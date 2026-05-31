@@ -1,0 +1,80 @@
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from .config import settings
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,   # 连接前检查存活，自动重连
+    echo=settings.DEBUG,
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def init_db():
+    from .models import stock, sector, signal, review, screening  # noqa: F401 - imports trigger table registration
+    Base.metadata.create_all(bind=engine)
+    _apply_schema_patches()
+
+
+def _apply_schema_patches():
+    """
+    幂等地补充新增字段（CREATE TABLE 不处理 ALTER TABLE）。
+    每次启动/init_db 调用时执行，已存在的列会被跳过。
+    """
+    from sqlalchemy import text
+
+    patches = [
+        # Sector 新增字段（板块筛选指标）
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS sector_type VARCHAR(20)",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS stock_count INTEGER DEFAULT 0 NOT NULL",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS total_market_cap FLOAT DEFAULT 0.0 NOT NULL",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS turnover_rate FLOAT DEFAULT 0.0 NOT NULL",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS amount FLOAT DEFAULT 0.0 NOT NULL",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS pct_change_30d FLOAT DEFAULT 0.0 NOT NULL",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS limit_down_count INTEGER DEFAULT 0 NOT NULL",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS pct_change_5d FLOAT DEFAULT 0.0 NOT NULL",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS pct_change_10d FLOAT DEFAULT 0.0 NOT NULL",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS pct_change_20d FLOAT DEFAULT 0.0 NOT NULL",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS pct_change_60d FLOAT DEFAULT 0.0 NOT NULL",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS is_watched BOOLEAN DEFAULT FALSE NOT NULL",
+        # Snapshot 新增字段（连续跌停数）
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS limit_down_count INTEGER DEFAULT 0 NOT NULL",
+        # Snapshot 新增字段（股票阶段，用于历史赚钱效应分组）
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS phase VARCHAR(30)",
+        # DailyReview 新增字段（强势股真实均涨幅）
+        "ALTER TABLE daily_reviews ADD COLUMN IF NOT EXISTS strong_pool_avg_pct FLOAT",
+        # Stock 主板块字段（计算一致性：所有展示模块读同一个字段）
+        "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS primary_sector_id INTEGER REFERENCES sectors(id) ON DELETE SET NULL",
+        "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS primary_sector_name VARCHAR(100)",
+        # DailyReview 新增字段（涨跌停计数 & 赚钱效应历史快照）
+        "ALTER TABLE daily_reviews ADD COLUMN IF NOT EXISTS overall_up_count INTEGER",
+        "ALTER TABLE daily_reviews ADD COLUMN IF NOT EXISTS overall_down_count INTEGER",
+        "ALTER TABLE daily_reviews ADD COLUMN IF NOT EXISTS overall_limit_up_count INTEGER",
+        "ALTER TABLE daily_reviews ADD COLUMN IF NOT EXISTS overall_limit_down_count INTEGER",
+        "ALTER TABLE daily_reviews ADD COLUMN IF NOT EXISTS profit_effect_groups JSONB",
+        "ALTER TABLE daily_reviews ADD COLUMN IF NOT EXISTS profit_effect_sectors JSONB",
+        # DailyReview 现有 JSON 字段改 JSONB（幂等，已是 JSONB 时会报错被静默跳过）
+        # 注：active_sectors / dragon_changes 若为 JSON 类型则补 JSONB 列不影响现有列
+    ]
+    with engine.begin() as conn:
+        for sql in patches:
+            try:
+                conn.execute(text(sql))
+            except Exception:
+                pass  # 字段已存在时静默跳过

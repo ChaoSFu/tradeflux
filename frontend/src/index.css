@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    /* 将 rem 基准从 16px 调至 15px，所有 Tailwind 字号等比放大 ~6% */
+    font-size: 15px;
+  }
+
+  body {
+    @apply bg-bg-base text-text-primary font-sans antialiased;
+    font-size: 1rem;   /* 15px via html root */
+    line-height: 1.55;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-bg-base;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-bg-border rounded;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-text-muted;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-bg-card border border-bg-border rounded-lg;
+  }
+
+  .card-elevated {
+    @apply bg-bg-elevated border border-bg-border rounded-lg;
+  }
+
+  .tag-up {
+    @apply text-up bg-up-dim text-xs font-mono px-1.5 py-0.5 rounded;
+  }
+
+  .tag-down {
+    @apply text-down bg-down-dim text-xs font-mono px-1.5 py-0.5 rounded;
+  }
+
+  .tag-neutral {
+    @apply text-text-secondary bg-bg-elevated text-xs font-mono px-1.5 py-0.5 rounded;
+  }
+
+  .mono {
+    @apply font-mono tabular-nums;
+  }
+
+  .label {
+    /* 升级到 text-secondary（从 muted 提亮），保持小字+大写风格 */
+    @apply text-text-secondary text-xs uppercase tracking-wider;
+  }
+
+  .divider {
+    @apply border-t border-bg-border;
+  }
+}
