@@ -229,19 +229,24 @@ export default function SectorRanking() {
   })
 
   const allSectors: Sector[] = data?.items ?? []
-  const sectors = useMemo(
-    () => showAll ? allSectors : allSectors.filter(s => s.is_watched),
-    [allSectors, showAll],
-  )
 
-  // Rank maps for all 7 tag columns（正向强势指标）
+  // Rank maps 始终基于全量板块计算，确保龙位排名不因过滤而失真
   const rankMaps = useMemo((): RankMaps => {
     const maps = {} as RankMaps
     for (const col of TAG_COLS) {
-      maps[col.key] = buildRankMap(sectors, col.field)
+      maps[col.key] = buildRankMap(allSectors, col.field)
     }
     return maps
-  }, [sectors])
+  }, [allSectors])
+
+  // 默认只展示带正向 tag 的强势板块（跌停 tag 不算），showAll 时展示全部
+  const hasPositiveTag = (s: Sector) =>
+    TAG_COLS.some(c => (rankMaps[c.key].get(s.id) ?? 999) <= 5)
+
+  const sectors = useMemo(
+    () => showAll ? allSectors : allSectors.filter(hasPositiveTag),
+    [allSectors, showAll, rankMaps],
+  )
 
 
   const sorted = useMemo(() => {
