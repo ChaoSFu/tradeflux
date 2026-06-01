@@ -151,25 +151,104 @@ def _build_rank_maps(sectors: list) -> dict:
 def get_all_sectors(db: Session) -> SectorListResponse:
     """
     返回 is_watched=True 的板块列表，rank 字段直接读 DB（由 daily_update 写入）。
+    批量预取关联数据，避免 N+1 查询。
     """
+    from ..models.sector import StockSectorRelation
+    from ..schemas.sector import StockInSector
+    from collections import defaultdict
+
     sectors = (
         db.query(Sector)
         .filter(Sector.is_watched == True)   # noqa: E712
         .order_by(Sector.emotion_score.desc())
         .all()
     )
+    sector_ids = [s.id for s in sectors]
+
+    # ── 批量预取：板块成员关联 ────────────────────────────────────────────
+    all_rels = (
+        db.query(StockSectorRelation)
+        .filter(StockSectorRelation.sector_id.in_(sector_ids))
+        .all()
+    )
+    # {sector_id: [rel, ...]}
+    rels_by_sector: dict = defaultdict(list)
+    for rel in all_rels:
+        rels_by_sector[rel.sector_id].append(rel)
+
+    # ── 批量预取：所有涉及的股票 ──────────────────────────────────────────
+    all_stock_ids = {rel.stock_id for rel in all_rels}
+    # 加上龙头股 id
+    leader_ids = {s.leader_stock_id for s in sectors if s.leader_stock_id}
+    all_stock_ids |= leader_ids
+
+    stock_map: dict = {
+        s.id: s
+        for s in db.query(Stock).filter(Stock.id.in_(all_stock_ids)).all()
+    } if all_stock_ids else {}
+
+    # ── 组装响应 ──────────────────────────────────────────────────────────
     items = []
     for s in sectors:
-        resp = _build_sector_response(s, db)
-        # 直接读落库的 rank 字段
-        resp.rank_5d     = getattr(s, "rank_5d",     None)
-        resp.rank_10d    = getattr(s, "rank_10d",    None)
-        resp.rank_20d    = getattr(s, "rank_20d",    None)
-        resp.rank_60d    = getattr(s, "rank_60d",    None)
-        resp.rank_lu     = getattr(s, "rank_lu",     None)
-        resp.rank_board  = getattr(s, "rank_board",  None)
-        resp.rank_strong = getattr(s, "rank_strong", None)
+        rels = rels_by_sector.get(s.id, [])
+        stocks_in_sector = []
+        for rel in rels:
+            stock = stock_map.get(rel.stock_id)
+            if stock:
+                stocks_in_sector.append(StockInSector(
+                    id=stock.id,
+                    code=stock.code,
+                    name=stock.name,
+                    is_leader=rel.is_leader,
+                    is_core=rel.is_core,
+                    is_compensation=rel.is_compensation,
+                    leader_score=stock.leader_score,
+                    risk_score=stock.risk_score,
+                    phase=stock.phase,
+                ))
+
+        leader_stock = stock_map.get(s.leader_stock_id) if s.leader_stock_id else None
+
+        resp = SectorResponse(
+            id=s.id,
+            code=s.code,
+            name=s.name,
+            description=s.description,
+            phase=s.phase,
+            phase_label=PHASE_LABELS.get(s.phase, "Unknown"),
+            phase_label_zh=PHASE_LABELS_ZH.get(s.phase, "未知"),
+            strong_stock_count=s.strong_stock_count,
+            limit_up_count=s.limit_up_count,
+            limit_down_count=getattr(s, "limit_down_count", 0),
+            board_height=s.board_height,
+            continuity_score=s.continuity_score,
+            risk_score=s.risk_score,
+            emotion_score=s.emotion_score,
+            sector_type=getattr(s, "sector_type", None),
+            stock_count=getattr(s, "stock_count", 0),
+            pct_change_30d=getattr(s, "pct_change_30d", 0.0),
+            pct_change_5d=getattr(s, "pct_change_5d",  0.0),
+            pct_change_10d=getattr(s, "pct_change_10d", 0.0),
+            pct_change_20d=getattr(s, "pct_change_20d", 0.0),
+            pct_change_60d=getattr(s, "pct_change_60d", 0.0),
+            amount=getattr(s, "amount", 0.0),
+            is_watched=getattr(s, "is_watched", False),
+            leader_stock_id=s.leader_stock_id,
+            leader_stock_code=leader_stock.code if leader_stock else None,
+            leader_stock_name=leader_stock.name if leader_stock else None,
+            stocks=stocks_in_sector,
+            created_at=s.created_at,
+            updated_at=s.updated_at,
+            rank_5d=getattr(s, "rank_5d", None),
+            rank_10d=getattr(s, "rank_10d", None),
+            rank_20d=getattr(s, "rank_20d", None),
+            rank_60d=getattr(s, "rank_60d", None),
+            rank_lu=getattr(s, "rank_lu", None),
+            rank_board=getattr(s, "rank_board", None),
+            rank_strong=getattr(s, "rank_strong", None),
+        )
         items.append(resp)
+
     return SectorListResponse(items=items, total=len(items))
 
 

@@ -9,9 +9,9 @@ import {
 import type { UpdateStatus } from '@/api/admin'
 import { MARKET_PHASE_LABELS } from '@/utils/format'
 import {
-  RefreshCw, Download, CheckCircle, XCircle,
+  Download, CheckCircle, XCircle,
   ChevronDown, ChevronUp, Settings2, Layers, AlertTriangle,
-  LogIn, LogOut, User, Lock,
+  LogIn, LogOut, User, Lock, RefreshCw,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { useAuthStore } from '@/store/auth'
@@ -380,7 +380,7 @@ function DataUpdateMenu() {
 // ── Header ────────────────────────────────────────────────────────────────────
 
 export function Header({ title }: { title: string }) {
-  const { data, isLoading, refetch, isFetching } = useQuery({
+  const { data } = useQuery({
     queryKey: ['market-state'],
     queryFn: fetchMarketState,
     staleTime: 60_000,
@@ -418,28 +418,18 @@ export function Header({ title }: { title: string }) {
 
         <DataUpdateMenu />
 
-        <button
-          onClick={() => refetch()}
-          className={cn(
-            'p-1.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-elevated transition-colors',
-            isFetching && 'animate-spin text-accent',
-          )}
-          disabled={isLoading || isFetching}
-          title="刷新市场状态"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-        </button>
-
-        <NavLink
-          to="/sector-config"
-          title="板块配置"
-          className={({ isActive }) => cn(
-            'p-1.5 rounded transition-colors',
-            isActive ? 'text-accent bg-accent/10' : 'text-text-muted hover:text-text-primary hover:bg-bg-elevated',
-          )}
-        >
-          <Settings2 className="w-3.5 h-3.5" />
-        </NavLink>
+        {isLoggedIn && (
+          <NavLink
+            to="/sector-config"
+            title="板块配置"
+            className={({ isActive }) => cn(
+              'p-1.5 rounded transition-colors',
+              isActive ? 'text-accent bg-accent/10' : 'text-text-muted hover:text-text-primary hover:bg-bg-elevated',
+            )}
+          >
+            <Settings2 className="w-3.5 h-3.5" />
+          </NavLink>
+        )}
 
         {/* 登录/登出 */}
         {isLoggedIn ? (
