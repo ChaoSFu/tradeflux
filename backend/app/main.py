@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .database import init_db
-from .routers import stocks, sectors, signals, reviews, market_state, screening, admin
+from .routers import stocks, sectors, signals, reviews, market_state, screening, admin, auth
 
 app = FastAPI(
     title="TradeFlux API",
@@ -27,6 +27,7 @@ app.include_router(reviews.router, prefix=settings.API_PREFIX)
 app.include_router(market_state.router, prefix=settings.API_PREFIX)
 app.include_router(screening.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
+app.include_router(auth.router, prefix=settings.API_PREFIX)
 
 
 @app.on_event("startup")

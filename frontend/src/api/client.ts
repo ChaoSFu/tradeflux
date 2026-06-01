@@ -6,6 +6,20 @@ const client = axios.create({
   timeout: 15_000,
 })
 
+// 自动注入 JWT token
+client.interceptors.request.use((config) => {
+  try {
+    const raw = localStorage.getItem('tradeflux:token')
+    if (raw) {
+      const { state } = JSON.parse(raw)
+      if (state?.token) {
+        config.headers.Authorization = `Bearer ${state.token}`
+      }
+    }
+  } catch {}
+  return config
+})
+
 client.interceptors.response.use(
   (r) => r,
   (err) => {

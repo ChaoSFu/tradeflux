@@ -109,6 +109,7 @@ function getLeaderTags(stock: Stock, maxes: LeaderMaxes): string[] {
 // ─── Phase group tag ─────────────────────────────────────────────────────────
 
 const PHASE_META: Record<Exclude<GroupKey, 'dragon'>, { label: string; color: string; bg: string }> = {
+  all:         { label: '全部',     color: '#A78BFA', bg: 'rgba(167,139,250,0.10)' },
   limit_up:    { label: '涨停龙头', color: '#FF4560', bg: 'rgba(255,69,96,0.12)'   },
   oscillating: { label: '震荡龙头', color: '#5EA6FF', bg: 'rgba(94,166,255,0.12)'  },
   weakening:   { label: '走弱龙头', color: '#F59E0B', bg: 'rgba(245,158,11,0.12)'  },

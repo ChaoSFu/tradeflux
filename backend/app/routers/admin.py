@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models.sector import Sector
+from app.auth import require_auth
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -131,7 +132,7 @@ def _capture_sync_boards() -> None:
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/update")
-def trigger_update(skip_boards: bool = True):
+def trigger_update(skip_boards: bool = True, _: str = Depends(require_auth)):
     """Start a daily data update in the background."""
     with _lock:
         if _job["status"] == "running":
@@ -176,7 +177,7 @@ def get_update_status():
 
 
 @router.post("/sync-boards")
-def trigger_sync_boards():
+def trigger_sync_boards(_: str = Depends(require_auth)):
     """启动东财板块全量同步（概念 + 行业全量 + 地区，约 5-8 分钟）。"""
     with _boards_lock:
         if _boards_job["status"] == "running":

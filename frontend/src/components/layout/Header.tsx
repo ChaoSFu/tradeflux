@@ -11,8 +11,11 @@ import { MARKET_PHASE_LABELS } from '@/utils/format'
 import {
   RefreshCw, Download, CheckCircle, XCircle,
   ChevronDown, ChevronUp, Settings2, Layers, AlertTriangle,
+  LogIn, LogOut, User, Lock,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
+import { useAuthStore } from '@/store/auth'
+import { LoginModal } from '@/components/auth/LoginModal'
 
 const PHASE_DOT: Record<string, string> = {
   bull_frenzy: 'bg-dragon',
@@ -34,11 +37,12 @@ interface JobPanelProps {
   onTrigger: () => void
   description: string
   estimatedTime: string
+  locked?: boolean  // 未登录时锁定
 }
 
 function JobPanel({
   label, icon, status, isRunning, isDone, isError,
-  onTrigger, description, estimatedTime,
+  onTrigger, description, estimatedTime, locked = false,
 }: JobPanelProps) {
   const [showLog, setShowLog] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
@@ -107,22 +111,32 @@ function JobPanel({
               {showLog ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
             </button>
           )}
-          <button
-            onClick={onTrigger}
-            disabled={isRunning}
-            className={cn(
-              'text-[10px] px-2 py-1 rounded transition-colors font-medium whitespace-nowrap',
-              isRunning
-                ? 'bg-bg-elevated text-text-muted cursor-not-allowed'
-                : isDone
-                  ? 'bg-up/15 text-up border border-up/30 hover:bg-up/25'
-                  : isError
-                    ? 'bg-down/15 text-down border border-down/30 hover:bg-down/25'
-                    : 'bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25',
-            )}
-          >
-            {isRunning ? '运行中…' : isDone ? '再次运行' : isError ? '重试' : '立即运行'}
-          </button>
+          {locked ? (
+            <span
+              className="flex items-center gap-1 text-[10px] px-2 py-1 rounded text-text-muted bg-bg-elevated border border-bg-border cursor-default"
+              title="请先登录"
+            >
+              <Lock className="w-3 h-3" />
+              需要登录
+            </span>
+          ) : (
+            <button
+              onClick={onTrigger}
+              disabled={isRunning}
+              className={cn(
+                'text-[10px] px-2 py-1 rounded transition-colors font-medium whitespace-nowrap',
+                isRunning
+                  ? 'bg-bg-elevated text-text-muted cursor-not-allowed'
+                  : isDone
+                    ? 'bg-up/15 text-up border border-up/30 hover:bg-up/25'
+                    : isError
+                      ? 'bg-down/15 text-down border border-down/30 hover:bg-down/25'
+                      : 'bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25',
+              )}
+            >
+              {isRunning ? '运行中…' : isDone ? '再次运行' : isError ? '重试' : '立即运行'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -161,6 +175,7 @@ function DataUpdateMenu() {
   const [open, setOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const { isLoggedIn } = useAuthStore()
 
   // ── 每日更新任务 ────────────────────────────────────────────────────────────
   const [updatePolling, setUpdatePolling] = useState(false)
@@ -220,6 +235,7 @@ function DataUpdateMenu() {
   }
 
   const handleUpdate = async () => {
+    if (!isLoggedIn) { showToast('请先登录后再执行数据更新'); return }
     if (updateStatus?.status === 'running') { setOpen(true); return }
     // 本地快速判断：板块同步运行中时给出提示
     if (syncStatus?.status === 'running') {
@@ -248,6 +264,7 @@ function DataUpdateMenu() {
   }
 
   const handleSyncBoards = async () => {
+    if (!isLoggedIn) { showToast('请先登录后再执行板块同步'); return }
     if (syncStatus?.status === 'running') { setOpen(true); return }
     // 本地快速判断：日更运行中时给出提示
     if (updateStatus?.status === 'running') {
@@ -328,8 +345,9 @@ function DataUpdateMenu() {
             isDone={updateStatus?.status === 'done'}
             isError={updateStatus?.status === 'error'}
             onTrigger={handleUpdate}
-            description="拉取全市场行情 → K线计算 → 更新强势池 → 刷新板块统计 → 写入复盘。每日收盘后运行。"
-            estimatedTime="1-5 分钟"
+            description="选股 API 获取候选股 → K线计算 → 更新强势池 → 刷新板块统计 → 写入复盘。每日收盘后运行。"
+            estimatedTime="30 秒"
+            locked={!isLoggedIn}
           />
 
           {/* 板块全量同步 */}
@@ -343,6 +361,7 @@ function DataUpdateMenu() {
             onTrigger={handleSyncBoards}
             description="从东财同步全部概念/行业/地区板块及成员关联。板块成员变动或首次部署时使用。"
             estimatedTime="约 1 分钟"
+            locked={!isLoggedIn}
           />
 
           {/* 耗时参考 */}
@@ -366,10 +385,14 @@ export function Header({ title }: { title: string }) {
     queryFn: fetchMarketState,
     staleTime: 60_000,
   })
+  const { isLoggedIn, username, logout } = useAuthStore()
+  const [showLogin, setShowLogin] = useState(false)
 
   return (
     <header className="h-14 flex items-center justify-between px-6 border-b border-bg-border bg-bg-card shrink-0">
       <h1 className="text-sm font-semibold text-text-primary">{title}</h1>
+
+      {showLogin && <LoginModal onClose={() => setShowLogin(false)} />}
 
       <div className="flex items-center gap-3">
         {data && (
@@ -417,6 +440,31 @@ export function Header({ title }: { title: string }) {
         >
           <Settings2 className="w-3.5 h-3.5" />
         </NavLink>
+
+        {/* 登录/登出 */}
+        {isLoggedIn ? (
+          <div className="flex items-center gap-1.5">
+            <span className="flex items-center gap-1 text-xs text-text-muted">
+              <User className="w-3 h-3" />
+              {username}
+            </span>
+            <button
+              onClick={logout}
+              title="退出登录"
+              className="p-1.5 rounded text-text-muted hover:text-down hover:bg-bg-elevated transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setShowLogin(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs text-accent border border-accent/30 hover:bg-accent/10 transition-colors"
+          >
+            <LogIn className="w-3 h-3" />
+            登录
+          </button>
+        )}
       </div>
     </header>
   )
