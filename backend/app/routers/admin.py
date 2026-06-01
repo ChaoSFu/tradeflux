@@ -90,6 +90,16 @@ def _capture_sync_boards() -> None:
         with _boards_lock:
             _boards_job["log_lines"] = log[-_MAX_LOG:]
 
+    def _write_log_file(text: str) -> None:
+        """把捕获到的输出同步写入日志文件。"""
+        import os
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        log_dir = os.path.join(backend_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, f"sync_boards_{date.today().isoformat()}.log")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(text)
+
     buf = io.StringIO()
     try:
         backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -100,14 +110,18 @@ def _capture_sync_boards() -> None:
             from scripts.sync_boards import run_sync_boards  # type: ignore
             run_sync_boards()
 
-        _flush(buf.getvalue())
+        output = buf.getvalue()
+        _flush(output)
+        _write_log_file(output)
         with _boards_lock:
             _boards_job["status"] = "done"
             _boards_job["finished_at"] = datetime.now().isoformat(timespec="seconds")
             _boards_job["message"] = "板块全量同步完成"
 
     except Exception as exc:  # noqa: BLE001
-        _flush(buf.getvalue())
+        output = buf.getvalue()
+        _flush(output)
+        _write_log_file(output)
         with _boards_lock:
             _boards_job["status"] = "error"
             _boards_job["finished_at"] = datetime.now().isoformat(timespec="seconds")
@@ -122,12 +136,21 @@ def trigger_update(skip_boards: bool = True):
     with _lock:
         if _job["status"] == "running":
             return {"ok": False, "message": "已有更新任务在运行中，请稍后"}
+
+        # 互斥检查：板块同步正在运行时不允许启动日更
+        # 两者都写 stock_sector_relations，并发会导致 DeadlockDetected
+        with _boards_lock:
+            if _boards_job["status"] == "running":
+                return {
+                    "ok": False,
+                    "message": "板块同步正在运行中，请等待同步完成后再执行数据更新（避免数据库死锁）",
+                }
+
         _job["status"] = "running"
         _job["started_at"] = datetime.now().isoformat(timespec="seconds")
         _job["finished_at"] = None
         _job["log_lines"] = []
 
-        # 提示盘中更新风险（A 股交易时间 09:25–15:00 CST = UTC+8）
         now = datetime.now()
         h, m = now.hour, now.minute
         in_trading = (9, 25) <= (h, m) <= (15, 0)
@@ -154,10 +177,19 @@ def get_update_status():
 
 @router.post("/sync-boards")
 def trigger_sync_boards():
-    """启动东财板块全量同步（t:2 行业 + t:3 概念，约 7-12 分钟）。"""
+    """启动东财板块全量同步（概念 + 行业全量 + 地区，约 5-8 分钟）。"""
     with _boards_lock:
         if _boards_job["status"] == "running":
             return {"ok": False, "message": "已有板块同步任务在运行中，请稍后"}
+
+        # 互斥检查：日更正在运行时不允许启动板块同步
+        with _lock:
+            if _job["status"] == "running":
+                return {
+                    "ok": False,
+                    "message": "数据更新正在运行中，请等待更新完成后再执行板块同步（避免数据库死锁）",
+                }
+
         _boards_job["status"] = "running"
         _boards_job["started_at"] = datetime.now().isoformat(timespec="seconds")
         _boards_job["finished_at"] = None

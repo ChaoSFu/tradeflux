@@ -114,6 +114,13 @@ export interface Sector {
   leader_stock_id: number | null
   leader_stock_name: string | null
   leader_stock_code: string | null
+  rank_5d: number | null
+  rank_10d: number | null
+  rank_20d: number | null
+  rank_60d: number | null
+  rank_lu: number | null
+  rank_board: number | null
+  rank_strong: number | null
   stocks: StockInSector[]
   created_at: string | null
   updated_at: string | null
@@ -283,6 +290,7 @@ export interface SectorProfitEffect {
   up_count: number
   down_count: number
   avg_pct: number
+  sector_pct_today: number
 }
 
 export interface ProfitEffectData {

@@ -116,12 +116,61 @@ def _build_sector_response(sector: Sector, db: Session) -> SectorResponse:
     )
 
 
+def _build_rank_maps(sectors: list) -> dict:
+    """
+    对全量板块的 7 个维度计算 dense rank（前5名，value>0）。
+    返回 {sector_id: {field: rank}} 结构。
+    """
+    RANK_FIELDS = [
+        ("rank_5d",     "pct_change_5d"),
+        ("rank_10d",    "pct_change_10d"),
+        ("rank_20d",    "pct_change_20d"),
+        ("rank_60d",    "pct_change_60d"),
+        ("rank_lu",     "limit_up_count"),
+        ("rank_board",  "board_height"),
+        ("rank_strong", "strong_stock_count"),
+    ]
+    result: dict = {s.id: {} for s in sectors}
+    for rank_key, field in RANK_FIELDS:
+        eligible = [s for s in sectors if getattr(s, field, 0) > 0]
+        eligible.sort(key=lambda s: getattr(s, field), reverse=True)
+        rank, prev_val, count = 1, None, 0
+        for s in eligible:
+            val = getattr(s, field)
+            if prev_val is not None and val != prev_val:
+                rank = count + 1
+                if rank > 5:
+                    break
+            if rank <= 5:
+                result[s.id][rank_key] = rank
+            prev_val = val
+            count += 1
+    return result
+
+
 def get_all_sectors(db: Session) -> SectorListResponse:
-    sectors = db.query(Sector).order_by(Sector.emotion_score.desc()).all()
-    return SectorListResponse(
-        items=[_build_sector_response(s, db) for s in sectors],
-        total=len(sectors),
+    """
+    返回 is_watched=True 的板块列表，rank 字段直接读 DB（由 daily_update 写入）。
+    """
+    sectors = (
+        db.query(Sector)
+        .filter(Sector.is_watched == True)   # noqa: E712
+        .order_by(Sector.emotion_score.desc())
+        .all()
     )
+    items = []
+    for s in sectors:
+        resp = _build_sector_response(s, db)
+        # 直接读落库的 rank 字段
+        resp.rank_5d     = getattr(s, "rank_5d",     None)
+        resp.rank_10d    = getattr(s, "rank_10d",    None)
+        resp.rank_20d    = getattr(s, "rank_20d",    None)
+        resp.rank_60d    = getattr(s, "rank_60d",    None)
+        resp.rank_lu     = getattr(s, "rank_lu",     None)
+        resp.rank_board  = getattr(s, "rank_board",  None)
+        resp.rank_strong = getattr(s, "rank_strong", None)
+        items.append(resp)
+    return SectorListResponse(items=items, total=len(items))
 
 
 def get_sector_by_code(db: Session, code: str) -> SectorResponse | None:

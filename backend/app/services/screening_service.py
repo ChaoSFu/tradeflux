@@ -29,6 +29,7 @@ class StockWindowStats:
     trading_days: int          # 总交易日数（判断次新股）
 
     # 今日数据
+    today_close_price: float
     today_pct_change: float
     today_turnover: float
     today_is_limit_up: bool
@@ -233,6 +234,7 @@ def compute_window_stats(
         name=name,
         is_st=is_st,
         trading_days=n,
+        today_close_price=today.close_price,
         today_pct_change=today.pct_change,
         today_turnover=today.turnover_rate,
         today_is_limit_up=today.is_limit_up,

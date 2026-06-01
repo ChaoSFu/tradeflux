@@ -1,7 +1,7 @@
 # TradeFlux · 短线晴雨表 — 项目逻辑梳理
 
 > 本文档梳理项目的完整逻辑架构，供开发者快速理解系统设计与数据流转。
-> 最后更新：2026-05-31
+> 最后更新：2026-06-01
 
 ---
 
@@ -588,16 +588,21 @@ class ClaudeAIReviewGenerator(AIReviewGenerator):
 
 ### 每日更新流程（`scripts/daily_update.py`）
 
+> 实测耗时：**50–90s**
+
 ```
-1. fetch_main_board_stocks()          → AkShare列表 + 新浪涨跌幅（约30s）
-2. 确定候选股：当前强势池 + 今日高涨幅（>7%）股
-3. fetch_klines_batch(candidates)     → 并发拉取60日K线（max_workers=5）
-4. compute_window_stats()             → 计算全部窗口统计指标
-5. evaluate_criteria()                → 对比 ScreeningCriteria → in_strong_pool
-6. 写入 StockDailySnapshot
-7. refresh_sector_phases()            → 刷新板块阶段
-8. 生成并写入 DailyReview
-9. 输出统计摘要
+1. fetch_main_board_stocks()          → AkShare列表 + 新浪涨跌幅（3–30s，外部接口抖动）
+2. 确定候选股                         → 调东财智能选股 API（fetch_strong_pool_codes）
+                                        返回强势股代码集合（约60–80只）
+                                        + 今日涨跌停 + 涨幅>7% 的股票（共约260只）
+3. K线获取（DB重建路径优化）           → 有≥60条历史快照的股票：从 DB 重建+拉今日1根
+                                        新股/历史不足：拉完整65日（24–80s）
+4. compute_window_stats()             → 计算所有窗口统计指标（含 today_close_price）
+5. 入池判断                           → in_pool = code in strong_pool_codes（API结果集）
+6. 写入 StockDailySnapshot            → 含 close_price 字段（供次日DB重建使用）
+7. 补全涨跌停板块关联                  → 并发 F10，增量更新（已有关联时0.0s）
+8. refresh_sector_phases() + 更新主板块
+9. 生成并写入 DailyReview + 弱转强信号
 ```
 
 用法：
@@ -610,7 +615,11 @@ cd backend
 
 ### 板块同步（`scripts/sync_boards.py`）
 
-从东方财富 WAP 接口全量同步板块数据：
+> 实测耗时：**~51s**（重构前 ~13.5 分钟，加速 15 倍）
+
+分两步执行：
+
+**第1步 板块元数据**（~13s）：httpx 拉取东方财富全量板块（930个）名称/涨幅/市值等 → upsert sectors 表
 
 | 数据源 | 板块类型 | 数量 |
 |--------|---------|------|
@@ -618,7 +627,9 @@ cd backend
 | `b:MK0881` | 行业板块全量（含一/二/三级） | ~457个 |
 | `m:90+e:1` | 地区板块 | ~31个 |
 
-> 新板块默认 `is_watched=False`，已有板块保留原有配置。约需 5-8 分钟。
+**第2步 个股→板块关联**（~38s）：对当日涨跌停 + 强势股池（约200只）并发调 F10 接口，获取每只股票的 BK 码 → 增量更新 `stock_sector_relations`（只写有变化的）
+
+> 新板块默认 `is_watched=False`，已有板块保留原有配置。
 
 也可通过管理页面触发：`POST /api/admin/sync-boards`
 
@@ -650,6 +661,7 @@ cd backend
 - 顶部横幅：市场阶段、情绪温度条、赚钱/亏钱效应、仓位建议
 - 4格统计卡：活跃板块数、危险板块数、龙头数量、弱转强候选数
 - 情绪曲线图（近30日）：赚钱效应/亏钱效应/情绪温度三条线
+- 板块赚钱/亏钱效应列表：每行显示**板块当日涨跌幅**（东财板块指数）+ 强势股均涨幅
 - 活跃板块列表、龙头股列表、弱转强候选
 
 #### 强势股池（SectorPool）★ 重构为板块分组视图
@@ -659,9 +671,11 @@ cd backend
 - 股票卡片展示：阶段标签（normal/weakening/broken）+ 涨停/跌停/炸板图标
 - 搜索框、多维度排序（涨停/连板/情绪等）
 
-#### 股票列表（StockPool）
+#### 股票列表（StockPool）★ 新增全部 tab
 
-- 搜索框（按代码/名称）+ 板块筛选
+- Tab 分组：**全部**（新增）/ 总龙头 / 震荡龙头 / 涨停龙头 / 走弱龙头 / 破位龙头
+- 龙头 tag（10龙/20龙/60龙/60高板龙/连板龙）始终基于**全量强势池**对比，不受当前 tab 分组影响
+- 「全部」tab 按 tag 优先排序，是浏览整个强势池的权威视图
 - 可排序表格：龙头分/风险分/情绪分/60日最高板等
 
 #### 个股详情（StockDetail）

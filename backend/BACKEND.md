@@ -1,7 +1,7 @@
 # TradeFlux Backend 技术文档
 
 > 面向开发者的后端架构说明，覆盖目录结构、外部接口依赖、数据链路和数据库表结构。
-> 最后更新：2026-05-31
+> 最后更新：2026-06-01
 
 ---
 
@@ -64,11 +64,13 @@ backend/
 │
 ├── scripts/                  运维脚本（每日更新流程）
 │   ├── daily_update.py       每日核心更新主流程
-│   ├── sync_boards.py        东方财富板块全量同步
+│   ├── sync_boards.py        东方财富板块全量同步（已重写，见§8）
 │   ├── init_screening.py     初始化默认筛选条件
 │   ├── seed_mock_data.py     注入模拟数据（开发调试）
 │   ├── import_xuangu.py      从文件导入股票数据
-│   └── backfill_daily_reviews.py  历史复盘数据补录
+│   ├── backfill_daily_reviews.py  历史复盘数据补录
+│   ├── seed_kline_history.py      一次性补填历史 close_price 快照（K线DB重建初始化）
+│   └── backfill_close_price.py   从已有快照反推 close_price（辅助工具）
 │
 ├── requirements.txt
 ├── .env.example
@@ -110,7 +112,9 @@ backend/
 |------|-----|------|---------|
 | 股票列表 clist | `https://push2.eastmoney.com/api/qt/clist/get` | 获取全市场股票列表（涨跌幅、换手率） | `daily_update.py` 备用 |
 | K 线接口 | `https://push2his.eastmoney.com/api/qt/stock/kline/get` | 获取单股日线 K 线（含换手率） | `fetch_kline()` 主力 |
-| 板块列表（WAP） | `https://push2.eastmoney.com/api/qt/clist/get`（板块 fs 参数） | 获取概念/行业/地区板块列表及行情 | `sync_boards.py` |
+| 板块列表（WAP） | `https://push2delay.eastmoney.com/api/qt/clist/get`（板块 fs 参数） | 获取概念/行业/地区板块元数据 | `sync_boards.py` 第1步 |
+| F10 板块归属 | `https://emweb.securities.eastmoney.com/PC_HSF10/CoreConception/PageAjax` | 查询个股所属板块 BK 码列表 | `fetch_stock_bk_codes()` |
+| 智能选股 | `https://np-tjxg-g.eastmoney.com/api/smart-tag/stock/v3/pw/search-code` | 自然语言筛股，返回满足条件的代码集合 | `fetch_strong_pool_codes()` |
 
 **请求频率限制**：东方财富对高频请求有 TLS 指纹检测，批量 K 线抓取 `max_workers=5`，请求间隔 ≥0.1s。
 
@@ -164,6 +168,8 @@ fetch_kline(code):
 
 ### 4.1 每日更新链路（写入路径）
 
+> 实测耗时（稳定后）：**50–90s**，主要瓶颈为 AkShare/新浪行情接口网络抖动（3–30s）和 K线拉取（24–80s）。
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  触发方式：                                                       │
@@ -173,65 +179,66 @@ fetch_kline(code):
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 1  fetch_main_board_stocks()                               │
+│  Step 1  fetch_main_board_stocks()                      ~3–30s  │
 │  数据源：AkShare（主） + 新浪财经涨跌幅                            │
 │  输出：List[StockBasicInfo]（约 4500 只）                         │
-│    字段：code, name, market, is_st, pct_change,                  │
-│          turnover_rate, listing_date                              │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 2  候选股筛选                                               │
-│  来源1：当前 in_strong_pool=True 的股票（DB查询）                  │
-│  来源2：今日涨幅 > PCT_CANDIDATE_THRESHOLD(7%) 的高涨股            │
-│  目的：减少 K 线请求量（从 4500 缩减到 500–800）                   │
+│  Step 2  确定候选股 & 强势池                                ~3–4s │
+│  ① 调用东财智能选股 API（fetch_strong_pool_codes）               │
+│     keyWord："主板非ST;非退市;非新股次新;近60日最高连板>3 OR      │
+│              60日涨停>9 OR 10日涨停>4 OR 20日涨幅前10"           │
+│     → 返回强势股代码集合（约 60–80 只）                           │
+│  ② API 失败时回退：读 DB 中 in_strong_pool=True 的股票           │
+│  候选股 = 强势池代码 + 今日涨跌停 + 涨幅>7% 的股票（共 ~260 只）  │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 3  fetch_klines_batch(candidates, days=65)                 │
-│  数据源：东方财富 K 线（主） / 腾讯财经 K 线（备用）                │
-│  并发：max_workers=5，delay=0.1s                                  │
+│  Step 3  K 线数据获取（DB重建路径优化）                   ~24–80s │
+│  分组：                                                           │
+│    DB重建组（有≥60条历史快照）→ 从快照重建历史 KLineBar             │
+│                                + API 只拉今日 2 根（days=2）      │
+│                                  并发 max_workers=8              │
+│    全量拉取组（新股/历史不足）→ API 拉完整 65 日（days=65）         │
+│                                  并发 max_workers=5              │
 │  输出：Dict[code, List[KLineBar]]                                 │
-│    KLineBar 字段：date, open/close/high/low_price,               │
-│                   pct_change, turnover_rate,                      │
-│                   is_limit_up, is_limit_down, is_broken_board    │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 4  compute_window_stats(code, bars, ...)                   │
-│  纯内存计算，无 DB 访问                                            │
-│  输出：StockWindowStats（每只股票一个对象）                        │
+│  Step 4  compute_window_stats(code, bars, ...)           ~0.5s  │
+│  纯内存计算，输出 StockWindowStats                                 │
 │    包含：连板统计、涨停天数、累计涨幅、情绪/风险/龙头评分、          │
 │          阶段分类（normal/weakening/broken）、ma60/ma30            │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 5  evaluate_criteria(stats, criteria, all_pct_20d)         │
-│  读取：DB 中 is_active=True 的 ScreeningCriteria                  │
-│  判断：是否满足入池条件（OR 逻辑）                                  │
+│  Step 5  入池判断                                                 │
+│  in_pool = stats.code in strong_pool_codes（Step2 API结果集）    │
 │  更新：Stock.in_strong_pool = True/False                          │
+│  写入：StockDailySnapshot（含 close_price 字段，供次日DB重建使用）  │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 6  写入 stock_daily_snapshots（当日快照）                    │
-│          更新 stocks 表缓存字段（leader_score 等）                 │
+│  Step 6  补全涨跌停板块关联（并发 F10，增量）               ~0s   │
+│  对今日涨跌停但无板块关联的股票，并发调 F10 接口补建关联            │
+│  已有关联时直接跳过（0.0s）                                        │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 7  refresh_sector_phases()                                 │
-│  聚合板块内的强势股统计 → 更新 sectors 表                          │
-│  写入 sector_daily_snapshots（板块当日快照）                       │
+│  Step 7  refresh_sector_phases() + 更新主板块           ~1–2s   │
+│  聚合板块内强势股统计 → 更新 sectors 表 → 写入 sector_daily_snaps │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 8  get_current_market_state() → 生成并写入 DailyReview     │
+│  Step 8  生成并写入 DailyReview + 弱转强信号              ~0.3s  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -255,20 +262,32 @@ FastAPI Router  →  Service Layer  →  SQLAlchemy Session  →  PostgreSQL
 
 ### 4.3 板块同步链路
 
+> 实测耗时：**~51s**（重构前 ~13.5 分钟）
+
 ```
 POST /api/admin/sync-boards
   OR python scripts/sync_boards.py
     │
     ▼
-东方财富 clist（板块 fs 参数）
+【第1步】板块元数据同步（~13s）
+    东方财富 clist 接口（httpx，替换原 curl subprocess）
     概念板块：fs=m:90+e:3  (~399 个)
-    行业板块：fs=b:MK0881  (~457 个，含一/二/三级)
+    行业板块：fs=b:MK0881  (~457 个)
     地区板块：fs=m:90+e:1  (~31 个)
+    → Upsert sectors 表（名称/涨幅/市值等）
+    → 新板块 is_watched=False；已有板块保留配置
     │
     ▼
-Upsert → sectors 表
-    新板块：is_watched=False（用户在管理页手动开启）
-    已有板块：保留原 is_watched 值，更新行情字段
+【第2步】个股→板块关联同步（~38s）
+    目标股票：当日涨跌停 + 当日强势股池（约 200 只）
+    → 并发调 F10 接口（max_workers=10）获取每只股票的 BK 码
+    → 与 DB 现有关联对比，只有变化才写入（增量更新）
+    → 只关联 is_watched=True 的板块
+
+    设计原则：
+    - 反向思路：个股→板块（而非传统的板块→遍历成分股）
+    - 只维护前端实际展示的股票（涨跌停池 + 强势股池）
+    - 未变化的关联直接跳过（本次实测 196/199 只无变化）
 ```
 
 ---
@@ -326,6 +345,7 @@ ORM：**SQLAlchemy 2.0 声明式**
 | `id` | INTEGER | PK | 主键 |
 | `stock_id` | INTEGER | FK→stocks.id, NOT NULL | 关联股票 |
 | `date` | DATE | NOT NULL | 日期 |
+| `close_price` | FLOAT | nullable | 当日收盘价（用于次日 K线DB重建计算 MA60/MA30） |
 | `pct_change` | FLOAT | nullable | 当日涨跌幅 % |
 | `turnover_rate` | FLOAT | nullable | 换手率 % |
 | `is_limit_up` | BOOLEAN | NOT NULL | 当日涨停 |
@@ -572,8 +592,8 @@ screening_criteria     （独立表，配置项）
 
 | 文件 | 职责 | 关键函数 |
 |------|------|---------|
-| `eastmoney_fetcher.py` | 外部行情抓取 | `fetch_main_board_stocks()`, `fetch_kline()`, `fetch_klines_batch()` |
-| `screening_service.py` | K线→统计指标→入池判断 | `compute_window_stats()`, `evaluate_criteria()`, `get_active_criteria()` |
+| `eastmoney_fetcher.py` | 外部行情抓取 | `fetch_main_board_stocks()`, `fetch_kline()`, `fetch_klines_batch()`, `fetch_strong_pool_codes()`, `fetch_stock_bk_codes()` |
+| `screening_service.py` | K线→统计指标 | `compute_window_stats()`, `get_active_criteria()` |
 | `sector_phase_service.py` | 板块生命周期阶段判断 | `refresh_sector_phases()`, `_classify_phase()` |
 | `sector_top_stocks_service.py` | 板块龙头股计算 | 配合 `daily_update.py` 识别板块内 is_leader |
 | `strong_stock_service.py` | 强势股池 DB 查询 | `get_strong_pool()`, `_enrich_stock_response()` |
@@ -620,10 +640,16 @@ python scripts/daily_update.py --skip-boards
 ### `sync_boards.py` — 板块全量同步
 
 ```bash
-python scripts/sync_boards.py
-# 约 5-8 分钟，拉取东方财富全量概念/行业/地区板块
-# 新板块 is_watched=False，需在管理页手动开启
+python scripts/sync_boards.py               # 完整同步（元数据 + 个股关联，约 51s）
+python scripts/sync_boards.py --meta-only   # 只更新板块元数据（约 13s）
+python scripts/sync_boards.py --stocks-only # 只更新个股关联（约 38s）
 ```
+
+**设计**：已重写，分两步：
+1. 板块元数据（名称/涨幅/市值）：httpx 拉取 930 个板块 → upsert sectors 表
+2. 个股→板块关联：对当日涨跌停 + 强势股池（~200只）并发调 F10 接口，增量更新 `stock_sector_relations`
+
+> 新板块默认 `is_watched=False`，需在管理页手动开启。运行日志写入 `logs/sync_boards_YYYY-MM-DD.log`。
 
 ### `init_screening.py` — 初始化筛选条件
 
@@ -645,6 +671,23 @@ python scripts/seed_mock_data.py
 ```bash
 python scripts/backfill_daily_reviews.py
 # 为历史已有的日快照数据补录 daily_reviews 记录
+```
+
+### `seed_kline_history.py` — K线历史初始化
+
+```bash
+python scripts/seed_kline_history.py
+# 一次性为 DB 中活跃股票批量拉取 65 日 K 线，填充历史 close_price 快照
+# 使 _build_klines_from_db（DB重建路径）立即生效
+# 首次部署或新环境迁移后运行一次即可
+```
+
+### `backfill_close_price.py` — close_price 反推补填
+
+```bash
+python scripts/backfill_close_price.py
+# 从已知今日收盘价出发，利用 pct_change 向历史反推 close_price
+# 适用于 seed_kline_history 前的辅助补填
 ```
 
 ---

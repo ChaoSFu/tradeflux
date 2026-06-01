@@ -35,6 +35,15 @@ class Sector(Base):
     risk_score = Column(Float, default=0.0, nullable=False)
     emotion_score = Column(Float, default=0.0, nullable=False)
 
+    # 排名 tag（在 is_watched 板块中的相对排名，前5名，daily_update 写入）
+    rank_5d     = Column(Integer, nullable=True)   # 近5日涨幅排名
+    rank_10d    = Column(Integer, nullable=True)   # 近10日涨幅排名
+    rank_20d    = Column(Integer, nullable=True)   # 近20日涨幅排名
+    rank_60d    = Column(Integer, nullable=True)   # 近60日涨幅排名
+    rank_lu     = Column(Integer, nullable=True)   # 涨停数排名
+    rank_board  = Column(Integer, nullable=True)   # 连板高度排名
+    rank_strong = Column(Integer, nullable=True)   # 强势股数排名
+
     leader_stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=True)
 
     created_at = Column(DateTime, server_default=func.now())

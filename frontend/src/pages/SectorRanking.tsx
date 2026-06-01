@@ -16,43 +16,20 @@ import type { Sector } from '@/types'
 // ─── Tag columns (优先级从高到低) ─────────────────────────────────────────────
 
 type TagKey = '5d' | '10d' | '20d' | '60d' | 'lu' | 'board' | 'strong'
+type ViewMode = 'trend' | 'emotion' | 'all'
 
-const TAG_COLS: Array<{ key: TagKey; label: string; field: keyof Sector }> = [
-  { key: '5d',     label: '5日',  field: 'pct_change_5d'     },
-  { key: '10d',    label: '10日', field: 'pct_change_10d'    },
-  { key: '20d',    label: '20日', field: 'pct_change_20d'    },
-  { key: '60d',    label: '60日', field: 'pct_change_60d'    },
-  { key: 'lu',     label: '涨停', field: 'limit_up_count'    },
-  { key: 'board',  label: '连板', field: 'board_height'      },
-  { key: 'strong', label: '强势', field: 'strong_stock_count'},
+const TAG_COLS: Array<{ key: TagKey; label: string; rankField: keyof Sector; pctField?: keyof Sector; view: ViewMode }> = [
+  { key: '5d',     label: '5日',  rankField: 'rank_5d',     pctField: 'pct_change_5d',  view: 'trend'   },
+  { key: '10d',    label: '10日', rankField: 'rank_10d',    pctField: 'pct_change_10d', view: 'trend'   },
+  { key: '20d',    label: '20日', rankField: 'rank_20d',    pctField: 'pct_change_20d', view: 'trend'   },
+  { key: '60d',    label: '60日', rankField: 'rank_60d',    pctField: 'pct_change_60d', view: 'trend'   },
+  { key: 'lu',     label: '涨停', rankField: 'rank_lu',                                  view: 'emotion' },
+  { key: 'board',  label: '连板', rankField: 'rank_board',                               view: 'emotion' },
+  { key: 'strong', label: '强势', rankField: 'rank_strong',                              view: 'emotion' },
 ]
 
 // 仅用于渲染涨幅列（不含涨停/连板/强势）
-const PCT_COLS = TAG_COLS.slice(0, 4)
-
-// ─── Rank map: top-5, value > 0, dense rank ───────────────────────────────────
-
-function buildRankMap(sectors: Sector[], field: keyof Sector): Map<number, number> {
-  const eligible = sectors.filter(s => (s[field] as number) > 0)
-  const sorted = [...eligible].sort((a, b) => (b[field] as number) - (a[field] as number))
-  const map = new Map<number, number>()
-  let rank = 1
-  let prevVal: number | null = null
-  let count = 0
-  for (const s of sorted) {
-    const val = s[field] as number
-    if (prevVal !== null && val !== prevVal) {
-      rank = count + 1
-      if (rank > 5) break
-    }
-    if (rank <= 5) map.set(s.id, rank)
-    prevVal = val
-    count++
-  }
-  return map
-}
-
-type RankMaps = Record<TagKey, Map<number, number>>
+const PCT_COLS = TAG_COLS.filter(c => c.pctField)
 
 // ─── Sort ─────────────────────────────────────────────────────────────────────
 
@@ -204,24 +181,34 @@ function TopStocksPanel({ bkCode, onClickStock }: { bkCode: string; onClickStock
 
 // ─── Composite tag sort score ─────────────────────────────────────────────────
 
+function getSectorRank(s: Sector, key: TagKey): number {
+  const field = TAG_COLS.find(c => c.key === key)!.rankField
+  return (s[field] as number | null) ?? 999
+}
+
 /**
  * 返回排序比较数组: [tagCount, ...TAG_COLS 按优先级, 龙位越小越好]
- * 用于 lexicographic 比较。
+ * 用于 lexicographic 比较。直接读后端返回的 rank 字段。
  */
-function getSortVector(s: Sector, rm: RankMaps): number[] {
-  const ranks = TAG_COLS.map(c => rm[c.key].get(s.id) ?? 999)
+function getSortVector(s: Sector, cols: typeof TAG_COLS): number[] {
+  const ranks = cols.map(c => getSectorRank(s, c.key))
   const tagCount = ranks.filter(r => r < 999).length
-  return [tagCount, ...ranks.map(r => -r)]  // negate rank so higher = better
+  return [tagCount, ...ranks.map(r => -r)]
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export default function SectorRanking() {
+interface SectorRankingProps {
+  // 固定视图模式（传入时隐藏 Tab 切换和全局过滤控件）
+  fixedView?: ViewMode
+}
+
+export default function SectorRanking({ fixedView }: SectorRankingProps = {}) {
   const navigate = useNavigate()
   const [sortKey, setSortKey] = useState<SortKey>('tags')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
-  const [showAll, setShowAll] = useState(false)
   const [expandedCode, setExpandedCode] = useState<string | null>(null)
+  const [viewMode, setViewMode] = useState<ViewMode>(fixedView ?? 'trend')
 
   const { data, isLoading } = useQuery({
     queryKey: ['sectors-ranking'],
@@ -230,23 +217,11 @@ export default function SectorRanking() {
 
   const allSectors: Sector[] = data?.items ?? []
 
-  // Rank maps 始终基于全量板块计算，确保龙位排名不因过滤而失真
-  const rankMaps = useMemo((): RankMaps => {
-    const maps = {} as RankMaps
-    for (const col of TAG_COLS) {
-      maps[col.key] = buildRankMap(allSectors, col.field)
-    }
-    return maps
-  }, [allSectors])
+  // 当前视图模式下参与排名和过滤的 tag 列
+  const activeCols = TAG_COLS.filter(c => c.view === viewMode)
 
-  // 默认只展示带正向 tag 的强势板块（跌停 tag 不算），showAll 时展示全部
-  const hasPositiveTag = (s: Sector) =>
-    TAG_COLS.some(c => (rankMaps[c.key].get(s.id) ?? 999) <= 5)
-
-  const sectors = useMemo(
-    () => showAll ? allSectors : allSectors.filter(hasPositiveTag),
-    [allSectors, showAll, rankMaps],
-  )
+  // 后端已过滤 is_watched=true，直接使用全部返回数据
+  const sectors = allSectors
 
 
   const sorted = useMemo(() => {
@@ -271,8 +246,8 @@ export default function SectorRanking() {
         return sortDir === 'asc' ? c : -c
       }
       if (sortKey === 'tags') {
-        const va = getSortVector(a, rankMaps)
-        const vb = getSortVector(b, rankMaps)
+        const va = getSortVector(a, activeCols)
+        const vb = getSortVector(b, activeCols)
         for (let i = 0; i < va.length; i++) {
           if (va[i] !== vb[i]) return vb[i] - va[i]
         }
@@ -281,7 +256,7 @@ export default function SectorRanking() {
       const diff = getNum(b) - getNum(a)
       return sortDir === 'desc' ? diff : -diff
     })
-  }, [sectors, sortKey, sortDir, rankMaps])
+  }, [sectors, sortKey, sortDir, viewMode])
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir(d => d === 'desc' ? 'asc' : 'desc')
@@ -314,20 +289,7 @@ export default function SectorRanking() {
     <div className="space-y-3 animate-fade-in">
 
       {/* Top bar */}
-      <div className="flex items-center gap-3">
-        <span className="text-xs text-text-muted">{sectors.length} 个板块</span>
-        <button
-          onClick={() => setShowAll(v => !v)}
-          className={cn(
-            'text-xs px-2.5 py-1 rounded border transition-colors',
-            showAll
-              ? 'border-accent/40 text-accent bg-accent/10'
-              : 'border-border text-text-muted hover:text-text-secondary hover:bg-bg-elevated',
-          )}
-        >
-          {showAll ? '仅看关注板块' : '显示全部板块'}
-        </button>
-        {/* 默认排序快捷按钮 */}
+      <div className="flex items-center gap-3 flex-wrap">
         {sortKey !== 'tags' && (
           <button
             onClick={() => { setSortKey('tags'); setSortDir('desc') }}
@@ -365,11 +327,11 @@ export default function SectorRanking() {
             </thead>
             <tbody>
               {sorted.map((s, idx) => {
-                // 收集该板块所有正向 tag（按列优先级顺序）
-                const sectorTags = TAG_COLS
+                // 只展示当前视图模式下的 tag（趋势模式不显示涨停/连板/强势 tag）
+                const sectorTags = activeCols
                   .map(c => {
-                    const rank = rankMaps[c.key].get(s.id)
-                    return rank ? { key: c.key, label: c.label, rank } : null
+                    const rank = s[c.rankField] as number | null
+                    return rank != null ? { key: c.key, label: c.label, rank } : null
                   })
                   .filter((t): t is { key: TagKey; label: string; rank: number } => t !== null)
 
@@ -380,8 +342,8 @@ export default function SectorRanking() {
                   <Fragment key={s.id}>
                   <tr
                     className={cn(
-                      'hover:bg-bg-elevated/60 transition-colors border-b border-bg-border/15 last:border-0',
-                      isExpanded && 'bg-accent/5',
+                      'hover:bg-bg-elevated/60 transition-colors',
+                      isExpanded ? 'bg-accent/5 border-b-0' : 'border-b border-bg-border/15',
                     )}
                   >
                     <td className="px-3 py-2 text-text-muted/60 font-mono">{idx + 1}</td>
@@ -417,10 +379,10 @@ export default function SectorRanking() {
                     </td>
 
                     {/* 5/10/20/60 日涨幅（纯数字） */}
-                    {PCT_COLS.map(({ key, field }) => (
+                    {PCT_COLS.map(({ key, pctField }) => (
                       <td key={key} className="px-3 py-2 text-right">
-                        <span className={cn('font-mono font-medium', pctColor(s[field] as number))}>
-                          {pctStr(s[field] as number)}
+                        <span className={cn('font-mono font-medium', pctColor(s[pctField!] as number))}>
+                          {pctStr(s[pctField!] as number)}
                         </span>
                       </td>
                     ))}
@@ -480,6 +442,17 @@ export default function SectorRanking() {
                     </td>
                   </tr>
 
+                  {/* 展开面板：内嵌在行下方，colSpan 撑满所有列 */}
+                  {isExpanded && (
+                    <tr className="border-b border-accent/20">
+                      <td colSpan={13} className="p-0 bg-accent/5">
+                        <TopStocksPanel
+                          bkCode={s.code}
+                          onClickStock={(code) => navigate(`/stocks/${code}`)}
+                        />
+                      </td>
+                    </tr>
+                  )}
                   </Fragment>
                 )
               })}
@@ -487,33 +460,6 @@ export default function SectorRanking() {
           </table>
         )}
       </div>
-
-      {/* 展开面板：放在表格外，避免 tr 嵌套 table 的 HTML 结构问题 */}
-      {expandedCode && (() => {
-        const expandedSector = sorted.find(s => s.code === expandedCode)
-        console.log('[SectorRanking expand]', { expandedCode, found: !!expandedSector, sortedCodes: sorted.slice(0,3).map(s=>s.code) })
-        if (!expandedSector) return null
-        return (
-          <div className="card overflow-hidden p-0 border border-accent/30">
-            {/* 面板标题栏 */}
-            <div className="flex items-center gap-3 px-4 py-2.5 bg-bg-elevated/40 border-b border-bg-border/30">
-              <div className="w-1 h-5 rounded-full bg-accent shrink-0" />
-              <span className="font-semibold text-sm text-text-primary">{expandedSector.name}</span>
-              <span className="text-xs text-text-muted">主板非ST · 近20日涨幅前10名</span>
-              <button
-                onClick={() => setExpandedCode(null)}
-                className="ml-auto text-text-muted hover:text-text-secondary transition-colors text-xs px-2 py-0.5 rounded hover:bg-bg-elevated"
-              >
-                收起 ✕
-              </button>
-            </div>
-            <TopStocksPanel
-              bkCode={expandedCode}
-              onClickStock={(code) => navigate(`/stocks/${code}`)}
-            />
-          </div>
-        )
-      })()}
     </div>
   )
 }

@@ -21,21 +21,6 @@ from ..schemas.stock import StockResponse, StockListResponse, LimitMoveTrendPoin
 
 
 # ---------------------------------------------------------------------------
-# Pool qualification
-# ---------------------------------------------------------------------------
-
-def _qualifies_strong_pool(stock: Stock) -> bool:
-    if stock.is_st or stock.is_new_stock:
-        return False
-    return (
-        stock.board_count_60d > 3
-        or stock.limit_up_days_60d > 9
-        or stock.limit_up_days_10d > 4
-        or stock.top_10_pct_change_20d
-    )
-
-
-# ---------------------------------------------------------------------------
 # Sector tag filter
 # ---------------------------------------------------------------------------
 
@@ -182,7 +167,7 @@ def _enrich_stocks_bulk(stocks: List[Stock], db: Session) -> List[StockResponse]
                     data.is_leader = rel.is_leader
                     break
 
-        # ── 板块标签：所有 is_watched 板块（不受 primary 限制）──────────────
+        # ── 板块标签：只包含 is_watched=True 的板块，与 Sector Config 保持一致 ──
         sector_names: List[str] = []
         for rel in rels_by_stock.get(stock.id, []):
             sec = sector_map.get(rel.sector_id)
@@ -357,11 +342,19 @@ def get_limit_moves_trend(db: Session, days: int = 20) -> list[LimitMoveTrendPoi
 
 
 def recalculate_strong_pool(db: Session) -> int:
-    """Recompute in_strong_pool flag for every stock. Returns updated count."""
+    """
+    从东方财富选股 API 拉取最新强势股列表，同步更新 in_strong_pool 标志。
+    返回发生变更的股票数。
+    """
+    from .eastmoney_fetcher import fetch_strong_pool_codes
+    api_codes = fetch_strong_pool_codes()
+    if not api_codes:
+        return 0
+
     stocks = db.query(Stock).all()
     updated = 0
     for s in stocks:
-        new_val = _qualifies_strong_pool(s)
+        new_val = s.code in api_codes
         if s.in_strong_pool != new_val:
             s.in_strong_pool = new_val
             updated += 1

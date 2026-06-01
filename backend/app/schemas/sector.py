@@ -78,6 +78,14 @@ class SectorResponse(SectorBase):
     leader_stock_id: Optional[int] = None
     leader_stock_name: Optional[str] = None
     leader_stock_code: Optional[str] = None
+    # 跨板块排名（null = 未进前5，1 = 第一名）
+    rank_5d: Optional[int] = None
+    rank_10d: Optional[int] = None
+    rank_20d: Optional[int] = None
+    rank_60d: Optional[int] = None
+    rank_lu: Optional[int] = None      # 涨停数排名
+    rank_board: Optional[int] = None   # 连板高度排名
+    rank_strong: Optional[int] = None  # 强势股数排名
     stocks: List[StockInSector] = []
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

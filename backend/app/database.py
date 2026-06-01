@@ -53,6 +53,16 @@ def _apply_schema_patches():
         "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS pct_change_20d FLOAT DEFAULT 0.0 NOT NULL",
         "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS pct_change_60d FLOAT DEFAULT 0.0 NOT NULL",
         "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS is_watched BOOLEAN DEFAULT FALSE NOT NULL",
+        # Sector 排名 tag 字段（daily_update 刷新板块统计时写入）
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS rank_5d INTEGER",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS rank_10d INTEGER",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS rank_20d INTEGER",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS rank_60d INTEGER",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS rank_lu INTEGER",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS rank_board INTEGER",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS rank_strong INTEGER",
+        # Snapshot 新增字段（收盘价，用于历史 KLine 重建计算 MA60/MA30）
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS close_price FLOAT",
         # Snapshot 新增字段（连续跌停数）
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS limit_down_count INTEGER DEFAULT 0 NOT NULL",
         # Snapshot 新增字段（股票阶段，用于历史赚钱效应分组）

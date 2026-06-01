@@ -359,6 +359,7 @@ def get_profit_effect(db: Session, min_stocks: int = 3) -> ProfitEffectResponse:
             up_count=up,
             down_count=down,
             avg_pct=round(sum(pcts) / len(pcts), 2),
+            sector_pct_today=round(sector.pct_change_30d or 0.0, 2),
         ))
 
     sector_effects.sort(key=lambda x: x.avg_pct, reverse=True)

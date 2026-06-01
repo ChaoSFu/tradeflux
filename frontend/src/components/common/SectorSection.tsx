@@ -6,6 +6,8 @@ import { useState, useMemo, useCallback } from 'react'
 import { Star, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import type { Stock } from '@/types'
+import { useSectorTags } from '@/hooks/useSectorTags'
+import { SectorRankTags } from '@/components/common/SectorTags'
 
 // ─── Group helpers ────────────────────────────────────────────────────────────
 
@@ -105,6 +107,8 @@ export function SectorSection({
 }) {
   const { name, stocks } = group
   const [pinnedGroup, setPinnedGroup] = useState<GroupKey | null>(null)
+  const { byName: sectorTagsByName } = useSectorTags()
+  const tagData = sectorTagsByName.get(name)
 
   const sortedStocks = useMemo(() => sortByGroup(stocks, pinnedGroup), [stocks, pinnedGroup])
   const leader = sortedStocks[0]
@@ -142,6 +146,11 @@ export function SectorSection({
         >
           {stocks.length} 只
         </span>
+        {tagData && (
+          <div className="flex flex-wrap gap-1">
+            <SectorRankTags tagData={tagData} />
+          </div>
+        )}
         {leader && (
           <span className="flex items-center gap-1 text-xs text-text-muted ml-1">
             <Star className="w-3 h-3 text-dragon fill-dragon shrink-0" />

@@ -55,7 +55,7 @@ function sortStocks(stocks: Stock[], key: SortKey, dir: SortDir): Stock[] {
 
 // ─── Group definitions ────────────────────────────────────────────────────────
 
-type GroupKey = 'dragon' | 'oscillating' | 'limit_up' | 'weakening' | 'broken'
+type GroupKey = 'all' | 'dragon' | 'oscillating' | 'limit_up' | 'weakening' | 'broken'
 
 interface GroupDef {
   key: GroupKey
@@ -64,8 +64,9 @@ interface GroupDef {
   bgColor: string
 }
 
-// Tab display order: 总龙头 first (non-exclusive), then phase groups
+// Tab display order: 全部 first, then 总龙头, then phase groups
 const GROUPS: GroupDef[] = [
+  { key: 'all',         label: '全部',     color: '#A78BFA', bgColor: 'rgba(167,139,250,0.10)' },
   { key: 'dragon',      label: '总龙头',   color: '#FFD700', bgColor: 'rgba(255,215,0,0.10)'   },
   { key: 'oscillating', label: '震荡龙头', color: '#4F9CF9', bgColor: 'rgba(79,156,249,0.10)'  },
   { key: 'limit_up',    label: '涨停龙头', color: '#FF4560', bgColor: 'rgba(255,69,96,0.10)'   },
@@ -156,7 +157,7 @@ function sortDragon(stocks: Stock[], globalMaxes: LeaderMaxes, sectorLeaders: Ma
 export default function StockPool() {
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
-  const [activeTab, setActiveTab] = useState<GroupKey>('dragon')
+  const [activeTab, setActiveTab] = useState<GroupKey>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>(DEFAULT_SORT)
 
   const { data, isLoading } = useQuery({
@@ -177,6 +178,8 @@ export default function StockPool() {
   const grouped = useMemo(() => {
     const map = new Map<GroupKey, Stock[]>(GROUPS.map((g) => [g.key, []]))
     for (const stock of allStocks) {
+      // 全部 tab：所有股票
+      map.get('all')!.push(stock)
       // Phase groups (mutually exclusive)
       map.get(getGroupKey(stock))!.push(stock)
       // 总龙头 (non-exclusive): global leader tag 或 板块龙头
@@ -192,16 +195,14 @@ export default function StockPool() {
   const activeDef = GROUPS.find((g) => g.key === activeTab)!
   const activeStocks = useMemo(() => {
     const stocks = grouped.get(activeTab) ?? []
-    // 总龙头 tab: fixed sort by tag count → sector leader → history breadth → score
-    if (activeTab === 'dragon') return sortDragon(stocks, globalLeaderMaxes, sectorLeaders)
+    // 全部/总龙头 tab: fixed sort by tag → sector leader → score
+    if (activeTab === 'all' || activeTab === 'dragon')
+      return sortDragon(stocks, globalLeaderMaxes, sectorLeaders)
     return sortStocks(stocks, sort.key, sort.dir)
   }, [grouped, activeTab, sort, globalLeaderMaxes, sectorLeaders])
 
-  // ── Leader maxes: global for 总龙头 tab, per-tab otherwise ────────────────
-  const leaderMaxes = useMemo(
-    () => activeTab === 'dragon' ? globalLeaderMaxes : computeLeaderMaxes(activeStocks),
-    [activeTab, globalLeaderMaxes, activeStocks],
-  )
+  // ── Leader maxes: always global — tags compare against the full pool ────────
+  const leaderMaxes = globalLeaderMaxes
 
   const handleSort = (key: SortKey) => {
     setSort((prev) =>
@@ -248,6 +249,9 @@ export default function StockPool() {
                   : { border: '1px solid transparent' }
               }
             >
+              {grp.key === 'all'      && isActive && (
+                <Star className="w-3.5 h-3.5 shrink-0" style={{ color: grp.color }} />
+              )}
               {grp.key === 'dragon'   && isActive && (
                 <Crown className="w-3.5 h-3.5 shrink-0" style={{ color: grp.color }} />
               )}

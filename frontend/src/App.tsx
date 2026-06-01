@@ -6,7 +6,8 @@ import StockDetail from '@/pages/StockDetail'
 import SectorPool from '@/pages/SectorPool'
 import SectorConfig from '@/pages/SectorConfig'
 import SectorAnalysis from '@/pages/SectorAnalysis'
-import SectorRanking from '@/pages/SectorRanking'
+import SectorTrend from '@/pages/SectorTrend'
+import SectorEmotion from '@/pages/SectorEmotion'
 import Signals from '@/pages/Signals'
 import DailyReview from '@/pages/DailyReview'
 import LimitMovesDashboard from '@/pages/LimitMovesDashboard'
@@ -24,7 +25,8 @@ export default function App() {
           <Route path="sector-pool" element={<SectorPool />} />
           <Route path="sector-config" element={<SectorConfig />} />
           <Route path="sectors" element={<SectorAnalysis />} />
-          <Route path="sector-ranking" element={<SectorRanking />} />
+          <Route path="sector-trend" element={<SectorTrend />} />
+          <Route path="sector-emotion" element={<SectorEmotion />} />
           <Route path="signals" element={<Signals />} />
           <Route path="review" element={<DailyReview />} />
           {/* 涨跌停分析 */}

@@ -15,9 +15,11 @@
 """
 import httpx
 import time
+import random
+import string
 from datetime import date
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple
+from typing import List, Dict, Set, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 HEADERS = {
@@ -574,3 +576,169 @@ def fetch_klines_batch(
                 results[stock.code] = []
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# 强势池筛选 API（东方财富智能选股 search-code 接口）
+# ---------------------------------------------------------------------------
+
+STRONG_POOL_SEARCH_URL = (
+    "https://np-tjxg-g.eastmoney.com/api/smart-tag/stock/v3/pw/search-code"
+)
+
+# 选股关键词：主板非ST、非退市、非新股次新股，满足连板/涨停/涨幅条件之一
+STRONG_POOL_KEYWORD = (
+    "主板非ST;非退市股；非新股非次新；"
+    "近60个交易日最高连板数大于3或者"
+    "近60个交易日涨停天数大于9或者"
+    "近10个交易日涨停天数大于4或"
+    "近20个交易日涨幅前10;"
+)
+
+_F10_HEADERS = {
+    "Referer": "https://emweb.securities.eastmoney.com/",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+}
+
+
+def fetch_stock_bk_codes(code: str) -> list[str]:
+    """
+    通过东财 emweb F10 接口获取个股所属板块代码列表。
+    返回 ["BK0665", "BK0940", ...] 格式，与 sectors.code 字段直接对应。
+    失败时返回空列表，不阻断主流程。
+    """
+    mkt = "SH" if code.startswith(("6", "5", "9")) else "SZ"
+    url = (
+        f"https://emweb.securities.eastmoney.com/PC_HSF10/CoreConception/PageAjax"
+        f"?code={mkt}{code}"
+    )
+    try:
+        resp = httpx.get(url, headers=_F10_HEADERS, timeout=10)
+        data = resp.json()
+        bk_codes = []
+        for item in data.get("ssbk", []):
+            board_code = str(item.get("BOARD_CODE", "")).strip()
+            if board_code:
+                bk_codes.append(f"BK{board_code.zfill(4)}")
+        return bk_codes
+    except Exception:
+        return []
+
+
+_SEARCH_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://xuangu.eastmoney.com/",
+    "Origin": "https://xuangu.eastmoney.com",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "actionmode": "edit_way",
+    "curpage": "stockResult",
+    "jumpsource": "edit_way",
+}
+
+
+def fetch_strong_pool_codes(
+    xc_id: str = "xc11bd34d6790101033c",
+    fingerprint: str = "a3b5b577646954c0a1ff47146894e3d1",
+    keyword: str = STRONG_POOL_KEYWORD,
+    page_size: int = 50,
+) -> Set[str]:
+    """
+    调用东方财富智能选股 search-code 接口，返回满足强势股条件的股票代码集合。
+    自动分页直到拉取全部结果。
+
+    参数说明：
+      xc_id       — 选股方案 ID（对应特定的筛选条件组合）
+      fingerprint — 客户端指纹（固定值，由东方财富页面生成）
+      keyword     — 自然语言选股条件，与 xc_id 对应
+    """
+    custom_data = f'[{{"type":"text","value":"{keyword}","extra":""}}]'
+    codes: Set[str] = set()
+    page_no = 1
+    total: int | None = None
+
+    while True:
+        ts = str(int(time.time() * 1_000_000))
+        rid = "".join(random.choices(string.ascii_letters, k=32)) + str(int(time.time() * 1000))
+        body = {
+            "needAmbiguousSuggest": True,
+            "pageSize": page_size,
+            "pageNo": page_no,
+            "fingerprint": fingerprint,
+            "matchWord": "",
+            "shareToGuba": False,
+            "timestamp": ts,
+            "requestId": rid,
+            "removedConditionIdList": [],
+            "ownSelectAll": False,
+            "needCorrect": True,
+            "client": "WEB",
+            "product": "",
+            "needShowStockNum": False,
+            "biz": "web_ai_select_stocks",
+            "xcId": xc_id,
+            "gids": [],
+            "dxInfoNew": [],
+            "keyWordNew": keyword,
+            "customDataNew": custom_data,
+        }
+
+        try:
+            resp = httpx.post(
+                STRONG_POOL_SEARCH_URL,
+                headers=_SEARCH_HEADERS,
+                json=body,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            print(f"[fetcher] 强势池 API 第 {page_no} 页失败: {e}")
+            break
+
+        result = data.get("data", {}).get("result", {})
+        data_list = result.get("dataList", [])
+
+        if total is None:
+            total = result.get("total", len(data_list))
+
+        for item in data_list:
+            code = item.get("SECURITY_CODE", "").strip()
+            if code:
+                codes.add(code)
+
+        if not data_list or len(codes) >= (total or 0):
+            break
+        page_no += 1
+        time.sleep(0.3)
+
+    return codes
+
+
+# 涨跌停选股关键词
+LIMIT_MOVE_KEYWORD = "非ST；非退市股票；涨停股票或者跌停股票"
+
+
+def fetch_limit_move_codes(
+    xc_id: str = "xc11bd34d6790101033c",
+    fingerprint: str = "a3b5b577646954c0a1ff47146894e3d1",
+    keyword: str = LIMIT_MOVE_KEYWORD,
+    page_size: int = 50,
+) -> Set[str]:
+    """
+    调用东方财富智能选股 API，获取今日涨停 + 跌停的非ST非退市股票代码集合。
+    替代原来扫描全量 5206 只股票再过滤涨跌停的逻辑。
+    """
+    # 直接复用 fetch_strong_pool_codes 的实现，只换 keyword
+    return fetch_strong_pool_codes(
+        xc_id=xc_id,
+        fingerprint=fingerprint,
+        keyword=keyword,
+        page_size=page_size,
+    )

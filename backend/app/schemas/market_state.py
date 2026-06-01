@@ -22,6 +22,7 @@ class SectorProfitEffect(BaseModel):
     up_count: int
     down_count: int
     avg_pct: float
+    sector_pct_today: float = 0.0   # 板块当日涨跌幅（东财板块指数）
 
 
 class ProfitEffectResponse(BaseModel):

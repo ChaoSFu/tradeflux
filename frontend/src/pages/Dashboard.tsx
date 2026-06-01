@@ -19,6 +19,8 @@ import {
 import { cn } from '@/utils/cn'
 import { TrendingUp, Zap, ChevronDown, ChevronUp } from 'lucide-react'
 import type { RiskLevel, ProfitEffectGroup, SectorProfitEffect, Stock } from '@/types'
+import { useSectorTags, type SectorTagData } from '@/hooks/useSectorTags'
+import { SectorRankTags } from '@/components/common/SectorTags'
 
 const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> = {
   bull_frenzy: 'dragon',
@@ -73,10 +75,12 @@ function SectorRow({
   s,
   active,
   onClick,
+  tagData,
 }: {
   s: SectorProfitEffect
   active?: boolean
   onClick?: () => void
+  tagData?: SectorTagData
 }) {
   return (
     <button
@@ -86,12 +90,20 @@ function SectorRow({
         active ? 'bg-accent/10 ring-1 ring-accent/30' : 'hover:bg-bg-elevated',
       )}
     >
-      <span className="text-sm text-text-primary font-medium w-24 truncate shrink-0">
-        {s.sector_name}
-      </span>
+      <div className="w-24 shrink-0">
+        <div className="text-sm text-text-primary font-medium truncate">{s.sector_name}</div>
+        {tagData && (
+          <div className="flex flex-wrap gap-0.5 mt-0.5">
+            <SectorRankTags tagData={tagData} />
+          </div>
+        )}
+      </div>
       <div className="flex-1">
         <UpDownBar up={s.up_count} flat={s.stock_count - s.up_count - s.down_count} down={s.down_count} />
       </div>
+      <span className={cn('text-sm font-mono font-medium w-16 text-right shrink-0', pctColor(s.sector_pct_today))}>
+        {pctSign(s.sector_pct_today)}
+      </span>
       <span className="text-xs text-text-muted w-20 text-center shrink-0 font-mono">
         <span className="text-up">{s.up_count}</span>
         <span className="text-text-muted/60 mx-0.5">/</span>
@@ -139,6 +151,8 @@ export default function Dashboard() {
     const groups = buildSectorGroups(allStocks)
     return new Map(groups.map((g) => [g.name, g]))
   }, [allStocks])
+
+  const { byCode: sectorTagsByCode } = useSectorTags()
 
   const toggleSector = (name: string) =>
     setExpandedSector((prev) => (prev === name ? null : name))
@@ -327,6 +341,7 @@ export default function Dashboard() {
                                 s={s}
                                 active={expandedSector === s.sector_name}
                                 onClick={() => toggleSector(s.sector_name)}
+                                tagData={sectorTagsByCode.get(s.sector_code)}
                               />
                             ))}
                           </div>
@@ -344,6 +359,7 @@ export default function Dashboard() {
                                 s={s}
                                 active={expandedSector === s.sector_name}
                                 onClick={() => toggleSector(s.sector_name)}
+                                tagData={sectorTagsByCode.get(s.sector_code)}
                               />
                             ))}
                           </div>

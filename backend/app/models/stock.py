@@ -61,6 +61,7 @@ class StockDailySnapshot(Base):
     date = Column(Date, nullable=False, index=True)
 
     # 关键行情指标（从 K 线计算后保留，用于评分和展示）
+    close_price = Column(Float, nullable=True)     # 当日收盘价（用于历史 KLine 重建，计算 MA60/MA30）
     pct_change = Column(Float, nullable=True)      # 当日涨跌幅 %
     turnover_rate = Column(Float, nullable=True)   # 换手率 %
 
