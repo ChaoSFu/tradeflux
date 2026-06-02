@@ -195,7 +195,7 @@ function DataUpdateMenu() {
           fetchLastUpdateStatus().then(setLastUpdate).catch(() => {})
         }
       } catch { setUpdatePolling(false) }
-    }, 2000)
+    }, 1000)
     return () => clearInterval(id)
   }, [updatePolling, qc])
 
@@ -205,10 +205,17 @@ function DataUpdateMenu() {
   const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null)
   const [lastUpdate, setLastUpdate] = useState<LastUpdateStatus | null>(null)
 
-  // ── 挂载时拉取初始状态（展示上次运行记录）────────────────────────────────────
+  // ── 挂载时拉取初始状态，若已在运行则自动启动轮询 ─────────────────────────────
   useEffect(() => {
-    fetchUpdateStatus().then(setUpdateStatus).catch(() => {})
-    fetchSyncBoardsStatus().then(setSyncStatus).catch(() => {})
+    fetchUpdateStatus().then(s => {
+      setUpdateStatus(s)
+      // 页面刷新/导航回来时，若后端任务仍在运行，自动接续轮询
+      if (s.status === 'running') setUpdatePolling(true)
+    }).catch(() => {})
+    fetchSyncBoardsStatus().then(s => {
+      setSyncStatus(s)
+      if (s.status === 'running') setSyncPolling(true)
+    }).catch(() => {})
     fetchSchedulerStatus().then(setSchedulerStatus).catch(() => {})
     fetchLastUpdateStatus().then(setLastUpdate).catch(() => {})
   }, [])
@@ -221,7 +228,7 @@ function DataUpdateMenu() {
         setSyncStatus(s)
         if (s.status !== 'running') setSyncPolling(false)
       } catch { setSyncPolling(false) }
-    }, 3000)
+    }, 1000)
     return () => clearInterval(id)
   }, [syncPolling])
 
