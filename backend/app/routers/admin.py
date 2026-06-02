@@ -42,6 +42,20 @@ _boards_job: dict = {
 _MAX_LOG = 200  # Boards sync is long; keep more lines
 
 
+def _write_log_file(target_date: date, message: str) -> None:
+    """向当日 daily_update 日志文件追加一条记录。"""
+    try:
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        log_dir = os.path.join(backend_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, f"daily_update_{target_date.isoformat()}.log")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a") as f:
+            f.write(f"\n[{ts}] [UI] {message}\n")
+    except Exception:
+        pass
+
+
 def _capture_update(target_date: date, skip_boards: bool) -> None:
     """Run daily_update in a thread; capture print output into _job['log_lines']."""
     import io
@@ -64,11 +78,15 @@ def _capture_update(target_date: date, skip_boards: bool) -> None:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            msg = "另一个更新任务正在运行（定时任务或手动触发），请稍后再试"
+            _write_log_file(target_date, f"❌ 获取锁失败：{msg}")
             with _lock:
                 _job["status"] = "error"
                 _job["finished_at"] = datetime.now().isoformat(timespec="seconds")
-                _job["message"] = "另一个更新任务正在运行（定时任务或手动触发），请稍后再试"
+                _job["message"] = msg
             return
+
+        _write_log_file(target_date, "✅ UI 手动触发，获取锁成功，开始执行")
 
         # Ensure the backend package root is importable
         backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -80,6 +98,7 @@ def _capture_update(target_date: date, skip_boards: bool) -> None:
             run_daily_update(target_date, skip_boards=skip_boards)
 
         _flush(buf.getvalue())
+        _write_log_file(target_date, f"✅ UI 手动触发完成")
         with _lock:
             _job["status"] = "done"
             _job["finished_at"] = datetime.now().isoformat(timespec="seconds")
@@ -87,6 +106,7 @@ def _capture_update(target_date: date, skip_boards: bool) -> None:
 
     except Exception as exc:  # noqa: BLE001
         _flush(buf.getvalue())
+        _write_log_file(target_date, f"❌ UI 手动触发失败: {exc}")
         with _lock:
             _job["status"] = "error"
             _job["finished_at"] = datetime.now().isoformat(timespec="seconds")
