@@ -106,10 +106,12 @@ def _fetch_boards_by_fs(fs_code: str, label: str) -> list[dict]:
     return all_boards
 
 
-def _upsert_board(db, board: dict, sector_type: str) -> tuple["Sector", bool]:
-    """更新或创建板块元数据记录。"""
+def _upsert_board(db, board: dict, sector_type: str) -> tuple["Sector | None", bool]:
+    """更新或创建板块元数据记录。name 为空时跳过（API 偶发返回无名称的板块）。"""
     bk_code = board["f12"]
-    name = board["f14"]
+    name = board.get("f14") or None
+    if not name:
+        return None, False  # 无名称，跳过
 
     sector = db.query(Sector).filter(Sector.code == bk_code).first()
     is_new = sector is None
@@ -149,10 +151,12 @@ def sync_board_metadata(db) -> tuple[int, int]:
 
     new_count = updated_count = 0
     for board, sector_type in all_boards:
-        name = board.get("f14", "")
-        if any(kw in name for kw in DYNAMIC_BOARD_KEYWORDS):
+        name = board.get("f14") or ""
+        if not name or any(kw in name for kw in DYNAMIC_BOARD_KEYWORDS):
             continue
-        _, is_new = _upsert_board(db, board, sector_type)
+        sector, is_new = _upsert_board(db, board, sector_type)
+        if sector is None:
+            continue  # _upsert_board 内部已过滤无名称板块
         if is_new:
             new_count += 1
         else:
