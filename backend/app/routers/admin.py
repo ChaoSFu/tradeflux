@@ -3,6 +3,7 @@ Admin endpoints — manual triggers for background data jobs + sector visibility
 """
 import sys
 import os
+import fcntl
 import threading
 from datetime import date, datetime
 from typing import List, Optional
@@ -15,6 +16,9 @@ from app.models.sector import Sector
 from app.auth import require_auth
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+# ── 进程级互斥锁文件（与 cron 任务共享，防止并发执行）─────────────────────────
+DAILY_UPDATE_LOCK_FILE = "/tmp/tradeflux_daily_update.lock"
 
 # ── In-memory job state ────────────────────────────────────────────────────────
 _lock = threading.Lock()
@@ -53,7 +57,19 @@ def _capture_update(target_date: date, skip_boards: bool) -> None:
             _job["log_lines"] = log[-60:]
 
     buf = io.StringIO()
+    lock_fd = None
     try:
+        # ── 文件锁：与 cron 任务互斥，防止并发执行 ──────────────────────────
+        lock_fd = open(DAILY_UPDATE_LOCK_FILE, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            with _lock:
+                _job["status"] = "error"
+                _job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+                _job["message"] = "另一个更新任务正在运行（定时任务或手动触发），请稍后再试"
+            return
+
         # Ensure the backend package root is importable
         backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         if backend_dir not in sys.path:
@@ -75,6 +91,10 @@ def _capture_update(target_date: date, skip_boards: bool) -> None:
             _job["status"] = "error"
             _job["finished_at"] = datetime.now().isoformat(timespec="seconds")
             _job["message"] = str(exc)
+    finally:
+        if lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
 
 
 def _capture_sync_boards() -> None:
