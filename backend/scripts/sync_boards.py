@@ -116,7 +116,8 @@ def _upsert_board(db, board: dict, sector_type: str) -> tuple["Sector | None", b
     sector = db.query(Sector).filter(Sector.code == bk_code).first()
     is_new = sector is None
     if is_new:
-        sector = Sector(code=bk_code, is_watched=False)
+        # 创建时即带上 name/sector_type，避免 flush 时触发 NOT NULL 约束
+        sector = Sector(code=bk_code, name=name, sector_type=sector_type, is_watched=False)
         db.add(sector)
         db.flush()  # 立即写入 session，避免同一 code 重复出现时查询不到
 
