@@ -52,13 +52,24 @@ def _run_daily_update() -> None:
             sys.path.insert(0, backend_dir)
 
         from scripts.daily_update import run_daily_update  # type: ignore
+        started = datetime.now().isoformat(timespec="seconds")
         run_daily_update(today)
+        finished = datetime.now().isoformat(timespec="seconds")
 
         _log(log_path, "SCHED", "✅ 每日数据更新完成")
+        # 持久化更新结果
+        from app.routers.admin import _save_last_update  # type: ignore
+        _save_last_update("scheduled", "done", started, finished, f"定时更新完成 {today}")
 
     except Exception as exc:
+        finished = datetime.now().isoformat(timespec="seconds")
         _log(log_path, "SCHED", f"❌ 每日数据更新失败: {exc}")
         logger.exception("定时更新异常")
+        try:
+            from app.routers.admin import _save_last_update  # type: ignore
+            _save_last_update("scheduled", "error", None, finished, str(exc))
+        except Exception:
+            pass
     finally:
         if lock_fd:
             try:

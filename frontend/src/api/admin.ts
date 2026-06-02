@@ -39,3 +39,15 @@ export interface SchedulerStatus {
 
 export const fetchSchedulerStatus = () =>
   client.get<SchedulerStatus>('/admin/scheduler/status').then((r) => r.data)
+
+// ── 最后一次更新结果（持久化）────────────────────────────────────────────────
+export interface LastUpdateStatus {
+  source: 'manual' | 'scheduled' | null
+  status: 'done' | 'error' | null
+  started_at: string | null
+  finished_at: string | null
+  message: string | null
+}
+
+export const fetchLastUpdateStatus = () =>
+  client.get<LastUpdateStatus>('/admin/update/last').then((r) => r.data)

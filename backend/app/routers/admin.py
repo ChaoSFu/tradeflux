@@ -3,6 +3,7 @@ Admin endpoints — manual triggers for background data jobs + sector visibility
 """
 import sys
 import os
+import json
 import fcntl
 import threading
 from datetime import date, datetime
@@ -19,6 +20,36 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 # ── 进程级互斥锁文件（与 cron 任务共享，防止并发执行）─────────────────────────
 DAILY_UPDATE_LOCK_FILE = "/tmp/tradeflux_daily_update.lock"
+
+# ── 最后一次更新结果持久化文件（服务重启后仍可读）──────────────────────────────
+def _get_last_update_path() -> str:
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    return os.path.join(backend_dir, "logs", "last_update_status.json")
+
+def _save_last_update(source: str, status: str, started_at: str | None, finished_at: str | None, message: str) -> None:
+    try:
+        path = _get_last_update_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({
+                "source": source,          # "manual" | "scheduled"
+                "status": status,          # "done" | "error"
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "message": message,
+            }, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def _load_last_update() -> dict | None:
+    try:
+        path = _get_last_update_path()
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 # ── In-memory job state ────────────────────────────────────────────────────────
 _lock = threading.Lock()
@@ -56,7 +87,7 @@ def _write_log_file(target_date: date, message: str) -> None:
         pass
 
 
-def _capture_update(target_date: date, skip_boards: bool) -> None:
+def _capture_update(target_date: date, skip_boards: bool, source: str = "manual") -> None:
     """Run daily_update in a thread; capture print output into _job['log_lines']."""
     import io
     import contextlib
@@ -98,18 +129,23 @@ def _capture_update(target_date: date, skip_boards: bool) -> None:
             run_daily_update(target_date, skip_boards=skip_boards)
 
         _flush(buf.getvalue())
-        _write_log_file(target_date, f"✅ UI 手动触发完成")
+        finished = datetime.now().isoformat(timespec="seconds")
+        _flush(buf.getvalue())
+        _write_log_file(target_date, f"✅ {source} 触发完成")
+        _save_last_update(source, "done", _job.get("started_at"), finished, f"更新完成 {target_date}")
         with _lock:
             _job["status"] = "done"
-            _job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            _job["finished_at"] = finished
             _job["message"] = f"更新完成 {target_date}"
 
     except Exception as exc:  # noqa: BLE001
+        finished = datetime.now().isoformat(timespec="seconds")
         _flush(buf.getvalue())
-        _write_log_file(target_date, f"❌ UI 手动触发失败: {exc}")
+        _write_log_file(target_date, f"❌ {source} 触发失败: {exc}")
+        _save_last_update(source, "error", _job.get("started_at"), finished, str(exc))
         with _lock:
             _job["status"] = "error"
-            _job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            _job["finished_at"] = finished
             _job["message"] = str(exc)
     finally:
         if lock_fd:
@@ -247,6 +283,15 @@ def get_sync_boards_status():
     """返回板块同步任务当前状态。"""
     with _boards_lock:
         return dict(_boards_job)
+
+
+@router.get("/update/last")
+def get_last_update():
+    """返回最后一次更新结果（持久化，服务重启后仍可读）。"""
+    data = _load_last_update()
+    if not data:
+        return {"source": None, "status": None, "started_at": None, "finished_at": None, "message": None}
+    return data
 
 
 @router.get("/scheduler/status")

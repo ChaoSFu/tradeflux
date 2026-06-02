@@ -5,9 +5,9 @@ import { fetchMarketState } from '@/api/marketState'
 import {
   triggerUpdate, fetchUpdateStatus,
   triggerSyncBoards, fetchSyncBoardsStatus,
-  fetchSchedulerStatus,
+  fetchSchedulerStatus, fetchLastUpdateStatus,
 } from '@/api/admin'
-import type { UpdateStatus, SchedulerStatus } from '@/api/admin'
+import type { UpdateStatus, SchedulerStatus, LastUpdateStatus } from '@/api/admin'
 import { MARKET_PHASE_LABELS } from '@/utils/format'
 import {
   Download, CheckCircle, XCircle,
@@ -191,6 +191,8 @@ function DataUpdateMenu() {
         if (s.status !== 'running') {
           setUpdatePolling(false)
           if (s.status === 'done') qc.invalidateQueries()
+          // 更新完成后刷新持久化状态
+          fetchLastUpdateStatus().then(setLastUpdate).catch(() => {})
         }
       } catch { setUpdatePolling(false) }
     }, 2000)
@@ -201,12 +203,14 @@ function DataUpdateMenu() {
   const [syncPolling, setSyncPolling] = useState(false)
   const [syncStatus, setSyncStatus] = useState<UpdateStatus | null>(null)
   const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null)
+  const [lastUpdate, setLastUpdate] = useState<LastUpdateStatus | null>(null)
 
   // ── 挂载时拉取初始状态（展示上次运行记录）────────────────────────────────────
   useEffect(() => {
     fetchUpdateStatus().then(setUpdateStatus).catch(() => {})
     fetchSyncBoardsStatus().then(setSyncStatus).catch(() => {})
     fetchSchedulerStatus().then(setSchedulerStatus).catch(() => {})
+    fetchLastUpdateStatus().then(setLastUpdate).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -299,12 +303,14 @@ function DataUpdateMenu() {
   const syncRunning   = syncStatus?.status   === 'running'
   const anyRunning    = updateRunning || syncRunning
 
-  // 最后更新时间 & 结果
-  const lastFinished = updateStatus?.finished_at
-  const lastResult   = updateStatus?.status  // 'done' | 'error' | ...
+  // 最后更新：优先用持久化数据（服务重启后仍存在）
+  const lastFinished = lastUpdate?.finished_at ?? updateStatus?.finished_at
+  const lastResult   = lastUpdate?.status ?? updateStatus?.status
+  const lastSource   = lastUpdate?.source  // 'manual' | 'scheduled'
   const lastTimeStr  = lastFinished
     ? new Date(lastFinished).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
     : null
+  const sourceLabel  = lastSource === 'scheduled' ? '定时' : lastSource === 'manual' ? '手动' : ''
 
   // 下次调度时间
   const nextRunStr = schedulerStatus?.next_run
@@ -314,8 +320,8 @@ function DataUpdateMenu() {
     : null
 
   return (
-    <div className="flex items-center gap-2" ref={menuRef}>
-      {/* 最后更新时间 + 结果 */}
+    <div className="relative flex items-center gap-2" ref={menuRef}>
+      {/* 最后更新时间 + 来源 + 结果 */}
       {lastTimeStr && !anyRunning && (
         <div className={cn(
           'flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border',
@@ -331,7 +337,7 @@ function DataUpdateMenu() {
               ? <XCircle className="w-3 h-3" />
               : null
           }
-          <span>上次 {lastTimeStr}</span>
+          <span>{sourceLabel && `${sourceLabel} `}{lastTimeStr}</span>
         </div>
       )}
 
