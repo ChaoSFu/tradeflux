@@ -28,3 +28,14 @@ export const triggerSyncBoards = () =>
 
 export const fetchSyncBoardsStatus = () =>
   client.get<UpdateStatus>('/admin/sync-boards/status').then((r) => r.data)
+
+// ── 内置调度器状态 ────────────────────────────────────────────────────────────
+export interface SchedulerStatus {
+  running: boolean
+  next_run: string | null   // ISO 时间字符串
+  job_id?: string
+  message?: string
+}
+
+export const fetchSchedulerStatus = () =>
+  client.get<SchedulerStatus>('/admin/scheduler/status').then((r) => r.data)

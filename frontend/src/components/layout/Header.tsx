@@ -5,8 +5,9 @@ import { fetchMarketState } from '@/api/marketState'
 import {
   triggerUpdate, fetchUpdateStatus,
   triggerSyncBoards, fetchSyncBoardsStatus,
+  fetchSchedulerStatus,
 } from '@/api/admin'
-import type { UpdateStatus } from '@/api/admin'
+import type { UpdateStatus, SchedulerStatus } from '@/api/admin'
 import { MARKET_PHASE_LABELS } from '@/utils/format'
 import {
   Download, CheckCircle, XCircle,
@@ -199,11 +200,13 @@ function DataUpdateMenu() {
   // ── 板块同步任务 ────────────────────────────────────────────────────────────
   const [syncPolling, setSyncPolling] = useState(false)
   const [syncStatus, setSyncStatus] = useState<UpdateStatus | null>(null)
+  const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null)
 
   // ── 挂载时拉取初始状态（展示上次运行记录）────────────────────────────────────
   useEffect(() => {
     fetchUpdateStatus().then(setUpdateStatus).catch(() => {})
     fetchSyncBoardsStatus().then(setSyncStatus).catch(() => {})
+    fetchSchedulerStatus().then(setSchedulerStatus).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -296,8 +299,50 @@ function DataUpdateMenu() {
   const syncRunning   = syncStatus?.status   === 'running'
   const anyRunning    = updateRunning || syncRunning
 
+  // 最后更新时间 & 结果
+  const lastFinished = updateStatus?.finished_at
+  const lastResult   = updateStatus?.status  // 'done' | 'error' | ...
+  const lastTimeStr  = lastFinished
+    ? new Date(lastFinished).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    : null
+
+  // 下次调度时间
+  const nextRunStr = schedulerStatus?.next_run
+    ? new Date(schedulerStatus.next_run).toLocaleString('zh-CN', {
+        month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+      })
+    : null
+
   return (
-    <div className="relative" ref={menuRef}>
+    <div className="flex items-center gap-2" ref={menuRef}>
+      {/* 最后更新时间 + 结果 */}
+      {lastTimeStr && !anyRunning && (
+        <div className={cn(
+          'flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border',
+          lastResult === 'done'
+            ? 'text-up border-up/30 bg-up/5'
+            : lastResult === 'error'
+              ? 'text-down border-down/30 bg-down/5'
+              : 'text-text-muted border-bg-border',
+        )}>
+          {lastResult === 'done'
+            ? <CheckCircle className="w-3 h-3" />
+            : lastResult === 'error'
+              ? <XCircle className="w-3 h-3" />
+              : null
+          }
+          <span>上次 {lastTimeStr}</span>
+        </div>
+      )}
+
+      {/* 调度器下次执行时间 */}
+      {nextRunStr && !anyRunning && schedulerStatus?.running && (
+        <div className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border text-text-muted border-bg-border">
+          <RefreshCw className="w-2.5 h-2.5" />
+          <span>定时 {nextRunStr}</span>
+        </div>
+      )}
+
       {/* Toast 提示 */}
       {toast && (
         <div className="absolute right-0 top-full mt-1.5 z-50 max-w-xs px-3 py-2 rounded-lg border border-warn/40 bg-bg-card shadow-lg text-xs text-warn">
