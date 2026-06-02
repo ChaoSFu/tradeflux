@@ -942,6 +942,20 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
             s.code: s
             for s in db.query(Stock).filter(Stock.code.in_(all_candidate_codes)).all()
         }
+
+        # stub 股票（name == code）需要从全市场列表补全真实名称
+        stub_codes = {s.code for s in known_stocks.values() if s.name == s.code}
+        new_codes = all_candidate_codes - set(known_stocks.keys())
+        if stub_codes or new_codes:
+            log.info(f"  补全名称：stub {len(stub_codes)} 只，新股 {len(new_codes)} 只，拉取全市场列表...")
+            all_stocks = fetch_main_board_stocks()
+            name_map = {s.code: s.name for s in all_stocks}
+            # 更新 stub 名称
+            for code in stub_codes:
+                real_name = name_map.get(code)
+                if real_name and real_name != code:
+                    known_stocks[code].name = real_name
+
         candidates: List[StockBasicInfo] = []
         for code in all_candidate_codes:
             s = known_stocks.get(code)
@@ -956,11 +970,12 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
                     listing_date=getattr(s, "ipo_date", None),
                 ))
             else:
-                # 新股：按代码前缀推断市场，创建 stub
+                # 新股：按代码前缀推断市场，创建 stub（名称从全市场列表取，取不到用 code 占位）
                 mkt = 1 if code.startswith(("6", "5", "9")) else 0
+                real_name = name_map.get(code, code) if (stub_codes or new_codes) else code
                 stub = Stock(
                     code=code,
-                    name=code,
+                    name=real_name,
                     market="SH" if mkt == 1 else "SZ",
                     is_st=False,
                     is_new_stock=False,
@@ -968,7 +983,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
                 db.add(stub)
                 db.flush()
                 candidates.append(StockBasicInfo(
-                    code=code, name=code, market=mkt,
+                    code=code, name=real_name, market=mkt,
                     is_st=False, pct_change=0.0, turnover_rate=0.0,
                 ))
         db.commit()
