@@ -116,6 +116,7 @@ def _upsert_board(db, board: dict, sector_type: str) -> tuple["Sector", bool]:
     if is_new:
         sector = Sector(code=bk_code, is_watched=False)
         db.add(sector)
+        db.flush()  # 立即写入 session，避免同一 code 重复出现时查询不到
 
     sector.name = name
     sector.sector_type = sector_type
