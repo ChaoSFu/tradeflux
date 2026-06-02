@@ -352,17 +352,8 @@ def sync_stock_sector_relations(db, max_workers: int = 10) -> dict:
 
     db.commit()
 
-    # 批量更新各板块的 stock_count（从关联表统计，替代 API f17 字段）
-    from sqlalchemy import func as sqlfunc
-    counts = (
-        db.query(StockSectorRelation.sector_id, sqlfunc.count().label("cnt"))
-        .group_by(StockSectorRelation.sector_id)
-        .all()
-    )
-    count_map = {row.sector_id: row.cnt for row in counts}
-    for sector in db.query(Sector).all():
-        sector.stock_count = count_map.get(sector.id, 0)
-    db.commit()
+    # 注意：stock_count 由 sync_board_metadata 通过东财 API(fs=b:{code}) 获取真实成份股数
+    # 不在此处用 stock_sector_relations 覆盖，避免用部分关联数（仅强势股+涨跌停）污染全量数据
 
     return {
         "stocks_processed": len(stocks),
