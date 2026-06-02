@@ -264,7 +264,14 @@ def _sync_missing_sector_relations(db, limit_move_stocks: list, log=None) -> int
             except Exception:
                 pass
 
-    # 写入关联（单线程操作 DB）
+    # 写入关联（单线程操作 DB，跳过已存在的）
+    # 先批量读出已有关联，避免重复插入触发 uq_stock_sector 约束
+    existing_rel_keys = {
+        (r.stock_id, r.sector_id)
+        for r in db.query(StockSectorRelation.stock_id, StockSectorRelation.sector_id)
+        .filter(StockSectorRelation.stock_id.in_([s.id for s, _ in results]))
+        .all()
+    }
     total_created = 0
     for stock, bk_codes in results:
         created = 0
@@ -272,7 +279,10 @@ def _sync_missing_sector_relations(db, limit_move_stocks: list, log=None) -> int
             sector = sector_map.get(bk_code)
             if not sector:
                 continue
+            if (stock.id, sector.id) in existing_rel_keys:
+                continue
             db.add(StockSectorRelation(stock_id=stock.id, sector_id=sector.id))
+            existing_rel_keys.add((stock.id, sector.id))
             created += 1
         if created:
             total_created += created
@@ -442,6 +452,7 @@ def _upsert_stock(db, info: StockBasicInfo, stats: StockWindowStats, in_pool: bo
     if not stock:
         stock = Stock(code=info.code)
         db.add(stock)
+        db.flush()  # 确保 id 生成，防止同一 code 重复插入
 
     stock.name = info.name
     stock.market = "SH" if info.market == 1 else "SZ"

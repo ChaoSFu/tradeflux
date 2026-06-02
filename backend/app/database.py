@@ -81,6 +81,8 @@ def _apply_schema_patches():
         "ALTER TABLE daily_reviews ADD COLUMN IF NOT EXISTS profit_effect_sectors JSONB",
         # DailyReview 现有 JSON 字段改 JSONB（幂等，已是 JSONB 时会报错被静默跳过）
         # 注：active_sectors / dragon_changes 若为 JSON 类型则补 JSONB 列不影响现有列
+        # StockSectorRelation 联合唯一约束（防止重复插入）
+        "ALTER TABLE stock_sector_relations ADD CONSTRAINT uq_stock_sector UNIQUE (stock_id, sector_id)",
     ]
     with engine.begin() as conn:
         for sql in patches:

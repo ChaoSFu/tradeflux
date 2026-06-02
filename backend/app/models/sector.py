@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from ..database import Base
@@ -62,6 +62,9 @@ class Sector(Base):
 
 class StockSectorRelation(Base):
     __tablename__ = "stock_sector_relations"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "sector_id", name="uq_stock_sector"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
