@@ -17,7 +17,8 @@ import {
   PHASE_COLORS, pct, PHASE_NAME_TO_NUM,
 } from '@/utils/format'
 import { cn } from '@/utils/cn'
-import { TrendingUp, Zap, ChevronDown, ChevronUp } from 'lucide-react'
+import { TrendingUp, Zap, ChevronDown, ChevronUp, Activity } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import type { RiskLevel, ProfitEffectGroup, SectorProfitEffect, Stock } from '@/types'
 import { useSectorTags, type SectorTagData } from '@/hooks/useSectorTags'
 import { SectorRankTags } from '@/components/common/SectorTags'
@@ -60,6 +61,19 @@ function UpDownBar({ up, flat, down }: { up: number; flat: number; down: number 
       {downPct > 0 && (
         <div className="bg-down rounded-r-full" style={{ width: `${downPct}%` }} />
       )}
+    </div>
+  )
+}
+
+/** 有意义的空状态：解释「为什么没有」，而非裸露的「暂无」 */
+function EmptyHint({ icon: Icon, title, hint }: { icon: LucideIcon; title: string; hint: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center text-center py-8 px-4">
+      <div className="w-10 h-10 rounded-full bg-bg-elevated flex items-center justify-center mb-2.5">
+        <Icon className="w-5 h-5 text-text-muted" />
+      </div>
+      <div className="text-sm font-medium text-text-secondary">{title}</div>
+      <div className="text-xs text-text-muted mt-1 max-w-[280px] leading-relaxed">{hint}</div>
     </div>
   )
 }
@@ -406,7 +420,11 @@ export default function Dashboard() {
             ))}
           </div>
         ) : (
-          <div className="text-center text-text-muted text-sm py-10">暂无活跃板块</div>
+          <EmptyHint
+            icon={Activity}
+            title="当前无扩张期板块"
+            hint={`市场处于「${MARKET_PHASE_LABELS[state?.market_phase ?? ''] ?? '弱势'}」，最强板块尚在启动/分歧阶段，未形成连板扩张梯队。`}
+          />
         )}
       </Card>
 
@@ -465,7 +483,11 @@ export default function Dashboard() {
               ))}
             </div>
           ) : (
-            <div className="text-center text-text-muted text-sm py-6">暂无弱转强信号</div>
+            <EmptyHint
+              icon={Zap}
+              title="今日暂无弱转强候选"
+              hint="强势池个股中未出现破位/走弱后涨停、炸板复板等修复形态，属当前弱势行情的正常表现。"
+            />
           )}
         </Card>
       </div>
