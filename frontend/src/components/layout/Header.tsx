@@ -321,8 +321,8 @@ function DataUpdateMenu() {
 
   return (
     <div className="relative flex items-center gap-2" ref={menuRef}>
-      {/* 最后更新时间 + 来源 + 结果 */}
-      {lastTimeStr && !anyRunning && (
+      {/* 最后更新时间 + 来源 + 结果（运行中也保持显示） */}
+      {lastTimeStr && (
         <div className={cn(
           'flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border',
           lastResult === 'done'
@@ -341,8 +341,8 @@ function DataUpdateMenu() {
         </div>
       )}
 
-      {/* 调度器下次执行时间 */}
-      {nextRunStr && !anyRunning && schedulerStatus?.running && (
+      {/* 调度器下次执行时间（运行中也保持显示） */}
+      {nextRunStr && schedulerStatus?.running && (
         <div className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border text-text-muted border-bg-border">
           <RefreshCw className="w-2.5 h-2.5" />
           <span>定时 {nextRunStr}</span>
