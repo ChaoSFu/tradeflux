@@ -892,6 +892,12 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
         if api_pool_codes:
             strong_pool_codes = api_pool_codes
             log.info(f"强势股 API: {len(api_pool_codes)} 只")
+            in_db_not_api = db_pool_codes - api_pool_codes
+            in_api_not_db = api_pool_codes - db_pool_codes
+            if in_db_not_api:
+                log.info(f"  DB有但API无（待退出）: {sorted(in_db_not_api)}")
+            if in_api_not_db:
+                log.info(f"  API有但DB无（待入池）: {sorted(in_api_not_db)}")
         else:
             strong_pool_codes = db_pool_codes
             log.info(f"强势股 API 不可用，回退 DB {len(db_pool_codes)} 只")
@@ -981,14 +987,14 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
 
         # 分组：DB 历史足够的只拉今日，其余拉完整 65 日
         db_klines_map, db_group, full_group = _build_klines_from_db(candidates, db, target_date)
-        log.info(f"DB重建 {len(db_group)} 只（只拉今日），全量拉取 {len(full_group)} 只")
+        log.info(f"DB重建 {len(db_group)} 只（拉近2日），全量拉取 {len(full_group)} 只")
 
         # 全量拉取（新股 / 历史不足）
         full_klines = fetch_klines_batch(full_group, days=65, max_workers=5) if full_group else {}
 
         # 今日单日拉取（DB 重建组）：days=1，无 delay，高并发
         today_klines = fetch_klines_batch(
-            db_group, days=1, max_workers=20, delay_between=0.0,
+            db_group, days=2, max_workers=20, delay_between=0.0,
         ) if db_group else {}
 
         # 合并：db_group 用历史快照 + 今日 API bar 拼接

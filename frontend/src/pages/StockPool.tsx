@@ -196,8 +196,9 @@ export default function StockPool() {
   const activeDef = GROUPS.find((g) => g.key === activeTab)!
   const activeStocks = useMemo(() => {
     const stocks = grouped.get(activeTab) ?? []
-    // 全部/总龙头 tab: fixed sort by tag → sector leader → score
-    if (activeTab === 'all' || activeTab === 'dragon')
+    // 用户未手动点击列头时（默认排序），全部/总龙头 tab 用龙头优先序
+    if (sort.key === DEFAULT_SORT.key && sort.dir === DEFAULT_SORT.dir &&
+        (activeTab === 'all' || activeTab === 'dragon'))
       return sortDragon(stocks, globalLeaderMaxes, sectorLeaders)
     return sortStocks(stocks, sort.key, sort.dir)
   }, [grouped, activeTab, sort, globalLeaderMaxes, sectorLeaders])
