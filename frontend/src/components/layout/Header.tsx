@@ -360,7 +360,7 @@ function DataUpdateMenu() {
             isError={syncStatus?.status === 'error'}
             onTrigger={handleSyncBoards}
             description="从东财同步全部概念/行业/地区板块及成员关联。板块成员变动或首次部署时使用。"
-            estimatedTime="约 1 分钟"
+            estimatedTime="1 分钟"
             locked={!isLoggedIn}
           />
 
