@@ -325,6 +325,15 @@ function DataUpdateMenu() {
     : null
   const sourceLabel  = lastSource === 'scheduled' ? '定时' : lastSource === 'manual' ? '手动' : ''
 
+  // 运行时长（秒）
+  const lastDuration = (() => {
+    const s = lastUpdate?.started_at
+    const f = lastUpdate?.finished_at
+    if (!s || !f) return null
+    const sec = Math.round((new Date(f).getTime() - new Date(s).getTime()) / 1000)
+    return sec >= 60 ? `${Math.floor(sec / 60)}分${sec % 60}秒` : `${sec}秒`
+  })()
+
   // 下次调度时间
   const nextRunStr = schedulerStatus?.next_run
     ? new Date(schedulerStatus.next_run).toLocaleString('zh-CN', {
@@ -351,6 +360,9 @@ function DataUpdateMenu() {
               : null
           }
           <span>{sourceLabel && `${sourceLabel} `}{lastTimeStr}</span>
+          {lastDuration && (
+            <span className="opacity-60">· {lastDuration}</span>
+          )}
         </div>
       )}
 
