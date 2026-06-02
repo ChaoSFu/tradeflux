@@ -52,11 +52,18 @@ def _run_daily_update() -> None:
             sys.path.insert(0, backend_dir)
 
         from scripts.daily_update import run_daily_update  # type: ignore
+        from scripts.sync_boards import run_sync_boards    # type: ignore
         started = datetime.now().isoformat(timespec="seconds")
+
+        # Step 1: 每日数据更新
         run_daily_update(today)
+        _log(log_path, "SCHED", "✅ 每日数据更新完成，开始板块行情同步...")
+
+        # Step 2: 板块行情同步（meta_only=True，只更新涨跌幅/换手/市值，约30s）
+        run_sync_boards(meta_only=True)
         finished = datetime.now().isoformat(timespec="seconds")
 
-        _log(log_path, "SCHED", "✅ 每日数据更新完成")
+        _log(log_path, "SCHED", "✅ 板块行情同步完成")
         # 持久化更新结果
         from app.routers.admin import _save_last_update  # type: ignore
         _save_last_update("scheduled", "done", started, finished, f"定时更新完成 {today}")

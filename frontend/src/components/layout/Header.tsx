@@ -277,34 +277,31 @@ function DataUpdateMenu() {
     }
   }
 
-  const handleSyncBoards = async () => {
+  const _doSyncBoards = async (metaOnly: boolean) => {
     if (!isLoggedIn) { showToast('请先登录后再执行板块同步'); return }
     if (syncStatus?.status === 'running') { setOpen(true); return }
-    // 本地快速判断：日更运行中时给出提示
     if (updateStatus?.status === 'running') {
       showToast('数据更新运行中，请等待完成后再执行板块同步')
       setOpen(true)
       return
     }
     try {
-      const res = await triggerSyncBoards(true)  // meta_only：只更新涨跌幅/换手/市值
+      const res = await triggerSyncBoards(metaOnly)
       if (res.ok) {
         setSyncPolling(true)
         setSyncStatus({ status: 'running', started_at: null, finished_at: null, message: '启动中…', log_lines: [] })
         setOpen(true)
       } else {
         showToast(res.message)
-        if (res.message.includes('运行中')) {
-          const cur = await fetchSyncBoardsStatus()
-          setSyncStatus(cur)
-          setOpen(true)
-          if (cur.status === 'running') setSyncPolling(true)
-        }
+        if (res.message.includes('运行中')) setOpen(true)
       }
-    } catch (e: any) {
-      showToast(e.message ?? '请求失败')
-    }
+    } catch (e: any) { showToast(e.message ?? '请求失败') }
   }
+
+  const handleSyncBoards     = () => _doSyncBoards(true)   // 行情同步（meta_only）
+  const handleFullSyncBoards = () => _doSyncBoards(false)  // 全量同步
+
+  // ── keep old body for reference: replaced by _doSyncBoards ───────────────
 
   const updateRunning = updateStatus?.status === 'running'
   const syncRunning   = syncStatus?.status   === 'running'
@@ -408,7 +405,21 @@ function DataUpdateMenu() {
             locked={!isLoggedIn}
           />
 
-          {/* 板块全量同步 */}
+          {/* 板块行情同步（每日） */}
+          <JobPanel
+            label="板块行情同步"
+            icon={<Layers className="w-3.5 h-3.5" />}
+            status={syncStatus}
+            isRunning={syncRunning}
+            isDone={syncStatus?.status === 'done'}
+            isError={syncStatus?.status === 'error'}
+            onTrigger={handleSyncBoards}
+            description="每日收盘后运行，更新板块涨跌幅/换手率/市值等行情数据（定时任务自动执行）。"
+            estimatedTime="30 秒"
+            locked={!isLoggedIn}
+          />
+
+          {/* 板块全量同步（每周） */}
           <JobPanel
             label="板块全量同步"
             icon={<Layers className="w-3.5 h-3.5" />}
@@ -416,9 +427,9 @@ function DataUpdateMenu() {
             isRunning={syncRunning}
             isDone={syncStatus?.status === 'done'}
             isError={syncStatus?.status === 'error'}
-            onTrigger={handleSyncBoards}
-            description="更新板块涨跌幅/换手率/市值等行情数据。成份股/关联变更请在板块配置页执行全量同步。"
-            estimatedTime="30 秒"
+            onTrigger={handleFullSyncBoards}
+            description="每周运行一次，同步成份股数量及个股板块关联。板块成员变动或首次部署时使用。"
+            estimatedTime="约 1 分钟"
             locked={!isLoggedIn}
           />
 
