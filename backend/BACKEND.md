@@ -1,7 +1,7 @@
 # TradeFlux Backend 技术文档
 
 > 面向开发者的后端架构说明，覆盖目录结构、外部接口依赖、数据链路和数据库表结构。
-> 最后更新：2026-06-01
+> 最后更新：2026-06-02
 
 ---
 
@@ -24,7 +24,8 @@
 ```
 backend/
 ├── app/
-│   ├── main.py               应用入口：注册路由、CORS、启动时建表
+│   ├── main.py               应用入口：注册路由、CORS、lifespan 管理调度器
+│   ├── scheduler.py          内置 APScheduler：每日 15:30~16:30 随机触发，失败重试 3 次
 │   ├── config.py             全局配置（从 .env 读取，pydantic-settings）
 │   ├── database.py           SQLAlchemy 引擎、SessionLocal、init_db()
 │   │
@@ -49,7 +50,7 @@ backend/
 │   │   ├── reviews.py
 │   │   ├── market_state.py
 │   │   ├── screening.py      筛选条件 CRUD
-│   │   └── admin.py          后台管理：触发更新/同步、板块可见性管理
+│   │   └── admin.py          后台管理：触发更新/同步（含 meta_only 参数）、板块可见性、持久化状态
 │   │
 │   └── services/             核心业务逻辑层
 │       ├── eastmoney_fetcher.py      外部行情抓取（主力 + 备用接口）
@@ -86,6 +87,7 @@ backend/
 | 包 | 版本 | 用途 |
 |----|------|------|
 | `fastapi` | 0.115.0 | Web 框架 |
+| `apscheduler` | 3.10.4 | 内置调度器（每日自动更新） |
 | `uvicorn[standard]` | 0.32.0 | ASGI 服务器 |
 | `sqlalchemy` | 2.0.36 | ORM |
 | `alembic` | 1.13.3 | 数据库迁移 |
@@ -169,6 +171,13 @@ fetch_kline(code):
 ### 4.1 每日更新链路（写入路径）
 
 > 实测耗时（稳定后）：**50–90s**，主要瓶颈为 AkShare/新浪行情接口网络抖动（3–30s）和 K线拉取（24–80s）。
+>
+> **触发方式**：
+> - `POST /api/admin/update`（UI 手动触发，后台线程）
+> - `python scripts/daily_update.py`（命令行）
+> - **内置调度器**（每个交易日 15:30 触发，jitter=3600 随机延迟，失败自动重试最多3次，间隔10分钟）
+>
+> **互斥机制**：所有触发方式共享 `/tmp/tradeflux_daily_update.lock` 文件锁，确保同一时刻只有一个实例运行。
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -204,6 +213,9 @@ fetch_kline(code):
 │                                  并发 max_workers=8              │
 │    全量拉取组（新股/历史不足）→ API 拉完整 65 日（days=65）         │
 │                                  并发 max_workers=5              │
+│                                                                   │
+│  ⚠️ 注意：db_group 拉 days=2（不是 days=1），因东财 API 单日      │
+│  请求的涨跌幅字段 pct_change 固定返回 0，需前一日数据才能正确计算。  │
 │  输出：Dict[code, List[KLineBar]]                                 │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
@@ -260,22 +272,41 @@ FastAPI Router  →  Service Layer  →  SQLAlchemy Session  →  PostgreSQL
 
 > 查询路径不涉及任何外部接口调用，所有数据均从 PostgreSQL 读取（由每日更新脚本预计算写入）。
 
-### 4.3 板块同步链路
+### 4.3 板块同步链路（两种模式）
 
-> 实测耗时：**~51s**（重构前 ~13.5 分钟）
+板块同步已拆分为两种模式，满足不同频率需求：
+
+#### 模式A：板块行情同步（meta_only=true，每日）
+
+> 耗时：**~30s**，每日收盘后由内置调度器自动执行（跟随每日数据更新之后）
+
+```
+POST /api/admin/sync-boards?meta_only=true
+  OR python scripts/sync_boards.py --meta-only
+    │
+    ▼
+【第1步】板块元数据同步（~30s，跳过成份股数量）
+    更新：名称/涨幅(今日/5日/10日/20日/60日)/市值/成交额/换手率
+    跳过：成份股数量（stock_count）、个股关联
+```
+
+#### 模式B：板块全量同步（meta_only=false，每周）
+
+> 耗时：**~5–8 分钟**，每周手动触发一次
 
 ```
 POST /api/admin/sync-boards
   OR python scripts/sync_boards.py
     │
     ▼
-【第1步】板块元数据同步（~13s）
-    东方财富 clist 接口（httpx，替换原 curl subprocess）
-    概念板块：fs=m:90+e:3  (~399 个)
-    行业板块：fs=b:MK0881  (~457 个)
-    地区板块：fs=m:90+e:1  (~31 个)
-    → Upsert sectors 表（名称/涨幅/市值等）
-    → 新板块 is_watched=False；已有板块保留配置
+【第1步】板块元数据同步（~30s）
+    同上，更新名称/涨幅/市值等
+    │
+    ▼
+【第1步补充】并发拉取成份股数量（~15s）
+    对每个板块调用 fs=b:{bk_code}&pn=1&pz=1 接口
+    从 data.total 获取真实成份股总数 → 更新 sectors.stock_count
+    并发 max_workers=20，失败保持原值不覆盖
     │
     ▼
 【第2步】个股→板块关联同步（~38s）
@@ -287,8 +318,10 @@ POST /api/admin/sync-boards
     设计原则：
     - 反向思路：个股→板块（而非传统的板块→遍历成分股）
     - 只维护前端实际展示的股票（涨跌停池 + 强势股池）
-    - 未变化的关联直接跳过（本次实测 196/199 只无变化）
+    - stock_count 不由关联表统计，避免部分数据污染全量数据
 ```
+
+> **网络容错**：拉取板块列表时，每页最多重试 3 次（间隔 3/6/9s），SSL 超时等网络抖动不会导致数据丢失。
 
 ---
 
@@ -371,6 +404,8 @@ ORM：**SQLAlchemy 2.0 声明式**
 
 **索引**：`stock_id`，`date`
 
+**唯一约束**：`uq_snapshot_stock_date(stock_id, date)` — 每只股票每天只能有一条快照
+
 ---
 
 ### 5.3 `sectors` — 板块主表
@@ -425,6 +460,8 @@ ORM：**SQLAlchemy 2.0 声明式**
 | `created_at` | TIMESTAMP | server_default=now() | 创建时间 |
 
 **索引**：`stock_id`，`sector_id`
+
+**唯一约束**：`uq_stock_sector(stock_id, sector_id)` — 防止重复插入同一股票-板块关联
 
 ---
 
@@ -616,7 +653,8 @@ screening_criteria     （独立表，配置项）
 | `reviews.py` | `/api/reviews` | 复盘增删改查、AI 生成今日复盘 |
 | `market_state.py` | `/api/market-state` | 当前市场状态、情绪历史曲线 |
 | `screening.py` | `/api/screening` | 筛选条件 CRUD |
-| `admin.py` | `/api/admin` | 触发每日更新、板块同步、板块可见性管理 |
+| `admin.py` | `/api/admin` | 触发每日更新、板块同步（meta_only/full）、板块可见性管理、调度器状态查询 |
+| `auth.py` | `/api/auth` | JWT 登录认证（admin 操作需登录） |
 
 Swagger 文档：`http://localhost:8000/docs`
 
@@ -637,19 +675,26 @@ python scripts/daily_update.py --date 2026-05-26
 python scripts/daily_update.py --skip-boards
 ```
 
-### `sync_boards.py` — 板块全量同步
+### `sync_boards.py` — 板块同步（两种模式）
 
 ```bash
-python scripts/sync_boards.py               # 完整同步（元数据 + 个股关联，约 51s）
-python scripts/sync_boards.py --meta-only   # 只更新板块元数据（约 13s）
-python scripts/sync_boards.py --stocks-only # 只更新个股关联（约 38s）
+# 板块全量同步（每周，约 5-8 分钟）：元数据 + 成份股数量 + 个股关联
+python scripts/sync_boards.py
+
+# 板块行情同步（每日，约 30s）：只更新涨跌幅/换手/市值
+python scripts/sync_boards.py --meta-only
+
+# 只更新个股关联（跳过元数据）
+python scripts/sync_boards.py --stocks-only
 ```
 
-**设计**：已重写，分两步：
-1. 板块元数据（名称/涨幅/市值）：httpx 拉取 930 个板块 → upsert sectors 表
-2. 个股→板块关联：对当日涨跌停 + 强势股池（~200只）并发调 F10 接口，增量更新 `stock_sector_relations`
+**设计**：
+1. **元数据同步**（每次都跑）：httpx 拉取 887 个板块基础数据，失败页重试 3 次
+2. **成份股数量**（仅全量模式）：并发 20 workers 调用 `fs=b:{code}` API，从 `data.total` 获取真实成份股数
+3. **个股→板块关联**（仅全量模式）：对当日涨跌停 + 强势股池并发调 F10，增量更新
 
-> 新板块默认 `is_watched=False`，需在管理页手动开启。运行日志写入 `logs/sync_boards_YYYY-MM-DD.log`。
+> `stock_count` 字段由东财 API 获取，不由 `stock_sector_relations` 统计（避免部分数据污染）。
+> 新板块默认 `is_watched=False`，需在管理页手动开启。日志写入 `logs/sync_boards_YYYY-MM-DD.log`。
 
 ### `init_screening.py` — 初始化筛选条件
 
@@ -710,3 +755,77 @@ DATABASE_URL=sqlite:///./tradeflux.db
 ```
 
 > ⚠️ `backend/.env` 含数据库凭据，已加入 `.gitignore`，不会提交到版本库。
+
+**生产环境追加变量**：
+
+| 变量 | 示例值 | 说明 |
+|------|--------|------|
+| `ADMIN_USERNAME` | `admin` | 管理员账号 |
+| `ADMIN_PASSWORD` | `your-password` | 管理员密码（建议修改） |
+| `JWT_SECRET_KEY` | `openssl rand -hex 32` | JWT 签名密钥 |
+
+---
+
+## 10. 部署运维（阿里云 ECS）
+
+### 服务管理
+
+```bash
+# 后端服务（systemd 守护）
+sudo systemctl start/stop/restart tradeflux
+sudo systemctl status tradeflux
+
+# 查看实时日志
+sudo journalctl -u tradeflux -f --no-pager
+
+# 查看调度器启动日志
+sudo journalctl -u tradeflux --since today | grep SCHED
+```
+
+### 数据更新流程
+
+```
+每个交易日 15:30（随机到 16:30）
+  ↓ 内置调度器自动触发（jitter=3600）
+  ↓ Step1: daily_update.py（~50s）
+  ↓ Step2: sync_boards.py --meta-only（~30s）
+  ↓ 失败自动重试，间隔 10 分钟，最多 3 次
+  ↓ 结果写入 logs/daily_update_YYYY-MM-DD.log
+
+每周一次（手动，前端下拉框）
+  ↓ 板块全量同步（~5-8 分钟）
+  ↓ 更新成份股数量 + 个股板块关联
+```
+
+### 更新部署流程
+
+```bash
+cd /opt/code/tradeflux
+
+# 拉取最新代码
+git pull origin main
+
+# 后端：若有新依赖
+cd backend && source .venv/bin/activate
+pip install -r requirements.txt
+deactivate
+
+# 后端：若有 schema 变更（_apply_schema_patches 幂等执行）
+source .venv/bin/activate
+python -c "from app.database import init_db; init_db()"
+deactivate
+
+# 重启服务
+sudo systemctl restart tradeflux
+
+# 前端：重新构建
+cd frontend && npm run build
+```
+
+### 日志文件
+
+| 文件 | 内容 |
+|------|------|
+| `logs/daily_update_YYYY-MM-DD.log` | 每日数据更新 + 板块行情同步 + 调度器标签（[SCHED]/[RETRY1]/[UI]） |
+| `logs/sync_boards_YYYY-MM-DD.log` | 板块全量同步详细过程 |
+| `logs/last_update_status.json` | 最后一次更新的来源/状态/时间/时长（持久化，服务重启后仍可读） |
