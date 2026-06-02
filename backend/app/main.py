@@ -6,23 +6,28 @@ from .database import init_db
 from .routers import stocks, sectors, signals, reviews, market_state, screening, admin, auth
 
 
+_scheduler = None  # 全局暴露，供 admin router 查询状态
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _scheduler
     # ── 启动 ──────────────────────────────────────────────────────────────
     init_db()
 
     # 启动内置调度器（与服务同生同死，重启自动清旧启动新）
     from .scheduler import create_scheduler
-    scheduler = create_scheduler()
-    scheduler.start()
-    import logging
-    logging.getLogger(__name__).info("✅ 内置调度器已启动（周一至周五 15:30~16:30 随机执行每日更新）")
+    _scheduler = create_scheduler()
+    _scheduler.start()
+    next_run = _scheduler.get_job("daily_update").next_run_time
+    print(f"[SCHED] ✅ 内置调度器已启动，下次执行时间：{next_run}", flush=True)
 
     yield
 
     # ── 关闭 ──────────────────────────────────────────────────────────────
-    scheduler.shutdown(wait=False)
-    logging.getLogger(__name__).info("🛑 内置调度器已停止")
+    _scheduler.shutdown(wait=False)
+    _scheduler = None
+    print("[SCHED] 🛑 内置调度器已停止", flush=True)
 
 
 app = FastAPI(

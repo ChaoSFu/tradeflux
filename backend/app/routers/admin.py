@@ -249,6 +249,25 @@ def get_sync_boards_status():
         return dict(_boards_job)
 
 
+@router.get("/scheduler/status")
+def get_scheduler_status():
+    """返回内置调度器状态及下次执行时间。"""
+    try:
+        from apscheduler.schedulers.base import STATE_RUNNING
+        # 通过 app state 获取 scheduler（lifespan 中绑定）
+        from app.main import _scheduler  # type: ignore
+        if _scheduler is None:
+            return {"running": False, "next_run": None, "message": "调度器未启动"}
+        job = _scheduler.get_job("daily_update")
+        return {
+            "running": _scheduler.state == STATE_RUNNING,
+            "next_run": job.next_run_time.isoformat() if job and job.next_run_time else None,
+            "job_id": "daily_update",
+        }
+    except Exception as exc:
+        return {"running": False, "next_run": None, "message": str(exc)}
+
+
 # ── Sector visibility management ──────────────────────────────────────────────
 
 class SectorVisibilityItem(BaseModel):
