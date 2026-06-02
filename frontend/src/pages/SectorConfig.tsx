@@ -3,10 +3,10 @@
  * 控制哪些板块以 tag 形式展示在强势股池中。
  * is_watched=true → 展示；false → 隐藏。
  */
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import client from '@/api/client'
-import { Search, Eye, EyeOff, X, RefreshCw, Loader2, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
+import { Search, Eye, EyeOff, X, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 import { cn } from '@/utils/cn'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -26,14 +26,6 @@ interface SectorItem {
   pct_change_10d: number | null   // 近10日涨幅 %
 }
 
-interface SyncStatus {
-  status: 'idle' | 'running' | 'done' | 'error'
-  started_at: string | null
-  finished_at: string | null
-  message: string
-  log_lines: string[]
-}
-
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
 const fetchSectorConfig = (): Promise<SectorItem[]> =>
@@ -44,12 +36,6 @@ const toggleWatch = (id: number): Promise<{ id: number; name: string; is_watched
 
 const batchWatch = (ids: number[], watched: boolean) =>
   client.post('/admin/sectors/batch-watch', ids, { params: { watched } }).then((r) => r.data)
-
-const triggerSyncBoards = () =>
-  client.post('/admin/sync-boards').then((r) => r.data)
-
-const fetchSyncBoardsStatus = (): Promise<SyncStatus> =>
-  client.get('/admin/sync-boards/status').then((r) => r.data)
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
@@ -134,48 +120,12 @@ export default function SectorConfig() {
   const [capThreshold, setCapThreshold] = useState(5000)    // 亿
   const [countFilterOn, setCountFilterOn] = useState(false) // 成份股 < threshold 过滤
   const [countThreshold, setCountThreshold] = useState(50)  // 只
-  const [showSyncLog, setShowSyncLog] = useState(false)
-  const logRef = useRef<HTMLDivElement>(null)
-
-  // Board sync status polling (put first so we can use it below)
-  const { data: syncStatus } = useQuery({
-    queryKey: ['sync-boards-status'],
-    queryFn: fetchSyncBoardsStatus,
-    refetchInterval: (query) => {
-      const status = query.state.data?.status
-      return status === 'running' ? 3000 : false
-    },
-  })
 
   const { data = [], isLoading } = useQuery({
     queryKey: ['admin-sectors'],
     queryFn: fetchSectorConfig,
     staleTime: 10_000,
-    // While syncing, refresh every 10s so new board types appear as tabs in real time
-    refetchInterval: syncStatus?.status === 'running' ? 10_000 : false,
   })
-
-  const syncMut = useMutation({
-    mutationFn: triggerSyncBoards,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['sync-boards-status'] })
-      setShowSyncLog(true)
-    },
-  })
-
-  // Auto-scroll log to bottom
-  useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight
-    }
-  }, [syncStatus?.log_lines])
-
-  // Refresh sector list when sync completes
-  useEffect(() => {
-    if (syncStatus?.status === 'done') {
-      qc.invalidateQueries({ queryKey: ['admin-sectors'] })
-    }
-  }, [syncStatus?.status, qc])
 
   const toggleMut = useMutation({
     mutationFn: toggleWatch,
@@ -269,81 +219,8 @@ export default function SectorConfig() {
     }
   }
 
-  const isSyncing = syncStatus?.status === 'running' || syncMut.isPending
-
   return (
     <div className="space-y-4 animate-fade-in">
-      {/* Sync panel */}
-      <div className="p-3 rounded-lg bg-bg-card border border-bg-border">
-        <div className="flex items-center gap-3">
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-text-primary">东财板块全量同步</div>
-            <div className="text-xs text-text-muted mt-0.5">
-              概念(~399) + 行业全量(~457, WAP行业标签) + 地区(~31)，新板块默认隐藏，预计 5–8 分钟
-            </div>
-          </div>
-          {syncStatus && syncStatus.status !== 'idle' && (
-            <button
-              onClick={() => setShowSyncLog((v) => !v)}
-              className="text-xs text-text-muted hover:text-text-primary transition-colors underline"
-            >
-              {showSyncLog ? '收起日志' : '查看日志'}
-            </button>
-          )}
-          <button
-            onClick={() => { syncMut.mutate(); setShowSyncLog(true) }}
-            disabled={isSyncing}
-            className={cn(
-              'flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium border transition-all shrink-0',
-              isSyncing
-                ? 'bg-accent/5 text-accent/50 border-accent/20 cursor-not-allowed'
-                : 'bg-accent/10 text-accent border-accent/30 hover:bg-accent/20',
-            )}
-          >
-            {isSyncing
-              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> 同步中...</>
-              : <><RefreshCw className="w-3.5 h-3.5" /> 立即同步</>
-            }
-          </button>
-        </div>
-
-        {/* Status row */}
-        {syncStatus && syncStatus.status !== 'idle' && (
-          <div className={cn(
-            'mt-2 pt-2 border-t border-bg-border/40 text-xs flex items-center gap-2',
-            syncStatus.status === 'done' ? 'text-down' :
-            syncStatus.status === 'error' ? 'text-up' : 'text-text-muted'
-          )}>
-            {syncStatus.status === 'running' && <Loader2 className="w-3 h-3 animate-spin" />}
-            <span>{syncStatus.message}</span>
-            {syncStatus.started_at && (
-              <span className="ml-auto text-text-muted/85">
-                开始: {syncStatus.started_at}
-                {syncStatus.finished_at && ` → ${syncStatus.finished_at}`}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* Log panel */}
-        {showSyncLog && syncStatus && syncStatus.log_lines.length > 0 && (
-          <div
-            ref={logRef}
-            className="mt-2 bg-bg-base rounded p-2 max-h-48 overflow-y-auto font-mono text-xs text-text-muted leading-relaxed"
-          >
-            {syncStatus.log_lines.map((line, i) => (
-              <div key={i} className={cn(
-                line.includes('✅') || line.includes('★') ? 'text-down' :
-                line.includes('❌') ? 'text-up' :
-                line.includes('[新]') ? 'text-accent' : ''
-              )}>
-                {line}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
       {/* Summary bar */}
       <div className="flex items-center gap-3 p-3 rounded-lg bg-bg-card border border-bg-border text-sm">
         <Eye className="w-4 h-4 text-accent shrink-0" />
