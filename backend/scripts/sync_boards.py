@@ -76,7 +76,7 @@ def _fetch_boards_by_fs(fs_code: str, label: str) -> list[dict]:
             "pn": str(page), "pz": "100", "po": "1", "np": "1",
             "fltt": "2", "invt": "2", "fid": "f3",
             "fs": fs_code,
-            "fields": "f12,f14,f3,f8,f20,f6,f109,f110,f160,f165,f17",
+            "fields": "f12,f14,f3,f8,f20,f6,f109,f110,f160,f165",
         }
         try:
             resp = httpx.get(
@@ -106,6 +106,31 @@ def _fetch_boards_by_fs(fs_code: str, label: str) -> list[dict]:
     return all_boards
 
 
+def _fetch_board_stock_count(bk_code: str) -> int:
+    """
+    调用东财 clist API 获取指定板块的成份股总数。
+    fs=b:{bk_code} 时 data.total 即为该板块成份股数量。
+    只取第1页1条数据（pz=1），仅用 total 字段，轻量快速。
+    失败返回 -1（调用方据此决定是否跳过更新）。
+    """
+    try:
+        resp = httpx.get(
+            f"{BASE_URL}/clist/get",
+            params={
+                "pn": "1", "pz": "1", "np": "1",
+                "fltt": "2", "invt": "2", "fid": "f3",
+                "fs": f"b:{bk_code}",
+                "fields": "f12",
+            },
+            headers=_HTTP_HEADERS,
+            timeout=10,
+        )
+        total = (resp.json().get("data") or {}).get("total")
+        return int(total) if total is not None else -1
+    except Exception:
+        return -1
+
+
 def _upsert_board(db, board: dict, sector_type: str) -> tuple["Sector | None", bool]:
     """更新或创建板块元数据记录。name 为空时跳过（API 偶发返回无名称的板块）。"""
     bk_code = board["f12"]
@@ -123,7 +148,6 @@ def _upsert_board(db, board: dict, sector_type: str) -> tuple["Sector | None", b
 
     sector.name = name
     sector.sector_type = sector_type
-    sector.stock_count      = int(board.get("f17") or 0)
     sector.total_market_cap = round((board.get("f20") or 0) / 1e8, 2)
     sector.turnover_rate    = round(board.get("f8") or 0, 4)
     sector.amount           = round((board.get("f6") or 0) / 1e8, 2)
@@ -166,6 +190,34 @@ def sync_board_metadata(db) -> tuple[int, int]:
 
     db.commit()
     print(f"  板块元数据同步完成: 新增 {new_count} 个，更新 {updated_count} 个")
+
+    # ── 并发拉取各板块成份股数量，更新 stock_count ──────────────────────────
+    print("\n[第1步-补充] 并发拉取各板块成份股数量...")
+    t0 = time.time()
+    all_sectors = db.query(Sector).filter(Sector.code.isnot(None)).all()
+    code_to_sector = {s.code: s for s in all_sectors}
+
+    ok_count = skip_count = 0
+
+    def _fetch_one(code: str) -> tuple[str, int]:
+        return code, _fetch_board_stock_count(code)
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {executor.submit(_fetch_one, code): code for code in code_to_sector}
+        for i, future in enumerate(as_completed(futures), 1):
+            code, total = future.result()
+            if total >= 0:  # -1 表示失败，保持原值
+                code_to_sector[code].stock_count = total
+                ok_count += 1
+            else:
+                skip_count += 1
+            if i % 100 == 0:
+                print(f"    进度: {i}/{len(futures)}")
+
+    db.commit()
+    elapsed = time.time() - t0
+    print(f"  成份股数量更新完成: 成功 {ok_count} 个，失败保持原值 {skip_count} 个，耗时 {elapsed:.1f}s")
+
     return new_count, updated_count
 
 
@@ -285,6 +337,18 @@ def sync_stock_sector_relations(db, max_workers: int = 10) -> dict:
             db.add(StockSectorRelation(stock_id=stock.id, sector_id=sid))
             added += 1
 
+    db.commit()
+
+    # 批量更新各板块的 stock_count（从关联表统计，替代 API f17 字段）
+    from sqlalchemy import func as sqlfunc
+    counts = (
+        db.query(StockSectorRelation.sector_id, sqlfunc.count().label("cnt"))
+        .group_by(StockSectorRelation.sector_id)
+        .all()
+    )
+    count_map = {row.sector_id: row.cnt for row in counts}
+    for sector in db.query(Sector).all():
+        sector.stock_count = count_map.get(sector.id, 0)
     db.commit()
 
     return {
