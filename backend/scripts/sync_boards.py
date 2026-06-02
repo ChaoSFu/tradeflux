@@ -160,9 +160,11 @@ def _upsert_board(db, board: dict, sector_type: str) -> tuple["Sector | None", b
     return sector, is_new
 
 
-def sync_board_metadata(db) -> tuple[int, int]:
+def sync_board_metadata(db, update_stock_count: bool = True) -> tuple[int, int]:
     """
     第1步：同步全量板块元数据。
+    update_stock_count=True：额外并发拉取各板块成份股数量（全量同步时使用，约+15s）。
+    update_stock_count=False：仅更新涨跌幅/换手/市值等，跳过成份股数量（meta_only 模式）。
     返回 (新增数, 更新数)
     """
     print("\n[第1步] 拉取东财全量板块元数据...")
@@ -190,6 +192,9 @@ def sync_board_metadata(db) -> tuple[int, int]:
 
     db.commit()
     print(f"  板块元数据同步完成: 新增 {new_count} 个，更新 {updated_count} 个")
+
+    if not update_stock_count:
+        return new_count, updated_count
 
     # ── 并发拉取各板块成份股数量，更新 stock_count ──────────────────────────
     print("\n[第1步-补充] 并发拉取各板块成份股数量...")
@@ -385,7 +390,8 @@ def run_sync_boards(
 
         if not stocks_only:
             t0 = time.time()
-            sync_board_metadata(db)
+            # meta_only 模式跳过成份股数量更新（仅更新涨跌幅/换手/市值等）
+            sync_board_metadata(db, update_stock_count=not meta_only)
             steps.append(("板块元数据", time.time() - t0))
 
         if not meta_only:

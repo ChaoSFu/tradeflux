@@ -23,8 +23,12 @@ export const fetchUpdateStatus = () =>
 // 从东财拉取概念/行业/地区全部板块及成员，建立 stock_sector_relations
 // 耗时：约 5-8 分钟（887 个板块，每板块一次 API）
 // 建议频率：每周运行一次，或板块新增/成员大变动后手动触发
-export const triggerSyncBoards = () =>
-  client.post<{ ok: boolean; message: string }>('/admin/sync-boards').then((r) => r.data)
+// meta_only=true：仅更新涨跌幅/换手/市值（~30s，每日调用）
+// meta_only=false：全量同步含成份股数量+关联（~5-8min，每周一次）
+export const triggerSyncBoards = (metaOnly = false) =>
+  client.post<{ ok: boolean; message: string }>('/admin/sync-boards', null, {
+    params: { meta_only: metaOnly },
+  }).then((r) => r.data)
 
 export const fetchSyncBoardsStatus = () =>
   client.get<UpdateStatus>('/admin/sync-boards/status').then((r) => r.data)

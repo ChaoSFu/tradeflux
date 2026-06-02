@@ -153,7 +153,7 @@ def _capture_update(target_date: date, skip_boards: bool, source: str = "manual"
             lock_fd.close()
 
 
-def _capture_sync_boards() -> None:
+def _capture_sync_boards(meta_only: bool = False) -> None:
     """Run sync_boards in a thread; capture print output into _boards_job."""
     import io
     import contextlib
@@ -185,7 +185,7 @@ def _capture_sync_boards() -> None:
 
         with contextlib.redirect_stdout(buf):
             from scripts.sync_boards import run_sync_boards  # type: ignore
-            run_sync_boards()
+            run_sync_boards(meta_only=meta_only)
 
         output = buf.getvalue()
         _flush(output)
@@ -193,7 +193,7 @@ def _capture_sync_boards() -> None:
         with _boards_lock:
             _boards_job["status"] = "done"
             _boards_job["finished_at"] = datetime.now().isoformat(timespec="seconds")
-            _boards_job["message"] = "板块全量同步完成"
+            _boards_job["message"] = "板块元数据更新完成" if meta_only else "板块全量同步完成"
 
     except Exception as exc:  # noqa: BLE001
         output = buf.getvalue()
@@ -253,8 +253,12 @@ def get_update_status():
 
 
 @router.post("/sync-boards")
-def trigger_sync_boards(_: str = Depends(require_auth)):
-    """启动东财板块全量同步（概念 + 行业全量 + 地区，约 5-8 分钟）。"""
+def trigger_sync_boards(meta_only: bool = False, _: str = Depends(require_auth)):
+    """
+    启动板块同步。
+    meta_only=true：仅更新涨跌幅/换手/市值等频繁变化的元数据（约30s），供每日调用。
+    meta_only=false（默认）：全量同步，含成份股数量 + 个股板块关联（约5-8分钟），建议每周一次。
+    """
     with _boards_lock:
         if _boards_job["status"] == "running":
             return {"ok": False, "message": "已有板块同步任务在运行中，请稍后"}
@@ -271,11 +275,14 @@ def trigger_sync_boards(_: str = Depends(require_auth)):
         _boards_job["started_at"] = datetime.now().isoformat(timespec="seconds")
         _boards_job["finished_at"] = None
         _boards_job["log_lines"] = []
-        _boards_job["message"] = "正在同步东财板块：概念(e:3) + 行业全量(MK0881) + 地区(e:1)，预计 5-8 分钟..."
+        _boards_job["message"] = (
+            "正在更新板块元数据（涨跌幅/换手/市值），约30秒..." if meta_only
+            else "正在全量同步板块：元数据 + 成份股数量 + 个股关联，预计 5-8 分钟..."
+        )
 
-    t = threading.Thread(target=_capture_sync_boards, daemon=True)
+    t = threading.Thread(target=_capture_sync_boards, args=(meta_only,), daemon=True)
     t.start()
-    return {"ok": True, "message": "板块全量同步已启动，可通过 /admin/sync-boards/status 查看进度"}
+    return {"ok": True, "message": "板块元数据更新已启动" if meta_only else "板块全量同步已启动"}
 
 
 @router.get("/sync-boards/status")

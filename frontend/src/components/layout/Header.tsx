@@ -287,7 +287,7 @@ function DataUpdateMenu() {
       return
     }
     try {
-      const res = await triggerSyncBoards()
+      const res = await triggerSyncBoards(true)  // meta_only：只更新涨跌幅/换手/市值
       if (res.ok) {
         setSyncPolling(true)
         setSyncStatus({ status: 'running', started_at: null, finished_at: null, message: '启动中…', log_lines: [] })
@@ -417,8 +417,8 @@ function DataUpdateMenu() {
             isDone={syncStatus?.status === 'done'}
             isError={syncStatus?.status === 'error'}
             onTrigger={handleSyncBoards}
-            description="从东财同步全部概念/行业/地区板块及成员关联。板块成员变动或首次部署时使用。"
-            estimatedTime="1 分钟"
+            description="更新板块涨跌幅/换手率/市值等行情数据。成份股/关联变更请在板块配置页执行全量同步。"
+            estimatedTime="30 秒"
             locked={!isLoggedIn}
           />
 
