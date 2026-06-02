@@ -203,6 +203,13 @@ export default function StockPool() {
     return sortStocks(stocks, sort.key, sort.dir)
   }, [grouped, activeTab, sort, globalLeaderMaxes, sectorLeaders])
 
+  // 当前是否由 sortDragon 控制顺序（列头不应高亮任何列）
+  const usingDragon =
+    sort.key === DEFAULT_SORT.key && sort.dir === DEFAULT_SORT.dir &&
+    (activeTab === 'all' || activeTab === 'dragon')
+  // 传给列头的 sort 状态：sortDragon 模式下清空 key，使所有列头均不高亮
+  const headerSort = usingDragon ? { key: '' as SortKey, dir: sort.dir } : sort
+
   // ── Leader maxes: always global — tags compare against the full pool ────────
   const leaderMaxes = globalLeaderMaxes
 
@@ -290,28 +297,28 @@ export default function StockPool() {
                 <tr className="border-b border-bg-border/40">
                   <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium whitespace-nowrap">代码 / 名称</th>
                   <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium">板块</th>
-                  <SortTh col="phase_group" label="分组" sort={sort} onSort={handleSort} align="left" />
-                  <SortTh col="today_board_count" label="连续连板"  sort={sort} onSort={handleSort} />
-                  <SortTh col="limit_up_days_10d" label="10日涨停"  sort={sort} onSort={handleSort} />
-                  <SortTh col="limit_up_days_20d" label="20日涨停"  sort={sort} onSort={handleSort} />
-                  <SortTh col="limit_up_days_60d" label="60日涨停"  sort={sort} onSort={handleSort} />
-                  <SortTh col="board_count_60d"   label="60日高板"  sort={sort} onSort={handleSort} />
-                  <SortTh col="pct_change_10d"    label="10日涨幅"  sort={sort} onSort={handleSort} />
-                  <SortTh col="pct_change_20d"    label="20日涨幅"  sort={sort} onSort={handleSort} />
-                  <SortTh col="pct_change_60d"    label="60日涨幅"  sort={sort} onSort={handleSort} />
+                  <SortTh col="phase_group" label="分组" sort={headerSort} onSort={handleSort} align="left" />
+                  <SortTh col="today_board_count" label="连续连板"  sort={headerSort} onSort={handleSort} />
+                  <SortTh col="limit_up_days_10d" label="10日涨停"  sort={headerSort} onSort={handleSort} />
+                  <SortTh col="limit_up_days_20d" label="20日涨停"  sort={headerSort} onSort={handleSort} />
+                  <SortTh col="limit_up_days_60d" label="60日涨停"  sort={headerSort} onSort={handleSort} />
+                  <SortTh col="board_count_60d"   label="60日高板"  sort={headerSort} onSort={handleSort} />
+                  <SortTh col="pct_change_10d"    label="10日涨幅"  sort={headerSort} onSort={handleSort} />
+                  <SortTh col="pct_change_20d"    label="20日涨幅"  sort={headerSort} onSort={handleSort} />
+                  <SortTh col="pct_change_60d"    label="60日涨幅"  sort={headerSort} onSort={handleSort} />
                   <th className="px-3 py-2 whitespace-nowrap">
                     <span className="flex items-center justify-end gap-1">
-                      <SortHeader label="龙头分" sortKey="leader_score" sort={sort} onSort={handleSort} align="right" />
+                      <SortHeader label="龙头分" sortKey="leader_score" sort={headerSort} onSort={handleSort} align="right" />
                       <ColInfo {...LEADER_INFO} />
                     </span>
                   </th>
                   <th className="px-3 py-2 whitespace-nowrap">
                     <span className="flex items-center justify-end gap-1">
-                      <SortHeader label="风险分" sortKey="risk_score" sort={sort} onSort={handleSort} align="right" />
+                      <SortHeader label="风险分" sortKey="risk_score" sort={headerSort} onSort={handleSort} align="right" />
                       <ColInfo {...RISK_INFO} />
                     </span>
                   </th>
-                  <SortTh col="today_pct_change"  label="今日涨幅"  sort={sort} onSort={handleSort} />
+                  <SortTh col="today_pct_change"  label="今日涨幅"  sort={headerSort} onSort={handleSort} />
                 </tr>
               </thead>
               <tbody>
