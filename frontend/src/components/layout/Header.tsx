@@ -320,6 +320,10 @@ function DataUpdateMenu() {
   const lastFinished = lastUpdate?.finished_at ?? updateStatus?.finished_at
   const lastResult   = lastUpdate?.status ?? updateStatus?.status
   const lastSource   = lastUpdate?.source  // 'manual' | 'scheduled'
+
+  // 数据源 API 降级：优先取本次任务状态，回退到持久化的上次结果
+  const degraded = (updateStatus?.degraded ?? lastUpdate?.degraded) ?? false
+  const degradeWarnings = (updateStatus?.warnings?.length ? updateStatus.warnings : lastUpdate?.warnings) ?? []
   const lastTimeStr  = lastFinished
     ? new Date(lastFinished).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
     : null
@@ -363,6 +367,17 @@ function DataUpdateMenu() {
           {lastDuration && (
             <span className="opacity-60">· {lastDuration}</span>
           )}
+        </div>
+      )}
+
+      {/* 数据源 API 降级告警（常驻可见，提示数据可能不完整/过时） */}
+      {degraded && !anyRunning && (
+        <div
+          className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border text-warn border-warn/40 bg-warn/10 cursor-help"
+          title={degradeWarnings.join('\n') || '部分数据源 API 降级，数据可能不完整或过时'}
+        >
+          <AlertTriangle className="w-3 h-3" />
+          <span>数据降级</span>
         </div>
       )}
 
@@ -411,6 +426,24 @@ function DataUpdateMenu() {
               两个入口相互独立，可单独触发；建议每周运行一次板块同步
             </p>
           </div>
+
+          {/* 数据源降级告警明细 */}
+          {degraded && (
+            <div className="px-4 py-2.5 border-b border-warn/30 bg-warn/10">
+              <div className="flex items-center gap-1.5 text-warn">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span className="text-xs font-semibold">数据源 API 降级</span>
+              </div>
+              <ul className="mt-1 space-y-0.5">
+                {degradeWarnings.map((w, i) => (
+                  <li key={i} className="text-[10px] text-warn/90 leading-relaxed">· {w}</li>
+                ))}
+              </ul>
+              <p className="text-[10px] text-text-muted mt-1.5 leading-relaxed">
+                当前涨跌停/强势池数据可能不完整或过时，请勿据此直接做交易判断；建议数据源恢复后重跑更新。
+              </p>
+            </div>
+          )}
 
           {/* 每日数据更新 */}
           <JobPanel

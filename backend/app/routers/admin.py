@@ -26,7 +26,10 @@ def _get_last_update_path() -> str:
     backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     return os.path.join(backend_dir, "logs", "last_update_status.json")
 
-def _save_last_update(source: str, status: str, started_at: str | None, finished_at: str | None, message: str) -> None:
+def _save_last_update(
+    source: str, status: str, started_at: str | None, finished_at: str | None, message: str,
+    degraded: bool = False, warnings: list[str] | None = None,
+) -> None:
     try:
         path = _get_last_update_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -37,6 +40,8 @@ def _save_last_update(source: str, status: str, started_at: str | None, finished
                 "started_at": started_at,
                 "finished_at": finished_at,
                 "message": message,
+                "degraded": degraded,      # True=有数据源API降级，数据可能不完整/过时
+                "warnings": warnings or [],
             }, f, ensure_ascii=False)
     except Exception:
         pass
@@ -59,6 +64,8 @@ _job: dict = {
     "finished_at": None,
     "message": "",
     "log_lines": [],        # last N lines of stdout captured
+    "degraded": False,      # True=有数据源API降级，数据可能不完整/过时
+    "warnings": [],
 }
 
 _boards_lock = threading.Lock()
@@ -127,17 +134,25 @@ def _capture_update(target_date: date, skip_boards: bool, source: str = "manual"
 
         with contextlib.redirect_stdout(buf):
             from scripts.daily_update import run_daily_update  # type: ignore
-            run_daily_update(target_date, skip_boards=skip_boards)
+            result = run_daily_update(target_date, skip_boards=skip_boards)
+
+        degraded = bool(result and result.get("degraded"))
+        warnings = list((result or {}).get("warnings") or [])
 
         _flush(buf.getvalue())
         finished = datetime.now().isoformat(timespec="seconds")
         _flush(buf.getvalue())
-        _write_log_file(target_date, f"✅ {source} 触发完成")
-        _save_last_update(source, "done", _job.get("started_at"), finished, f"更新完成 {target_date}")
+        _write_log_file(target_date, f"✅ {source} 触发完成"
+                        + (f"（数据降级：{'；'.join(warnings)}）" if degraded else ""))
+        message = f"更新完成 {target_date}" + ("（部分数据源降级，详见告警）" if degraded else "")
+        _save_last_update(source, "done", _job.get("started_at"), finished, message,
+                          degraded=degraded, warnings=warnings)
         with _lock:
             _job["status"] = "done"
             _job["finished_at"] = finished
-            _job["message"] = f"更新完成 {target_date}"
+            _job["message"] = message
+            _job["degraded"] = degraded
+            _job["warnings"] = warnings
 
     except Exception as exc:  # noqa: BLE001
         finished = datetime.now().isoformat(timespec="seconds")
@@ -148,6 +163,8 @@ def _capture_update(target_date: date, skip_boards: bool, source: str = "manual"
             _job["status"] = "error"
             _job["finished_at"] = finished
             _job["message"] = str(exc)
+            _job["degraded"] = False
+            _job["warnings"] = []
     finally:
         if lock_fd:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -228,6 +245,8 @@ def trigger_update(skip_boards: bool = True, _: str = Depends(require_auth)):
         _job["started_at"] = datetime.now().isoformat(timespec="seconds")
         _job["finished_at"] = None
         _job["log_lines"] = []
+        _job["degraded"] = False
+        _job["warnings"] = []
 
         now = datetime.now()
         h, m = now.hour, now.minute
