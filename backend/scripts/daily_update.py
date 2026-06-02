@@ -309,13 +309,16 @@ def _bulk_upsert_stocks_basic(db, all_stocks: List[StockBasicInfo]) -> int:
     new_count = 0
     for info in all_stocks:
         if info.code not in existing:
-            db.add(Stock(
+            new_stock = Stock(
                 code=info.code,
                 name=info.name,
                 market="SH" if info.market == 1 else "SZ",
                 is_st=info.is_st,
                 is_new_stock=False,
-            ))
+            )
+            db.add(new_stock)
+            db.flush()  # 立即写入，防止 all_stocks 中重复 code 触发唯一约束冲突
+            existing[info.code] = new_stock
             new_count += 1
         else:
             s = existing[info.code]

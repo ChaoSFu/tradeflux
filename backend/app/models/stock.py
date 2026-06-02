@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from ..database import Base
@@ -55,6 +55,9 @@ class StockDailySnapshot(Base):
     原始行情从东方财富实时拉取，计算完成后丢弃。
     """
     __tablename__ = "stock_daily_snapshots"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "date", name="uq_snapshot_stock_date"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)

@@ -83,6 +83,8 @@ def _apply_schema_patches():
         # 注：active_sectors / dragon_changes 若为 JSON 类型则补 JSONB 列不影响现有列
         # StockSectorRelation 联合唯一约束（防止重复插入）
         "ALTER TABLE stock_sector_relations ADD CONSTRAINT uq_stock_sector UNIQUE (stock_id, sector_id)",
+        # StockDailySnapshot 联合唯一约束（每只股票每天只能有一条快照）
+        "ALTER TABLE stock_daily_snapshots ADD CONSTRAINT uq_snapshot_stock_date UNIQUE (stock_id, date)",
     ]
     with engine.begin() as conn:
         for sql in patches:
