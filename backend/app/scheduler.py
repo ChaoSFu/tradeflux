@@ -31,8 +31,8 @@ def _log(log_path: str, tag: str, msg: str) -> None:
     logger.info(line)
 
 
-def _do_update(log_path: str, today: date) -> None:
-    """执行一次完整的更新流程（数据更新 + 板块行情同步）。"""
+def _do_update(log_path: str, today: date) -> dict:
+    """执行一次完整的更新流程（数据更新 + 板块行情同步）。返回 daily_update 的汇总 dict。"""
     backend_dir = os.path.dirname(os.path.dirname(__file__))
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
@@ -40,11 +40,12 @@ def _do_update(log_path: str, today: date) -> None:
     from scripts.daily_update import run_daily_update  # type: ignore
     from scripts.sync_boards import run_sync_boards    # type: ignore
 
-    run_daily_update(today)
+    result = run_daily_update(today) or {}
     _log(log_path, "SCHED", "✅ 每日数据更新完成，开始板块行情同步...")
 
     run_sync_boards(meta_only=True)
     _log(log_path, "SCHED", "✅ 板块行情同步完成")
+    return result
 
 
 def _run_with_retry(attempt: int = 1) -> None:
@@ -77,15 +78,20 @@ def _run_with_retry(attempt: int = 1) -> None:
         _log(log_path, tag, f"✅ 获取锁成功，开始执行（第 {attempt}/{MAX_RETRIES} 次）")
         started = datetime.now().isoformat(timespec="seconds")
 
-        _do_update(log_path, today)
+        result = _do_update(log_path, today)
+        degraded = bool(result.get("degraded"))
+        warnings = list(result.get("warnings") or [])
 
         finished = datetime.now().isoformat(timespec="seconds")
-        _log(log_path, tag, f"✅ 全部完成（共尝试 {attempt} 次）")
+        _log(log_path, tag, f"✅ 全部完成（共尝试 {attempt} 次）"
+             + (f"，数据降级：{'；'.join(warnings)}" if degraded else ""))
 
         try:
             from app.routers.admin import _save_last_update  # type: ignore
             _save_last_update("scheduled", "done", started, finished,
-                              f"定时更新完成 {today}（第{attempt}次）")
+                              f"定时更新完成 {today}（第{attempt}次）"
+                              + ("（部分数据源降级）" if degraded else ""),
+                              degraded=degraded, warnings=warnings)
         except Exception:
             pass
 

@@ -7,6 +7,8 @@ export interface UpdateStatus {
   message: string
   log_lines: string[]
   mode?: 'meta' | 'full' | null   // 板块同步专用：区分行情同步和全量同步
+  degraded?: boolean              // true=有数据源API降级，数据可能不完整/过时
+  warnings?: string[]
 }
 
 // ── 每日数据更新 ──────────────────────────────────────────────────────────────
@@ -52,6 +54,8 @@ export interface LastUpdateStatus {
   started_at: string | null
   finished_at: string | null
   message: string | null
+  degraded?: boolean              // true=有数据源API降级，数据可能不完整/过时
+  warnings?: string[]
 }
 
 export const fetchLastUpdateStatus = () =>

@@ -479,8 +479,15 @@ def _upsert_stock(db, info: StockBasicInfo, stats: StockWindowStats, in_pool: bo
     return stock
 
 
-def _upsert_snapshot(db, stock: Stock, stats: StockWindowStats, today: date) -> None:
-    """写入今日快照（存在则更新，不存在则新建）"""
+def _upsert_snapshot(
+    db, stock: Stock, stats: StockWindowStats, today: date,
+    is_limit_up: bool | None = None, is_limit_down: bool | None = None,
+) -> None:
+    """
+    写入今日快照（存在则更新，不存在则新建）。
+    is_limit_up / is_limit_down 传入非 None 时为权威值（来自涨跌停选股 API），
+    覆盖本地 K 线反推结果；传入 None 时退回本地计算值。
+    """
     snap = (
         db.query(StockDailySnapshot)
         .filter(
@@ -496,8 +503,8 @@ def _upsert_snapshot(db, stock: Stock, stats: StockWindowStats, today: date) -> 
     snap.close_price = stats.today_close_price
     snap.pct_change = stats.today_pct_change
     snap.turnover_rate = stats.today_turnover
-    snap.is_limit_up = stats.today_is_limit_up
-    snap.is_limit_down = stats.today_is_limit_down
+    snap.is_limit_up = stats.today_is_limit_up if is_limit_up is None else is_limit_up
+    snap.is_limit_down = stats.today_is_limit_down if is_limit_down is None else is_limit_down
     snap.is_broken_board = stats.today_is_broken_board
     snap.board_count = stats.board_count_current
     snap.limit_down_count = stats.limit_down_count_current
@@ -871,9 +878,20 @@ def _save_daily_review(db, today: date) -> None:
 # 主流程
 # ---------------------------------------------------------------------------
 
-def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
+def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
+    """
+    执行每日更新。返回汇总 dict：
+      {"degraded": bool, "warnings": [str]}
+    degraded=True 表示有数据源 API 降级（已回退 DB），界面应提示数据可能不完整/过时。
+    抛异常的硬失败由调用方捕获，不在此返回。
+    """
     log = StepLogger(target_date)
     db = SessionLocal()
+    api_warnings: list[str] = []   # API 降级告警（供界面提示，数据可能不完整或过时）
+
+    def _result() -> dict:
+        return {"degraded": bool(api_warnings), "warnings": list(api_warnings)}
+
     try:
         init_db()
 
@@ -881,7 +899,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
         criteria = get_active_criteria(db)
         if not criteria:
             log.info("❌ 未找到生效的筛选条件，请先运行 scripts/init_screening.py")
-            return
+            return _result()
         log.info(f"筛选条件: {criteria.name} | "
                  f"连板>={criteria.min_board_count_60d+1} | "
                  f"60日涨停>={criteria.min_limit_up_days_60d+1} | "
@@ -899,6 +917,10 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
             api_pool_codes   = fut_strong.result()
             api_limit_codes  = fut_limit.result()
 
+        # 涨跌停 API 是否真正返回数据（决定是否以其为涨跌停的权威来源）。
+        # 失败回退到 DB 时不做权威覆盖/对账，避免循环依赖与误清。
+        limit_api_ok = bool(api_limit_codes)
+
         # 强势池：API 结果为准，失败回退 DB
         db_pool_codes = {
             s.code for s in db.query(Stock).filter(Stock.in_strong_pool == True).all()  # noqa
@@ -915,6 +937,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
         else:
             strong_pool_codes = db_pool_codes
             log.info(f"强势股 API 不可用，回退 DB {len(db_pool_codes)} 只")
+            api_warnings.append("强势股选股 API 调用失败，已回退数据库历史，强势池可能未更新")
 
         if api_limit_codes:
             log.info(f"涨跌停 API: {len(api_limit_codes)} 只")
@@ -933,9 +956,30 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
                 ).all()
             }
             log.info(f"涨跌停 API 不可用，回退 DB {len(api_limit_codes)} 只")
+            api_warnings.append("涨跌停选股 API 调用失败，已回退数据库历史，今日涨跌停数据可能不完整或过时")
 
         # 候选股 = 强势池 ∪ 涨跌停
         all_candidate_codes = strong_pool_codes | api_limit_codes
+
+        # 涨跌停复核：当日快照已标涨跌停、但已不在 API 名单里的股票，并入候选重抓，
+        # 以收盘价重算（解决盘中涨跌停、尾盘打开后因退出候选集而状态无法更新的问题）。
+        if limit_api_ok:
+            recheck_codes = {
+                row[0]
+                for row in db.query(Stock.code)
+                .join(StockDailySnapshot, StockDailySnapshot.stock_id == Stock.id)
+                .filter(
+                    StockDailySnapshot.date == target_date,
+                    or_(
+                        StockDailySnapshot.is_limit_up == True,    # noqa: E712
+                        StockDailySnapshot.is_limit_down == True,  # noqa: E712
+                    ),
+                    Stock.code.notin_(api_limit_codes),
+                ).all()
+            }
+            if recheck_codes:
+                all_candidate_codes = all_candidate_codes | recheck_codes
+                log.info(f"涨跌停复核：并入 {len(recheck_codes)} 只（曾标记今已退出名单）重抓")
 
         # 从 DB 构建 StockBasicInfo（已知股票直接读库，未知股票创建 stub）
         known_stocks = {
@@ -992,7 +1036,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
 
         if not candidates:
             log.end(ok=False, detail="无候选股，退出")
-            return
+            return _result()
 
         lu_cnt = len(api_limit_codes - strong_pool_codes)
         ld_cnt = 0   # API 不区分涨停/跌停，统计合并
@@ -1095,10 +1139,44 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
                 total_in_pool += 1
             stock = _upsert_stock(db, info, stats, in_pool)
             db.flush()
-            _upsert_snapshot(db, stock, stats, target_date)
+            # 涨跌停以选股 API 名单为权威来源（API 不分方向，用 pct 符号判定），
+            # 规避本地用前收价反推跌停价的脆弱逻辑（脏前收→漏判 / 北交所阈值缺失）。
+            if limit_api_ok:
+                in_limit = stats.code in api_limit_codes
+                pct = stats.today_pct_change or 0.0
+                auth_lu = in_limit and pct > 0
+                auth_ld = in_limit and pct < 0
+                _upsert_snapshot(db, stock, stats, target_date,
+                                 is_limit_up=auth_lu, is_limit_down=auth_ld)
+            else:
+                _upsert_snapshot(db, stock, stats, target_date)
 
         db.commit()
         log.end(detail=f"快照写入 {len(stats_list)} 只，强势池: +{new_in_pool}/-{removed_from_pool}，当前 {total_in_pool} 只")
+
+        # ── 第4.1步：涨跌停对账 ──────────────────────────────────
+        # 当日快照中仍标着涨跌停、但已不在选股 API 名单里的股票，强制清除标记。
+        # 解决「盘中涨跌停、尾盘打开」的票因退出候选集而无法被后续更新修正的问题。
+        if limit_api_ok:
+            stale_snaps = (
+                db.query(StockDailySnapshot)
+                .join(Stock, Stock.id == StockDailySnapshot.stock_id)
+                .filter(
+                    StockDailySnapshot.date == target_date,
+                    or_(
+                        StockDailySnapshot.is_limit_up == True,    # noqa: E712
+                        StockDailySnapshot.is_limit_down == True,  # noqa: E712
+                    ),
+                    Stock.code.notin_(api_limit_codes),
+                )
+                .all()
+            )
+            for snap in stale_snaps:
+                snap.is_limit_up = False
+                snap.is_limit_down = False
+            if stale_snaps:
+                db.commit()
+                log.info(f"涨跌停对账：清除过期标记 {len(stale_snaps)} 只")
 
         # ── 第4.5步：补全涨跌停股板块关联 ────────────────────────
         # 对今日涨跌停但 stock_sector_relations 为空的股票，
@@ -1169,6 +1247,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> None:
             run_sync_boards()
         except Exception as e:
             print(f"[sync_boards] 板块同步失败（不影响主流程）: {e}")
+
+    return _result()
 
 
 # ---------------------------------------------------------------------------
