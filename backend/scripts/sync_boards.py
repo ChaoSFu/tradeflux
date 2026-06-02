@@ -76,7 +76,7 @@ def _fetch_boards_by_fs(fs_code: str, label: str) -> list[dict]:
             "pn": str(page), "pz": "100", "po": "1", "np": "1",
             "fltt": "2", "invt": "2", "fid": "f3",
             "fs": fs_code,
-            "fields": "f12,f14,f3,f8,f20,f6,f109,f110,f160,f165",
+            "fields": "f12,f14,f3,f8,f20,f6,f109,f110,f160,f165,f17",
         }
         try:
             resp = httpx.get(
@@ -123,6 +123,7 @@ def _upsert_board(db, board: dict, sector_type: str) -> tuple["Sector | None", b
 
     sector.name = name
     sector.sector_type = sector_type
+    sector.stock_count      = int(board.get("f17") or 0)
     sector.total_market_cap = round((board.get("f20") or 0) / 1e8, 2)
     sector.turnover_rate    = round(board.get("f8") or 0, 4)
     sector.amount           = round((board.get("f6") or 0) / 1e8, 2)
