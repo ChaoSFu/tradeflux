@@ -377,8 +377,13 @@ def run_sync_boards(
     from datetime import datetime
     today = date.today().isoformat()
 
+    mode_label = "板块行情同步（meta_only）" if meta_only else "板块全量同步（full）"
     print(f"\n{'='*60}")
-    print(f"  TradeFlux 板块同步  [{today}]  启动于 {datetime.now().strftime('%H:%M:%S')}")
+    print(f"  TradeFlux {mode_label}  [{today}]  启动于 {datetime.now().strftime('%H:%M:%S')}")
+    if meta_only:
+        print(f"  模式：仅更新涨跌幅/换手率/市值等行情数据，跳过成份股数量和个股关联")
+    else:
+        print(f"  模式：全量同步，含成份股数量（并发拉取）+ 个股→板块关联（F10）")
     print(f"{'='*60}")
 
     db = SessionLocal()
@@ -390,14 +395,18 @@ def run_sync_boards(
 
         if not stocks_only:
             t0 = time.time()
-            # meta_only 模式跳过成份股数量更新（仅更新涨跌幅/换手/市值等）
+            print(f"\n[步骤1] 板块元数据同步（update_stock_count={'否' if meta_only else '是'}）...")
             sync_board_metadata(db, update_stock_count=not meta_only)
-            steps.append(("板块元数据", time.time() - t0))
+            elapsed = time.time() - t0
+            print(f"  ✅ 板块元数据完成，耗时 {elapsed:.1f}s")
+            steps.append(("板块元数据", elapsed))
 
         if not meta_only:
             t0 = time.time()
+            print(f"\n[步骤2] 个股→板块关联同步（F10）...")
             stats = sync_stock_sector_relations(db)
             t1 = time.time() - t0
+            print(f"  ✅ 关联同步完成，耗时 {t1:.1f}s")
             steps.append(("个股关联同步", t1))
             print(f"\n  关联同步结果:")
             print(f"    处理股票:   {stats['stocks_processed']} 只")

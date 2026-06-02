@@ -303,9 +303,18 @@ function DataUpdateMenu() {
 
   // ── keep old body for reference: replaced by _doSyncBoards ───────────────
 
-  const updateRunning = updateStatus?.status === 'running'
-  const syncRunning   = syncStatus?.status   === 'running'
-  const anyRunning    = updateRunning || syncRunning
+  const updateRunning  = updateStatus?.status === 'running'
+  // 按 mode 区分：行情同步(meta) 和全量同步(full) 各自独立显示状态
+  const metaSyncRunning = syncStatus?.status === 'running' && syncStatus?.mode === 'meta'
+  const fullSyncRunning = syncStatus?.status === 'running' && syncStatus?.mode === 'full'
+  const syncRunning     = metaSyncRunning || fullSyncRunning
+  const anyRunning      = updateRunning || syncRunning
+
+  // 按 mode 过滤状态：只给对应面板显示结果
+  const metaSyncStatus = syncStatus?.mode === 'meta' || syncStatus?.status === 'idle' || !syncStatus?.mode
+    ? syncStatus : null
+  const fullSyncStatus = syncStatus?.mode === 'full' || syncStatus?.status === 'idle' || !syncStatus?.mode
+    ? syncStatus : null
 
   // 最后更新：优先用持久化数据（服务重启后仍存在）
   const lastFinished = lastUpdate?.finished_at ?? updateStatus?.finished_at
@@ -409,10 +418,10 @@ function DataUpdateMenu() {
           <JobPanel
             label="板块行情同步"
             icon={<Layers className="w-3.5 h-3.5" />}
-            status={syncStatus}
-            isRunning={syncRunning}
-            isDone={syncStatus?.status === 'done'}
-            isError={syncStatus?.status === 'error'}
+            status={metaSyncStatus}
+            isRunning={metaSyncRunning}
+            isDone={syncStatus?.mode === 'meta' && syncStatus?.status === 'done'}
+            isError={syncStatus?.mode === 'meta' && syncStatus?.status === 'error'}
             onTrigger={handleSyncBoards}
             description="每日收盘后运行，更新板块涨跌幅/换手率/市值等行情数据（定时任务自动执行）。"
             estimatedTime="30 秒"
@@ -423,10 +432,10 @@ function DataUpdateMenu() {
           <JobPanel
             label="板块全量同步"
             icon={<Layers className="w-3.5 h-3.5" />}
-            status={syncStatus}
-            isRunning={syncRunning}
-            isDone={syncStatus?.status === 'done'}
-            isError={syncStatus?.status === 'error'}
+            status={fullSyncStatus}
+            isRunning={fullSyncRunning}
+            isDone={syncStatus?.mode === 'full' && syncStatus?.status === 'done'}
+            isError={syncStatus?.mode === 'full' && syncStatus?.status === 'error'}
             onTrigger={handleFullSyncBoards}
             description="每周运行一次，同步成份股数量及个股板块关联。板块成员变动或首次部署时使用。"
             estimatedTime="约 1 分钟"

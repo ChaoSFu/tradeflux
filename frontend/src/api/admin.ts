@@ -6,6 +6,7 @@ export interface UpdateStatus {
   finished_at: string | null
   message: string
   log_lines: string[]
+  mode?: 'meta' | 'full' | null   // 板块同步专用：区分行情同步和全量同步
 }
 
 // ── 每日数据更新 ──────────────────────────────────────────────────────────────

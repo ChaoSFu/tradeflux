@@ -68,6 +68,7 @@ _boards_job: dict = {
     "finished_at": None,
     "message": "",
     "log_lines": [],
+    "mode": None,   # "meta" | "full"，区分板块行情同步和板块全量同步
 }
 
 _MAX_LOG = 200  # Boards sync is long; keep more lines
@@ -275,6 +276,7 @@ def trigger_sync_boards(meta_only: bool = False, _: str = Depends(require_auth))
         _boards_job["started_at"] = datetime.now().isoformat(timespec="seconds")
         _boards_job["finished_at"] = None
         _boards_job["log_lines"] = []
+        _boards_job["mode"] = "meta" if meta_only else "full"
         _boards_job["message"] = (
             "正在更新板块元数据（涨跌幅/换手/市值），约30秒..." if meta_only
             else "正在全量同步板块：元数据 + 成份股数量 + 个股关联，预计 5-8 分钟..."
