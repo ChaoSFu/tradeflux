@@ -78,16 +78,24 @@ def _fetch_boards_by_fs(fs_code: str, label: str) -> list[dict]:
             "fs": fs_code,
             "fields": "f12,f14,f3,f8,f20,f6,f109,f110,f160,f165",
         }
-        try:
-            resp = httpx.get(
-                f"{BASE_URL}/clist/get",
-                params=params,
-                headers=_HTTP_HEADERS,
-                timeout=20,
-            )
-            data = resp.json()
-        except Exception as e:
-            print(f"  [{label}] 第{page}页请求失败: {e}")
+        # 最多重试 3 次，每次间隔递增
+        data = None
+        for attempt in range(3):
+            try:
+                resp = httpx.get(
+                    f"{BASE_URL}/clist/get",
+                    params=params,
+                    headers=_HTTP_HEADERS,
+                    timeout=30,
+                )
+                data = resp.json()
+                break
+            except Exception as e:
+                wait = (attempt + 1) * 3
+                print(f"  [{label}] 第{page}页请求失败（第{attempt+1}次）: {e}，{wait}s 后重试...")
+                time.sleep(wait)
+        if data is None:
+            print(f"  [{label}] 第{page}页重试3次均失败，跳过此页")
             break
 
         diff = (data.get("data") or {}).get("diff") or []
