@@ -648,10 +648,17 @@ def fetch_strong_pool_codes(
     fingerprint: str = "a3b5b577646954c0a1ff47146894e3d1",
     keyword: str = STRONG_POOL_KEYWORD,
     page_size: int = 50,
-) -> Set[str]:
+    with_names: bool = False,
+) -> "Set[str] | dict[str, str]":
     """
-    调用东方财富智能选股 search-code 接口，返回满足强势股条件的股票代码集合。
-    自动分页直到拉取全部结果。
+    调用东方财富智能选股 search-code 接口。自动分页直到拉取全部结果。
+
+    返回：
+      with_names=False（默认）→ 股票代码集合 Set[str]（向后兼容）
+      with_names=True        → {code: name} 字典（name 取 SECURITY_SHORT_NAME）
+
+    注：选股关键词均含「非ST」，故凡出现在结果中的股票当日均为非 ST，
+        调用方可据此把 is_st 刷新为 False（摘帽场景自动修正）。
 
     参数说明：
       xc_id       — 选股方案 ID（对应特定的筛选条件组合）
@@ -660,6 +667,7 @@ def fetch_strong_pool_codes(
     """
     custom_data = f'[{{"type":"text","value":"{keyword}","extra":""}}]'
     codes: Set[str] = set()
+    names: dict[str, str] = {}
     page_no = 1
     total: int | None = None
 
@@ -712,13 +720,16 @@ def fetch_strong_pool_codes(
             code = item.get("SECURITY_CODE", "").strip()
             if code:
                 codes.add(code)
+                nm = (item.get("SECURITY_SHORT_NAME") or "").strip()
+                if nm:
+                    names[code] = nm
 
         if not data_list or len(codes) >= (total or 0):
             break
         page_no += 1
         time.sleep(0.3)
 
-    return codes
+    return names if with_names else codes
 
 
 # 涨跌停选股关键词
@@ -730,9 +741,11 @@ def fetch_limit_move_codes(
     fingerprint: str = "a3b5b577646954c0a1ff47146894e3d1",
     keyword: str = LIMIT_MOVE_KEYWORD,
     page_size: int = 50,
-) -> Set[str]:
+    with_names: bool = False,
+) -> "Set[str] | dict[str, str]":
     """
-    调用东方财富智能选股 API，获取今日涨停 + 跌停的非ST非退市股票代码集合。
+    调用东方财富智能选股 API，获取今日涨停 + 跌停的非ST非退市股票。
+    with_names=True 时返回 {code: name}，否则返回代码集合。
     替代原来扫描全量 5206 只股票再过滤涨跌停的逻辑。
     """
     # 直接复用 fetch_strong_pool_codes 的实现，只换 keyword
@@ -741,4 +754,5 @@ def fetch_limit_move_codes(
         fingerprint=fingerprint,
         keyword=keyword,
         page_size=page_size,
+        with_names=with_names,
     )

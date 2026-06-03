@@ -909,13 +909,19 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # ── 第1步：确定候选股（通过东财选股 API）──────────────────
         log.begin("确定候选股")
 
-        # 并发调两个东财选股 API
+        # 并发调两个东财选股 API（with_names=True 顺带带回股票名，省去全市场拉取）
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2) as ex:
-            fut_strong = ex.submit(fetch_strong_pool_codes)
-            fut_limit  = ex.submit(fetch_limit_move_codes)
-            api_pool_codes   = fut_strong.result()
-            api_limit_codes  = fut_limit.result()
+            fut_strong = ex.submit(fetch_strong_pool_codes, with_names=True)
+            fut_limit  = ex.submit(fetch_limit_move_codes, with_names=True)
+            api_pool_names   = fut_strong.result()   # {code: name}
+            api_limit_names  = fut_limit.result()    # {code: name}
+
+        api_pool_codes  = set(api_pool_names)
+        api_limit_codes = set(api_limit_names)
+        # 选股结果均为「非ST」，故出现在此 map 的股票当日 is_st=False（摘帽自动修正）。
+        # 用于刷新已知候选股的 name/is_st，并给新股直接命名，替代全市场列表拉取。
+        api_name_map: dict[str, str] = {**api_pool_names, **api_limit_names}
 
         # 涨跌停 API 是否真正返回数据（决定是否以其为涨跌停的权威来源）。
         # 失败回退到 DB 时不做权威覆盖/对账，避免循环依赖与误清。
@@ -987,18 +993,28 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             for s in db.query(Stock).filter(Stock.code.in_(all_candidate_codes)).all()
         }
 
-        # stub 股票（name == code）需要从全市场列表补全真实名称
-        stub_codes = {s.code for s in known_stocks.values() if s.name == s.code}
+        # 刷新已知候选股的 name / is_st：名字由选股 API 直接带回（api_name_map），
+        # 且关键词为「非ST」→ 出现在结果中即当日非 ST（摘帽/改名自动修正）。
+        refreshed = 0
+        for code, s in known_stocks.items():
+            fresh = api_name_map.get(code)
+            if fresh and (s.name != fresh or s.is_st):
+                s.name = fresh
+                s.is_st = False
+                refreshed += 1
+        if refreshed:
+            log.info(f"  刷新股票名称/ST状态 {refreshed} 只（选股API）")
+
+        # 仍缺名字的新代码（不在选股结果里，如复核股/极少数新股）才回退全市场列表补名
         new_codes = all_candidate_codes - set(known_stocks.keys())
-        if stub_codes or new_codes:
-            log.info(f"  补全名称：stub {len(stub_codes)} 只，新股 {len(new_codes)} 只，拉取全市场列表...")
-            all_stocks = fetch_main_board_stocks()
-            name_map = {s.code: s.name for s in all_stocks}
-            # 更新 stub 名称
-            for code in stub_codes:
-                real_name = name_map.get(code)
-                if real_name and real_name != code:
-                    known_stocks[code].name = real_name
+        unnamed_new = {c for c in new_codes if c not in api_name_map}
+        fallback_name_map: dict[str, str] = {}
+        if unnamed_new:
+            log.info(f"  {len(unnamed_new)} 只新代码不在选股结果，回退全市场列表补名...")
+            try:
+                fallback_name_map = {s.code: s.name for s in fetch_main_board_stocks()}
+            except Exception as e:
+                log.info(f"  全市场列表补名失败（忽略，用 code 占位）: {e}")
 
         candidates: List[StockBasicInfo] = []
         for code in all_candidate_codes:
@@ -1014,21 +1030,22 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                     listing_date=getattr(s, "ipo_date", None),
                 ))
             else:
-                # 新股：按代码前缀推断市场，创建 stub（名称从全市场列表取，取不到用 code 占位）
+                # 新股：按代码前缀推断市场；名称优先选股API，其次全市场列表，最后用 code 占位
                 mkt = 1 if code.startswith(("6", "5", "9")) else 0
-                real_name = name_map.get(code, code) if (stub_codes or new_codes) else code
+                real_name = api_name_map.get(code) or fallback_name_map.get(code) or code
+                is_st_new = "ST" in real_name   # 选股结果非ST→False；fallback名字含ST则True
                 stub = Stock(
                     code=code,
                     name=real_name,
                     market="SH" if mkt == 1 else "SZ",
-                    is_st=False,
+                    is_st=is_st_new,
                     is_new_stock=False,
                 )
                 db.add(stub)
                 db.flush()
                 candidates.append(StockBasicInfo(
                     code=code, name=real_name, market=mkt,
-                    is_st=False, pct_change=0.0, turnover_rate=0.0,
+                    is_st=is_st_new, pct_change=0.0, turnover_rate=0.0,
                 ))
         db.commit()
 
