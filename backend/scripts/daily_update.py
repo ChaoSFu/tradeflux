@@ -963,9 +963,10 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             full_group, days=65, max_workers=15, delay_between=0.0,
         ) if full_group else {}
 
-        # 今日单日拉取（DB 重建组）：days=1，无 delay，高并发
+        # 今日单日拉取（DB 重建组）：仅拉 2 天、payload 极小，可用更高并发。
+        # 20→40：该步骤瓶颈在请求往返延迟，提高并发直接缩短墙钟耗时。
         today_klines = fetch_klines_batch(
-            db_group, days=2, max_workers=20, delay_between=0.0,
+            db_group, days=2, max_workers=40, delay_between=0.0,
         ) if db_group else {}
 
         # 合并：db_group 用历史快照 + 今日 API bar 拼接
