@@ -643,33 +643,53 @@ _SEARCH_HEADERS = {
 }
 
 
+def _parse_limit_dir(item: dict) -> "str | None":
+    """
+    从选股 API 条目解析涨跌停方向，返回 'up' | 'down' | None。
+    优先用显式字段 IS_LIMIT_UP/IS_LIMIT_DOWN（值 '涨停'/'跌停'，字段名带日期后缀），
+    缺失/异常时回退 CHG（涨跌幅）符号。
+    """
+    lu_key = next((k for k in item if k.startswith("IS_LIMIT_UP")), None)
+    ld_key = next((k for k in item if k.startswith("IS_LIMIT_DOWN")), None)
+    if lu_key and str(item.get(lu_key)) == "涨停":
+        return "up"
+    if ld_key and str(item.get(ld_key)) == "跌停":
+        return "down"
+    try:
+        chg = float(item.get("CHG"))
+        return "up" if chg > 0 else ("down" if chg < 0 else None)
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_strong_pool_codes(
     xc_id: str = "xc11bd34d6790101033c",
     fingerprint: str = "a3b5b577646954c0a1ff47146894e3d1",
     keyword: str = STRONG_POOL_KEYWORD,
     page_size: int = 50,
     with_names: bool = False,
-) -> "Set[str] | dict[str, str]":
+    with_detail: bool = False,
+) -> "Set[str] | dict":
     """
     调用东方财富智能选股 search-code 接口。自动分页直到拉取全部结果。
 
     返回：
-      with_names=False（默认）→ 股票代码集合 Set[str]（向后兼容）
-      with_names=True        → {code: name} 字典（name 取 SECURITY_SHORT_NAME）
+      默认             → 股票代码集合 Set[str]（向后兼容）
+      with_names=True  → {code: name}（name 取 SECURITY_SHORT_NAME）
+      with_detail=True → {code: {"name": str, "limit_dir": "up"|"down"|None}}
 
-    注：选股关键词均含「非ST」，故凡出现在结果中的股票当日均为非 ST，
+    数据完整性：分页过程中任一页请求失败 → 视为本次 API 不可用，返回空
+      （空 set / 空 dict）。绝不返回「部分结果」被误当作权威全集——否则会
+      漏判涨跌停并触发错误的对账清除。调用方据空结果回退 DB。
+
+    注：选股关键词均含「非ST」→ 出现在结果中的股票当日均为非 ST，
         调用方可据此把 is_st 刷新为 False（摘帽场景自动修正）。
-
-    参数说明：
-      xc_id       — 选股方案 ID（对应特定的筛选条件组合）
-      fingerprint — 客户端指纹（固定值，由东方财富页面生成）
-      keyword     — 自然语言选股条件，与 xc_id 对应
     """
     custom_data = f'[{{"type":"text","value":"{keyword}","extra":""}}]'
-    codes: Set[str] = set()
-    names: dict[str, str] = {}
+    details: dict[str, dict] = {}
     page_no = 1
     total: int | None = None
+    complete = True
 
     while True:
         ts = str(int(time.time() * 1_000_000))
@@ -707,7 +727,8 @@ def fetch_strong_pool_codes(
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            print(f"[fetcher] 强势池 API 第 {page_no} 页失败: {e}")
+            print(f"[fetcher] 选股 API 第 {page_no} 页失败: {e}（本次视为不可用，回退DB）")
+            complete = False
             break
 
         result = data.get("data", {}).get("result", {})
@@ -719,17 +740,24 @@ def fetch_strong_pool_codes(
         for item in data_list:
             code = item.get("SECURITY_CODE", "").strip()
             if code:
-                codes.add(code)
-                nm = (item.get("SECURITY_SHORT_NAME") or "").strip()
-                if nm:
-                    names[code] = nm
+                details[code] = {
+                    "name": (item.get("SECURITY_SHORT_NAME") or "").strip(),
+                    "limit_dir": _parse_limit_dir(item),
+                }
 
-        if not data_list or len(codes) >= (total or 0):
+        if not data_list or len(details) >= (total or 0):
             break
         page_no += 1
         time.sleep(0.3)
 
-    return names if with_names else codes
+    # 分页未完整拉完 → 视为不可用，返回空，避免「部分结果」被当作权威全集
+    if not complete:
+        return {} if (with_names or with_detail) else set()
+    if with_detail:
+        return details
+    if with_names:
+        return {c: d["name"] for c, d in details.items()}
+    return set(details)
 
 
 # 涨跌停选股关键词
@@ -742,11 +770,12 @@ def fetch_limit_move_codes(
     keyword: str = LIMIT_MOVE_KEYWORD,
     page_size: int = 50,
     with_names: bool = False,
-) -> "Set[str] | dict[str, str]":
+    with_detail: bool = False,
+) -> "Set[str] | dict":
     """
     调用东方财富智能选股 API，获取今日涨停 + 跌停的非ST非退市股票。
-    with_names=True 时返回 {code: name}，否则返回代码集合。
-    替代原来扫描全量 5206 只股票再过滤涨跌停的逻辑。
+    with_names=True → {code: name}；with_detail=True → {code: {name, limit_dir}}；
+    否则返回代码集合。替代原来扫描全量 5206 只股票再过滤涨跌停的逻辑。
     """
     # 直接复用 fetch_strong_pool_codes 的实现，只换 keyword
     return fetch_strong_pool_codes(
@@ -755,4 +784,5 @@ def fetch_limit_move_codes(
         keyword=keyword,
         page_size=page_size,
         with_names=with_names,
+        with_detail=with_detail,
     )
