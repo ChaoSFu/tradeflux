@@ -88,8 +88,13 @@ export function OverflowBadge({ count, hidden }: { count: number; hidden: string
 // ─── Leader badge ─────────────────────────────────────────────────────────────
 
 export function LeaderTag({ label }: { label: string }) {
+  // 龙2（标签以 "2" 结尾）用更淡的颜色，与龙1（"1"结尾）区分主次
+  const isRank2 = label.endsWith('2')
+  const cls = isRank2
+    ? 'bg-amber-500/8 text-amber-400/55 border-amber-500/20'
+    : 'bg-amber-500/15 text-amber-400 border-amber-500/30'
   return (
-    <span className="inline-flex items-center px-1 py-px text-[9px] font-bold rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 whitespace-nowrap leading-tight">
+    <span className={`inline-flex items-center px-1 py-px text-[9px] font-bold rounded border whitespace-nowrap leading-tight ${cls}`}>
       {label}
     </span>
   )

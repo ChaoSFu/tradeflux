@@ -5,7 +5,10 @@ import { fetchStrongPool } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag } from '@/components/common/SectorTags'
 import { useSectorLeaders } from '@/hooks/useSectorLeaders'
-import { useLeaderUniverseMaxes } from '@/hooks/useLeaderUniverseMaxes'
+import {
+  useLeaderUniverseMaxes, getLeaderTags, dragonPrimary,
+  type LeaderMaxes,
+} from '@/hooks/useLeaderUniverseMaxes'
 import { Search, Star, Flame, Crown, Info, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 // Note: Star kept for is_leader badge; Flame for limit_up tab; Crown for dragon tab; Info for ColInfo tooltips
 import { cn } from '@/utils/cn'
@@ -84,18 +87,7 @@ function getGroupKey(stock: Stock): GroupKey {
 
 // ─── Leader-tag helpers ───────────────────────────────────────────────────────
 
-type LeaderMaxes = { board: number; d10: number; d20: number; d60: number; high: number }
-
-function getLeaderTags(stock: Stock, maxes: LeaderMaxes): string[] {
-  const tags: string[] = []
-  // Display/sort priority: 10龙 → 20龙 → 60龙 → 60高板龙 → 连板龙
-  if ((stock.limit_up_days_10d  ?? 0) > 0 && stock.limit_up_days_10d  === maxes.d10)   tags.push('10龙')
-  if ((stock.limit_up_days_20d  ?? 0) > 0 && stock.limit_up_days_20d  === maxes.d20)   tags.push('20龙')
-  if ((stock.limit_up_days_60d  ?? 0) > 0 && stock.limit_up_days_60d  === maxes.d60)   tags.push('60龙')
-  if ((stock.board_count_60d    ?? 0) > 0 && stock.board_count_60d    === maxes.high)   tags.push('60高板龙')
-  if ((stock.today_board_count  ?? 0) > 0 && stock.today_board_count  === maxes.board)  tags.push('连板龙')
-  return tags
-}
+// getLeaderTags / LeaderMaxes 由 useLeaderUniverseMaxes 提供（龙1/龙2 全集口径）
 
 // ─── Phase group tag ─────────────────────────────────────────────────────────
 
@@ -119,27 +111,19 @@ function PhaseGroupTag({ phase }: { phase: Exclude<GroupKey, 'dragon'> }) {
   )
 }
 
-// Dragon-group sort:
-// Compare by whether the stock HAS each tag (boolean), not by raw metric value.
-// Priority: 10龙 → 20龙 → 60龙 → 60高板龙 → 连板龙 → 板块龙头 → tag总数 → leader_score
-const DRAGON_TAG_PRIORITY = ['10龙', '20龙', '60龙', '60高板龙', '连板龙'] as const
-
+// Dragon-group sort（龙1/龙2 两档）：
+// 1. 主标签优先级：龙1 组整体在 龙2 组之前；组内 10>20>60>高板>连板（DRAGON_TAG_ORDER）
+// 2. 主标签相同 → 标签数多的靠前
+// 3. 板块龙头 → 4. 龙头分
 function sortDragon(stocks: Stock[], globalMaxes: LeaderMaxes, sectorLeaders: Map<number, string>): Stock[] {
   return [...stocks].sort((a, b) => {
-    const tagsA = new Set(getLeaderTags(a, globalMaxes))
-    const tagsB = new Set(getLeaderTags(b, globalMaxes))
-    // 1–5. tag boolean priority
-    for (const tag of DRAGON_TAG_PRIORITY) {
-      const diff = (tagsB.has(tag) ? 1 : 0) - (tagsA.has(tag) ? 1 : 0)
-      if (diff !== 0) return diff
-    }
-    // 6. 板块龙头
+    const tagsA = getLeaderTags(a, globalMaxes)
+    const tagsB = getLeaderTags(b, globalMaxes)
+    const pa = dragonPrimary(tagsA), pb = dragonPrimary(tagsB)
+    if (pa !== pb) return pa - pb
+    if (tagsA.length !== tagsB.length) return tagsB.length - tagsA.length
     const slDiff = (sectorLeaders.has(b.id) ? 1 : 0) - (sectorLeaders.has(a.id) ? 1 : 0)
     if (slDiff !== 0) return slDiff
-    // 7. tag 总数
-    const countDiff = tagsB.size - tagsA.size
-    if (countDiff !== 0) return countDiff
-    // 8. 龙头分
     return b.leader_score - a.leader_score
   })
 }
