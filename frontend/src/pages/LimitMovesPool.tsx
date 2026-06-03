@@ -9,6 +9,7 @@ import { fetchLimitMoves } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { SectorTagList, LeaderTag, NegativeTag, SectorLeaderTag } from '@/components/common/SectorTags'
 import { useSectorLeaders } from '@/hooks/useSectorLeaders'
+import { useLeaderUniverseMaxes } from '@/hooks/useLeaderUniverseMaxes'
 import { Search, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import type { Stock } from '@/types'
@@ -74,14 +75,23 @@ export default function LimitMovesPool() {
   // ── 板块龙头（完全支配，由板块分析页数据决定）────────────────────────────
   const sectorLeaders = useSectorLeaders()  // Map<stockId, primarySector>
 
-  // ── Per-list leader maxes (0 if list is empty) ──────────────────────────────
+  // ── 龙头标签基准 ────────────────────────────────────────────────────────────
+  // 涨停天数龙(10/20/60)是市场级强度，对比【强势池+涨停+跌停】合并全集，
+  // 避免在当前 tab 子列表（如当日跌停池）内比出虚高的"龙"。
+  // 连板龙/高板龙是方向相关的当日指标：涨停 tab 用全集上行指标；
+  // 跌停 tab 用当前跌停列表的「跌停板」指标（代表当日最弱，即"跌停龙"）。
+  const universe = useLeaderUniverseMaxes()
   const leaderMaxes = useMemo(() => ({
-    board: Math.max(0, ...baseList.map(s => (tab === 'limit_up' ? (s.today_board_count ?? 0) : (s.today_limit_down_count ?? 0)))),
-    d10:   Math.max(0, ...baseList.map(s => s.limit_up_days_10d ?? 0)),
-    d20:   Math.max(0, ...baseList.map(s => s.limit_up_days_20d ?? 0)),
-    d60:   Math.max(0, ...baseList.map(s => s.limit_up_days_60d ?? 0)),
-    high:  Math.max(0, ...baseList.map(s => (tab === 'limit_down' ? (s.board_down_count_60d ?? 0) : (s.board_count_60d ?? 0)))),
-  }), [baseList, tab])
+    d10: universe.d10,
+    d20: universe.d20,
+    d60: universe.d60,
+    board: tab === 'limit_up'
+      ? universe.board
+      : Math.max(0, ...baseList.map(s => s.today_limit_down_count ?? 0)),
+    high: tab === 'limit_up'
+      ? universe.high
+      : Math.max(0, ...baseList.map(s => s.board_down_count_60d ?? 0)),
+  }), [universe, baseList, tab])
 
   const sorted = useMemo(() => [...baseList].sort((a, b) => {
     let av: number, bv: number

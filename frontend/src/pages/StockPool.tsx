@@ -5,6 +5,7 @@ import { fetchStrongPool } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag } from '@/components/common/SectorTags'
 import { useSectorLeaders } from '@/hooks/useSectorLeaders'
+import { useLeaderUniverseMaxes } from '@/hooks/useLeaderUniverseMaxes'
 import { Search, Star, Flame, Crown, Info, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 // Note: Star kept for is_leader badge; Flame for limit_up tab; Crown for dragon tab; Info for ColInfo tooltips
 import { cn } from '@/utils/cn'
@@ -85,16 +86,6 @@ function getGroupKey(stock: Stock): GroupKey {
 
 type LeaderMaxes = { board: number; d10: number; d20: number; d60: number; high: number }
 
-function computeLeaderMaxes(stocks: Stock[]): LeaderMaxes {
-  return {
-    board: Math.max(0, ...stocks.map((s) => s.today_board_count ?? 0)),
-    d10:   Math.max(0, ...stocks.map((s) => s.limit_up_days_10d  ?? 0)),
-    d20:   Math.max(0, ...stocks.map((s) => s.limit_up_days_20d  ?? 0)),
-    d60:   Math.max(0, ...stocks.map((s) => s.limit_up_days_60d  ?? 0)),
-    high:  Math.max(0, ...stocks.map((s) => s.board_count_60d    ?? 0)),
-  }
-}
-
 function getLeaderTags(stock: Stock, maxes: LeaderMaxes): string[] {
   const tags: string[] = []
   // Display/sort priority: 10龙 → 20龙 → 60龙 → 60高板龙 → 连板龙
@@ -170,8 +161,8 @@ export default function StockPool() {
   const allStocks: Stock[] = (data as any)?.items ?? []
   const total = (data as any)?.total ?? 0
 
-  // ── Global leader maxes (used for 总龙头 tab) ─────────────────────────────
-  const globalLeaderMaxes = useMemo(() => computeLeaderMaxes(allStocks), [allStocks])
+  // ── Global leader maxes：对比【强势池+涨停+跌停】合并全集（与涨跌停池页一致）──
+  const globalLeaderMaxes = useLeaderUniverseMaxes()
 
   // ── 板块龙头（完全支配，由板块分析页数据决定）────────────────────────────
   const sectorLeaders = useSectorLeaders()  // Map<stockId, primarySector>
