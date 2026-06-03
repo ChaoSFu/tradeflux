@@ -963,29 +963,35 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             full_group, days=65, max_workers=15, delay_between=0.0,
         ) if full_group else {}
 
-        # 今日单日拉取（DB 重建组）：仅拉 2 天、payload 极小，可用更高并发。
-        # 取 30（40 实测更快但留余量防 eastmoney 限流；瓶颈在请求往返延迟）。
+        # DB 重建组拉取天数：仅拉 2 天、payload 极小，可用更高并发（取 30 防限流）。
+        # 边界2：按「DB 最新快照 → target_date」的最大缺口决定天数，避免连续停机多日后
+        # days=2 只补 1 根、中间留空洞（MA60/连板数会偏差）。常态 gap=1 → 拉 3 天。
+        db_fetch_days = 2
+        if db_group:
+            latest_hist = [bars[-1].date for bars in db_klines_map.values() if bars]
+            if latest_hist:
+                gap = (target_date - min(latest_hist)).days
+                db_fetch_days = max(2, min(gap + 2, 65))
+        if db_fetch_days > 3:
+            log.info(f"  DB重建检测到缺口，拉取近 {db_fetch_days} 天补齐")
         today_klines = fetch_klines_batch(
-            db_group, days=2, max_workers=30, delay_between=0.0,
+            db_group, days=db_fetch_days, max_workers=30, delay_between=0.0,
         ) if db_group else {}
 
-        # 合并：db_group 用历史快照 + 今日 API bar 拼接
+        # 合并：历史快照 + 新拉 bar，按日期并集去重（新数据覆盖同日历史并补齐缺口日）
         klines_map: dict = {}
         for info in full_group:
             klines_map[info.code] = full_klines.get(info.code, [])
         for info in db_group:
             hist_bars = db_klines_map[info.code]
-            today_bars = today_klines.get(info.code, [])
-            # 取今日 bar（最后一根）
-            if today_bars:
-                today_bar = today_bars[-1]
-                # 避免重复：若历史末尾已是今日则替换，否则追加
-                if hist_bars and hist_bars[-1].date == today_bar.date:
-                    klines_map[info.code] = hist_bars[:-1] + [today_bar]
-                else:
-                    klines_map[info.code] = hist_bars + [today_bar]
-            else:
+            new_bars = today_klines.get(info.code, [])
+            if not new_bars:
                 klines_map[info.code] = hist_bars  # 今日无数据，降级用历史
+                continue
+            by_date = {b.date: b for b in hist_bars}
+            for b in new_bars:
+                by_date[b.date] = b                # 新数据覆盖/补齐缺口
+            klines_map[info.code] = [by_date[d] for d in sorted(by_date)]
 
         fetched = sum(1 for v in klines_map.values() if v)
         failed = len(candidates) - fetched
@@ -1003,13 +1009,25 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             )
             log.info(f"⚠️  今日数据缺失 {missing_today}/{len(candidates)} 只（full {full_missing} / db {db_today_missing}）")
 
-        for _bars in klines_map.values():
-            if _bars:
-                kline_latest_date = _bars[-1].date
-                if kline_latest_date != target_date:
-                    log.info(f"⚠️  {target_date} 非交易日，自动修正为 {kline_latest_date}")
-                    target_date = kline_latest_date
-                break
+        # target_date 跟随「最新一根 K 线」自动修正：用所有股票的最大日期，
+        # 避免个别停牌股的陈旧末日 bar 把 target_date 误导到过去。
+        all_latest = [bars[-1].date for bars in klines_map.values() if bars]
+        if all_latest:
+            kline_latest_date = max(all_latest)
+            if kline_latest_date != target_date:
+                log.info(f"⚠️  {target_date} 非交易日/无当日数据，自动修正为 {kline_latest_date}")
+                target_date = kline_latest_date
+
+        # 边界3：选股API数据日期须与（修正后的）target_date 一致，才以其为涨跌停权威。
+        # 盘前等场景 API 可能返回另一交易日的数据，错配会把标志写到错误日期或误清对账。
+        # 不一致时回退本地 K 线判定（不做权威覆盖/对账）。
+        limit_dates = {d.get("limit_date") for d in api_limit_detail.values() if d.get("limit_date")}
+        limit_authority_ok = limit_api_ok and (
+            not limit_dates or (len(limit_dates) == 1 and next(iter(limit_dates)) == target_date)
+        )
+        if limit_api_ok and not limit_authority_ok:
+            log.info(f"⚠️  选股API数据日期 {sorted(map(str, limit_dates))} ≠ target_date {target_date}，"
+                     f"跳过涨跌停权威覆盖，回退本地K线判定")
 
         existing_snap_count = (
             db.query(StockDailySnapshot)
@@ -1053,8 +1071,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             db.flush()
             # 涨跌停以选股 API 名单为权威来源：方向取 API 显式字段 limit_dir，
             # 缺失时回退 pct 符号。规避本地用前收价反推跌停价的脆弱逻辑
-            # （脏前收→漏判 / 北交所阈值缺失）。
-            if limit_api_ok:
+            # （脏前收→漏判 / 北交所阈值缺失）。仅在数据日期与 target_date 一致时生效。
+            if limit_authority_ok:
                 detail = api_limit_detail.get(stats.code)
                 if detail:
                     d = detail["limit_dir"]
@@ -1117,7 +1135,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # ── 第4.1步：涨跌停对账 ──────────────────────────────────
         # 当日快照中仍标着涨跌停、但已不在选股 API 名单里的股票，强制清除标记。
         # 解决「盘中涨跌停、尾盘打开」的票因退出候选集而无法被后续更新修正的问题。
-        if limit_api_ok:
+        # 仅在数据日期与 target_date 一致时执行，避免用错日期的名单误清。
+        if limit_authority_ok:
             stale_snaps = (
                 db.query(StockDailySnapshot)
                 .join(Stock, Stock.id == StockDailySnapshot.stock_id)

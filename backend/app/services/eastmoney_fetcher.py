@@ -662,6 +662,22 @@ def _parse_limit_dir(item: dict) -> "str | None":
         return None
 
 
+def _parse_limit_date(item: dict) -> "date | None":
+    """
+    从选股 API 条目的日期后缀字段（如 'IS_LIMIT_DOWN{2026-06-03}'）解析数据日期。
+    用于校验 API 数据日期与快照 target_date 是否一致（避免盘前等场景错配）。
+    """
+    for k in item:
+        if k.startswith(("IS_LIMIT_UP", "IS_LIMIT_DOWN", "IFSTSTOCK", "FIRST_LIMITUP")):
+            l, r = k.find("{"), k.find("}")
+            if 0 <= l < r:
+                try:
+                    return date.fromisoformat(k[l + 1:r])
+                except ValueError:
+                    continue
+    return None
+
+
 def fetch_strong_pool_codes(
     xc_id: str = "xc11bd34d6790101033c",
     fingerprint: str = "a3b5b577646954c0a1ff47146894e3d1",
@@ -743,6 +759,7 @@ def fetch_strong_pool_codes(
                 details[code] = {
                     "name": (item.get("SECURITY_SHORT_NAME") or "").strip(),
                     "limit_dir": _parse_limit_dir(item),
+                    "limit_date": _parse_limit_date(item),
                 }
 
         if not data_list or len(details) >= (total or 0):
