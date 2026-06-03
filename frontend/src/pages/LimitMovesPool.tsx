@@ -76,22 +76,14 @@ export default function LimitMovesPool() {
   const sectorLeaders = useSectorLeaders()  // Map<stockId, primarySector>
 
   // ── 龙头标签基准 ────────────────────────────────────────────────────────────
-  // 涨停天数龙(10/20/60)是市场级强度，对比【强势池+涨停+跌停】合并全集，
-  // 避免在当前 tab 子列表（如当日跌停池）内比出虚高的"龙"。
-  // 连板龙/高板龙是方向相关的当日指标：涨停 tab 用全集上行指标；
-  // 跌停 tab 用当前跌停列表的「跌停板」指标（代表当日最弱，即"跌停龙"）。
-  const universe = useLeaderUniverseMaxes()
-  const leaderMaxes = useMemo(() => ({
-    d10: universe.d10,
-    d20: universe.d20,
-    d60: universe.d60,
-    board: tab === 'limit_up'
-      ? universe.board
-      : Math.max(0, ...baseList.map(s => s.today_limit_down_count ?? 0)),
-    high: tab === 'limit_up'
-      ? universe.high
-      : Math.max(0, ...baseList.map(s => s.board_down_count_60d ?? 0)),
-  }), [universe, baseList, tab])
+  // 所有龙头标签（10/20/60龙、连板龙、60高板龙）均为市场级强度，统一对比
+  // 【强势池+涨停+跌停】合并全集，两个 tab 口径一致——避免在子列表内比出虚高的"龙"。
+  const leaderMaxes = useLeaderUniverseMaxes()
+  // 跌停池内的负向指标（负反馈/60连跌）：在当日跌停池内比较「跌停板」维度。
+  const downMaxes = useMemo(() => ({
+    board: Math.max(0, ...limitDowns.map(s => s.today_limit_down_count ?? 0)),
+    high:  Math.max(0, ...limitDowns.map(s => s.board_down_count_60d ?? 0)),
+  }), [limitDowns])
 
   const sorted = useMemo(() => [...baseList].sort((a, b) => {
     let av: number, bv: number
@@ -187,22 +179,21 @@ export default function LimitMovesPool() {
             ) : sorted.length === 0 ? (
               <tr><td colSpan={14} className="py-12 text-center text-text-muted text-sm">暂无数据</td></tr>
             ) : sorted.map((stock, idx) => {
-                const boardVal = tab === 'limit_up' ? (stock.today_board_count ?? 0) : (stock.today_limit_down_count ?? 0)
                 const leaderTags: string[] = []
                 const negTags:    string[] = []
-                if (tab === 'limit_down') {
-                  // 跌停 tab — consecutive limit-down means negative feedback
-                  if (boardVal > 0 && boardVal === leaderMaxes.board) negTags.push('负反馈')
-                  const highDown = stock.board_down_count_60d ?? 0
-                  if (highDown > 0 && highDown === leaderMaxes.high) negTags.push('60连跌')
-                } else {
-                  // 涨停 tab — normal amber leader tags
-                  if (boardVal > 0 && boardVal === leaderMaxes.board) leaderTags.push('连板龙')
-                  if ((stock.board_count_60d ?? 0) > 0 && (stock.board_count_60d ?? 0) === leaderMaxes.high) leaderTags.push('60高板龙')
-                }
+                // 龙头标签：UP 方向市场强度，对比全集，两个 tab 统一口径
+                if ((stock.today_board_count ?? 0) > 0 && (stock.today_board_count ?? 0) === leaderMaxes.board) leaderTags.push('连板龙')
+                if ((stock.board_count_60d ?? 0) > 0 && (stock.board_count_60d ?? 0) === leaderMaxes.high) leaderTags.push('60高板龙')
                 if ((stock.limit_up_days_10d ?? 0) > 0 && (stock.limit_up_days_10d ?? 0) === leaderMaxes.d10) leaderTags.push('10龙')
                 if ((stock.limit_up_days_20d ?? 0) > 0 && (stock.limit_up_days_20d ?? 0) === leaderMaxes.d20) leaderTags.push('20龙')
                 if ((stock.limit_up_days_60d ?? 0) > 0 && (stock.limit_up_days_60d ?? 0) === leaderMaxes.d60) leaderTags.push('60龙')
+                // 跌停 tab — 跌停池内的负向指标（连续跌停=负反馈、60日连跌）
+                if (tab === 'limit_down') {
+                  const downBoard = stock.today_limit_down_count ?? 0
+                  if (downBoard > 0 && downBoard === downMaxes.board) negTags.push('负反馈')
+                  const highDown = stock.board_down_count_60d ?? 0
+                  if (highDown > 0 && highDown === downMaxes.high) negTags.push('60连跌')
+                }
                 const sectorName = sectorLeaders.get(stock.id)
                 const leadSectors: string[] = sectorName ? [sectorName] : []
                 return (
