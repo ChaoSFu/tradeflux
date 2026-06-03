@@ -957,8 +957,11 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         db_klines_map, db_group, full_group = _build_klines_from_db(candidates, db, target_date)
         log.info(f"DB重建 {len(db_group)} 只（拉近2日），全量拉取 {len(full_group)} 只")
 
-        # 全量拉取（新股 / 历史不足）
-        full_klines = fetch_klines_batch(full_group, days=65, max_workers=5) if full_group else {}
+        # 全量拉取（新股 / 历史不足）：提高并发并去掉逐请求延迟。
+        # 同一 K 线接口在 DB 重建组已用 20 并发/0 延迟稳定运行，这里取 15 留余量。
+        full_klines = fetch_klines_batch(
+            full_group, days=65, max_workers=15, delay_between=0.0,
+        ) if full_group else {}
 
         # 今日单日拉取（DB 重建组）：days=1，无 delay，高并发
         today_klines = fetch_klines_batch(
