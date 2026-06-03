@@ -119,96 +119,6 @@ from app.services.screening_service import (
 from app.services.sector_phase_service import refresh_sector_phases
 
 
-# ---------------------------------------------------------------------------
-# 候选股选取策略
-# ---------------------------------------------------------------------------
-
-PCT_CANDIDATE_THRESHOLD = 7.0   # 今日涨幅超过此值视为潜在候选（可能是涨停）
-MAX_OTHER_CANDIDATES    = 300   # 非涨跌停的高涨幅候选上限（防止过多 K 线请求）
-
-
-def _limit_threshold(code: str, is_st: bool = False) -> float:
-    """
-    根据股票代码返回涨跌停检测阈值（留 0.5% 误差空间）。
-    主板 ±10% → 9.5；科创板/创业板 ±20% → 19.5；ST ±5% → 4.5
-    """
-    lp = get_limit_pct(code, is_st)  # 精确值（4.95 / 9.90 / 19.90）
-    return lp - 0.4                  # 留误差，统一减 0.4%
-
-
-def _select_candidates(
-    all_stocks: List[StockBasicInfo],
-    strong_pool_codes: set,
-    criteria_include_sh: bool,
-    criteria_include_sz: bool,
-    exclude_st: bool,
-    db=None,
-) -> List[StockBasicInfo]:
-    """
-    选取需要拉取 K 线的候选股：
-    - 当前强势池中的股票（必须重新评估）
-    - 今日涨停股票（pct_change >= 9.5%）：无数量上限，确保涨停池完整
-    - 今日跌停股票（pct_change <= -9.5%）：无数量上限，确保跌停池完整
-    - 其他高涨幅股票（7% ~ 9.5%）：上限 MAX_OTHER_CANDIDATES
-
-    注：若主板列表因 API 限流不完整，强势池中缺失的股票从 DB 补充，
-        确保每次更新都覆盖全部强势池股票。
-    """
-    in_pool = []
-    found_pool_codes: set = set()
-    limit_ups: List[StockBasicInfo] = []
-    limit_downs: List[StockBasicInfo] = []
-    other_candidates: List[StockBasicInfo] = []
-
-    for s in all_stocks:
-        # 市场过滤
-        if s.market == 1 and not criteria_include_sh:
-            continue
-        if s.market == 0 and not criteria_include_sz:
-            continue
-        # ST 过滤
-        if exclude_st and s.is_st:
-            continue
-
-        threshold = _limit_threshold(s.code, s.is_st)
-        if s.code in strong_pool_codes:
-            in_pool.append(s)
-            found_pool_codes.add(s.code)
-        elif s.pct_change >= threshold:
-            limit_ups.append(s)
-        elif s.pct_change <= -threshold:
-            limit_downs.append(s)
-        elif s.pct_change >= PCT_CANDIDATE_THRESHOLD:
-            other_candidates.append(s)
-
-    # 强势池中未被主板列表覆盖的股票，从 DB 补充
-    # （防止东方财富 API 限流/TLS 指纹检测只返回首页 200 条，导致余下股票永远漏更新）
-    missing_codes = strong_pool_codes - found_pool_codes
-    if missing_codes and db is not None:
-        print(f"  ⚠️  {len(missing_codes)} 只强势池股票不在主板列表（API限流），从DB补充: "
-              f"{', '.join(sorted(missing_codes))}")
-        db_stocks = db.query(Stock).filter(Stock.code.in_(missing_codes)).all()
-        for s in db_stocks:
-            in_pool.append(StockBasicInfo(
-                code=s.code,
-                name=s.name,
-                market=1 if s.market == "SH" else 0,
-                is_st=s.is_st,
-                pct_change=0.0,
-                turnover_rate=0.0,
-            ))
-
-    # 其他高涨幅候选按涨幅降序，限制数量（涨跌停不受此限制）
-    other_candidates.sort(key=lambda x: x.pct_change, reverse=True)
-    other_candidates = other_candidates[:MAX_OTHER_CANDIDATES]
-
-    new_candidates = limit_ups + limit_downs + other_candidates
-    print(
-        f"  候选：强势池重评 {len(in_pool)} 只，"
-        f"涨停 {len(limit_ups)} 只，跌停 {len(limit_downs)} 只，"
-        f"其他高涨幅 {len(other_candidates)} 只"
-    )
-    return in_pool + new_candidates
 
 
 # ---------------------------------------------------------------------------
@@ -293,41 +203,6 @@ def _sync_missing_sector_relations(db, limit_move_stocks: list, log=None) -> int
     return total_created
 
 
-# ---------------------------------------------------------------------------
-# Step 1：全量股票基础信息写入（打通 sync_boards 的数据依赖）
-# ---------------------------------------------------------------------------
-
-def _bulk_upsert_stocks_basic(db, all_stocks: List[StockBasicInfo]) -> int:
-    """
-    将全市场 ~4500 只股票的基础字段写入 stocks 表。
-    只写 code/name/market/is_st，不碰评分/快照等精算字段。
-
-    目的：确保 stock_sector_relations 能对任意市场股票建立关联，
-    消除 sync_boards.py 对 stocks 表已有记录的前置依赖。
-    """
-    existing: dict = {s.code: s for s in db.query(Stock).all()}
-    new_count = 0
-    for info in all_stocks:
-        if info.code not in existing:
-            new_stock = Stock(
-                code=info.code,
-                name=info.name,
-                market="SH" if info.market == 1 else "SZ",
-                is_st=info.is_st,
-                is_new_stock=False,
-            )
-            db.add(new_stock)
-            db.flush()  # 立即写入，防止 all_stocks 中重复 code 触发唯一约束冲突
-            existing[info.code] = new_stock
-            new_count += 1
-        else:
-            s = existing[info.code]
-            # 仅更新可能变化的基础字段（改名、ST 变动）
-            if s.name != info.name or s.is_st != info.is_st:
-                s.name = info.name
-                s.is_st = info.is_st
-    db.commit()
-    return new_count
 
 
 # ---------------------------------------------------------------------------
@@ -913,15 +788,18 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2) as ex:
             fut_strong = ex.submit(fetch_strong_pool_codes, with_names=True)
-            fut_limit  = ex.submit(fetch_limit_move_codes, with_names=True)
-            api_pool_names   = fut_strong.result()   # {code: name}
-            api_limit_names  = fut_limit.result()    # {code: name}
+            fut_limit  = ex.submit(fetch_limit_move_codes, with_detail=True)
+            api_pool_names    = fut_strong.result()   # {code: name}
+            api_limit_detail  = fut_limit.result()    # {code: {"name", "limit_dir"}}
 
         api_pool_codes  = set(api_pool_names)
-        api_limit_codes = set(api_limit_names)
+        api_limit_codes = set(api_limit_detail)
         # 选股结果均为「非ST」，故出现在此 map 的股票当日 is_st=False（摘帽自动修正）。
         # 用于刷新已知候选股的 name/is_st，并给新股直接命名，替代全市场列表拉取。
-        api_name_map: dict[str, str] = {**api_pool_names, **api_limit_names}
+        api_name_map: dict[str, str] = {
+            **api_pool_names,
+            **{c: d["name"] for c, d in api_limit_detail.items()},
+        }
 
         # 涨跌停 API 是否真正返回数据（决定是否以其为涨跌停的权威来源）。
         # 失败回退到 DB 时不做权威覆盖/对账，避免循环依赖与误清。
@@ -1156,13 +1034,20 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 total_in_pool += 1
             stock = _upsert_stock(db, info, stats, in_pool)
             db.flush()
-            # 涨跌停以选股 API 名单为权威来源（API 不分方向，用 pct 符号判定），
-            # 规避本地用前收价反推跌停价的脆弱逻辑（脏前收→漏判 / 北交所阈值缺失）。
+            # 涨跌停以选股 API 名单为权威来源：方向取 API 显式字段 limit_dir，
+            # 缺失时回退 pct 符号。规避本地用前收价反推跌停价的脆弱逻辑
+            # （脏前收→漏判 / 北交所阈值缺失）。
             if limit_api_ok:
-                in_limit = stats.code in api_limit_codes
-                pct = stats.today_pct_change or 0.0
-                auth_lu = in_limit and pct > 0
-                auth_ld = in_limit and pct < 0
+                detail = api_limit_detail.get(stats.code)
+                if detail:
+                    d = detail["limit_dir"]
+                    if d is None:   # API 未给方向 → 回退当日 pct 符号
+                        pct = stats.today_pct_change or 0.0
+                        d = "up" if pct > 0 else ("down" if pct < 0 else None)
+                    auth_lu = d == "up"
+                    auth_ld = d == "down"
+                else:
+                    auth_lu = auth_ld = False
                 _upsert_snapshot(db, stock, stats, target_date,
                                  is_limit_up=auth_lu, is_limit_down=auth_ld)
             else:
