@@ -964,9 +964,9 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         ) if full_group else {}
 
         # 今日单日拉取（DB 重建组）：仅拉 2 天、payload 极小，可用更高并发。
-        # 20→40：该步骤瓶颈在请求往返延迟，提高并发直接缩短墙钟耗时。
+        # 取 30（40 实测更快但留余量防 eastmoney 限流；瓶颈在请求往返延迟）。
         today_klines = fetch_klines_batch(
-            db_group, days=2, max_workers=40, delay_between=0.0,
+            db_group, days=2, max_workers=30, delay_between=0.0,
         ) if db_group else {}
 
         # 合并：db_group 用历史快照 + 今日 API bar 拼接
@@ -989,6 +989,19 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
 
         fetched = sum(1 for v in klines_map.values() if v)
         failed = len(candidates) - fetched
+
+        # 今日数据缺失检测（疑似限流）：
+        #   full_group 拉空（bars 为空）；db_group 今日 bar 缺失（限流时会静默退回旧历史，
+        #   不计入 failed，必须单独检测）。缺失比例偏高 → 标记 degraded，界面提示数据不完整。
+        full_missing = sum(1 for info in full_group if not full_klines.get(info.code))
+        db_today_missing = sum(1 for info in db_group if not today_klines.get(info.code))
+        missing_today = full_missing + db_today_missing
+        if candidates and missing_today / len(candidates) >= 0.1:
+            api_warnings.append(
+                f"K线今日数据缺失 {missing_today}/{len(candidates)} 只（疑似限流/接口异常），"
+                f"今日涨跌停与评分可能不完整"
+            )
+            log.info(f"⚠️  今日数据缺失 {missing_today}/{len(candidates)} 只（full {full_missing} / db {db_today_missing}）")
 
         for _bars in klines_map.values():
             if _bars:
