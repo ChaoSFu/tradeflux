@@ -1059,6 +1059,47 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         db.commit()
         log.end(detail=f"快照写入 {len(stats_list)} 只，强势池: +{new_in_pool}/-{removed_from_pool}，当前 {total_in_pool} 只")
 
+        # ── 第4.05步：历史快照自举 ────────────────────────────────
+        # full_group 这次全量拉到的 65 日 K 线，把历史日(< target_date)一并落库，
+        # 使该股下次更新即可走 DB 重建（仅拉今日）——每只股票全量拉取一生只发生一次。
+        # 历史快照仅存 K 线原始字段（close_price/pct/换手/涨跌停标志），供窗口重建用。
+        if full_group:
+            fg_codes = [info.code for info in full_group]
+            sid_by_code = {
+                row[0]: row[1]
+                for row in db.query(Stock.code, Stock.id).filter(Stock.code.in_(fg_codes)).all()
+            }
+            sids = list(sid_by_code.values())
+            existing_pairs = {
+                (r[0], r[1])
+                for r in db.query(StockDailySnapshot.stock_id, StockDailySnapshot.date)
+                .filter(StockDailySnapshot.stock_id.in_(sids)).all()
+            } if sids else set()
+            backfilled = 0
+            for info in full_group:
+                sid = sid_by_code.get(info.code)
+                if not sid:
+                    continue
+                for bar in klines_map.get(info.code, []):
+                    if bar.date >= target_date or (bar.close_price or 0) <= 0:
+                        continue
+                    if (sid, bar.date) in existing_pairs:
+                        continue
+                    db.add(StockDailySnapshot(
+                        stock_id=sid, date=bar.date,
+                        close_price=round(bar.close_price, 4),
+                        pct_change=round(bar.pct_change or 0.0, 4),
+                        turnover_rate=round(bar.turnover_rate or 0.0, 4),
+                        is_limit_up=bar.is_limit_up,
+                        is_limit_down=bar.is_limit_down,
+                        is_broken_board=bar.is_broken_board,
+                    ))
+                    existing_pairs.add((sid, bar.date))
+                    backfilled += 1
+            if backfilled:
+                db.commit()
+                log.info(f"历史快照自举：补录 {backfilled} 条（full_group {len(full_group)} 只，下次可走DB重建）")
+
         # ── 第4.1步：涨跌停对账 ──────────────────────────────────
         # 当日快照中仍标着涨跌停、但已不在选股 API 名单里的股票，强制清除标记。
         # 解决「盘中涨跌停、尾盘打开」的票因退出候选集而无法被后续更新修正的问题。
