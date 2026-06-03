@@ -9,7 +9,7 @@ import { fetchLimitMoves } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { SectorTagList, LeaderTag, NegativeTag, SectorLeaderTag } from '@/components/common/SectorTags'
 import { useSectorLeaders } from '@/hooks/useSectorLeaders'
-import { useLeaderUniverseMaxes } from '@/hooks/useLeaderUniverseMaxes'
+import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
 import { Search, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import type { Stock } from '@/types'
@@ -179,14 +179,9 @@ export default function LimitMovesPool() {
             ) : sorted.length === 0 ? (
               <tr><td colSpan={14} className="py-12 text-center text-text-muted text-sm">暂无数据</td></tr>
             ) : sorted.map((stock, idx) => {
-                const leaderTags: string[] = []
+                // 龙头标签（龙1/龙2，全集口径，两个 tab 统一）
+                const leaderTags = getLeaderTags(stock, leaderMaxes)
                 const negTags:    string[] = []
-                // 龙头标签：UP 方向市场强度，对比全集，两个 tab 统一口径
-                if ((stock.today_board_count ?? 0) > 0 && (stock.today_board_count ?? 0) === leaderMaxes.board) leaderTags.push('连板龙')
-                if ((stock.board_count_60d ?? 0) > 0 && (stock.board_count_60d ?? 0) === leaderMaxes.high) leaderTags.push('60高板龙')
-                if ((stock.limit_up_days_10d ?? 0) > 0 && (stock.limit_up_days_10d ?? 0) === leaderMaxes.d10) leaderTags.push('10龙')
-                if ((stock.limit_up_days_20d ?? 0) > 0 && (stock.limit_up_days_20d ?? 0) === leaderMaxes.d20) leaderTags.push('20龙')
-                if ((stock.limit_up_days_60d ?? 0) > 0 && (stock.limit_up_days_60d ?? 0) === leaderMaxes.d60) leaderTags.push('60龙')
                 // 跌停 tab — 跌停池内的负向指标（连续跌停=负反馈、60日连跌）
                 if (tab === 'limit_down') {
                   const downBoard = stock.today_limit_down_count ?? 0
