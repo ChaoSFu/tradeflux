@@ -249,12 +249,15 @@ export function SectorSection({
               )
             })}
           </span>
-          {/* avg pct */}
-          <span className={cn(
-            'text-xs font-mono font-semibold px-1.5 py-px rounded',
-            avgPct > 0 ? 'text-up bg-up/10' : avgPct < 0 ? 'text-down bg-down/10' : 'text-text-muted',
-          )}>
-            {avgPct > 0 ? '+' : ''}{avgPct.toFixed(2)}%
+          {/* 赚钱效应 = 成员股今日涨幅均值（区别于板块自身今日涨幅） */}
+          <span className="flex items-center gap-1">
+            <span className="text-text-muted/70 text-xs">赚钱效应</span>
+            <span className={cn(
+              'text-xs font-mono font-semibold px-1.5 py-px rounded',
+              avgPct > 0 ? 'text-up bg-up/10' : avgPct < 0 ? 'text-down bg-down/10' : 'text-text-muted',
+            )}>
+              {avgPct > 0 ? '+' : ''}{avgPct.toFixed(2)}%
+            </span>
           </span>
           {/* up/down */}
           <span className="flex items-center gap-1 text-xs font-mono">
