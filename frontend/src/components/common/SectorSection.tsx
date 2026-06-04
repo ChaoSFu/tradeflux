@@ -212,7 +212,7 @@ export function SectorSection({
         <div className="ml-auto flex items-center gap-3">
           {/* 板块级指标：今日/10/20/60日涨幅 + 强势股数 + 连板高度 */}
           {tagData && (
-            <span className="hidden lg:flex items-center gap-2 text-[11px] font-mono">
+            <span className="hidden lg:flex items-center gap-2 text-xs font-mono">
               {([['今', tagData.pct_today], ['10日', tagData.pct_10d], ['20日', tagData.pct_20d], ['60日', tagData.pct_60d]] as const).map(([lab, v]) => (
                 <span key={lab} className="text-text-muted/70">
                   {lab}
