@@ -11,6 +11,7 @@ import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { PHASE_COLORS, PHASE_LABELS_ZH } from '@/utils/format'
 import { Search, Star, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/utils/cn'
+import { SortTh, type StockSortKey } from '@/components/common/SectorSection'
 import type { Stock, Sector } from '@/types'
 
 // ─── Group classification ──────────────────────────────────────────────────────
@@ -327,8 +328,10 @@ function SectorSection({
 }) {
   const { name, stocks } = group
   const [pinnedGroup, setPinnedGroup] = useState<GroupKey | null>(null)
+  const [sortKey, setSortKey] = useState<StockSortKey | null>(null)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
-  const sortedStocks = useMemo(() => (
+  const defaultSorted = useMemo(() => (
     [...stocks].sort((a, b) => {
       const ga = getGroup(a, limitDownIds), gb = getGroup(b, limitDownIds)
       if (pinnedGroup) {
@@ -341,7 +344,23 @@ function SectorSection({
     })
   ), [stocks, pinnedGroup, limitDownIds])
 
-  const leader = sortedStocks[0]
+  const sortedStocks = useMemo(() => {
+    if (sortKey) {
+      return [...stocks].sort((a, b) => {
+        const av = (a[sortKey] as number | null | undefined) ?? -Infinity
+        const bv = (b[sortKey] as number | null | undefined) ?? -Infinity
+        return sortDir === 'desc' ? bv - av : av - bv
+      })
+    }
+    return defaultSorted
+  }, [stocks, defaultSorted, sortKey, sortDir])
+
+  const handleSort = (k: StockSortKey) => {
+    if (sortKey === k) setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))
+    else { setSortKey(k); setSortDir('desc') }
+  }
+
+  const leader = defaultSorted[0]
 
   const groupCounts = useMemo(() => (
     stocks.reduce((acc, s) => {
@@ -454,23 +473,23 @@ function SectorSection({
                 <th className="text-left  px-4 py-1.5 text-text-secondary font-semibold w-8">#</th>
                 <th className="text-left  px-2 py-1.5 text-text-secondary font-semibold w-28">股票</th>
                 <th className="text-left  px-2 py-1.5 text-text-secondary font-semibold w-20">分组</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary font-semibold whitespace-nowrap">连续连板</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary font-semibold whitespace-nowrap">10日涨停</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary font-semibold whitespace-nowrap">20日涨停</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary font-semibold whitespace-nowrap">60日涨停</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary font-semibold whitespace-nowrap">60日高板</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary font-semibold whitespace-nowrap">10日涨幅</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary font-semibold whitespace-nowrap">20日涨幅</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary font-semibold whitespace-nowrap">60日涨幅</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary font-semibold w-14">龙头分</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary font-semibold w-14">风险分</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary font-semibold whitespace-nowrap">今日涨幅</th>
+                <SortTh label="连续连板" col="today_board_count" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="10日涨停" col="limit_up_days_10d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="20日涨停" col="limit_up_days_20d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="60日涨停" col="limit_up_days_60d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="60日高板" col="board_count_60d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="10日涨幅" col="pct_change_10d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="20日涨幅" col="pct_change_20d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="60日涨幅" col="pct_change_60d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="龙头分" col="leader_score" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-14" />
+                <SortTh label="风险分" col="risk_score" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-14" />
+                <SortTh label="今日涨幅" col="today_pct_change" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
               </tr>
             </thead>
             <tbody>
               {sortedStocks.map((stock, idx) => {
                 const grp = getGroup(stock, limitDownIds)
-                const isLeader = idx === 0
+                const isLeader = stock.id === leader?.id
                 return (
                   <tr
                     key={stock.id}

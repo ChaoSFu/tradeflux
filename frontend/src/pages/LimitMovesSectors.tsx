@@ -11,6 +11,7 @@ import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { Search, Star, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import type { Stock } from '@/types'
+import { SortTh, type StockSortKey } from '@/components/common/SectorSection'
 
 // ─── Group ────────────────────────────────────────────────────────────────────
 
@@ -269,9 +270,26 @@ function SectorSection({ group, collapsed, onToggle, onClickStock }: {
 }) {
   const { name, stocks } = group
   const [pinnedGroup, setPinnedGroup] = useState<GroupKey | null>(null)
+  const [sortKey, setSortKey] = useState<StockSortKey | null>(null)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
-  const sortedStocks = useMemo(() => sortByGroup(stocks, pinnedGroup), [stocks, pinnedGroup])
-  const leader = sortedStocks[0]
+  const sortedStocks = useMemo(() => {
+    if (sortKey) {
+      return [...stocks].sort((a, b) => {
+        const av = (a[sortKey] as number | null | undefined) ?? -Infinity
+        const bv = (b[sortKey] as number | null | undefined) ?? -Infinity
+        return sortDir === 'desc' ? bv - av : av - bv
+      })
+    }
+    return sortByGroup(stocks, pinnedGroup)
+  }, [stocks, pinnedGroup, sortKey, sortDir])
+
+  const leader = useMemo(() => sortByGroup(stocks, null)[0], [stocks])
+
+  const handleSort = (k: StockSortKey) => {
+    if (sortKey === k) setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))
+    else { setSortKey(k); setSortDir('desc') }
+  }
 
   const groupCounts = stocks.reduce(
     (acc, s) => { acc[getGroup(s)] = (acc[getGroup(s)] ?? 0) + 1; return acc },
@@ -345,17 +363,17 @@ function SectorSection({ group, collapsed, onToggle, onClickStock }: {
                 <th className="text-left  px-4 py-1.5 text-text-secondary/70 font-medium w-8">#</th>
                 <th className="text-left  px-2 py-1.5 text-text-secondary/70 font-medium">股票</th>
                 <th className="text-left  px-2 py-1.5 text-text-secondary/70 font-medium w-14">类型</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">连续连板</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">10日涨停</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">20日涨停</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">60日涨停</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">60日高板</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">10日涨幅</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">20日涨幅</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">60日涨幅</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium w-14">龙头分</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium w-14">风险分</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">今日涨幅</th>
+                <SortTh label="连续连板" col="today_board_count" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="10日涨停" col="limit_up_days_10d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="20日涨停" col="limit_up_days_20d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="60日涨停" col="limit_up_days_60d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="60日高板" col="board_count_60d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="10日涨幅" col="pct_change_10d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="20日涨幅" col="pct_change_20d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="60日涨幅" col="pct_change_60d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="龙头分" col="leader_score" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-14" />
+                <SortTh label="风险分" col="risk_score" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-14" />
+                <SortTh label="今日涨幅" col="today_pct_change" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
               </tr>
             </thead>
             <tbody>
@@ -366,13 +384,13 @@ function SectorSection({ group, collapsed, onToggle, onClickStock }: {
                   onClick={() => onClickStock(stock.code)}
                 >
                   <td className="px-4 py-2">
-                    {idx === 0
+                    {stock.id === leader?.id
                       ? <Star className="w-3 h-3 text-dragon fill-dragon" />
                       : <span className="text-text-muted/80 font-mono">{idx + 1}</span>
                     }
                   </td>
                   <td className="px-2 py-2">
-                    <div className={cn('font-medium', idx === 0 ? 'text-text-primary' : 'text-text-secondary')}>
+                    <div className={cn('font-medium', stock.id === leader?.id ? 'text-text-primary' : 'text-text-secondary')}>
                       {stock.name}
                     </div>
                     <div className="font-mono text-accent/70">{stock.code}</div>
