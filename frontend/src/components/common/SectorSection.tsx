@@ -65,6 +65,38 @@ export function GroupTag({ group }: { group: GroupKey }) {
   )
 }
 
+// ─── 成员表列排序 ───────────────────────────────────────────────────────────
+
+export type StockSortKey =
+  | 'today_board_count' | 'limit_up_days_10d' | 'limit_up_days_20d' | 'limit_up_days_60d'
+  | 'board_count_60d' | 'pct_change_10d' | 'pct_change_20d' | 'pct_change_60d'
+  | 'leader_score' | 'risk_score' | 'today_pct_change'
+
+export function SortTh({ label, col, sortKey, sortDir, onSort, className }: {
+  label: string
+  col: StockSortKey
+  sortKey: StockSortKey | null
+  sortDir: 'asc' | 'desc'
+  onSort: (k: StockSortKey) => void
+  className?: string
+}) {
+  const active = sortKey === col
+  return (
+    <th className={cn('px-2 py-1.5 font-medium whitespace-nowrap text-right select-none', className)}>
+      <button
+        onClick={(e) => { e.stopPropagation(); onSort(col) }}
+        className={cn(
+          'inline-flex items-center gap-0.5 ml-auto transition-colors hover:text-text-primary',
+          active ? 'text-accent' : 'text-text-secondary/70',
+        )}
+      >
+        {label}
+        {active && (sortDir === 'desc' ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />)}
+      </button>
+    </th>
+  )
+}
+
 // ─── SectorGroup ──────────────────────────────────────────────────────────────
 
 export interface SectorGroup {
@@ -107,11 +139,30 @@ export function SectorSection({
 }) {
   const { name, stocks } = group
   const [pinnedGroup, setPinnedGroup] = useState<GroupKey | null>(null)
+  const [sortKey, setSortKey] = useState<StockSortKey | null>(null)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const { byName: sectorTagsByName } = useSectorTags()
   const tagData = sectorTagsByName.get(name)
 
-  const sortedStocks = useMemo(() => sortByGroup(stocks, pinnedGroup), [stocks, pinnedGroup])
-  const leader = sortedStocks[0]
+  // 默认（未点列头）：按分组+龙头分排序；点列头：按该列数值排序
+  const sortedStocks = useMemo(() => {
+    if (sortKey) {
+      return [...stocks].sort((a, b) => {
+        const av = (a[sortKey] as number | null | undefined) ?? -Infinity
+        const bv = (b[sortKey] as number | null | undefined) ?? -Infinity
+        return sortDir === 'desc' ? bv - av : av - bv
+      })
+    }
+    return sortByGroup(stocks, pinnedGroup)
+  }, [stocks, pinnedGroup, sortKey, sortDir])
+
+  // 龙头始终取默认序首位（不随列排序改变 ★ 归属）
+  const leader = useMemo(() => sortByGroup(stocks, null)[0], [stocks])
+
+  const handleSort = (k: StockSortKey) => {
+    if (sortKey === k) setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))
+    else { setSortKey(k); setSortDir('desc') }
+  }
 
   const groupCounts = stocks.reduce(
     (acc, s) => { acc[getGroup(s)] = (acc[getGroup(s)] ?? 0) + 1; return acc },
@@ -227,23 +278,23 @@ export function SectorSection({
                 <th className="text-left  px-4 py-1.5 text-text-secondary/70 font-medium w-8">#</th>
                 <th className="text-left  px-2 py-1.5 text-text-secondary/70 font-medium w-28">股票</th>
                 <th className="text-left  px-2 py-1.5 text-text-secondary/70 font-medium w-20">分组</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">连续连板</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">10日涨停</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">20日涨停</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">60日涨停</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">60日高板</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">10日涨幅</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">20日涨幅</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">60日涨幅</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium w-14">龙头分</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium w-14">风险分</th>
-                <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">今日涨幅</th>
+                <SortTh label="连续连板" col="today_board_count" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="10日涨停" col="limit_up_days_10d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="20日涨停" col="limit_up_days_20d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="60日涨停" col="limit_up_days_60d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="60日高板" col="board_count_60d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="10日涨幅" col="pct_change_10d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="20日涨幅" col="pct_change_20d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="60日涨幅" col="pct_change_60d" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="龙头分" col="leader_score" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-14" />
+                <SortTh label="风险分" col="risk_score" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-14" />
+                <SortTh label="今日涨幅" col="today_pct_change" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
               </tr>
             </thead>
             <tbody>
               {sortedStocks.map((stock, idx) => {
                 const grp = getGroup(stock)
-                const isLeader = idx === 0
+                const isLeader = stock.id === leader?.id
                 return (
                   <tr
                     key={stock.id}
