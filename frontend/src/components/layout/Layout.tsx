@@ -6,7 +6,6 @@ const TITLES: Record<string, string> = {
   '/': '仪表盘 Dashboard',
   '/stocks': '强势股池 Strong Pool',
   '/sector-config': '板块展示配置 Sector Config',
-  '/sectors': '板块综合分析 Sector Analysis',
   '/sector-trend': '趋势板块 Sector Trend',
   '/sector-emotion': '情绪板块 Sector Emotion',
   '/sector-ranking': '板块涨幅排名 Sector Ranking',

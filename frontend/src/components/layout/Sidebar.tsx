@@ -48,7 +48,6 @@ const NAV: NavEntry[] = [
     label: '板块分析',
     icon: BarChart2,
     children: [
-      { type: 'link', to: '/sectors',        label: '综合分析', icon: BarChart2 },
       { type: 'link', to: '/sector-trend',   label: '趋势板块', icon: Activity  },
       { type: 'link', to: '/sector-emotion', label: '情绪板块', icon: Activity  },
     ],

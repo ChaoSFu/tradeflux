@@ -5,7 +5,6 @@ import StockPool from '@/pages/StockPool'
 import StockDetail from '@/pages/StockDetail'
 import SectorConfig from '@/pages/SectorConfig'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
-import SectorAnalysis from '@/pages/SectorAnalysis'
 import SectorTrend from '@/pages/SectorTrend'
 import SectorEmotion from '@/pages/SectorEmotion'
 import Signals from '@/pages/Signals'
@@ -22,7 +21,6 @@ export default function App() {
           <Route path="stocks" element={<StockPool />} />
           <Route path="stocks/:code" element={<StockDetail />} />
           <Route path="sector-config" element={<ProtectedRoute><SectorConfig /></ProtectedRoute>} />
-          <Route path="sectors" element={<SectorAnalysis />} />
           <Route path="sector-trend" element={<SectorTrend />} />
           <Route path="sector-emotion" element={<SectorEmotion />} />
           <Route path="signals" element={<Signals />} />
