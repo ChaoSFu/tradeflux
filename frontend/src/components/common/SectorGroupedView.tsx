@@ -15,6 +15,7 @@ import {
   buildSectorGroups, getGroup, getSectorAvgPct,
   SectorSection,
 } from '@/components/common/SectorSection'
+import { useSectorTags } from '@/hooks/useSectorTags'
 
 type SortKey = 'total' | 'limit_up' | 'limit_down' | 'up' | 'down' | 'oscillating' | 'weakening' | 'broken' | 'avg_pct'
 
@@ -45,6 +46,7 @@ export function SectorGroupedView({
   minStorageKey,
   unitLabel = '个股',
   headerExtra,
+  phaseFilter,
 }: {
   stocks: Stock[]
   isLoading: boolean
@@ -53,7 +55,10 @@ export function SectorGroupedView({
   unitLabel?: string
   /** 顶栏额外控件（如全部/强势股/涨跌停过滤器） */
   headerExtra?: React.ReactNode
+  /** 仅显示指定生命周期阶段(0-6)的板块；null/undefined 不过滤 */
+  phaseFilter?: number | null
 }) {
+  const { byName: sectorTagsByName } = useSectorTags()
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -86,6 +91,10 @@ export function SectorGroupedView({
   const groups = useMemo(() => {
     let g = buildSectorGroups(stocks)
     g = g.filter((sg) => sg.stocks.length >= minStocks)
+    // 生命周期阶段过滤（来自分布条点击）：按板块自身 phase
+    if (phaseFilter != null) {
+      g = g.filter((sg) => sectorTagsByName.get(sg.name)?.phase === phaseFilter)
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       g = g
@@ -99,7 +108,7 @@ export function SectorGroupedView({
       return b.stocks.length - a.stocks.length
     })
     return g
-  }, [stocks, minStocks, search, sortKey, sortDir])
+  }, [stocks, minStocks, search, sortKey, sortDir, phaseFilter, sectorTagsByName])
 
   const displayedStockCount = useMemo(() => {
     const ids = new Set<number>()

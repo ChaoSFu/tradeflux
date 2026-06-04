@@ -25,6 +25,7 @@ export interface SectorTagData {
   pct_60d:     number
   strong_stock_count: number
   board_height: number
+  phase: number   // 生命周期阶段 0-6
 }
 
 export interface SectorTagMaps {
@@ -59,6 +60,7 @@ export function useSectorTags(): SectorTagMaps {
         pct_60d:     s.pct_change_60d ?? 0,
         strong_stock_count: s.strong_stock_count ?? 0,
         board_height: s.board_height ?? 0,
+        phase: s.phase ?? 0,
       }
       byCode.set(s.code, tagData)
       byName.set(s.name, tagData)
