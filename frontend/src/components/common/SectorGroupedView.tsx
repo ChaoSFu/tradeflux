@@ -16,6 +16,7 @@ import {
   SectorSection,
 } from '@/components/common/SectorSection'
 import { useSectorTags } from '@/hooks/useSectorTags'
+import { PhaseLifecycleBar } from '@/components/common/PhaseLifecycleBar'
 
 type SortKey = 'total' | 'limit_up' | 'limit_down' | 'up' | 'down' | 'oscillating' | 'weakening' | 'broken' | 'avg_pct'
 
@@ -46,7 +47,7 @@ export function SectorGroupedView({
   minStorageKey,
   unitLabel = '个股',
   headerExtra,
-  phaseFilter,
+  lifecycle = false,
 }: {
   stocks: Stock[]
   isLoading: boolean
@@ -55,13 +56,14 @@ export function SectorGroupedView({
   unitLabel?: string
   /** 顶栏额外控件（如全部/强势股/涨跌停过滤器） */
   headerExtra?: React.ReactNode
-  /** 仅显示指定生命周期阶段(0-6)的板块；null/undefined 不过滤 */
-  phaseFilter?: number | null
+  /** 顶部显示「板块生命周期分布」条，并可点选按阶段过滤（计数仅限本页可显示板块） */
+  lifecycle?: boolean
 }) {
   const { byName: sectorTagsByName } = useSectorTags()
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [phase, setPhase] = useState<number | null>(null)
   const [minStocks, setMinStocksState] = useState<number>(() => loadMinStocks(minStorageKey))
   const [sortKey, setSortKey] = useState<SortKey>('avg_pct')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
@@ -88,13 +90,10 @@ export function SectorGroupedView({
     else { setSortKey(key); setSortDir('desc') }
   }
 
-  const groups = useMemo(() => {
+  // 本页可显示的板块（个股≥N + 搜索 + 排序，未应用阶段过滤）——用于分布条计数
+  const baseGroups = useMemo(() => {
     let g = buildSectorGroups(stocks)
     g = g.filter((sg) => sg.stocks.length >= minStocks)
-    // 生命周期阶段过滤（来自分布条点击）：按板块自身 phase
-    if (phaseFilter != null) {
-      g = g.filter((sg) => sectorTagsByName.get(sg.name)?.phase === phaseFilter)
-    }
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       g = g
@@ -108,7 +107,15 @@ export function SectorGroupedView({
       return b.stocks.length - a.stocks.length
     })
     return g
-  }, [stocks, minStocks, search, sortKey, sortDir, phaseFilter, sectorTagsByName])
+  }, [stocks, minStocks, search, sortKey, sortDir])
+
+  // 阶段过滤（来自分布条点击）：按板块自身 phase
+  const groups = useMemo(
+    () => (phase == null ? baseGroups : baseGroups.filter((sg) => sectorTagsByName.get(sg.name)?.phase === phase)),
+    [baseGroups, phase, sectorTagsByName],
+  )
+
+  const displayableNames = useMemo(() => baseGroups.map((g) => g.name), [baseGroups])
 
   const displayedStockCount = useMemo(() => {
     const ids = new Set<number>()
@@ -125,6 +132,11 @@ export function SectorGroupedView({
 
   return (
     <div className="space-y-3 animate-fade-in">
+      {/* 板块生命周期分布（计数仅限本页可显示板块，可点选过滤） */}
+      {lifecycle && (
+        <PhaseLifecycleBar selected={phase} onSelect={setPhase} sectorNames={displayableNames} />
+      )}
+
       {/* Top bar */}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative">
