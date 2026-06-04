@@ -5,14 +5,12 @@
 import { useMemo, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { fetchSectors } from '@/api/sectors'
 import { fetchStrongPool, fetchLimitMoves } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
-import { PHASE_COLORS, PHASE_LABELS_ZH } from '@/utils/format'
 import { Search, Star, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { SortTh, type StockSortKey } from '@/components/common/SectorSection'
-import type { Stock, Sector } from '@/types'
+import type { Stock } from '@/types'
 
 // ─── Group classification ──────────────────────────────────────────────────────
 
@@ -97,40 +95,6 @@ function useMinStocks() {
   return [min, update] as const
 }
 
-// ─── Lifecycle bar ────────────────────────────────────────────────────────────
-
-const PHASE_ORDER = [3, 2, 1, 0, 4, 5, 6]
-
-function PhaseLifecycleBar({ sectors }: { sectors: Sector[] }) {
-  const counts: Record<number, number> = {}
-  sectors.forEach(s => { counts[s.phase] = (counts[s.phase] ?? 0) + 1 })
-  const total = sectors.length || 1
-
-  return (
-    <div className="card p-3">
-      <div className="text-xs text-text-secondary mb-2">板块生命周期分布</div>
-      <div className="flex items-end gap-1.5 h-16">
-        {PHASE_ORDER.map(phase => {
-          const count = counts[phase] ?? 0
-          const color = PHASE_COLORS[phase]
-          return (
-            <div key={phase} className="flex flex-col items-center gap-0.5 flex-1">
-              <div
-                className="w-full rounded-t transition-all"
-                style={{ height: `${Math.max((count / total) * 100, 4)}%`, backgroundColor: color, opacity: count ? 1 : 0.15 }}
-              />
-              <div className="text-center leading-none">
-                <div className="text-xs font-mono" style={{ color }}>{count}</div>
-                <div className="text-text-secondary whitespace-nowrap" style={{ fontSize: 11 }}>{PHASE_LABELS_ZH[phase]}</div>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
 // ─── Group tag chip ───────────────────────────────────────────────────────────
 
 function GroupTag({ group }: { group: GroupKey }) {
@@ -156,7 +120,6 @@ export default function SectorAnalysis() {
   const [sortDir, setSortDir]       = useState<'asc' | 'desc'>('desc')
 
   // ── Data fetching ────────────────────────────────────────────────────────
-  const { data: sectorsData } = useQuery({ queryKey: ['sectors-lifecycle'], queryFn: fetchSectors })
 
   const { data: strongData, isLoading: loadingStrong } = useQuery({
     queryKey: ['strong-pool-sector-analysis'],
@@ -237,8 +200,6 @@ export default function SectorAnalysis() {
     <div className="space-y-3 animate-fade-in">
 
       {/* 板块生命周期 */}
-      <PhaseLifecycleBar sectors={sectorsData?.items ?? []} />
-
       {/* Filter bar */}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative">
