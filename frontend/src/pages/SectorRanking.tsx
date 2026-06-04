@@ -201,9 +201,11 @@ function getSortVector(s: Sector, cols: typeof TAG_COLS): number[] {
 interface SectorRankingProps {
   // 固定视图模式（传入时隐藏 Tab 切换和全局过滤控件）
   fixedView?: ViewMode
+  // 仅显示指定生命周期阶段(0-6)的板块；null/undefined 不过滤
+  phaseFilter?: number | null
 }
 
-export default function SectorRanking({ fixedView }: SectorRankingProps = {}) {
+export default function SectorRanking({ fixedView, phaseFilter }: SectorRankingProps = {}) {
   const navigate = useNavigate()
   const [sortKey, setSortKey] = useState<SortKey>('tags')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
@@ -220,8 +222,8 @@ export default function SectorRanking({ fixedView }: SectorRankingProps = {}) {
   // 当前视图模式下参与排名和过滤的 tag 列
   const activeCols = TAG_COLS.filter(c => c.view === viewMode)
 
-  // 后端已过滤 is_watched=true，直接使用全部返回数据
-  const sectors = allSectors
+  // 后端已过滤 is_watched=true；按选中的生命周期阶段过滤（来自分布条点击）
+  const sectors = phaseFilter != null ? allSectors.filter(s => s.phase === phaseFilter) : allSectors
 
 
   const sorted = useMemo(() => {
