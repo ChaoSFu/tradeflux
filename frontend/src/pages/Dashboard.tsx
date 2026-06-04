@@ -139,6 +139,7 @@ function SectorRow({
 export default function Dashboard() {
   const navigate = useNavigate()
   const [expandedSector, setExpandedSector] = useState<string | null>(null)
+  const [expandedActive, setExpandedActive] = useState<string | null>(null)
 
   const { data: state, isLoading: loadingState } = useQuery({
     queryKey: ['market-state'],
@@ -170,6 +171,9 @@ export default function Dashboard() {
 
   const toggleSector = (name: string) =>
     setExpandedSector((prev) => (prev === name ? null : name))
+
+  const toggleActive = (name: string) =>
+    setExpandedActive((prev) => (prev === name ? null : name))
 
   if (loadingState) return <LoadingSpinner />
 
@@ -404,20 +408,32 @@ export default function Dashboard() {
       <Card title="活跃板块" className="overflow-auto max-h-64">
         {state?.active_sectors.length ? (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-            {state.active_sectors.map((s) => (
-              <div key={s.sector_code} className="flex items-center justify-between gap-2 p-2 rounded bg-bg-elevated">
-                <div>
-                  <div className="text-sm font-medium text-text-primary">{s.sector_name}</div>
-                  <div className="text-xs text-text-muted mt-0.5">
-                    强股 {s.strong_stock_count} · 连板高度 {s.board_height}
+            {state.active_sectors.map((s) => {
+              const active = expandedActive === s.sector_name
+              const hasMembers = sectorGroupMap.has(s.sector_name)
+              return (
+                <div
+                  key={s.sector_code}
+                  onClick={() => hasMembers && toggleActive(s.sector_name)}
+                  className={cn(
+                    'flex items-center justify-between gap-2 p-2 rounded bg-bg-elevated transition-colors',
+                    hasMembers && 'cursor-pointer hover:bg-bg-border',
+                    active && 'ring-1 ring-accent/50',
+                  )}
+                >
+                  <div>
+                    <div className="text-sm font-medium text-text-primary">{s.sector_name}</div>
+                    <div className="text-xs text-text-muted mt-0.5">
+                      强股 {s.strong_stock_count} · 连板高度 {s.board_height}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <PhaseTag phase={s.phase} />
+                    <div className="text-xs font-mono text-accent mt-0.5">{s.emotion_score.toFixed(0)}</div>
                   </div>
                 </div>
-                <div className="text-right">
-                  <PhaseTag phase={s.phase} />
-                  <div className="text-xs font-mono text-accent mt-0.5">{s.emotion_score.toFixed(0)}</div>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         ) : (
           <EmptyHint
@@ -427,6 +443,16 @@ export default function Dashboard() {
           />
         )}
       </Card>
+
+      {/* 活跃板块展开：复用 SectorSection（与赚钱效应点击展开一致） */}
+      {expandedActive && sectorGroupMap.get(expandedActive) && (
+        <SectorSection
+          group={sectorGroupMap.get(expandedActive)!}
+          collapsed={false}
+          onToggle={() => setExpandedActive(null)}
+          onClickStock={(code) => navigate(`/stocks/${code}`)}
+        />
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* ── Dragon Leaders ── */}
