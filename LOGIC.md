@@ -255,17 +255,32 @@ screening_criteria     （★ 新增：可配置的入池筛选条件，is_activ
 
 从公开行情接口抓取 A 股实时数据，提供两个主要能力：
 
-#### 股票列表抓取（`fetch_main_board_stocks`）
+#### 候选股与名称/ST 来源（智能选股 API）★ 重构
+
+候选股与其名称/ST 状态**直接来自东财智能选股 search-code API**（`fetch_strong_pool_codes` / `fetch_limit_move_codes`），不再为补名字单独拉全市场列表：
 
 ```
-主力：AkShare（交易所官方列表 + 新浪财经涨跌幅）
-  → 约 4500 只，耗时约 30s，含上市日期（用于次新判断）
+fetch_strong_pool_codes(with_names / with_detail):
+  默认            → 代码集合 Set[str]
+  with_names=True → {code: name}（name 取 SECURITY_SHORT_NAME）
+  with_detail=True→ {code: {name, limit_dir, limit_date}}
+                    limit_dir 取 IS_LIMIT_UP/DOWN（"涨停"/"跌停"），CHG 兜底
+                    limit_date 取字段日期后缀（如 IS_LIMIT_DOWN{2026-06-03}）
 
-备用：东方财富 clist 接口
-  → 速度快但受 TLS 指纹限流，数据可能不完整
+数据完整性：分页过程中任一页失败（如 525 SSL 抖动）→ 视为本次不可用，
+            返回空 → 调用方回退 DB。绝不把"部分结果"当作权威全集。
 
-覆盖范围：沪主板 + 科创板(688) + 深主板 + 创业板(300/301)
-排除：北交所(8xxxxx)
+唯一逻辑键：股票 code（整数 id 仅内部 FK）。每次更新用选股 API 返回的名称
+            刷新已知候选股的 name / is_st（关键词均含"非ST"→ 出现即非ST，
+            摘帽/改名自动修正）；新股命名优先选股 API。
+```
+
+#### 全市场列表抓取（`fetch_main_board_stocks`）★ 降级为兜底
+
+```
+仅当有新代码不在选股结果中时才调用，用于给新股补名称（正常路径不触发）。
+主力：AkShare（约 4500 只，~30s，含上市日期）；备用：东财 clist。
+覆盖：沪主板 + 科创板(688) + 深主板 + 创业板(300/301)；排除：北交所(8xxxxx)
 ```
 
 #### K 线抓取（`fetch_kline` / `fetch_klines_batch`）
@@ -274,17 +289,21 @@ screening_criteria     （★ 新增：可配置的入池筛选条件，is_activ
 主力：东方财富历史 K 线接口（含换手率）
 备用：腾讯财经历史 K 线接口（无换手率，影响评分精度但不影响涨跌停判断）
 
-并发批量抓取：max_workers=5（保守，避免封锁）
+并发：全量拉取 max_workers=15；DB 重建组（仅拉近 2 天）max_workers=30
 默认拉取 65 日（保证计算 60 日指标有 5 日冗余）
 ```
 
-#### 涨跌停判断
+#### 涨跌停判断 ★ 改为以选股 API 为权威
 
 ```
-主板（600/601/603/605, 000/001/002/003）：±10%（ST ±5%）
-科创板（688）、创业板（300/301）：±20%
-炸板：当日最高价触及涨停价，但收盘未封板
-判断方法：用实际价格反推前收盘价，再精确计算涨停价，比单纯涨幅阈值更准确
+当日涨跌停的"事实"以智能选股 API 名单为权威来源（收盘后该名单即当日涨跌停全集）：
+  is_limit_up/down = code 在 API 名单 且 方向(limit_dir，缺失则 CHG/pct 符号)
+  → 规避本地"前收价反推跌停价"的脆弱逻辑（脏前收漏判 / 北交所阈值缺失）
+
+日期校验：选股 API 数据日期须与（修正后的）target_date 一致，才以其为权威；
+          不一致（如盘前竞价）→ 回退本地 K 线判定，避免错配到别的交易日。
+
+本地 K 线反推（主板±10%/ST±5%/科创创业±20%/炸板）仅用于历史回填与 API 不可用时兜底。
 ```
 
 ---
@@ -575,7 +594,8 @@ class ClaudeAIReviewGenerator(AIReviewGenerator):
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/admin/update` | 触发每日数据更新（后台线程，异步） |
-| GET | `/api/admin/update/status` | 查询更新任务状态 |
+| GET | `/api/admin/update/status` | 查询更新任务状态（含 `degraded`/`warnings`） |
+| GET | `/api/admin/update/last` | 最后一次更新结果（持久化，含 `degraded`/`warnings` 降级告警） |
 | POST | `/api/admin/sync-boards` | 触发东财板块全量同步（约5-8分钟） |
 | GET | `/api/admin/sync-boards/status` | 查询板块同步任务状态 |
 | GET | `/api/admin/sectors` | 获取全部板块（含 is_watched 状态，供管理页使用） |
@@ -588,21 +608,29 @@ class ClaudeAIReviewGenerator(AIReviewGenerator):
 
 ### 每日更新流程（`scripts/daily_update.py`）
 
-> 实测耗时：**50–90s**
+> 实测耗时：**~25–50s**（历史攒满后 K 线步骤走 DB 重建，显著加速）
 
 ```
-1. fetch_main_board_stocks()          → AkShare列表 + 新浪涨跌幅（3–30s，外部接口抖动）
-2. 确定候选股                         → 调东财智能选股 API（fetch_strong_pool_codes）
-                                        返回强势股代码集合（约60–80只）
-                                        + 今日涨跌停 + 涨幅>7% 的股票（共约260只）
-3. K线获取（DB重建路径优化）           → 有≥60条历史快照的股票：从 DB 重建+拉今日1根
-                                        新股/历史不足：拉完整65日（24–80s）
-4. compute_window_stats()             → 计算所有窗口统计指标（含 today_close_price）
-5. 入池判断                           → in_pool = code in strong_pool_codes（API结果集）
-6. 写入 StockDailySnapshot            → 含 close_price 字段（供次日DB重建使用）
-7. 补全涨跌停板块关联                  → 并发 F10，增量更新（已有关联时0.0s）
-8. refresh_sector_phases() + 更新主板块
-9. 生成并写入 DailyReview + 弱转强信号
+1. 选股 API 取候选            → fetch_strong_pool_codes(with_names) 强势池
+                               + fetch_limit_move_codes(with_detail) 涨跌停(含名称/方向/日期)
+                               任一 API 失败 → 回退 DB，并记 degraded 告警
+2. 涨跌停复核                 → 当日已标涨跌停、但已退出 API 名单的股票并入候选重抓
+                               （解决盘中涨跌停尾盘打开后状态无法更新）
+3. 刷新元数据                 → 用选股 API 名称刷新已知候选股 name / is_st（摘帽自动修正）
+4. K 线获取                  → ≥60 条历史快照：DB 重建，按"DB最新→target_date"缺口动态
+                               拉取近 N 天（常态 2~3，多日停机自动补齐），并集去重合并；
+                               历史不足/新股：拉完整 65 日
+5. compute_window_stats()    → 窗口统计（含 today_close_price）；target_date 跟随最新 K 线
+6. 写入快照                  → 涨跌停标志以选股 API 名单+方向为权威覆盖本地值
+                               （仅当 API 数据日期 == target_date 时生效）
+7. 历史快照自举              → full_group 这次拉到的 65 日历史一并落库，
+                               使该股下次走 DB 重建（每股全量拉取一生仅一次）
+8. 涨跌停对账                → 当日仍标涨跌停、但不在 API 名单的强制清标志（重抓失败兜底）
+9. 今日数据缺失检测           → full 拉空 + DB 重建组今日 bar 缺失 ≥10% → degraded 告警
+10. 补全涨跌停板块关联 → refresh_sector_phases + 更新主板块 → DailyReview + 弱转强信号
+
+降级（degraded）：API 回退 / 限流缺失等"成功但数据不完整"的情形会写入
+  last_update_status.json 与 /admin/update/last，前端顶栏显示黄色"数据降级"提示。
 ```
 
 用法：
@@ -673,10 +701,13 @@ cd backend
 
 #### 股票列表（StockPool）★ 新增全部 tab
 
-- Tab 分组：**全部**（新增）/ 总龙头 / 震荡龙头 / 涨停龙头 / 走弱龙头 / 破位龙头
-- 龙头 tag（10龙/20龙/60龙/60高板龙/连板龙）始终基于**全量强势池**对比，不受当前 tab 分组影响
-- 「全部」tab 按 tag 优先排序，是浏览整个强势池的权威视图
-- 可排序表格：龙头分/风险分/情绪分/60日最高板等
+- Tab 分组：**全部** / 总龙头 / 震荡龙头 / 涨停龙头 / 走弱龙头 / 破位龙头
+- 龙头 tag 基准统一为**【强势池 + 涨停池 + 跌停池】合并去重全集**（`useLeaderUniverseMaxes`），
+  不在当前子列表内比，避免"今日跌停股里历史最强者"被误标为龙
+- **龙1/龙2 两档**：10/20/60龙、60高板龙 各取全集内最高值(龙1)与次高值(龙2)，
+  标签为 `10龙1`/`10龙2` 等（龙2 用更淡的颜色）；连板龙单层（仅龙1）；板块龙已基于三池合并
+- 「全部/总龙头」默认排序：先龙1组后龙2组（组内 10>20>60>高板>连板），
+  主标签相同则标签数多的靠前 → 板块龙头 → 龙头分
 
 #### 个股详情（StockDetail）
 
@@ -692,6 +723,12 @@ cd backend
 
 - 按多维度（赚钱效应/5日涨幅/涨停数等）排序的板块排行
 - 区分概念板块、行业板块、地区板块
+
+#### 情绪板块（SectorEmotion）★ 重构为分组卡片视图
+
+- 复用板块强势分布（SectorPool）的分组卡片布局（共享组件 `SectorGroupedView`）
+- 成员个股 = **强势池 + 涨停池 + 跌停池 三路合并去重**（区别于 SectorPool 仅强势池）
+- 板块头（股数/龙头/涨停跌停计数/赚钱效应）+ 成员表（分组/连板/10·20·60日涨停/60高板/涨幅/龙头分/风险分）口径与 SectorPool 一致
 
 #### 弱转强信号（Signals）
 
