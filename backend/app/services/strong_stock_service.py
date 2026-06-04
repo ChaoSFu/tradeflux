@@ -55,6 +55,7 @@ def _enrich_stock_response(stock: Stock, db: Session) -> StockResponse:
 
     data = StockResponse.model_validate(stock)
     data.today_is_limit_up = bool(latest_snap.is_limit_up) if latest_snap else False
+    data.today_is_limit_down = bool(latest_snap.is_limit_down) if latest_snap else False
     data.today_pct_change = latest_snap.pct_change if latest_snap else None
     data.today_board_count = latest_snap.board_count if latest_snap else None
     data.today_limit_down_count = latest_snap.limit_down_count if latest_snap else None
@@ -151,6 +152,7 @@ def _enrich_stocks_bulk(stocks: List[Stock], db: Session) -> List[StockResponse]
 
         snap = snap_map.get(stock.id)
         data.today_is_limit_up = bool(snap.is_limit_up) if snap else False
+        data.today_is_limit_down = bool(snap.is_limit_down) if snap else False
         data.today_pct_change = snap.pct_change if snap else None
         data.today_board_count = snap.board_count if snap else None
         data.today_limit_down_count = snap.limit_down_count if snap else None

@@ -30,8 +30,9 @@ export interface Stock {
   is_leader: boolean | null
   // Multi-sector tags (filtered by display criteria)
   sectors: string[]
-  // Whether today's latest snapshot is a limit-up
+  // Whether today's latest snapshot is a limit-up / limit-down（权威标志）
   today_is_limit_up: boolean
+  today_is_limit_down: boolean
   // From latest snapshot
   today_pct_change: number | null
   today_board_count: number | null        // 连续涨停数
