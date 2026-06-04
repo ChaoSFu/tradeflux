@@ -1,7 +1,7 @@
 # TradeFlux Backend 技术文档
 
 > 面向开发者的后端架构说明，覆盖目录结构、外部接口依赖、数据链路和数据库表结构。
-> 最后更新：2026-06-02
+> 最后更新：2026-06-04
 
 ---
 
@@ -116,9 +116,9 @@ backend/
 | K 线接口 | `https://push2his.eastmoney.com/api/qt/stock/kline/get` | 获取单股日线 K 线（含换手率） | `fetch_kline()` 主力 |
 | 板块列表（WAP） | `https://push2delay.eastmoney.com/api/qt/clist/get`（板块 fs 参数） | 获取概念/行业/地区板块元数据 | `sync_boards.py` 第1步 |
 | F10 板块归属 | `https://emweb.securities.eastmoney.com/PC_HSF10/CoreConception/PageAjax` | 查询个股所属板块 BK 码列表 | `fetch_stock_bk_codes()` |
-| 智能选股 | `https://np-tjxg-g.eastmoney.com/api/smart-tag/stock/v3/pw/search-code` | 自然语言筛股，返回满足条件的代码集合 | `fetch_strong_pool_codes()` |
+| 智能选股 | `https://np-tjxg-g.eastmoney.com/api/smart-tag/stock/v3/pw/search-code` | 自然语言筛股；返回代码集合，可选带 名称/涨跌停方向/数据日期；自动分页（中途失败即视为不可用） | `fetch_strong_pool_codes()` / `fetch_limit_move_codes()` |
 
-**请求频率限制**：东方财富对高频请求有 TLS 指纹检测，批量 K 线抓取 `max_workers=5`，请求间隔 ≥0.1s。
+**请求频率限制**：东方财富对高频请求有 TLS 指纹检测。批量 K 线抓取并发：全量组 `max_workers=15`、DB 重建组 `max_workers=30`（仅拉近 2 天、payload 小）。偶发 525（SSL 握手）等瞬时错误会触发回退 DB + degraded 告警。
 
 **Headers（必须带 Referer）**：
 ```
@@ -170,7 +170,7 @@ fetch_kline(code):
 
 ### 4.1 每日更新链路（写入路径）
 
-> 实测耗时（稳定后）：**50–90s**，主要瓶颈为 AkShare/新浪行情接口网络抖动（3–30s）和 K线拉取（24–80s）。
+> 实测耗时（历史攒满后）：**~25–50s**。K 线步骤绝大多数股票走 DB 重建（仅拉近 2 天），瓶颈转为选股 API 与 K 线请求的往返延迟。
 >
 > **触发方式**：
 > - `POST /api/admin/update`（UI 手动触发，后台线程）
@@ -188,40 +188,32 @@ fetch_kline(code):
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 1  fetch_main_board_stocks()                      ~3–30s  │
-│  数据源：AkShare（主） + 新浪财经涨跌幅                            │
-│  输出：List[StockBasicInfo]（约 4500 只）                         │
+│  Step 1  确定候选股 & 强势池（选股 API）                    ~3–18s │
+│  ① fetch_strong_pool_codes(with_names) → 强势池 {code:name}      │
+│  ② fetch_limit_move_codes(with_detail) → 涨跌停                  │
+│       {code:{name, limit_dir(涨/跌方向), limit_date(数据日期)}}  │
+│  · 任一 API 分页中途失败 → 视为不可用、回退 DB，并记 degraded 告警│
+│  · 涨跌停复核：当日已标涨跌停但已退出名单的股票并入候选重抓        │
+│  · 用选股 API 名称刷新已知候选股 name/is_st（摘帽自动修正）       │
+│  · 全市场列表(fetch_main_board_stocks)仅在有新代码缺名时兜底拉取  │
+│  候选股 = 强势池 ∪ 涨跌停 ∪ 复核股                                │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 2  确定候选股 & 强势池                                ~3–4s │
-│  ① 调用东财智能选股 API（fetch_strong_pool_codes）               │
-│     keyWord："主板非ST;非退市;非新股次新;近60日最高连板>3 OR      │
-│              60日涨停>9 OR 10日涨停>4 OR 20日涨幅前10"           │
-│     → 返回强势股代码集合（约 60–80 只）                           │
-│  ② API 失败时回退：读 DB 中 in_strong_pool=True 的股票           │
-│  候选股 = 强势池代码 + 今日涨跌停 + 涨幅>7% 的股票（共 ~260 只）  │
-└───────────────────┬─────────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Step 3  K 线数据获取（DB重建路径优化）                   ~24–80s │
+│  Step 2  K 线数据获取（DB重建路径优化）                    ~7–40s │
 │  分组：                                                           │
-│    DB重建组（有≥60条历史快照）→ 从快照重建历史 KLineBar             │
-│                                + API 只拉今日 2 根（days=2）      │
-│                                  并发 max_workers=8              │
-│    全量拉取组（新股/历史不足）→ API 拉完整 65 日（days=65）         │
-│                                  并发 max_workers=5              │
-│                                                                   │
-│  ⚠️ 注意：db_group 拉 days=2（不是 days=1），因东财 API 单日      │
-│  请求的涨跌幅字段 pct_change 固定返回 0，需前一日数据才能正确计算。  │
-│  输出：Dict[code, List[KLineBar]]                                 │
+│    DB重建组（≥60条历史快照）→ 从快照重建 + API 拉近 N 天          │
+│       N 按"DB最新→target_date"缺口动态(常态2~3，多日停机自动补齐)│
+│       并发 max_workers=30；与历史按日期并集去重合并               │
+│    全量拉取组（新股/历史不足）→ API 拉 65 日，并发 max_workers=15 │
+│  · target_date 跟随所有股票最新 K 线日期（盘前自动修正到上一交易日）│
+│  ⚠️ db_group 至少拉 2 天：东财单日请求 pct_change 固定为 0       │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 4  compute_window_stats(code, bars, ...)           ~0.5s  │
+│  Step 3  compute_window_stats(code, bars, ...)           ~0.5s  │
 │  纯内存计算，输出 StockWindowStats                                 │
 │    包含：连板统计、涨停天数、累计涨幅、情绪/风险/龙头评分、          │
 │          阶段分类（normal/weakening/broken）、ma60/ma30            │
@@ -229,28 +221,33 @@ fetch_kline(code):
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 5  入池判断                                                 │
-│  in_pool = stats.code in strong_pool_codes（Step2 API结果集）    │
-│  更新：Stock.in_strong_pool = True/False                          │
-│  写入：StockDailySnapshot（含 close_price 字段，供次日DB重建使用）  │
+│  Step 4  入池判断 + 写入快照                                       │
+│  in_pool = stats.code in strong_pool_codes（选股 API 结果集）    │
+│  写入 StockDailySnapshot（含 close_price，供次日 DB 重建）         │
+│  · 涨跌停标志以选股 API 名单 + 方向为权威覆盖本地反推值            │
+│    （仅当 API 数据日期 == target_date 时生效，否则回退本地）       │
+│  · 历史快照自举：full_group 拉到的 65 日历史一并落库              │
+│    → 该股下次走 DB 重建（每股全量拉取一生仅一次）                 │
+│  · 涨跌停对账：当日仍标涨跌停但不在名单的强制清标志（重抓失败兜底）│
+│  · 今日数据缺失 ≥10%（疑似限流）→ degraded 告警                  │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 6  补全涨跌停板块关联（并发 F10，增量）               ~0s   │
+│  Step 5  补全涨跌停板块关联（并发 F10，增量）               ~0s   │
 │  对今日涨跌停但无板块关联的股票，并发调 F10 接口补建关联            │
 │  已有关联时直接跳过（0.0s）                                        │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 7  refresh_sector_phases() + 更新主板块           ~1–2s   │
+│  Step 6  refresh_sector_phases() + 更新主板块           ~1–2s   │
 │  聚合板块内强势股统计 → 更新 sectors 表 → 写入 sector_daily_snaps │
 └───────────────────┬─────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 8  生成并写入 DailyReview + 弱转强信号              ~0.3s  │
+│  Step 7  生成并写入 DailyReview + 弱转强信号              ~0.3s  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -724,7 +721,8 @@ python scripts/backfill_daily_reviews.py
 python scripts/seed_kline_history.py
 # 一次性为 DB 中活跃股票批量拉取 65 日 K 线，填充历史 close_price 快照
 # 使 _build_klines_from_db（DB重建路径）立即生效
-# 首次部署或新环境迁移后运行一次即可
+# 注：daily_update 已内置"历史快照自举"，新环境跑几次即自动攒满历史，
+#     此脚本现为可选（想立刻铺满历史时手动跑）
 ```
 
 ### `backfill_close_price.py` — close_price 反推补填
