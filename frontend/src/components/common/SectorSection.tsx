@@ -28,7 +28,7 @@ const GROUP_RANK: Record<GroupKey, number> = Object.fromEntries(
 
 export function getGroup(stock: Stock): GroupKey {
   if (stock.today_is_limit_up) return 'limit_up'
-  if ((stock.today_limit_down_count ?? 0) > 0) return 'limit_down'
+  if (stock.today_is_limit_down) return 'limit_down'
   if (stock.phase === 'broken') return 'broken'
   if (stock.phase === 'weakening') return 'weakening'
   return 'oscillating'

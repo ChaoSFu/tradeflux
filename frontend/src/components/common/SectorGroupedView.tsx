@@ -24,7 +24,7 @@ function getSectorStat(sg: SectorGroup, key: SortKey): number {
     case 'total':       return sg.stocks.length
     case 'avg_pct':     return getSectorAvgPct(sg.stocks)
     case 'limit_up':    return sg.stocks.filter((s) => s.today_is_limit_up).length
-    case 'limit_down':  return sg.stocks.filter((s) => (s.today_pct_change ?? 0) <= -9.8).length
+    case 'limit_down':  return sg.stocks.filter((s) => s.today_is_limit_down).length
     case 'up':          return sg.stocks.filter((s) => (s.today_pct_change ?? 0) > 0).length
     case 'down':        return sg.stocks.filter((s) => (s.today_pct_change ?? 0) < 0).length
     case 'oscillating': return sg.stocks.filter((s) => getGroup(s) === 'oscillating').length
