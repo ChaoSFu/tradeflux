@@ -4,6 +4,7 @@ import { fetchStrongPool, fetchLimitMoves } from '@/api/stocks'
 import { cn } from '@/utils/cn'
 import type { Stock } from '@/types'
 import { SectorGroupedView } from '@/components/common/SectorGroupedView'
+import { PhaseLifecycleBar } from '@/components/common/PhaseLifecycleBar'
 
 type Filter = 'all' | 'strong' | 'limit'
 
@@ -22,6 +23,7 @@ const FILTERS: { key: Filter; label: string; unit: string }[] = [
  */
 export default function SectorEmotion() {
   const [filter, setFilter] = useState<Filter>('all')
+  const [phase, setPhase] = useState<number | null>(null)
 
   const { data: strongData, isLoading: l1 } = useQuery({
     queryKey: ['strong-pool-sector-analysis'],
@@ -73,12 +75,16 @@ export default function SectorEmotion() {
   )
 
   return (
-    <SectorGroupedView
-      stocks={stocks}
-      isLoading={l1 || l2 || l3}
-      minStorageKey="tradeflux:sector_emotion_min_stocks"
-      unitLabel={unit}
-      headerExtra={filterTabs}
-    />
+    <div className="space-y-3">
+      <PhaseLifecycleBar selected={phase} onSelect={setPhase} />
+      <SectorGroupedView
+        stocks={stocks}
+        isLoading={l1 || l2 || l3}
+        minStorageKey="tradeflux:sector_emotion_min_stocks"
+        unitLabel={unit}
+        headerExtra={filterTabs}
+        phaseFilter={phase}
+      />
+    </div>
   )
 }
