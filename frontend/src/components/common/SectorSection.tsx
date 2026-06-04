@@ -11,22 +11,24 @@ import { SectorRankTags } from '@/components/common/SectorTags'
 
 // ─── Group helpers ────────────────────────────────────────────────────────────
 
-export type GroupKey = 'oscillating' | 'limit_up' | 'weakening' | 'broken'
+export type GroupKey = 'oscillating' | 'limit_up' | 'weakening' | 'broken' | 'limit_down'
 
 export const GROUP_META: Record<GroupKey, { label: string; color: string; bg: string }> = {
   limit_up:    { label: '涨停龙头', color: '#FF4560', bg: 'rgba(255,69,96,0.12)'   },
   oscillating: { label: '震荡龙头', color: '#4F9CF9', bg: 'rgba(79,156,249,0.12)'  },
   weakening:   { label: '走弱龙头', color: '#F59E0B', bg: 'rgba(245,158,11,0.12)'  },
   broken:      { label: '破位龙头', color: '#26C281', bg: 'rgba(38,194,129,0.10)'  },
+  limit_down:  { label: '跌停龙头', color: '#34D399', bg: 'rgba(52,211,153,0.10)'  },
 }
 
-export const GROUP_ORDER: GroupKey[] = ['limit_up', 'oscillating', 'weakening', 'broken']
+export const GROUP_ORDER: GroupKey[] = ['limit_up', 'oscillating', 'weakening', 'broken', 'limit_down']
 const GROUP_RANK: Record<GroupKey, number> = Object.fromEntries(
   GROUP_ORDER.map((k, i) => [k, i])
 ) as Record<GroupKey, number>
 
 export function getGroup(stock: Stock): GroupKey {
   if (stock.today_is_limit_up) return 'limit_up'
+  if ((stock.today_limit_down_count ?? 0) > 0) return 'limit_down'
   if (stock.phase === 'broken') return 'broken'
   if (stock.phase === 'weakening') return 'weakening'
   return 'oscillating'
@@ -171,11 +173,9 @@ export function SectorSection({
   const dominantGroup = (Object.entries(groupCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'oscillating') as GroupKey
   const accentColor = GROUP_META[dominantGroup].color
 
-  const upCount      = stocks.filter((s) => (s.today_pct_change ?? 0) > 0).length
-  const downCount    = stocks.filter((s) => (s.today_pct_change ?? 0) < 0).length
-  const limitUpCount = stocks.filter((s) => s.today_is_limit_up).length
-  const limitDnCount = stocks.filter((s) => (s.today_pct_change ?? 0) <= -9.8).length
-  const avgPct       = getSectorAvgPct(stocks)
+  const upCount   = stocks.filter((s) => (s.today_pct_change ?? 0) > 0).length
+  const downCount = stocks.filter((s) => (s.today_pct_change ?? 0) < 0).length
+  const avgPct    = getSectorAvgPct(stocks)
 
   const handleTagClick = useCallback((e: React.MouseEvent, key: GroupKey) => {
     e.stopPropagation()
@@ -247,21 +247,7 @@ export function SectorSection({
             <span className="text-text-muted/70">/</span>
             <span className="text-down">{downCount}跌</span>
           </span>
-          {/* limit up/down */}
-          {(limitUpCount > 0 || limitDnCount > 0) && (
-            <span className="flex items-center gap-1 text-xs font-mono">
-              {limitUpCount > 0 && (
-                <span className="px-1.5 py-px rounded bg-up/15 text-up font-semibold">
-                  {limitUpCount}涨停
-                </span>
-              )}
-              {limitDnCount > 0 && (
-                <span className="px-1.5 py-px rounded bg-down/15 text-down font-semibold">
-                  {limitDnCount}跌停
-                </span>
-              )}
-            </span>
-          )}
+          {/* 涨停/跌停已并入上方分组分布(GROUP_ORDER 含 limit_up/limit_down) */}
           {collapsed
             ? <ChevronDown className="w-3.5 h-3.5 text-text-muted shrink-0" />
             : <ChevronUp   className="w-3.5 h-3.5 text-text-muted shrink-0" />
