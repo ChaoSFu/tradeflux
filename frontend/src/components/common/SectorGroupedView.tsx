@@ -1,7 +1,7 @@
 /**
  * SectorGroupedView — 板块分组卡片视图（搜索 + 个股数过滤 + 排序 + 折叠卡片）
  *
- * 由 SectorPool（强势股池）与 SectorEmotion（情绪板块）共用：
+ * 由 SectorEmotion（情绪板块，全部/强势股/涨跌停过滤）使用：
  * 传入不同的 stocks 全集即可，布局与交互完全一致。
  */
 import { useMemo, useState } from 'react'
@@ -44,12 +44,15 @@ export function SectorGroupedView({
   isLoading,
   minStorageKey,
   unitLabel = '个股',
+  headerExtra,
 }: {
   stocks: Stock[]
   isLoading: boolean
   minStorageKey: string
   /** 头部计数 / 过滤器的单位文案，如「强势股」「个股」 */
   unitLabel?: string
+  /** 顶栏额外控件（如全部/强势股/涨跌停过滤器） */
+  headerExtra?: React.ReactNode
 }) {
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
@@ -139,6 +142,8 @@ export function SectorGroupedView({
           />
           <span className="px-1.5 py-1.5 text-text-muted/85 whitespace-nowrap">只</span>
         </div>
+
+        {headerExtra}
 
         <div className="text-xs text-text-muted ml-auto">
           {groups.length} 个板块 · {displayedStockCount} 只{unitLabel}

@@ -5,7 +5,6 @@ import { useAppStore } from '@/store'
 import {
   LayoutDashboard,
   TrendingUp,
-  Layers,
   BarChart2,
   Zap,
   BookOpen,
@@ -33,7 +32,6 @@ const NAV: NavEntry[] = [
     children: [
       { type: 'link', to: '/',            label: '仪表盘',   icon: LayoutDashboard },
       { type: 'link', to: '/stocks',      label: '强股池',   icon: TrendingUp },
-      { type: 'link', to: '/sector-pool', label: '板块分布', icon: Layers },
     ],
   },
   {
@@ -43,7 +41,6 @@ const NAV: NavEntry[] = [
     children: [
       { type: 'link', to: '/limit-moves',         label: '今日概览', icon: LayoutDashboard },
       { type: 'link', to: '/limit-moves/stocks',  label: '涨跌停池', icon: ArrowUpDown },
-      { type: 'link', to: '/limit-moves/sectors', label: '板块分布', icon: Layers },
     ],
   },
   {
