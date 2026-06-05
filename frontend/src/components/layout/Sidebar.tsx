@@ -27,10 +27,18 @@ type NavEntry     = NavLinkItem | NavGroupItem
 const NAV: NavEntry[] = [
   {
     type: 'group',
+    label: '活跃股分析',
+    icon: Activity,
+    children: [
+      { type: 'link', to: '/',            label: '仪表盘',     icon: LayoutDashboard },
+      { type: 'link', to: '/limit-moves', label: '涨跌停概览', icon: Flame },
+    ],
+  },
+  {
+    type: 'group',
     label: '强势股分析',
     icon: LineChart,
     children: [
-      { type: 'link', to: '/',            label: '仪表盘',   icon: LayoutDashboard },
       { type: 'link', to: '/stocks',      label: '强股池',   icon: TrendingUp },
     ],
   },
@@ -39,7 +47,6 @@ const NAV: NavEntry[] = [
     label: '涨跌停分析',
     icon: Flame,
     children: [
-      { type: 'link', to: '/limit-moves',         label: '今日概览', icon: LayoutDashboard },
       { type: 'link', to: '/limit-moves/stocks',  label: '涨跌停池', icon: ArrowUpDown },
     ],
   },
