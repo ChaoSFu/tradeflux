@@ -130,11 +130,20 @@ export default function LimitMovesDashboard() {
   // ── Trend chart data ──────────────────────────────────────────────────────
   const chartData = useMemo(() => {
     const raw: any[] = (trendData as any) ?? []
-    return raw.map((p) => ({
-      date: format(new Date(p.date), 'MM/dd'),
-      '涨停': p.limit_up_count,
-      '跌停': p.limit_down_count,
-    }))
+    const W = 30  // 滚动窗口：近30个交易日
+    const round1 = (v: number) => Math.round(v * 10) / 10
+    return raw.map((p, i) => {
+      const win = raw.slice(Math.max(0, i - W + 1), i + 1)
+      const avgUp   = win.reduce((s, q) => s + q.limit_up_count,   0) / win.length
+      const avgDown = win.reduce((s, q) => s + q.limit_down_count, 0) / win.length
+      return {
+        date: format(new Date(p.date), 'MM/dd'),
+        '涨停': p.limit_up_count,
+        '跌停': p.limit_down_count,
+        '涨停30日均值': round1(avgUp),
+        '跌停30日均值': round1(avgDown),
+      }
+    })
   }, [trendData])
 
   const avg = useMemo(() => {
@@ -277,6 +286,8 @@ export default function LimitMovesDashboard() {
                 <Legend wrapperStyle={{ fontSize: 12, color: '#A2A9C4', paddingTop: 4 }} iconSize={8} />
                 <Line type="monotone" dataKey="涨停" stroke={C_UP}   strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
                 <Line type="monotone" dataKey="跌停" stroke={C_DOWN} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+                <Line type="monotone" dataKey="涨停30日均值" stroke={C_UP}   strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.5} dot={false} activeDot={false} />
+                <Line type="monotone" dataKey="跌停30日均值" stroke={C_DOWN} strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.5} dot={false} activeDot={false} />
               </LineChart>
             </ResponsiveContainer>
           )}
