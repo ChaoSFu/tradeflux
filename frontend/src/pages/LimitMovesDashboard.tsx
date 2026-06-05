@@ -164,6 +164,24 @@ export default function LimitMovesDashboard() {
     [sectorStats],
   )
 
+  // ── 二板及以上（过滤首板）：看板块持续强度 ──────────────────────────────
+  // 涨停连板数 today_board_count>=2；跌停连续跌停数 today_limit_down_count>=2
+  const upStocks2   = useMemo(() => limitUps.filter(s => (s.today_board_count ?? 0) >= 2), [limitUps])
+  const downStocks2 = useMemo(() => limitDowns.filter(s => (s.today_limit_down_count ?? 0) >= 2), [limitDowns])
+  const sectorStats2 = useMemo(() => buildSectorStats(upStocks2, downStocks2), [upStocks2, downStocks2])
+  const topUpSectors2 = useMemo(
+    () => [...sectorStats2].filter(s => s.limit_up > 0)
+      .sort((a, b) => b.limit_up !== a.limit_up ? b.limit_up - a.limit_up : a.limit_down - b.limit_down)
+      .slice(0, 10),
+    [sectorStats2],
+  )
+  const topDownSectors2 = useMemo(
+    () => [...sectorStats2].filter(s => s.limit_down > 0)
+      .sort((a, b) => b.limit_down !== a.limit_down ? b.limit_down - a.limit_down : a.limit_up - b.limit_up)
+      .slice(0, 10),
+    [sectorStats2],
+  )
+
   const dataLoading = upLoading || downLoading
 
   return (
@@ -245,6 +263,32 @@ export default function LimitMovesDashboard() {
           allSectorStats={sectorStats}
           field="limit_down"
           stocks={limitDowns}
+          color={C_DOWN}
+          isLoading={dataLoading}
+        />
+      </div>
+
+      {/* ── 二板及以上集中板块（过滤首板，看持续强度）─────────────────────── */}
+      <div className="flex items-baseline gap-2 pt-1">
+        <span className="text-sm font-semibold text-text-primary">二板及以上集中板块</span>
+        <span className="text-xs text-text-muted">过滤首板，反映涨停 / 跌停板块的持续强度</span>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <SectorHotspot
+          title="涨停集中板块 · ≥2板"
+          sectors={topUpSectors2}
+          allSectorStats={sectorStats2}
+          field="limit_up"
+          stocks={upStocks2}
+          color={C_UP}
+          isLoading={dataLoading}
+        />
+        <SectorHotspot
+          title="跌停集中板块 · ≥2板"
+          sectors={topDownSectors2}
+          allSectorStats={sectorStats2}
+          field="limit_down"
+          stocks={downStocks2}
           color={C_DOWN}
           isLoading={dataLoading}
         />
