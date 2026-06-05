@@ -135,6 +135,10 @@ export default function StockPool() {
   const [search, setSearch] = useState('')
   const [activeTab, setActiveTab] = useState<GroupKey>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>(DEFAULT_SORT)
+  // 用户是否手动点过列头：未点时 全部/总龙头 tab 用龙头优先序(sortDragon)，点过即按列排序
+  const [userSorted, setUserSorted] = useState(false)
+
+  const selectTab = (key: GroupKey) => { setActiveTab(key); setUserSorted(false) }
 
   const { data, isLoading } = useQuery({
     queryKey: ['strong-pool-all', search],
@@ -169,19 +173,15 @@ export default function StockPool() {
   }, [allStocks, globalLeaderMaxes, sectorLeaders])
 
   const activeDef = GROUPS.find((g) => g.key === activeTab)!
+  // 当前是否由 sortDragon 控制顺序（未点列头 + 全部/总龙头 tab）
+  const usingDragon = !userSorted && (activeTab === 'all' || activeTab === 'dragon')
+
   const activeStocks = useMemo(() => {
     const stocks = grouped.get(activeTab) ?? []
-    // 用户未手动点击列头时（默认排序），全部/总龙头 tab 用龙头优先序
-    if (sort.key === DEFAULT_SORT.key && sort.dir === DEFAULT_SORT.dir &&
-        (activeTab === 'all' || activeTab === 'dragon'))
-      return sortDragon(stocks, globalLeaderMaxes, sectorLeaders)
+    if (usingDragon) return sortDragon(stocks, globalLeaderMaxes, sectorLeaders)
     return sortStocks(stocks, sort.key, sort.dir)
-  }, [grouped, activeTab, sort, globalLeaderMaxes, sectorLeaders])
+  }, [grouped, activeTab, sort, usingDragon, globalLeaderMaxes, sectorLeaders])
 
-  // 当前是否由 sortDragon 控制顺序（列头不应高亮任何列）
-  const usingDragon =
-    sort.key === DEFAULT_SORT.key && sort.dir === DEFAULT_SORT.dir &&
-    (activeTab === 'all' || activeTab === 'dragon')
   // 传给列头的 sort 状态：sortDragon 模式下清空 key，使所有列头均不高亮
   const headerSort = usingDragon ? { key: '' as SortKey, dir: sort.dir } : sort
 
@@ -190,10 +190,12 @@ export default function StockPool() {
 
   const handleSort = (key: SortKey) => {
     setSort((prev) =>
-      prev.key === key
+      // 首次点列头（之前在龙头序）一律从 desc 开始；同列再点才 desc↔asc 切换
+      userSorted && prev.key === key
         ? { key, dir: prev.dir === 'desc' ? 'asc' : 'desc' }
         : { key, dir: 'desc' },
     )
+    setUserSorted(true)
   }
 
   return (
@@ -220,7 +222,7 @@ export default function StockPool() {
           return (
             <button
               key={grp.key}
-              onClick={() => setActiveTab(grp.key)}
+              onClick={() => selectTab(grp.key)}
               className={cn(
                 'flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap',
                 isActive
