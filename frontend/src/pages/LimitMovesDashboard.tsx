@@ -30,6 +30,8 @@ interface SectorStat {
   limit_up: number
   limit_down: number
   total: number
+  up_max_board: number      // 板块内涨停股最高连板数（today_board_count）
+  down_max_board: number    // 板块内跌停股最高连续跌停数（today_limit_down_count）
   up_stock_ids: number[]    // stock IDs in this sector among today's up list
   down_stock_ids: number[]  // stock IDs in this sector among today's down list
 }
@@ -37,21 +39,29 @@ interface SectorStat {
 function buildSectorStats(upStocks: Stock[], downStocks: Stock[]): SectorStat[] {
   const map = new Map<string, {
     limit_up: number; limit_down: number
+    up_max_board: number; down_max_board: number
     up_ids: number[]; down_ids: number[]
   }>()
+  const get = (sec: string) => {
+    let e = map.get(sec)
+    if (!e) { e = { limit_up: 0, limit_down: 0, up_max_board: 0, down_max_board: 0, up_ids: [], down_ids: [] }; map.set(sec, e) }
+    return e
+  }
 
   for (const s of upStocks) {
+    const board = s.today_board_count ?? 0
     for (const sec of s.sectors ?? []) {
-      const e = map.get(sec) ?? { limit_up: 0, limit_down: 0, up_ids: [], down_ids: [] }
+      const e = get(sec)
       e.limit_up++; e.up_ids.push(s.id)
-      map.set(sec, e)
+      if (board > e.up_max_board) e.up_max_board = board
     }
   }
   for (const s of downStocks) {
+    const board = s.today_limit_down_count ?? 0
     for (const sec of s.sectors ?? []) {
-      const e = map.get(sec) ?? { limit_up: 0, limit_down: 0, up_ids: [], down_ids: [] }
+      const e = get(sec)
       e.limit_down++; e.down_ids.push(s.id)
-      map.set(sec, e)
+      if (board > e.down_max_board) e.down_max_board = board
     }
   }
 
@@ -60,6 +70,7 @@ function buildSectorStats(upStocks: Stock[], downStocks: Stock[]): SectorStat[] 
     result.push({
       name, limit_up: v.limit_up, limit_down: v.limit_down,
       total: v.limit_up + v.limit_down,
+      up_max_board: v.up_max_board, down_max_board: v.down_max_board,
       up_stock_ids: v.up_ids, down_stock_ids: v.down_ids,
     })
   }
@@ -144,10 +155,10 @@ export default function LimitMovesDashboard() {
       [...sectorStats]
         .filter(s => s.limit_up > 0)
         .sort((a, b) =>
-          // 赚钱效应排序：涨停数从大到小；相同则跌停数从小到大
+          // 涨停数从大到小；相同则最高连板数从大到小
           b.limit_up !== a.limit_up
             ? b.limit_up - a.limit_up
-            : a.limit_down - b.limit_down,
+            : b.up_max_board - a.up_max_board,
         )
         .slice(0, 10),
     [sectorStats],
@@ -157,10 +168,10 @@ export default function LimitMovesDashboard() {
       [...sectorStats]
         .filter(s => s.limit_down > 0)
         .sort((a, b) =>
-          // 亏钱效应排序：跌停数从大到小；相同则涨停数从小到大
+          // 跌停数从大到小；相同则最高连续跌停数从大到小
           b.limit_down !== a.limit_down
             ? b.limit_down - a.limit_down
-            : a.limit_up - b.limit_up,
+            : b.down_max_board - a.down_max_board,
         )
         .slice(0, 10),
     [sectorStats],
@@ -173,13 +184,13 @@ export default function LimitMovesDashboard() {
   const sectorStats2 = useMemo(() => buildSectorStats(upStocks2, downStocks2), [upStocks2, downStocks2])
   const topUpSectors2 = useMemo(
     () => [...sectorStats2].filter(s => s.limit_up > 0)
-      .sort((a, b) => b.limit_up !== a.limit_up ? b.limit_up - a.limit_up : a.limit_down - b.limit_down)
+      .sort((a, b) => b.limit_up !== a.limit_up ? b.limit_up - a.limit_up : b.up_max_board - a.up_max_board)
       .slice(0, 10),
     [sectorStats2],
   )
   const topDownSectors2 = useMemo(
     () => [...sectorStats2].filter(s => s.limit_down > 0)
-      .sort((a, b) => b.limit_down !== a.limit_down ? b.limit_down - a.limit_down : a.limit_up - b.limit_up)
+      .sort((a, b) => b.limit_down !== a.limit_down ? b.limit_down - a.limit_down : b.down_max_board - a.down_max_board)
       .slice(0, 10),
     [sectorStats2],
   )
@@ -483,9 +494,10 @@ function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, i
             {/* Ranked list */}
             <div className="flex-1 min-w-0 divide-y divide-bg-border/20">
               {sectors.map((s, idx) => {
-                const val    = s[field]
-                const maxVal = sectors[0]?.[field] ?? 1
-                const pct    = (val / maxVal) * 100
+                const val      = s[field]
+                const maxVal   = sectors[0]?.[field] ?? 1
+                const pct      = (val / maxVal) * 100
+                const maxBoard = field === 'limit_up' ? s.up_max_board : s.down_max_board
                 return (
                   <div
                     key={s.name}
@@ -505,8 +517,11 @@ function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, i
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between mb-0.5">
                         <span className="text-sm text-text-primary truncate pr-1">{s.name}</span>
-                        <span className="font-mono font-bold text-xs shrink-0" style={{ color }}>
-                          {val}只
+                        <span className="flex items-center gap-1.5 shrink-0 font-mono text-xs">
+                          {maxBoard > 0 && (
+                            <span className="text-text-muted/80">最高{maxBoard}板</span>
+                          )}
+                          <span className="font-bold" style={{ color }}>{val}只</span>
                         </span>
                       </div>
                       <div className="h-1 rounded-full bg-bg-border/40 overflow-hidden">
