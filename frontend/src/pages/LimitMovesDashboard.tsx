@@ -198,21 +198,25 @@ export default function LimitMovesDashboard() {
   const dataLoading = upLoading || downLoading
 
   // 点击集中板块 → 展开该板块成员个股（复用 SectorSection，与 Dashboard 一致）
+  // 主区(上)与 ≥2板区(下) 各自独立的展开状态，互不影响。
   const navigate = useNavigate()
-  type ExpandSrc = 'up' | 'down' | 'up2' | 'down2'
-  const [expanded, setExpanded] = useState<{ name: string; stocks: Stock[]; src: ExpandSrc } | null>(null)
-  const toggleExpand = (name: string, stockSet: Stock[], src: ExpandSrc) =>
-    setExpanded(prev =>
-      prev && prev.name === name && prev.src === src
+  type Side = 'up' | 'down'
+  type Exp = { name: string; stocks: Stock[]; side: Side } | null
+  const [expMain, setExpMain] = useState<Exp>(null)
+  const [exp2, setExp2] = useState<Exp>(null)
+  const mkToggle = (setter: (fn: (p: Exp) => Exp) => void) =>
+    (name: string, set: Stock[], side: Side) =>
+      setter(p => (p && p.name === name && p.side === side)
         ? null
-        : { name, src, stocks: stockSet.filter(s => (s.sectors ?? []).includes(name)) },
-    )
-  const expandedSection = (src: ExpandSrc) =>
-    expanded && expanded.src === src ? (
+        : { name, side, stocks: set.filter(s => (s.sectors ?? []).includes(name)) })
+  const toggleMain = mkToggle(setExpMain)
+  const toggle2 = mkToggle(setExp2)
+  const renderExp = (exp: Exp, close: () => void) =>
+    exp ? (
       <SectorSection
-        group={{ name: expanded.name, stocks: expanded.stocks }}
+        group={{ name: exp.name, stocks: exp.stocks }}
         collapsed={false}
-        onToggle={() => setExpanded(null)}
+        onToggle={close}
         onClickStock={(code) => navigate(`/stocks/${code}`)}
       />
     ) : null
@@ -289,8 +293,8 @@ export default function LimitMovesDashboard() {
           stocks={limitUps}
           color={C_UP}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggleExpand(n, limitUps, 'up')}
-          expandedName={expanded?.src === 'up' ? expanded.name : null}
+          onSelectSector={(n) => toggleMain(n, limitUps, 'up')}
+          expandedName={expMain?.side === 'up' ? expMain.name : null}
         />
         <SectorHotspot
           title="跌停集中板块"
@@ -300,12 +304,11 @@ export default function LimitMovesDashboard() {
           stocks={limitDowns}
           color={C_DOWN}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggleExpand(n, limitDowns, 'down')}
-          expandedName={expanded?.src === 'down' ? expanded.name : null}
+          onSelectSector={(n) => toggleMain(n, limitDowns, 'down')}
+          expandedName={expMain?.side === 'down' ? expMain.name : null}
         />
       </div>
-      {expandedSection('up')}
-      {expandedSection('down')}
+      {renderExp(expMain, () => setExpMain(null))}
 
       {/* ── 二板及以上集中板块（过滤首板，看持续强度）─────────────────────── */}
       <div className="flex items-baseline gap-2 pt-1">
@@ -321,8 +324,8 @@ export default function LimitMovesDashboard() {
           stocks={upStocks2}
           color={C_UP}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggleExpand(n, upStocks2, 'up2')}
-          expandedName={expanded?.src === 'up2' ? expanded.name : null}
+          onSelectSector={(n) => toggle2(n, upStocks2, 'up')}
+          expandedName={exp2?.side === 'up' ? exp2.name : null}
         />
         <SectorHotspot
           title="跌停集中板块 · ≥2板"
@@ -332,12 +335,11 @@ export default function LimitMovesDashboard() {
           stocks={downStocks2}
           color={C_DOWN}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggleExpand(n, downStocks2, 'down2')}
-          expandedName={expanded?.src === 'down2' ? expanded.name : null}
+          onSelectSector={(n) => toggle2(n, downStocks2, 'down')}
+          expandedName={exp2?.side === 'down' ? exp2.name : null}
         />
       </div>
-      {expandedSection('up2')}
-      {expandedSection('down2')}
+      {renderExp(exp2, () => setExp2(null))}
 
     </div>
   )
