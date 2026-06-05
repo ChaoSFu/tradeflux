@@ -3,7 +3,7 @@ import { Sidebar } from './Sidebar'
 import { Header } from './Header'
 
 const TITLES: Record<string, string> = {
-  '/': '仪表盘 Dashboard',
+  '/': '强势股概览 Strong Overview',
   '/stocks': '强势股池 Strong Pool',
   '/sector-config': '板块展示配置 Sector Config',
   '/sector-trend': '趋势板块 Sector Trend',

@@ -30,7 +30,7 @@ const NAV: NavEntry[] = [
     label: '活跃股分析',
     icon: Activity,
     children: [
-      { type: 'link', to: '/',            label: '仪表盘',     icon: LayoutDashboard },
+      { type: 'link', to: '/',            label: '强势股概览', icon: LayoutDashboard },
       { type: 'link', to: '/limit-moves', label: '涨跌停概览', icon: Flame },
     ],
   },
