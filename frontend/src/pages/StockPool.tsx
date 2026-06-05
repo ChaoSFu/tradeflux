@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { fetchStrongPool } from '@/api/stocks'
+import { fetchStrongPool, fetchLimitMoves } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag } from '@/components/common/SectorTags'
 import { useSectorLeaders } from '@/hooks/useSectorLeaders'
@@ -31,6 +31,14 @@ type SortKey =
   | 'phase_group'
 
 type SortDir = 'asc' | 'desc'
+
+// 股票全集口径
+type Universe = 'all' | 'strong' | 'limit'
+const UNIVERSES: { key: Universe; label: string }[] = [
+  { key: 'all',    label: '全部' },
+  { key: 'strong', label: '强势股' },
+  { key: 'limit',  label: '涨跌停股' },
+]
 
 const DEFAULT_SORT: { key: SortKey; dir: SortDir } = { key: 'today_board_count', dir: 'desc' }
 
@@ -138,16 +146,49 @@ export default function StockPool() {
   // 用户是否手动点过列头：未点时 全部/总龙头 tab 用龙头优先序(sortDragon)，点过即按列排序
   const [userSorted, setUserSorted] = useState(false)
 
+  // 股票全集口径：全部（强势+涨跌停）/ 仅强势股 / 仅涨跌停股
+  const [universe, setUniverse] = useState<Universe>('all')
+
   const selectTab = (key: GroupKey) => { setActiveTab(key); setUserSorted(false) }
 
-  const { data, isLoading } = useQuery({
+  const { data: strongData, isLoading: loadingStrong } = useQuery({
     queryKey: ['strong-pool-all', search],
-    queryFn: () => fetchStrongPool({ page: 1, page_size: 200, search }),
+    queryFn: () => fetchStrongPool({ page: 1, page_size: 500, search }),
     keepPreviousData: true,
   } as any)
+  const { data: upData, isLoading: loadingUp } = useQuery({
+    queryKey: ['limit-up-all', search],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_up', search }),
+    keepPreviousData: true,
+  } as any)
+  const { data: downData, isLoading: loadingDown } = useQuery({
+    queryKey: ['limit-down-all', search],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_down', search }),
+    keepPreviousData: true,
+  } as any)
+  const isLoading = loadingStrong || loadingUp || loadingDown
 
-  const allStocks: Stock[] = (data as any)?.items ?? []
-  const total = (data as any)?.total ?? 0
+  // 按口径合并去重（以股票代码为逻辑主键，id 即 code-based）
+  const allStocks: Stock[] = useMemo(() => {
+    const strong: Stock[] = (strongData as any)?.items ?? []
+    const up: Stock[] = (upData as any)?.items ?? []
+    const down: Stock[] = (downData as any)?.items ?? []
+    const src =
+      universe === 'strong' ? strong
+      : universe === 'limit' ? [...up, ...down]
+      : [...strong, ...up, ...down]
+    const seen = new Set<string | number>()
+    const merged: Stock[] = []
+    for (const s of src) {
+      if (seen.has(s.id)) continue
+      seen.add(s.id)
+      merged.push(s)
+    }
+    return merged
+  }, [strongData, upData, downData, universe])
+
+  const total = allStocks.length
+  const unitLabel = universe === 'strong' ? '强势股' : universe === 'limit' ? '涨跌停股' : '活跃股'
 
   // ── Global leader maxes：对比【强势池+涨停+跌停】合并全集（与涨跌停池页一致）──
   const globalLeaderMaxes = useLeaderUniverseMaxes()
@@ -211,7 +252,24 @@ export default function StockPool() {
             className="bg-bg-card border border-bg-border rounded pl-8 pr-3 py-1.5 text-sm text-text-primary focus:outline-none focus:border-accent/50 w-44"
           />
         </div>
-        <div className="ml-auto text-xs text-text-muted">共 {total} 只强势股</div>
+        {/* 全集口径切换：全部 / 强势股 / 涨跌停股 */}
+        <div className="flex items-center gap-0.5 bg-bg-card border border-bg-border rounded-lg p-0.5">
+          {UNIVERSES.map((u) => (
+            <button
+              key={u.key}
+              onClick={() => setUniverse(u.key)}
+              className={cn(
+                'px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                universe === u.key
+                  ? 'bg-accent/15 text-accent'
+                  : 'text-text-muted hover:text-text-secondary',
+              )}
+            >
+              {u.label}
+            </button>
+          ))}
+        </div>
+        <div className="ml-auto text-xs text-text-muted">共 {total} 只{unitLabel}</div>
       </div>
 
       {/* Tab bar */}
