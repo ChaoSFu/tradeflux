@@ -845,6 +845,16 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 候选股 = 强势池 ∪ 涨跌停
         all_candidate_codes = strong_pool_codes | api_limit_codes
 
+        # 强势池回收：DB 标记 in_strong_pool 但已不在选股 API 结果的「待退出」股，
+        # 并入候选重抓 → 走入池判断(in_pool=code in strong_pool_codes=False)自动回收，
+        # 同时补今日快照。否则它们永久滞留强势池(幽灵)、且 today_* 长期陈旧。
+        # 仅在强势池 API 成功时执行（失败回退 DB 时 strong_pool_codes==db_pool_codes，无差集）。
+        if api_pool_codes:
+            retire_codes = db_pool_codes - strong_pool_codes
+            if retire_codes:
+                all_candidate_codes = all_candidate_codes | retire_codes
+                log.info(f"强势池回收：并入 {len(retire_codes)} 只待退出股重抓并回收")
+
         # 涨跌停复核：当日快照已标涨跌停、但已不在 API 名单里的股票，并入候选重抓，
         # 以收盘价重算（解决盘中涨跌停、尾盘打开后因退出候选集而状态无法更新的问题）。
         if limit_api_ok:
