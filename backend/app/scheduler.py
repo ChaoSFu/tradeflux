@@ -149,12 +149,13 @@ def _run_daily_update() -> None:
 
 def create_scheduler() -> BackgroundScheduler:
     """
-    创建并配置后台调度器。
-    - 周一至周五 15:30 触发，jitter=3600 在 1 小时内随机延迟执行
-    - max_instances=1 确保同一时刻只有一个实例
-    - 失败后 10 分钟自动重试，最多 3 次
+    创建并配置后台调度器。两个定时更新（周一至周五）：
+    - 盘后 15:30 触发，jitter=3600（±1h 内随机）
+    - 盘前 09:27 触发，jitter=60（9:26:00~9:28:00，集合竞价后、开盘前随机）
+    两者共享文件锁互斥；max_instances=1；失败后 10 分钟自动重试，最多 3 次。
     """
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+    # 盘后更新（收盘后最终数据）
     scheduler.add_job(
         _run_daily_update,
         trigger=CronTrigger(
@@ -163,11 +164,27 @@ def create_scheduler() -> BackgroundScheduler:
             minute=30,
             timezone="Asia/Shanghai",
         ),
-        jitter=3600,        # 随机延迟 0~3600 秒，落在 15:30~16:30 之间
+        jitter=3600,        # ±3600 秒随机
         max_instances=1,    # 同一任务只允许一个实例运行
         id="daily_update",
         name="每日数据更新",
         replace_existing=True,
         misfire_grace_time=7200,  # 错过触发时间 2 小时内仍可补跑
+    )
+    # 盘前更新（集合竞价 9:25 之后、开盘 9:30 之前）
+    scheduler.add_job(
+        _run_daily_update,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=9,
+            minute=27,
+            timezone="Asia/Shanghai",
+        ),
+        jitter=60,          # ±60 秒 → 9:26:00~9:28:00
+        max_instances=1,
+        id="daily_update_preopen",
+        name="盘前数据更新",
+        replace_existing=True,
+        misfire_grace_time=1800,  # 错过 30 分钟内补跑（避免太晚跑进盘中）
     )
     return scheduler

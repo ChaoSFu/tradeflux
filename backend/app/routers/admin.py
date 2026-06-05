@@ -331,11 +331,17 @@ def get_scheduler_status():
         from app.main import _scheduler  # type: ignore
         if _scheduler is None:
             return {"running": False, "next_run": None, "message": "调度器未启动"}
-        job = _scheduler.get_job("daily_update")
+        # 盘后 + 盘前两个定时任务，取最早的下次执行时间
+        jobs = [j for j in (_scheduler.get_job("daily_update"),
+                            _scheduler.get_job("daily_update_preopen")) if j]
+        runs = [(j.id, j.next_run_time) for j in jobs if j.next_run_time]
+        runs.sort(key=lambda x: x[1])
+        soonest = runs[0] if runs else (None, None)
         return {
             "running": _scheduler.state == STATE_RUNNING,
-            "next_run": job.next_run_time.isoformat() if job and job.next_run_time else None,
-            "job_id": "daily_update",
+            "next_run": soonest[1].isoformat() if soonest[1] else None,
+            "job_id": soonest[0],
+            "jobs": [{"id": jid, "next_run": t.isoformat()} for jid, t in runs],
         }
     except Exception as exc:
         return {"running": False, "next_run": None, "message": str(exc)}
