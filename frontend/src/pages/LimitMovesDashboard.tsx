@@ -2,11 +2,13 @@
  * 涨跌停分析 — 仪表盘
  * 功能：近期涨停/跌停趋势曲线 + 板块集中度（饼图 + 排名列表 + 跨板块分析）
  */
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { fetchLimitMoves, fetchLimitMovesTrend } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { getSectorColor } from '@/components/common/SectorTags'
+import { SectorSection } from '@/components/common/SectorSection'
 import { ArrowUp, ArrowDown, TrendingUp } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { format } from 'date-fns'
@@ -184,6 +186,26 @@ export default function LimitMovesDashboard() {
 
   const dataLoading = upLoading || downLoading
 
+  // 点击集中板块 → 展开该板块成员个股（复用 SectorSection，与 Dashboard 一致）
+  const navigate = useNavigate()
+  type ExpandSrc = 'up' | 'down' | 'up2' | 'down2'
+  const [expanded, setExpanded] = useState<{ name: string; stocks: Stock[]; src: ExpandSrc } | null>(null)
+  const toggleExpand = (name: string, stockSet: Stock[], src: ExpandSrc) =>
+    setExpanded(prev =>
+      prev && prev.name === name && prev.src === src
+        ? null
+        : { name, src, stocks: stockSet.filter(s => (s.sectors ?? []).includes(name)) },
+    )
+  const expandedSection = (src: ExpandSrc) =>
+    expanded && expanded.src === src ? (
+      <SectorSection
+        group={{ name: expanded.name, stocks: expanded.stocks }}
+        collapsed={false}
+        onToggle={() => setExpanded(null)}
+        onClickStock={(code) => navigate(`/stocks/${code}`)}
+      />
+    ) : null
+
   return (
     <div className="space-y-4 animate-fade-in">
 
@@ -256,6 +278,8 @@ export default function LimitMovesDashboard() {
           stocks={limitUps}
           color={C_UP}
           isLoading={dataLoading}
+          onSelectSector={(n) => toggleExpand(n, limitUps, 'up')}
+          expandedName={expanded?.src === 'up' ? expanded.name : null}
         />
         <SectorHotspot
           title="跌停集中板块"
@@ -265,8 +289,12 @@ export default function LimitMovesDashboard() {
           stocks={limitDowns}
           color={C_DOWN}
           isLoading={dataLoading}
+          onSelectSector={(n) => toggleExpand(n, limitDowns, 'down')}
+          expandedName={expanded?.src === 'down' ? expanded.name : null}
         />
       </div>
+      {expandedSection('up')}
+      {expandedSection('down')}
 
       {/* ── 二板及以上集中板块（过滤首板，看持续强度）─────────────────────── */}
       <div className="flex items-baseline gap-2 pt-1">
@@ -282,6 +310,8 @@ export default function LimitMovesDashboard() {
           stocks={upStocks2}
           color={C_UP}
           isLoading={dataLoading}
+          onSelectSector={(n) => toggleExpand(n, upStocks2, 'up2')}
+          expandedName={expanded?.src === 'up2' ? expanded.name : null}
         />
         <SectorHotspot
           title="跌停集中板块 · ≥2板"
@@ -291,8 +321,12 @@ export default function LimitMovesDashboard() {
           stocks={downStocks2}
           color={C_DOWN}
           isLoading={dataLoading}
+          onSelectSector={(n) => toggleExpand(n, downStocks2, 'down2')}
+          expandedName={expanded?.src === 'down2' ? expanded.name : null}
         />
       </div>
+      {expandedSection('up2')}
+      {expandedSection('down2')}
 
     </div>
   )
@@ -324,7 +358,7 @@ function StatCard({ icon, label, value, sub, color }: {
 
 // ─── Sector hotspot (donut + ranked list + cross-sector analysis) ─────────────
 
-function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, isLoading }: {
+function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, isLoading, onSelectSector, expandedName }: {
   title: string
   sectors: SectorStat[]
   allSectorStats: SectorStat[]
@@ -332,6 +366,8 @@ function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, i
   stocks: Stock[]             // full list of today's up/down stocks
   color: string
   isLoading: boolean
+  onSelectSector?: (name: string) => void
+  expandedName?: string | null
 }) {
   // ── Cross-sector (overlap) stocks ─────────────────────────────────────────
   // A stock is "cross-sector" if it appears in 2+ of the top-N shown sectors
@@ -451,7 +487,15 @@ function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, i
                 const maxVal = sectors[0]?.[field] ?? 1
                 const pct    = (val / maxVal) * 100
                 return (
-                  <div key={s.name} className="px-3 py-2 flex items-center gap-2.5 hover:bg-bg-elevated transition-colors">
+                  <div
+                    key={s.name}
+                    onClick={() => onSelectSector?.(s.name)}
+                    className={cn(
+                      'px-3 py-2 flex items-center gap-2.5 transition-colors',
+                      onSelectSector && 'cursor-pointer hover:bg-bg-elevated',
+                      expandedName === s.name && 'bg-bg-elevated ring-1 ring-inset ring-accent/40',
+                    )}
+                  >
                     <span className={cn(
                       'w-4 text-center text-xs font-mono shrink-0',
                       idx === 0 ? 'text-dragon font-bold' : 'text-text-muted/80',
