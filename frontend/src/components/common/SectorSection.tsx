@@ -16,9 +16,10 @@ export type GroupKey = 'oscillating' | 'limit_up' | 'weakening' | 'broken' | 'li
 export const GROUP_META: Record<GroupKey, { label: string; color: string; bg: string }> = {
   limit_up:    { label: '涨停龙头', color: '#FF4560', bg: 'rgba(255,69,96,0.12)'   },
   oscillating: { label: '震荡龙头', color: '#4F9CF9', bg: 'rgba(79,156,249,0.12)'  },
-  weakening:   { label: '走弱龙头', color: '#F59E0B', bg: 'rgba(245,158,11,0.12)'  },
+  // 亏钱效应（走弱/破位/跌停）统一用绿色（A股惯例 跌=绿）
+  weakening:   { label: '走弱龙头', color: '#34D399', bg: 'rgba(52,211,153,0.10)'  },
   broken:      { label: '破位龙头', color: '#26C281', bg: 'rgba(38,194,129,0.10)'  },
-  limit_down:  { label: '跌停龙头', color: '#34D399', bg: 'rgba(52,211,153,0.10)'  },
+  limit_down:  { label: '跌停龙头', color: '#26C281', bg: 'rgba(38,194,129,0.10)'  },
 }
 
 export const GROUP_ORDER: GroupKey[] = ['limit_up', 'oscillating', 'weakening', 'broken', 'limit_down']

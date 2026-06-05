@@ -180,7 +180,7 @@ export function SectorRankTags({ tagData }: { tagData: SectorTagData | undefined
       <span
         key="risk"
         className="inline-flex items-center gap-0.5 px-1 py-px text-[9px] font-bold rounded whitespace-nowrap leading-tight"
-        style={{ color: '#FF4560', backgroundColor: 'rgba(255,69,96,0.15)', border: '1px solid rgba(255,69,96,0.45)' }}
+        style={{ color: '#26C281', backgroundColor: 'rgba(38,194,129,0.15)', border: '1px solid rgba(38,194,129,0.45)' }}
         title={`跌停 ${tagData.limit_down_count} 只，负反馈风险较大`}
       >
         ⚠ 跌停×{tagData.limit_down_count}

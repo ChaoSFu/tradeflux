@@ -74,7 +74,7 @@ const GROUPS: GroupDef[] = [
   { key: 'dragon',      label: '总龙头',   color: '#FFD700', bgColor: 'rgba(255,215,0,0.10)'   },
   { key: 'oscillating', label: '震荡龙头', color: '#4F9CF9', bgColor: 'rgba(79,156,249,0.10)'  },
   { key: 'limit_up',    label: '涨停龙头', color: '#FF4560', bgColor: 'rgba(255,69,96,0.10)'   },
-  { key: 'weakening',   label: '走弱龙头', color: '#F59E0B', bgColor: 'rgba(245,158,11,0.10)'  },
+  { key: 'weakening',   label: '走弱龙头', color: '#34D399', bgColor: 'rgba(52,211,153,0.10)' },
   { key: 'broken',      label: '破位龙头', color: '#26C281', bgColor: 'rgba(38,194,129,0.08)'  },
 ]
 
@@ -95,7 +95,7 @@ const PHASE_META: Record<Exclude<GroupKey, 'dragon'>, { label: string; color: st
   all:         { label: '全部',     color: '#A78BFA', bg: 'rgba(167,139,250,0.10)' },
   limit_up:    { label: '涨停龙头', color: '#FF4560', bg: 'rgba(255,69,96,0.12)'   },
   oscillating: { label: '震荡龙头', color: '#5EA6FF', bg: 'rgba(94,166,255,0.12)'  },
-  weakening:   { label: '走弱龙头', color: '#F59E0B', bg: 'rgba(245,158,11,0.12)'  },
+  weakening:   { label: '走弱龙头', color: '#34D399', bg: 'rgba(52,211,153,0.12)'  },
   broken:      { label: '破位龙头', color: '#26C281', bg: 'rgba(38,194,129,0.10)'  },
 }
 

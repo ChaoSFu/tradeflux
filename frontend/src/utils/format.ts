@@ -65,7 +65,7 @@ export const STOCK_PHASE_LABELS: Record<string, string> = {
 
 export const STOCK_PHASE_COLORS: Record<string, string> = {
   broken: '#26C281',    // green (下跌破位)
-  weakening: '#F59E0B', // amber/orange
+  weakening: '#34D399', // green (走弱也是亏钱效应，A股惯例用绿)
   normal: '#FF4560',    // red (强势上涨)
 }
 
