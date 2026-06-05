@@ -4,7 +4,7 @@ import { Header } from './Header'
 
 const TITLES: Record<string, string> = {
   '/': '强势股概览 Strong Overview',
-  '/stocks': '强势股池 Strong Pool',
+  '/stocks': '活跃股池 Active Pool',
   '/sector-config': '板块展示配置 Sector Config',
   '/sector-trend': '趋势板块 Sector Trend',
   '/sector-emotion': '情绪板块 Sector Emotion',
