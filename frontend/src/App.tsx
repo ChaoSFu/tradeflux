@@ -10,7 +10,6 @@ import SectorEmotion from '@/pages/SectorEmotion'
 import Signals from '@/pages/Signals'
 import DailyReview from '@/pages/DailyReview'
 import LimitMovesDashboard from '@/pages/LimitMovesDashboard'
-import LimitMovesPool from '@/pages/LimitMovesPool'
 
 export default function App() {
   return (
@@ -27,7 +26,6 @@ export default function App() {
           <Route path="review" element={<DailyReview />} />
           {/* 涨跌停分析 */}
           <Route path="limit-moves" element={<LimitMovesDashboard />} />
-          <Route path="limit-moves/stocks" element={<LimitMovesPool />} />
         </Route>
       </Routes>
     </BrowserRouter>

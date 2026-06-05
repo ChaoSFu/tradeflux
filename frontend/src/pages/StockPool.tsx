@@ -59,10 +59,19 @@ function sortStocks(stocks: Stock[], key: SortKey, dir: SortDir): Stock[] {
     })
   }
   return [...stocks].sort((a, b) => {
-    const av = (a[key] ?? -Infinity) as number
-    const bv = (b[key] ?? -Infinity) as number
+    const av = sortValue(a, key)
+    const bv = sortValue(b, key)
     return dir === 'desc' ? bv - av : av - bv
   })
+}
+
+// 取排序值：跌停股在「连续连板/60日高板」两列用跌停口径字段
+function sortValue(s: Stock, key: SortKey): number {
+  if (s.today_is_limit_down) {
+    if (key === 'today_board_count') return s.today_limit_down_count ?? -Infinity
+    if (key === 'board_count_60d')   return (s.board_down_count_60d ?? -Infinity) as number
+  }
+  return ((s as any)[key] ?? -Infinity) as number
 }
 
 // ─── Group definitions ────────────────────────────────────────────────────────
@@ -339,11 +348,11 @@ export default function StockPool() {
                   <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium whitespace-nowrap">代码 / 名称</th>
                   <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium">板块</th>
                   <SortTh col="phase_group" label="分组" sort={headerSort} onSort={handleSort} align="left" />
-                  <SortTh col="today_board_count" label="连续连板"  sort={headerSort} onSort={handleSort} />
+                  <SortTh col="today_board_count" label={activeTab === 'limit_down' ? '连续跌停' : '连续连板'}  sort={headerSort} onSort={handleSort} />
                   <SortTh col="limit_up_days_10d" label="10日涨停"  sort={headerSort} onSort={handleSort} />
                   <SortTh col="limit_up_days_20d" label="20日涨停"  sort={headerSort} onSort={handleSort} />
                   <SortTh col="limit_up_days_60d" label="60日涨停"  sort={headerSort} onSort={handleSort} />
-                  <SortTh col="board_count_60d"   label="60日高板"  sort={headerSort} onSort={handleSort} />
+                  <SortTh col="board_count_60d"   label={activeTab === 'limit_down' ? '60日高跌' : '60日高板'}  sort={headerSort} onSort={handleSort} />
                   <SortTh col="pct_change_10d"    label="10日涨幅"  sort={headerSort} onSort={handleSort} />
                   <SortTh col="pct_change_20d"    label="20日涨幅"  sort={headerSort} onSort={handleSort} />
                   <SortTh col="pct_change_60d"    label="60日涨幅"  sort={headerSort} onSort={handleSort} />
@@ -520,13 +529,19 @@ function StockRow({
         <PhaseGroupTag phase={phaseGroup} />
       </td>
 
-      {/* 连续连板 */}
+      {/* 连续连板（跌停股 → 连续跌停数） */}
       <td className="px-3 py-2.5 text-right font-mono text-xs">
         {(() => {
-          const cnt = stock.today_board_count ?? 0
+          const isDown = stock.today_is_limit_down
+          const cnt = isDown ? (stock.today_limit_down_count ?? 0) : (stock.today_board_count ?? 0)
           if (!cnt) return <span className="text-text-muted/70">—</span>
           return (
-            <span className={cn('font-bold px-1 py-px rounded', cnt >= 3 ? 'text-dragon' : 'text-up')}>
+            <span className={cn(
+              'font-bold px-1 py-px rounded',
+              isDown
+                ? cnt >= 3 ? 'bg-down/20 text-down' : 'text-down/70'
+                : cnt >= 3 ? 'text-dragon' : 'text-up',
+            )}>
               {cnt}板
             </span>
           )
@@ -563,11 +578,22 @@ function StockRow({
         </span>
       </td>
 
-      {/* 60日高板 */}
+      {/* 60日高板（跌停股 → 60日高跌） */}
       <td className="px-3 py-2.5 text-right font-mono text-xs">
-        <span className={cn(stock.board_count_60d >= 5 ? 'text-dragon font-bold' : 'text-text-secondary')}>
-          {stock.board_count_60d || '—'}
-        </span>
+        {(() => {
+          const isDown = stock.today_is_limit_down
+          const val = isDown ? (stock.board_down_count_60d ?? 0) : stock.board_count_60d
+          if (!val) return <span className="text-text-secondary">—</span>
+          return (
+            <span className={cn(
+              val >= 5
+                ? (isDown ? 'text-down font-bold' : 'text-dragon font-bold')
+                : 'text-text-secondary',
+            )}>
+              {val}
+            </span>
+          )
+        })()}
       </td>
 
       {/* 10日涨幅 */}
