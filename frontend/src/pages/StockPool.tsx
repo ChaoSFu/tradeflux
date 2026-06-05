@@ -9,7 +9,7 @@ import {
   useLeaderUniverseMaxes, getLeaderTags, dragonPrimary,
   type LeaderMaxes,
 } from '@/hooks/useLeaderUniverseMaxes'
-import { Search, Star, Flame, Crown, Info, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
+import { Search, Star, Flame, Crown, Info, ChevronUp, ChevronDown, ChevronsUpDown, TrendingDown } from 'lucide-react'
 // Note: Star kept for is_leader badge; Flame for limit_up tab; Crown for dragon tab; Info for ColInfo tooltips
 import { cn } from '@/utils/cn'
 import type { Stock } from '@/types'
@@ -67,7 +67,7 @@ function sortStocks(stocks: Stock[], key: SortKey, dir: SortDir): Stock[] {
 
 // ─── Group definitions ────────────────────────────────────────────────────────
 
-type GroupKey = 'all' | 'dragon' | 'oscillating' | 'limit_up' | 'weakening' | 'broken'
+type GroupKey = 'all' | 'dragon' | 'oscillating' | 'limit_up' | 'weakening' | 'broken' | 'limit_down'
 
 interface GroupDef {
   key: GroupKey
@@ -84,10 +84,12 @@ const GROUPS: GroupDef[] = [
   { key: 'limit_up',    label: '涨停龙头', color: '#FF4560', bgColor: 'rgba(255,69,96,0.10)'   },
   { key: 'weakening',   label: '走弱龙头', color: '#34D399', bgColor: 'rgba(52,211,153,0.10)' },
   { key: 'broken',      label: '破位龙头', color: '#26C281', bgColor: 'rgba(38,194,129,0.08)'  },
+  { key: 'limit_down',  label: '跌停股',   color: '#059669', bgColor: 'rgba(5,150,105,0.12)'   },
 ]
 
 function getGroupKey(stock: Stock): GroupKey {
   if (stock.today_is_limit_up) return 'limit_up'
+  if (stock.today_is_limit_down) return 'limit_down'
   if (stock.phase === 'broken') return 'broken'
   if (stock.phase === 'weakening') return 'weakening'
   return 'oscillating'
@@ -105,6 +107,7 @@ const PHASE_META: Record<Exclude<GroupKey, 'dragon'>, { label: string; color: st
   oscillating: { label: '震荡龙头', color: '#5EA6FF', bg: 'rgba(94,166,255,0.12)'  },
   weakening:   { label: '走弱龙头', color: '#34D399', bg: 'rgba(52,211,153,0.12)'  },
   broken:      { label: '破位龙头', color: '#26C281', bg: 'rgba(38,194,129,0.10)'  },
+  limit_down:  { label: '跌停股',   color: '#059669', bg: 'rgba(5,150,105,0.12)'   },
 }
 
 function PhaseGroupTag({ phase }: { phase: Exclude<GroupKey, 'dragon'> }) {
@@ -301,6 +304,9 @@ export default function StockPool() {
               )}
               {grp.key === 'limit_up' && isActive && (
                 <Flame className="w-3.5 h-3.5 shrink-0" style={{ color: grp.color }} />
+              )}
+              {grp.key === 'limit_down' && isActive && (
+                <TrendingDown className="w-3.5 h-3.5 shrink-0" style={{ color: grp.color }} />
               )}
               {grp.label}
               <span
