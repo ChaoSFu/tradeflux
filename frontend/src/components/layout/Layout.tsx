@@ -12,7 +12,6 @@ const TITLES: Record<string, string> = {
   '/signals': '弱转强信号 Weak-to-Strong',
   '/review': '日复盘 Daily Review',
   '/limit-moves': '涨跌停概览 Limit Moves',
-  '/limit-moves/stocks': '涨跌停池 Limit Pool',
 }
 
 export function Layout() {

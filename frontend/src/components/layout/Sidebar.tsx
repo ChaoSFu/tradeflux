@@ -14,7 +14,6 @@ import {
   ChevronUp,
   Activity,
   Flame,
-  ArrowUpDown,
 } from 'lucide-react'
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
@@ -32,14 +31,6 @@ const NAV: NavEntry[] = [
       { type: 'link', to: '/',            label: '强势股概览', icon: LayoutDashboard },
       { type: 'link', to: '/limit-moves', label: '涨跌停概览', icon: Flame },
       { type: 'link', to: '/stocks',      label: '活跃股池',   icon: TrendingUp },
-    ],
-  },
-  {
-    type: 'group',
-    label: '涨跌停分析',
-    icon: Flame,
-    children: [
-      { type: 'link', to: '/limit-moves/stocks',  label: '涨跌停池', icon: ArrowUpDown },
     ],
   },
   {
