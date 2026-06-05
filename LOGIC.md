@@ -616,6 +616,9 @@ class ClaudeAIReviewGenerator(AIReviewGenerator):
                                任一 API 失败 → 回退 DB，并记 degraded 告警
 2. 涨跌停复核                 → 当日已标涨跌停、但已退出 API 名单的股票并入候选重抓
                                （解决盘中涨跌停尾盘打开后状态无法更新）
+2b. 强势池回收                → DB 标记 in_strong_pool=True、但已不在强势池选股 API 的
+                               「待退出」股并入候选 → 入池判断 in_pool=False 自动回收
+                               in_strong_pool 并补今日快照（杜绝幽灵滞留 + today_* 陈旧）
 3. 刷新元数据                 → 用选股 API 名称刷新已知候选股 name / is_st（摘帽自动修正）
 4. K 线获取                  → ≥60 条历史快照：DB 重建，按"DB最新→target_date"缺口动态
                                拉取近 N 天（常态 2~3，多日停机自动补齐），并集去重合并；
@@ -632,6 +635,14 @@ class ClaudeAIReviewGenerator(AIReviewGenerator):
 降级（degraded）：API 回退 / 限流缺失等"成功但数据不完整"的情形会写入
   last_update_status.json 与 /admin/update/last，前端顶栏显示黄色"数据降级"提示。
 ```
+
+**`today_*` 字段口径（接口返回）：** `today_pct_change / today_is_limit_up / today_is_limit_down /
+today_board_count / today_limit_down_count` 仅在**该股最新快照日 == 全局最新交易日**时有效；
+否则一律置 None/False（不拿昨日快照冒充今日）。跌停判定统一用权威 `today_is_limit_down`
+（来自 snapshot.is_limit_down / 选股 API 名单），与涨停 `today_is_limit_up`、后端
+`sector.limit_down_count` 口径一致。
+> 板块「赚钱效应」只统计有今日快照的成员；强势池/板块卡片显示全部成员（无今日数据者
+> today_* 为 —），故两者数量可能差 1~2（数据口径不同，非错误）。
 
 用法：
 ```bash
