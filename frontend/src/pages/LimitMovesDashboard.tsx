@@ -109,6 +109,17 @@ function PieCustomTooltip({ active, payload }: any) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function LimitMovesDashboard() {
+  // 点击图例切换曲线显隐（默认全部显示）
+  const [hiddenLines, setHiddenLines] = useState<Set<string>>(new Set())
+  const toggleLine = (key?: string) => {
+    if (!key) return
+    setHiddenLines((prev) => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
   const { data: upData,   isLoading: upLoading }   = useQuery({
     queryKey: ['limit-moves', 'limit_up'],
     queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_up' }),
@@ -283,11 +294,18 @@ export default function LimitMovesDashboard() {
                 <XAxis dataKey="date" tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                 <YAxis tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} width={32} />
                 <Tooltip content={<CustomTooltip />} />
-                <Legend wrapperStyle={{ fontSize: 12, color: '#A2A9C4', paddingTop: 4 }} iconSize={8} />
-                <Line type="monotone" dataKey="涨停" stroke={C_UP}   strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
-                <Line type="monotone" dataKey="跌停" stroke={C_DOWN} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
-                <Line type="monotone" dataKey="涨停30日均值" stroke={C_UP}   strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.5} dot={false} activeDot={false} />
-                <Line type="monotone" dataKey="跌停30日均值" stroke={C_DOWN} strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.5} dot={false} activeDot={false} />
+                <Legend
+                  wrapperStyle={{ fontSize: 12, color: '#A2A9C4', paddingTop: 4, cursor: 'pointer' }}
+                  iconSize={8}
+                  onClick={(e: any) => toggleLine(e?.dataKey ?? e?.value)}
+                  formatter={(value: string, entry: any) => (
+                    <span style={{ opacity: hiddenLines.has(entry?.dataKey ?? value) ? 0.35 : 1 }}>{value}</span>
+                  )}
+                />
+                <Line type="monotone" dataKey="涨停" stroke={C_UP}   strokeWidth={2} dot={false} activeDot={{ r: 4 }} hide={hiddenLines.has('涨停')} />
+                <Line type="monotone" dataKey="跌停" stroke={C_DOWN} strokeWidth={2} dot={false} activeDot={{ r: 4 }} hide={hiddenLines.has('跌停')} />
+                <Line type="monotone" dataKey="涨停30日均值" stroke={C_UP}   strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.5} dot={false} activeDot={false} hide={hiddenLines.has('涨停30日均值')} />
+                <Line type="monotone" dataKey="跌停30日均值" stroke={C_DOWN} strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.5} dot={false} activeDot={false} hide={hiddenLines.has('跌停30日均值')} />
               </LineChart>
             </ResponsiveContainer>
           )}
