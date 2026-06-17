@@ -215,10 +215,10 @@ export default function StockPool() {
       map.get('all')!.push(stock)
       // Phase groups (mutually exclusive)
       map.get(getGroupKey(stock))!.push(stock)
-      // 总龙头 (non-exclusive): global leader tag 或 板块龙头
+      // 总龙头 (non-exclusive)：仅全市场龙头标签持有者（10/20/60龙·60高板龙·连板龙 的龙1/龙2）
+      // 不再纳入"每个板块的龙头"，避免被上百个板块各自的龙头撑大；板块龙头标签仍在行内展示。
       const hasLeaderTag = getLeaderTags(stock, globalLeaderMaxes).length > 0
-      const isSectorLeader = sectorLeaders.has(stock.id)
-      if (hasLeaderTag || isSectorLeader) {
+      if (hasLeaderTag) {
         map.get('dragon')!.push(stock)
       }
     }
