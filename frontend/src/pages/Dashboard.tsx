@@ -137,6 +137,81 @@ function SectorRow({
   )
 }
 
+// ─── 板块排序（赚钱效应 / 板块涨幅 / 个股数）──────────────────────────────────
+type SectorSortKey = 'avg_pct' | 'sector_pct_today' | 'stock_count'
+const SECTOR_SORTS: { key: SectorSortKey; label: string; title: string }[] = [
+  { key: 'avg_pct',          label: '效应', title: '按赚钱效应（龙头/成员均涨幅）排序' },
+  { key: 'sector_pct_today', label: '涨幅', title: '按板块涨幅排序' },
+  { key: 'stock_count',      label: '只数', title: '按板块个股数排序' },
+]
+
+/** 卡片内排序：个股数恒降序；赚钱效应/板块涨幅 在赚钱卡降序、亏钱卡升序（各自展示最强效应在前）。 */
+function sortSectors(list: SectorProfitEffect[], key: SectorSortKey, isLoss: boolean): SectorProfitEffect[] {
+  return [...list].sort((a, b) => {
+    if (key === 'stock_count') return b.stock_count - a.stock_count || b.avg_pct - a.avg_pct
+    const av = a[key], bv = b[key]
+    return isLoss ? av - bv : bv - av
+  })
+}
+
+function SectorSortControl({ value, onChange }: { value: SectorSortKey; onChange: (k: SectorSortKey) => void }) {
+  return (
+    <div className="flex items-center gap-0.5">
+      {SECTOR_SORTS.map((o) => (
+        <button
+          key={o.key}
+          title={o.title}
+          onClick={() => onChange(o.key)}
+          className={cn(
+            'px-1.5 py-0.5 rounded text-xs transition-colors',
+            value === o.key ? 'bg-accent/15 text-accent font-medium' : 'text-text-muted hover:text-text-secondary',
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** 板块赚钱/亏钱效应卡片：自带排序状态（默认赚钱效应），渲染 SectorRow 列表。 */
+function SectorEffectCard({
+  title, sectors, isLoss, expandedName, onToggleRow, tagFor, emptyText,
+}: {
+  title: string
+  sectors: SectorProfitEffect[]
+  isLoss: boolean
+  expandedName: string | null
+  onToggleRow: (name: string) => void
+  tagFor: (code: string) => SectorTagData | undefined
+  emptyText: string
+}) {
+  const [sortKey, setSortKey] = useState<SectorSortKey>('avg_pct')
+  const sorted = useMemo(() => sortSectors(sectors, sortKey, isLoss), [sectors, sortKey, isLoss])
+  return (
+    <Card
+      title={`${title} (${sectors.length})`}
+      action={sectors.length > 0 ? <SectorSortControl value={sortKey} onChange={setSortKey} /> : undefined}
+    >
+      {sorted.length > 0 ? (
+        <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+          {sorted.map((s) => (
+            <SectorRow
+              key={s.sector_code}
+              s={s}
+              active={expandedName === s.sector_name}
+              onClick={() => onToggleRow(s.sector_name)}
+              tagData={tagFor(s.sector_code)}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="text-center text-text-muted text-sm py-6">{emptyText}</div>
+      )}
+    </Card>
+  )
+}
+
 export default function Dashboard() {
   const navigate = useNavigate()
   const [expandedSector, setExpandedSector] = useState<string | null>(null)
@@ -386,48 +461,30 @@ export default function Dashboard() {
               {/* ── 板块赚钱 / 亏钱效应（并列） ── */}
               {pe.sectors.length > 0 && (() => {
                 const profitSectors = pe.sectors.filter((s: SectorProfitEffect) => s.avg_pct >= 0)
-                const lossSectors = [...pe.sectors.filter((s: SectorProfitEffect) => s.avg_pct < 0)]
-                  .sort((a, b) => a.avg_pct - b.avg_pct)
+                const lossSectors = pe.sectors.filter((s: SectorProfitEffect) => s.avg_pct < 0)
                 const expandedGroup = expandedSector ? sectorGroupMap.get(expandedSector) : null
 
                 return (
                   <>
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                      <Card title={`板块赚钱效应 (${profitSectors.length})`}>
-                        {profitSectors.length > 0 ? (
-                          <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
-                            {profitSectors.map((s: SectorProfitEffect) => (
-                              <SectorRow
-                                key={s.sector_code}
-                                s={s}
-                                active={expandedSector === s.sector_name}
-                                onClick={() => toggleSector(s.sector_name)}
-                                tagData={sectorTagsByCode.get(s.sector_code)}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="text-center text-text-muted text-sm py-6">暂无上涨板块</div>
-                        )}
-                      </Card>
-
-                      <Card title={`板块亏钱效应 (${lossSectors.length})`}>
-                        {lossSectors.length > 0 ? (
-                          <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
-                            {lossSectors.map((s: SectorProfitEffect) => (
-                              <SectorRow
-                                key={s.sector_code}
-                                s={s}
-                                active={expandedSector === s.sector_name}
-                                onClick={() => toggleSector(s.sector_name)}
-                                tagData={sectorTagsByCode.get(s.sector_code)}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="text-center text-text-muted text-sm py-6">暂无下跌板块</div>
-                        )}
-                      </Card>
+                      <SectorEffectCard
+                        title="板块赚钱效应"
+                        sectors={profitSectors}
+                        isLoss={false}
+                        expandedName={expandedSector}
+                        onToggleRow={toggleSector}
+                        tagFor={(code) => sectorTagsByCode.get(code)}
+                        emptyText="暂无上涨板块"
+                      />
+                      <SectorEffectCard
+                        title="板块亏钱效应"
+                        sectors={lossSectors}
+                        isLoss={true}
+                        expandedName={expandedSector}
+                        onToggleRow={toggleSector}
+                        tagFor={(code) => sectorTagsByCode.get(code)}
+                        emptyText="暂无下跌板块"
+                      />
                     </div>
 
                     {/* ── 展开的板块详情 ── */}
@@ -576,48 +633,29 @@ export default function Dashboard() {
           />
         ) : (() => {
           const profit = dragonSectors.filter((s) => s.avg_pct >= 0)
-            .sort((a, b) => b.stock_count - a.stock_count || b.avg_pct - a.avg_pct)
           const loss = dragonSectors.filter((s) => s.avg_pct < 0)
-            .sort((a, b) => b.stock_count - a.stock_count || a.avg_pct - b.avg_pct)
           const expandedGroup = expandedDragonSector ? dragonSectorGroupMap.get(expandedDragonSector) : null
           return (
             <>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <Card title={`总龙头·板块赚钱效应 (${profit.length})`}>
-                  {profit.length > 0 ? (
-                    <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
-                      {profit.map((s) => (
-                        <SectorRow
-                          key={s.sector_code}
-                          s={s}
-                          active={expandedDragonSector === s.sector_name}
-                          onClick={() => toggleDragonSector(s.sector_name)}
-                          tagData={sectorTagsByCode.get(s.sector_code)}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center text-text-muted text-sm py-6">暂无上涨板块</div>
-                  )}
-                </Card>
-
-                <Card title={`总龙头·板块亏钱效应 (${loss.length})`}>
-                  {loss.length > 0 ? (
-                    <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
-                      {loss.map((s) => (
-                        <SectorRow
-                          key={s.sector_code}
-                          s={s}
-                          active={expandedDragonSector === s.sector_name}
-                          onClick={() => toggleDragonSector(s.sector_name)}
-                          tagData={sectorTagsByCode.get(s.sector_code)}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center text-text-muted text-sm py-6">暂无下跌板块</div>
-                  )}
-                </Card>
+                <SectorEffectCard
+                  title="总龙头·板块赚钱效应"
+                  sectors={profit}
+                  isLoss={false}
+                  expandedName={expandedDragonSector}
+                  onToggleRow={toggleDragonSector}
+                  tagFor={(code) => sectorTagsByCode.get(code)}
+                  emptyText="暂无上涨板块"
+                />
+                <SectorEffectCard
+                  title="总龙头·板块亏钱效应"
+                  sectors={loss}
+                  isLoss={true}
+                  expandedName={expandedDragonSector}
+                  onToggleRow={toggleDragonSector}
+                  tagFor={(code) => sectorTagsByCode.get(code)}
+                  emptyText="暂无下跌板块"
+                />
               </div>
 
               {/* 展开：仅展示该板块的龙头成员 */}
