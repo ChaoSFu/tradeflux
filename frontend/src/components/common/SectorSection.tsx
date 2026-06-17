@@ -7,7 +7,8 @@ import { Star, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import type { Stock } from '@/types'
 import { useSectorTags } from '@/hooks/useSectorTags'
-import { SectorRankTags } from '@/components/common/SectorTags'
+import { SectorRankTags, LeaderTag } from '@/components/common/SectorTags'
+import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
 
 // ─── Group helpers ────────────────────────────────────────────────────────────
 
@@ -146,6 +147,8 @@ export function SectorSection({
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const { byName: sectorTagsByName } = useSectorTags()
   const tagData = sectorTagsByName.get(name)
+  // 全市场龙头标签基准（与活跃股池「总龙头」一致），用于行内展示个股龙头标签
+  const leaderMaxes = useLeaderUniverseMaxes()
 
   // 默认（未点列头）：按分组+龙头分排序；点列头：按该列数值排序
   const sortedStocks = useMemo(() => {
@@ -317,6 +320,14 @@ export function SectorSection({
                         {stock.name}
                       </div>
                       <div className="font-mono text-accent/90">{stock.code}</div>
+                      {(() => {
+                        const lts = getLeaderTags(stock, leaderMaxes)
+                        return lts.length > 0 ? (
+                          <div className="flex flex-wrap gap-0.5 mt-0.5">
+                            {lts.map((t) => <LeaderTag key={t} label={t} />)}
+                          </div>
+                        ) : null
+                      })()}
                     </td>
                     <td className="px-2 py-2"><GroupTag group={grp} /></td>
                     {/* 连续连板 */}
