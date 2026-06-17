@@ -191,6 +191,7 @@ export default function Dashboard() {
     }
     const out: SectorProfitEffect[] = []
     for (const [name, b] of buckets) {
+      if (b.n < 2) continue  // 个股数<2 的板块无参考价值，不展示
       const base = peByName.get(name)
       out.push({
         sector_code: base?.sector_code ?? name,
