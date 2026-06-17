@@ -22,7 +22,8 @@ import type { LucideIcon } from 'lucide-react'
 import type { RiskLevel, ProfitEffectGroup, SectorProfitEffect, Stock } from '@/types'
 import { useSectorTags, type SectorTagData } from '@/hooks/useSectorTags'
 import { useDragonStocks } from '@/hooks/useDragonStocks'
-import { SectorRankTags } from '@/components/common/SectorTags'
+import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
+import { SectorRankTags, LeaderTag } from '@/components/common/SectorTags'
 
 const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> = {
   bull_frenzy: 'dragon',
@@ -247,6 +248,12 @@ export default function Dashboard() {
 
   // ── 总龙头·板块分布（功能同板块赚钱效应，数据范围限定为总龙头）──────────────
   const dragonStocks = useDragonStocks()
+  const leaderMaxes = useLeaderUniverseMaxes()
+  // code → 龙头标签（仅总龙头有；用于龙头股/弱转强等卡片行内补标签）
+  const dragonTagsByCode = useMemo(
+    () => new Map(dragonStocks.map((s) => [s.code, getLeaderTags(s, leaderMaxes)])),
+    [dragonStocks, leaderMaxes],
+  )
   const [expandedDragonSector, setExpandedDragonSector] = useState<string | null>(null)
   const toggleDragonSector = (name: string) =>
     setExpandedDragonSector((prev) => (prev === name ? null : name))
@@ -564,8 +571,15 @@ export default function Dashboard() {
                   <div className="flex items-center gap-2 min-w-0">
                     <Badge variant="dragon">{LEADER_TYPE_LABELS[l.leader_type] ?? l.leader_type}</Badge>
                     <div>
-                      <span className="font-medium text-sm text-text-primary">{l.stock_name}</span>
-                      <span className="text-xs text-text-muted ml-1">{l.stock_code}</span>
+                      <div>
+                        <span className="font-medium text-sm text-text-primary">{l.stock_name}</span>
+                        <span className="text-xs text-text-muted ml-1">{l.stock_code}</span>
+                      </div>
+                      {(dragonTagsByCode.get(l.stock_code)?.length ?? 0) > 0 && (
+                        <div className="flex flex-wrap gap-0.5 mt-0.5">
+                          {dragonTagsByCode.get(l.stock_code)!.map((t) => <LeaderTag key={t} label={t} />)}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0 text-xs">
@@ -588,9 +602,10 @@ export default function Dashboard() {
               {state.weak_to_strong_candidates.slice(0, 5).map((c) => (
                 <div key={c.stock_code} className="p-2 rounded bg-bg-elevated">
                   <div className="flex items-center justify-between gap-2 mb-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm text-text-primary">{c.stock_name}</span>
                       <span className="text-xs text-text-muted">{c.stock_code}</span>
+                      {dragonTagsByCode.get(c.stock_code)?.map((t) => <LeaderTag key={t} label={t} />)}
                     </div>
                     <div className="flex items-center gap-1.5">
                       <RiskBadge level={c.risk_level as RiskLevel} />
