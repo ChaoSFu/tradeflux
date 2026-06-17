@@ -21,6 +21,7 @@ import { TrendingUp, Zap, ChevronDown, ChevronUp, Activity } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { RiskLevel, ProfitEffectGroup, SectorProfitEffect, Stock } from '@/types'
 import { useSectorTags, type SectorTagData } from '@/hooks/useSectorTags'
+import { useDragonStocks } from '@/hooks/useDragonStocks'
 import { SectorRankTags } from '@/components/common/SectorTags'
 
 const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> = {
@@ -168,6 +169,47 @@ export default function Dashboard() {
   }, [allStocks])
 
   const { byCode: sectorTagsByCode } = useSectorTags()
+
+  // ── 总龙头·板块分布（功能同板块赚钱效应，数据范围限定为总龙头）──────────────
+  const dragonStocks = useDragonStocks()
+  const [expandedDragonSector, setExpandedDragonSector] = useState<string | null>(null)
+  const toggleDragonSector = (name: string) =>
+    setExpandedDragonSector((prev) => (prev === name ? null : name))
+
+  // 龙头按板块聚合为 SectorProfitEffect（板块涨幅沿用 pe 的板块指数行情）
+  const dragonSectors = useMemo<SectorProfitEffect[]>(() => {
+    const peByName = new Map((pe?.sectors ?? []).map((s) => [s.sector_name, s]))
+    const buckets = new Map<string, { up: number; down: number; n: number; sum: number }>()
+    for (const st of dragonStocks) {
+      const p = st.today_pct_change ?? 0
+      for (const name of st.sectors ?? []) {
+        let b = buckets.get(name)
+        if (!b) { b = { up: 0, down: 0, n: 0, sum: 0 }; buckets.set(name, b) }
+        b.n++; b.sum += p
+        if (p > 0) b.up++; else if (p < 0) b.down++
+      }
+    }
+    const out: SectorProfitEffect[] = []
+    for (const [name, b] of buckets) {
+      const base = peByName.get(name)
+      out.push({
+        sector_code: base?.sector_code ?? name,
+        sector_name: name,
+        stock_count: b.n,
+        up_count: b.up,
+        down_count: b.down,
+        avg_pct: b.n ? b.sum / b.n : 0,
+        sector_pct_today: base?.sector_pct_today ?? (b.n ? b.sum / b.n : 0),
+      })
+    }
+    return out
+  }, [dragonStocks, pe])
+
+  // 展开龙头板块时，只展示该板块的龙头成员
+  const dragonSectorGroupMap = useMemo(() => {
+    const groups = buildSectorGroups(dragonStocks)
+    return new Map(groups.map((g) => [g.name, g]))
+  }, [dragonStocks])
 
   const toggleSector = (name: string) =>
     setExpandedSector((prev) => (prev === name ? null : name))
@@ -516,6 +558,79 @@ export default function Dashboard() {
             />
           )}
         </Card>
+      </div>
+
+      {/* ════════════════════════════════════════════════════════════════════════
+          总龙头·板块分布（功能/交互同板块赚钱效应，数据范围限定总龙头）
+      ════════════════════════════════════════════════════════════════════════ */}
+      <div className="space-y-4">
+        <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">
+          总龙头板块分布
+        </h2>
+        {dragonSectors.length === 0 ? (
+          <EmptyHint
+            icon={TrendingUp}
+            title="当前无总龙头"
+            hint="合并全集（强势池+涨跌停池）中暂无达到全市场龙头标签（10/20/60龙·高板龙·连板龙）的个股。"
+          />
+        ) : (() => {
+          const profit = dragonSectors.filter((s) => s.avg_pct >= 0)
+            .sort((a, b) => b.stock_count - a.stock_count || b.avg_pct - a.avg_pct)
+          const loss = dragonSectors.filter((s) => s.avg_pct < 0)
+            .sort((a, b) => b.stock_count - a.stock_count || a.avg_pct - b.avg_pct)
+          const expandedGroup = expandedDragonSector ? dragonSectorGroupMap.get(expandedDragonSector) : null
+          return (
+            <>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <Card title={`总龙头·板块赚钱效应 (${profit.length})`}>
+                  {profit.length > 0 ? (
+                    <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+                      {profit.map((s) => (
+                        <SectorRow
+                          key={s.sector_code}
+                          s={s}
+                          active={expandedDragonSector === s.sector_name}
+                          onClick={() => toggleDragonSector(s.sector_name)}
+                          tagData={sectorTagsByCode.get(s.sector_code)}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center text-text-muted text-sm py-6">暂无上涨板块</div>
+                  )}
+                </Card>
+
+                <Card title={`总龙头·板块亏钱效应 (${loss.length})`}>
+                  {loss.length > 0 ? (
+                    <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+                      {loss.map((s) => (
+                        <SectorRow
+                          key={s.sector_code}
+                          s={s}
+                          active={expandedDragonSector === s.sector_name}
+                          onClick={() => toggleDragonSector(s.sector_name)}
+                          tagData={sectorTagsByCode.get(s.sector_code)}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center text-text-muted text-sm py-6">暂无下跌板块</div>
+                  )}
+                </Card>
+              </div>
+
+              {/* 展开：仅展示该板块的龙头成员 */}
+              {expandedGroup && (
+                <SectorSection
+                  group={expandedGroup}
+                  collapsed={false}
+                  onToggle={() => setExpandedDragonSector(null)}
+                  onClickStock={(code) => navigate(`/stocks/${code}`)}
+                />
+              )}
+            </>
+          )
+        })()}
       </div>
 
     </div>
