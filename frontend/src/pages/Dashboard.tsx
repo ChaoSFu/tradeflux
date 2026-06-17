@@ -243,7 +243,7 @@ export default function Dashboard() {
     return new Map(groups.map((g) => [g.name, g]))
   }, [allStocks])
 
-  const { byCode: sectorTagsByCode } = useSectorTags()
+  const { byCode: sectorTagsByCode, byName: sectorTagsByName } = useSectorTags()
 
   // ── 总龙头·板块分布（功能同板块赚钱效应，数据范围限定为总龙头）──────────────
   const dragonStocks = useDragonStocks()
@@ -253,7 +253,6 @@ export default function Dashboard() {
 
   // 龙头按板块聚合为 SectorProfitEffect（板块涨幅沿用 pe 的板块指数行情）
   const dragonSectors = useMemo<SectorProfitEffect[]>(() => {
-    const peByName = new Map((pe?.sectors ?? []).map((s) => [s.sector_name, s]))
     const buckets = new Map<string, { up: number; down: number; n: number; sum: number }>()
     for (const st of dragonStocks) {
       const p = st.today_pct_change ?? 0
@@ -267,19 +266,20 @@ export default function Dashboard() {
     const out: SectorProfitEffect[] = []
     for (const [name, b] of buckets) {
       if (b.n < 2) continue  // 个股数<2 的板块无参考价值，不展示
-      const base = peByName.get(name)
+      // 板块涨幅取板块指数真实今日涨幅（覆盖全板块），与赚钱效应(成员均涨幅)区分
+      const td = sectorTagsByName.get(name)
       out.push({
-        sector_code: base?.sector_code ?? name,
+        sector_code: td?.code ?? name,
         sector_name: name,
         stock_count: b.n,
         up_count: b.up,
         down_count: b.down,
         avg_pct: b.n ? b.sum / b.n : 0,
-        sector_pct_today: base?.sector_pct_today ?? (b.n ? b.sum / b.n : 0),
+        sector_pct_today: td?.pct_today ?? 0,
       })
     }
     return out
-  }, [dragonStocks, pe])
+  }, [dragonStocks, sectorTagsByName])
 
   // 展开龙头板块时，只展示该板块的龙头成员
   const dragonSectorGroupMap = useMemo(() => {

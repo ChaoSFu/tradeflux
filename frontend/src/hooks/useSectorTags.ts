@@ -10,6 +10,7 @@ import { fetchSectors } from '@/api/sectors'
 import type { Sector } from '@/types'
 
 export interface SectorTagData {
+  code:        string
   rank_5d:     number | null
   rank_10d:    number | null
   rank_20d:    number | null
@@ -46,6 +47,7 @@ export function useSectorTags(): SectorTagMaps {
     const byName = new Map<string, SectorTagData>()
     for (const s of sectors) {
       const tagData: SectorTagData = {
+        code:        s.code,
         rank_5d:     s.rank_5d     ?? null,
         rank_10d:    s.rank_10d    ?? null,
         rank_20d:    s.rank_20d    ?? null,
