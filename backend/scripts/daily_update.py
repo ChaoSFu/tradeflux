@@ -1217,6 +1217,18 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
 
         log.summary()
 
+        # ── 重点监管名单同步（独立步骤，失败不影响主流程）──────────────────
+        try:
+            from app.services.regulatory_service import sync_regulatory_unusual
+            reg = sync_regulatory_unusual(db)
+            if reg.get("ok"):
+                log.info(f"重点监管名单同步完成：{reg.get('count')} 条")
+            else:
+                api_warnings.append("重点监管名单 API 调用失败，已保留旧名单")
+        except Exception as e:
+            log.info(f"[regulatory] 重点监管名单同步失败（不影响主流程）: {e}")
+            db.rollback()
+
     except Exception as e:
         import traceback
         log.error(str(e))
