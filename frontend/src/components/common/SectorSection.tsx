@@ -318,8 +318,8 @@ export function SectorSection({
                       }
                     </td>
                     <td className="px-2 py-2">
-                      <div className={cn('font-medium flex items-center gap-1', isLeader ? 'text-text-primary' : 'text-text-secondary')}>
-                        {stock.name}
+                      <div className={cn('font-medium flex items-center gap-1 whitespace-nowrap', isLeader ? 'text-text-primary' : 'text-text-secondary')}>
+                        <span>{stock.name}</span>
                         {regStatus.get(stock.code) && <RegulatoryTag status={regStatus.get(stock.code)!} />}
                       </div>
                       <div className="font-mono text-accent/90">{stock.code}</div>
