@@ -48,6 +48,11 @@ THRESHOLDS = [
 
 APPROACH_FLOOR = 0.6   # 接近度 ≥ 该值才进预警区（距阈值 ≤ 40%）
 TOP_N = 60
+DAILY_PCT_CAP = 21.0   # 单日涨跌幅钳制上限（覆盖各板涨跌停，过滤脏数据）
+
+
+def _clamp_pct(p: float) -> float:
+    return max(-DAILY_PCT_CAP, min(DAILY_PCT_CAP, p))
 
 
 def sync_indices(db: Session, days: int = 70) -> dict:
@@ -150,13 +155,15 @@ def get_approaching_regulation(db: Session, exclude_codes: Optional[set] = None)
             win_dates = recent[-window:]
             if len(win_dates) < min(window, 5):
                 continue
-            cum = sum(spct[d] - idx_pct[d] for d in win_dates)
+            # 钳制单日涨跌幅至 ±21%（覆盖各板涨跌停上限），杜绝停牌复牌/次新等脏数据撑爆累计偏离
+            cum = sum(_clamp_pct(spct[d]) - idx_pct[d] for d in win_dates)
             ratio = cum / threshold  # 同向时为正，越接近 1 越逼近触发
             if ratio > best_ratio:
                 best_ratio = ratio
                 best = (window, direction, threshold, label, cum, len(win_dates))
 
-        if best is None or best_ratio < APPROACH_FLOOR:
+        # 接近度 < floor 跳过；≥1 表示已达标（已触发/已进监管），不属于"即将进入"
+        if best is None or best_ratio < APPROACH_FLOOR or best_ratio >= 1.0:
             continue
         window, direction, threshold, label, cum, coverage = best
         results.append((
