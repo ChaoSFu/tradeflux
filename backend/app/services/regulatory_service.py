@@ -45,38 +45,42 @@ def sync_regulatory_unusual(db: Session) -> dict:
     全量替换当前（is_his=0）监管名单。返回 {"count": n, "ok": bool}。
     抓取失败（空）→ 保留旧数据，不清除，ok=False。
     """
-    rows = fetch_regulatory_unusual(is_his="0")
-    if not rows:
-        return {"count": 0, "ok": False}
-
-    # 全量替换 is_his=0（当前名单是小而权威的全集）
-    db.query(RegulatoryUnusual).filter(RegulatoryUnusual.is_his == "0").delete()
-
-    seen: set[str] = set()
+    # 注意：东财 IS_HIS 语义与直觉相反——IS_HIS=1 是最新活跃监管，IS_HIS=0 是旧记录。
+    # 故两套都拉，按各自 flag 分别全量替换（某套抓取失败则保留其旧数据）。
     count = 0
-    for r in rows:
-        info_code = (r.get("INFO_CODE") or "").strip()
-        code = (r.get("SECURITY_CODE") or "").strip()
-        if not info_code or not code or info_code in seen:
+    ok_any = False
+    for ishis in ("0", "1"):
+        rows = fetch_regulatory_unusual(is_his=ishis)
+        if not rows:
             continue
-        seen.add(info_code)
-        db.add(RegulatoryUnusual(
-            info_code=info_code,
-            security_code=code,
-            security_name=(r.get("SECURITY_NAME_ABBR") or "").strip() or None,
-            exchange=(r.get("MRAKET_TYPE") or "").strip() or None,
-            unusual_type=(r.get("UNUSUAL_TYPE") or "002").strip(),
-            reason_type=(r.get("UNUSUAL_REASON_TYPE") or "").strip() or None,
-            reason=(r.get("UNUSUAL_REASON") or "").strip() or None,
-            start_date=_parse_date(r.get("START_DATE")),
-            end_date=_parse_date(r.get("END_DATE")),
-            predict_start=_parse_date(r.get("PREDICT_START_DATE")),
-            predict_end=_parse_date(r.get("PREDICT_END_DATE")),
-            notice_date=_parse_date(r.get("NOTICE_DATE")),
-            is_his="0",
-        ))
-        count += 1
+        ok_any = True
+        db.query(RegulatoryUnusual).filter(RegulatoryUnusual.is_his == ishis).delete()
+        seen: set[str] = set()
+        for r in rows:
+            info_code = (r.get("INFO_CODE") or "").strip()
+            code = (r.get("SECURITY_CODE") or "").strip()
+            if not info_code or not code or info_code in seen:
+                continue
+            seen.add(info_code)
+            db.add(RegulatoryUnusual(
+                info_code=info_code,
+                security_code=code,
+                security_name=(r.get("SECURITY_NAME_ABBR") or "").strip() or None,
+                exchange=(r.get("MRAKET_TYPE") or "").strip() or None,
+                unusual_type=(r.get("UNUSUAL_TYPE") or "002").strip(),
+                reason_type=(r.get("UNUSUAL_REASON_TYPE") or "").strip() or None,
+                reason=(r.get("UNUSUAL_REASON") or "").strip() or None,
+                start_date=_parse_date(r.get("START_DATE")),
+                end_date=_parse_date(r.get("END_DATE")),
+                predict_start=_parse_date(r.get("PREDICT_START_DATE")),
+                predict_end=_parse_date(r.get("PREDICT_END_DATE")),
+                notice_date=_parse_date(r.get("NOTICE_DATE")),
+                is_his=ishis,
+            ))
+            count += 1
 
+    if not ok_any:
+        return {"count": 0, "ok": False}
     db.commit()
     return {"count": count, "ok": True}
 
@@ -85,23 +89,31 @@ def get_regulatory_watchlist(db: Session) -> RegulatoryWatchlistResponse:
     """当前监管名单 → 监管中 / 即将解除，join 本地快照补强势指标。"""
     today = date.today()
     recent_floor = today - timedelta(days=RECENTLY_RELEASED_DAYS)
-    records = (
-        db.query(RegulatoryUnusual)
-        .filter(RegulatoryUnusual.is_his == "0")
-        .all()
-    )
+    # IS_HIS=0/1 两套都要（IS_HIS=1 才是最新活跃监管），合并后按监控期判定状态
+    records = db.query(RegulatoryUnusual).all()
+
+    # 同一股票可能有多条记录（不同期），按 code 去重保留 predict_end 最晚的一条
+    def _dedup_by_code(rows: list) -> list:
+        best: dict[str, RegulatoryUnusual] = {}
+        for r in rows:
+            cur = best.get(r.security_code)
+            if cur is None or (r.predict_end or date.min) > (cur.predict_end or date.min):
+                best[r.security_code] = r
+        return list(best.values())
 
     # 活跃监管：今日仍在监管期内（predict_end 缺失视为活跃）
-    active = [
+    active = _dedup_by_code([
         r for r in records
         if (r.predict_end is None or r.predict_end >= today)
         and (r.predict_start is None or r.predict_start <= today)
-    ]
-    # 近期解除：监管期已在最近 N 个日历日内结束
-    released = [
+    ])
+    active_codes = {r.security_code for r in active}
+    # 近期解除：监管期已在最近 N 个日历日内结束（且当前未在活跃监管）
+    released = _dedup_by_code([
         r for r in records
         if r.predict_end is not None and recent_floor <= r.predict_end < today
-    ]
+        and r.security_code not in active_codes
+    ])
 
     # join 本地快照（命中才补充）
     codes = {r.security_code for r in active} | {r.security_code for r in released}
