@@ -7,8 +7,9 @@ import { Star, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import type { Stock } from '@/types'
 import { useSectorTags } from '@/hooks/useSectorTags'
-import { SectorRankTags, LeaderTag } from '@/components/common/SectorTags'
+import { SectorRankTags, LeaderTag, RegulatoryTag } from '@/components/common/SectorTags'
 import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
+import { useRegulatoryStatus } from '@/hooks/useRegulatoryStatus'
 
 // ─── Group helpers ────────────────────────────────────────────────────────────
 
@@ -149,6 +150,7 @@ export function SectorSection({
   const tagData = sectorTagsByName.get(name)
   // 全市场龙头标签基准（与活跃股池「总龙头」一致），用于行内展示个股龙头标签
   const leaderMaxes = useLeaderUniverseMaxes()
+  const regStatus = useRegulatoryStatus()  // code → 监管状态（警示徽章）
 
   // 默认（未点列头）：按分组+龙头分排序；点列头：按该列数值排序
   const sortedStocks = useMemo(() => {
@@ -316,8 +318,9 @@ export function SectorSection({
                       }
                     </td>
                     <td className="px-2 py-2">
-                      <div className={cn('font-medium', isLeader ? 'text-text-primary' : 'text-text-secondary')}>
+                      <div className={cn('font-medium flex items-center gap-1', isLeader ? 'text-text-primary' : 'text-text-secondary')}>
                         {stock.name}
+                        {regStatus.get(stock.code) && <RegulatoryTag status={regStatus.get(stock.code)!} />}
                       </div>
                       <div className="font-mono text-accent/90">{stock.code}</div>
                       {(() => {

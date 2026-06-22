@@ -110,6 +110,29 @@ export function NegativeTag({ label }: { label: string }) {
   )
 }
 
+// ─── 监管状态徽章（全局警示：监管中/即将解除/即将进入/近期解除）────────────────
+
+export type RegStatus = 'monitoring' | 'ending_soon' | 'approaching' | 'released'
+
+const REG_META: Record<RegStatus, { label: string; cls: string }> = {
+  monitoring:  { label: '监管中',   cls: 'bg-down/20 text-down border-down/40' },
+  ending_soon: { label: '即将解除', cls: 'bg-amber-500/15 text-amber-400 border-amber-500/30' },
+  approaching: { label: '即将监管', cls: 'bg-orange-500/15 text-orange-400 border-orange-500/35' },
+  released:    { label: '近期解除', cls: 'bg-text-muted/15 text-text-muted border-text-muted/30' },
+}
+
+export function RegulatoryTag({ status, title }: { status: RegStatus; title?: string }) {
+  const m = REG_META[status]
+  return (
+    <span
+      title={title ?? `重点监控：${m.label}`}
+      className={`inline-flex items-center px-1 py-px text-[9px] font-bold rounded border whitespace-nowrap leading-tight ${m.cls}`}
+    >
+      {m.label}
+    </span>
+  )
+}
+
 // ─── Sector leader badge (colored like SectorTag, ★ prefix) ──────────────────
 
 export function SectorLeaderTag({ name }: { name: string }) {
