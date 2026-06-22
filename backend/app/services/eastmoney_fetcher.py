@@ -41,6 +41,13 @@ SZ_INCLUDED_PREFIXES = ("000", "001", "002", "003", "300", "301")
 # 高幅涨跌停代码前缀（±20%）
 _HIGH_LIMIT_PREFIXES = ("688", "300", "301")
 
+# 北交所代码前缀（43/83/87/88/920… 东财 secid 用 market=0，腾讯用 bj 前缀，涨跌停 ±30%）
+_BJ_PREFIXES = ("4", "8", "92")
+
+
+def _is_bj_code(code: str) -> bool:
+    return code.startswith(_BJ_PREFIXES)
+
 
 @dataclass
 class StockBasicInfo:
@@ -81,6 +88,8 @@ def get_limit_pct(code: str, is_st: bool) -> float:
     """返回该股票的涨跌停幅度阈值（含 0.1% 误差空间）。"""
     if is_st:
         return 4.95
+    if _is_bj_code(code):
+        return 29.90  # 北交所 ±30%
     if code.startswith(_HIGH_LIMIT_PREFIXES):
         return 19.90  # 科创板 / 创业板 ±20%
     return 9.90       # 主板 ±10%
@@ -504,7 +513,7 @@ def _fetch_kline_tencent(
     code: str, market: int, days: int, is_st: bool, limit_pct: float, timeout: int
 ) -> List[KLineBar]:
     """腾讯财经历史 K 线（无换手率，从相邻收盘价计算涨跌幅）"""
-    prefix = "sh" if market == 1 else "sz"
+    prefix = "bj" if _is_bj_code(code) else ("sh" if market == 1 else "sz")
     full_code = f"{prefix}{code}"
 
     with httpx.Client(headers=TENCENT_HEADERS, timeout=timeout) as client:
@@ -512,9 +521,9 @@ def _fetch_kline_tencent(
             "param": f"{full_code},day,,,{days},qfq",
         })
         data = resp.json()
-        raw_bars = (
-            data.get("data", {}).get(full_code, {}).get("qfqday", [])
-        )
+        node = data.get("data", {}).get(full_code, {}) or {}
+        # 前复权数据在 qfqday；部分股票（北交所、无复权调整的沪深股）落在 day，回退取之
+        raw_bars = node.get("qfqday") or node.get("day") or []
         if not raw_bars:
             raise ValueError("腾讯财经 K 线返回空数据")
         return _parse_tencent_klines(raw_bars, is_st, limit_pct)

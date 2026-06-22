@@ -919,7 +919,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 ))
             else:
                 # 新股：按代码前缀推断市场；名称优先选股API，其次全市场列表，最后用 code 占位
-                mkt = 1 if code.startswith(("6", "5", "9")) else 0
+                # 注意：北交所(920/8/4 开头)东财 secid 用 market=0；仅 6/5/900(沪B) 为沪市
+                mkt = 1 if code.startswith(("6", "5", "900")) else 0
                 real_name = api_name_map.get(code) or fallback_name_map.get(code) or code
                 is_st_new = "ST" in real_name   # 选股结果非ST→False；fallback名字含ST则True
                 stub = Stock(
