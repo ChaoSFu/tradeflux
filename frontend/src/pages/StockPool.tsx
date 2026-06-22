@@ -3,8 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { fetchStrongPool, fetchLimitMoves } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
-import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag } from '@/components/common/SectorTags'
+import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag, RegulatoryTag } from '@/components/common/SectorTags'
 import { useSectorLeaders } from '@/hooks/useSectorLeaders'
+import { useRegulatoryStatus, type RegStatus } from '@/hooks/useRegulatoryStatus'
 import {
   useLeaderUniverseMaxes, getLeaderTags, dragonPrimary,
   type LeaderMaxes,
@@ -207,6 +208,7 @@ export default function StockPool() {
 
   // ── 板块龙头（完全支配，由板块分析页数据决定）────────────────────────────
   const sectorLeaders = useSectorLeaders()  // Map<stockId, primarySector>
+  const regStatus = useRegulatoryStatus()   // code → 监管状态（警示徽章）
 
   const grouped = useMemo(() => {
     const map = new Map<GroupKey, Stock[]>(GROUPS.map((g) => [g.key, []]))
@@ -384,6 +386,7 @@ export default function StockPool() {
                       groupColor={activeDef.color}
                       leaderMaxes={leaderMaxes}
                       sectorLeaders={sectorLeaders}
+                      regStatus={regStatus.get(stock.code)}
                       onClick={() => navigate(`/stocks/${stock.code}`)}
                     />
                   ))
@@ -475,12 +478,14 @@ function StockRow({
   groupColor,
   leaderMaxes,
   sectorLeaders,
+  regStatus,
   onClick,
 }: {
   stock: Stock
   groupColor: string
   leaderMaxes: LeaderMaxes
   sectorLeaders: Map<number, string>   // stockId → primarySector
+  regStatus?: RegStatus
   onClick: () => void
 }) {
   const sectors = stock.sectors ?? []
@@ -506,6 +511,7 @@ function StockRow({
           {stock.is_leader && (
             <Star className="w-3 h-3 text-yellow-400 fill-yellow-400 shrink-0" />
           )}
+          {regStatus && <RegulatoryTag status={regStatus} />}
         </div>
         {(leaderTags.length > 0 || leadSectors.length > 0) && (
           <div className="flex flex-wrap gap-0.5 mt-0.5">

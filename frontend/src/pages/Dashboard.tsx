@@ -23,7 +23,8 @@ import type { RiskLevel, ProfitEffectGroup, SectorProfitEffect, Stock } from '@/
 import { useSectorTags, type SectorTagData } from '@/hooks/useSectorTags'
 import { useDragonStocks } from '@/hooks/useDragonStocks'
 import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
-import { SectorRankTags, LeaderTag } from '@/components/common/SectorTags'
+import { SectorRankTags, LeaderTag, RegulatoryTag } from '@/components/common/SectorTags'
+import { useRegulatoryStatus } from '@/hooks/useRegulatoryStatus'
 
 const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> = {
   bull_frenzy: 'dragon',
@@ -249,6 +250,7 @@ export default function Dashboard() {
   // ── 总龙头·板块分布（功能同板块赚钱效应，数据范围限定为总龙头）──────────────
   const dragonStocks = useDragonStocks()
   const leaderMaxes = useLeaderUniverseMaxes()
+  const regStatus = useRegulatoryStatus()  // code → 监管状态（警示徽章）
   // code → 龙头标签（仅总龙头有；用于龙头股/弱转强等卡片行内补标签）
   const dragonTagsByCode = useMemo(
     () => new Map(dragonStocks.map((s) => [s.code, getLeaderTags(s, leaderMaxes)])),
@@ -571,9 +573,10 @@ export default function Dashboard() {
                   <div className="flex items-center gap-2 min-w-0">
                     <Badge variant="dragon">{LEADER_TYPE_LABELS[l.leader_type] ?? l.leader_type}</Badge>
                     <div>
-                      <div>
+                      <div className="flex items-center gap-1">
                         <span className="font-medium text-sm text-text-primary">{l.stock_name}</span>
-                        <span className="text-xs text-text-muted ml-1">{l.stock_code}</span>
+                        <span className="text-xs text-text-muted">{l.stock_code}</span>
+                        {regStatus.get(l.stock_code) && <RegulatoryTag status={regStatus.get(l.stock_code)!} />}
                       </div>
                       {(dragonTagsByCode.get(l.stock_code)?.length ?? 0) > 0 && (
                         <div className="flex flex-wrap gap-0.5 mt-0.5">
@@ -605,6 +608,7 @@ export default function Dashboard() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm text-text-primary">{c.stock_name}</span>
                       <span className="text-xs text-text-muted">{c.stock_code}</span>
+                      {regStatus.get(c.stock_code) && <RegulatoryTag status={regStatus.get(c.stock_code)!} />}
                       {dragonTagsByCode.get(c.stock_code)?.map((t) => <LeaderTag key={t} label={t} />)}
                     </div>
                     <div className="flex items-center gap-1.5">
