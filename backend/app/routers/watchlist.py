@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..schemas.regulatory import RegulatoryWatchlistResponse
 from ..services.regulatory_service import get_regulatory_watchlist, sync_regulatory_unusual
+from ..services.deviation_service import sync_indices
 
 router = APIRouter(prefix="/watchlist", tags=["watchlist"])
 
@@ -16,5 +17,7 @@ def regulatory_watchlist(db: Session = Depends(get_db)):
 
 @router.post("/regulatory/sync")
 def regulatory_sync(db: Session = Depends(get_db)):
-    """手动触发抓取重点监管名单（盘后定时任务亦会自动同步）。"""
-    return sync_regulatory_unusual(db)
+    """手动触发抓取重点监管名单 + 基准指数日线（盘后定时任务亦会自动同步）。"""
+    idx = sync_indices(db)
+    reg = sync_regulatory_unusual(db)
+    return {"regulatory": reg, "indices": idx}

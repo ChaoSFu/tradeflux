@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { ShieldAlert, Clock, Activity } from 'lucide-react'
-import { fetchRegulatoryWatchlist, type RegulatoryItem } from '@/api/watchlist'
+import { ShieldAlert, Clock, Activity, Gauge } from 'lucide-react'
+import { fetchRegulatoryWatchlist, type RegulatoryItem, type ApproachingItem } from '@/api/watchlist'
 import { Card } from '@/components/ui/card'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { SectorTag, OverflowBadge, LeaderTag } from '@/components/common/SectorTags'
@@ -128,6 +128,99 @@ function RegTable({ items, maxes, onClickStock, empty }: {
   )
 }
 
+function ApproachBar({ approach, direction }: { approach: number; direction: 'up' | 'down' }) {
+  const pct = Math.min(100, Math.round(approach * 100))
+  const reached = approach >= 1
+  const color = direction === 'up' ? 'var(--color-up, #FF4560)' : 'var(--color-down, #26C281)'
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-2 rounded-full bg-bg-elevated overflow-hidden min-w-[60px]">
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
+      </div>
+      <span className={cn('font-mono text-xs w-10 text-right', reached ? 'font-bold' : '')} style={{ color }}>
+        {pct}%
+      </span>
+    </div>
+  )
+}
+
+function ApproachRow({ it, maxes, onClick }: {
+  it: ApproachingItem
+  maxes: ReturnType<typeof useLeaderUniverseMaxes>
+  onClick: () => void
+}) {
+  const s = it.stock
+  const leaderTags = s ? getLeaderTags(s, maxes) : []
+  const sectors = s?.sectors ?? []
+  const shown = sectors.slice(0, 3)
+  const hidden = sectors.slice(3)
+  const dirColor = it.direction === 'up' ? 'text-up' : 'text-down'
+  return (
+    <tr
+      className="border-b border-bg-border/20 last:border-0 hover:bg-bg-elevated transition-colors cursor-pointer"
+      onClick={onClick}
+    >
+      <td className="px-3 py-2.5">
+        <div className="font-mono text-accent text-xs">{it.security_code}</div>
+        <div className="text-text-primary font-medium whitespace-nowrap">{it.security_name ?? '—'}</div>
+        {leaderTags.length > 0 && (
+          <div className="flex flex-wrap gap-0.5 mt-0.5">{leaderTags.map((t) => <LeaderTag key={t} label={t} />)}</div>
+        )}
+      </td>
+      <td className="px-3 py-2.5 max-w-[200px]">
+        {shown.length ? (
+          <div className="flex flex-wrap gap-1">
+            {shown.map((n) => <SectorTag key={n} name={n} />)}
+            {hidden.length > 0 && <OverflowBadge count={hidden.length} hidden={hidden} />}
+          </div>
+        ) : <span className="text-text-muted text-xs">—</span>}
+      </td>
+      <td className="px-3 py-2.5">
+        <span className={cn('text-xs', dirColor)}>{it.rule_label}</span>
+        {!it.full_window && <span className="text-text-muted/60 text-xs ml-1">· 数据不足{it.coverage}日</span>}
+      </td>
+      <td className={cn('px-3 py-2.5 text-right font-mono text-xs', dirColor)}>
+        {it.cum_deviation > 0 ? '+' : ''}{it.cum_deviation}% <span className="text-text-muted/60">/ {it.threshold}%</span>
+      </td>
+      <td className="px-3 py-2.5 w-40"><ApproachBar approach={it.approach} direction={it.direction} /></td>
+      <td className={cn('px-3 py-2.5 text-right font-mono text-xs', pctColor(s?.today_pct_change))}>
+        {pctStr(s?.today_pct_change)}
+      </td>
+    </tr>
+  )
+}
+
+function ApproachTable({ items, maxes, onClickStock }: {
+  items: ApproachingItem[]
+  maxes: ReturnType<typeof useLeaderUniverseMaxes>
+  onClickStock: (code: string) => void
+}) {
+  if (items.length === 0) {
+    return <div className="text-center text-text-muted text-sm py-6">当前无个股逼近严重异常波动阈值</div>
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-bg-border/40 text-xs text-text-secondary/70">
+            <th className="px-3 py-2 text-left font-medium">代码 / 名称</th>
+            <th className="px-3 py-2 text-left font-medium">板块</th>
+            <th className="px-3 py-2 text-left font-medium">逼近规则</th>
+            <th className="px-3 py-2 text-right font-medium">累计偏离 / 阈值</th>
+            <th className="px-3 py-2 text-left font-medium">接近度</th>
+            <th className="px-3 py-2 text-right font-medium">今日涨幅</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((it) => (
+            <ApproachRow key={it.security_code} it={it} maxes={maxes} onClick={() => onClickStock(it.security_code)} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export default function Watchlist() {
   const navigate = useNavigate()
   const maxes = useLeaderUniverseMaxes()
@@ -141,6 +234,7 @@ export default function Watchlist() {
   const monitoring = data?.monitoring ?? []
   const endingSoon = data?.ending_soon ?? []
   const recentlyReleased = data?.recently_released ?? []
+  const approaching = data?.approaching ?? []
   const activeCount = monitoring.length + endingSoon.length
   const onClickStock = (code: string) => navigate(`/stocks/${code}`)
 
@@ -161,12 +255,24 @@ export default function Watchlist() {
             <p className="label">近期解除</p>
             <span className="font-mono text-2xl font-bold text-down">{recentlyReleased.length}</span>
           </div>
+          <div>
+            <p className="label">即将进入</p>
+            <span className="font-mono text-2xl font-bold text-accent">{approaching.length}</span>
+          </div>
           <div className="text-xs text-text-muted max-w-[360px]">
             数据来源：交易所严重异常波动（重点监控）名单 · 截至 {data?.as_of ?? '—'}。
             「监管中」指今日仍处于监控期内的个股。
           </div>
         </div>
       </div>
+
+      {/* 即将进入监管（偏离值预警，M3 核心） */}
+      <Card title={`即将进入监管 · 偏离值预警 (${approaching.length})`} action={<Gauge className="w-3.5 h-3.5 text-accent" />}>
+        <ApproachTable items={approaching} maxes={maxes} onClickStock={onClickStock} />
+        <div className="text-xs text-text-muted/70 mt-2 px-1">
+          接近度 = 累计偏离值 / 严重异常波动阈值（10日±100% / 30日±200% / 10日-50% / 30日-70%）。偏离值 = 个股涨跌幅 − 对应板块指数涨跌幅。
+        </div>
+      </Card>
 
       {/* 即将解除 */}
       <Card title={`即将解除监管 (${endingSoon.length})`} action={<Clock className="w-3.5 h-3.5 text-warn" />}>

@@ -1217,6 +1217,17 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
 
         log.summary()
 
+        # ── 基准指数日线同步（偏离值用，失败不影响主流程）──────────────────
+        try:
+            from app.services.deviation_service import sync_indices
+            idx = sync_indices(db)
+            log.info(f"基准指数日线同步：新增 {idx.get('count')} 条，ok={idx.get('ok')}")
+            if not idx.get("ok"):
+                api_warnings.append("基准指数日线 API 调用失败，偏离值预警可能不准")
+        except Exception as e:
+            log.info(f"[indices] 指数日线同步失败（不影响主流程）: {e}")
+            db.rollback()
+
         # ── 重点监管名单同步（独立步骤，失败不影响主流程）──────────────────
         try:
             from app.services.regulatory_service import sync_regulatory_unusual
