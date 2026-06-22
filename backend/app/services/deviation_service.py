@@ -100,10 +100,12 @@ def _index_pct_maps(db: Session) -> dict[str, dict[date, float]]:
     return maps
 
 
-def get_approaching_regulation(db: Session) -> list[ApproachingItem]:
+def get_approaching_regulation(db: Session, exclude_codes: Optional[set] = None) -> list[ApproachingItem]:
     """
     计算候选池个股的累计偏离值，返回逼近严重异常波动阈值（接近度≥APPROACH_FLOOR）的个股。
+    exclude_codes：已在监管名单（活跃/近期解除）的代码，剔除以保证「即将进入」是前瞻信号。
     """
+    exclude_codes = exclude_codes or set()
     index_maps = _index_pct_maps(db)
     if not index_maps:
         return []
@@ -125,6 +127,10 @@ def get_approaching_regulation(db: Session) -> list[ApproachingItem]:
     results: list[tuple[float, ApproachingItem, Stock]] = []
 
     for st in stocks:
+        if st.code in exclude_codes:
+            continue  # 已在监管名单（活跃/近期解除）→ 不算"即将进入"
+        if "退" in (st.name or ""):
+            continue  # 退市整理期个股是噪音，剔除
         idx_code = board_index_code(st.code)
         if not idx_code or idx_code not in index_maps:
             continue

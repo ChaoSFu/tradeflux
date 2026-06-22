@@ -153,7 +153,9 @@ def get_regulatory_watchlist(db: Session) -> RegulatoryWatchlistResponse:
     recently_released.sort(key=_rk, reverse=True)  # 最近解除在前（days_remaining 越接近0越前）
 
     from ..services.deviation_service import get_approaching_regulation
-    approaching = get_approaching_regulation(db)
+    # 已在监管名单（活跃 + 近期解除）的代码 → 不计入「即将进入」前瞻预警
+    exclude_codes = {r.security_code for r in active} | {r.security_code for r in released}
+    approaching = get_approaching_regulation(db, exclude_codes=exclude_codes)
 
     return RegulatoryWatchlistResponse(
         as_of=today,
