@@ -803,3 +803,66 @@ def fetch_limit_move_codes(
         with_names=with_names,
         with_detail=with_detail,
     )
+
+
+# ─── 异常波动 / 重点监控（严重异常波动 UNUSUAL_TYPE=002）─────────────────────────
+REGULATORY_UNUSUAL_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
+
+_REGULATORY_COLUMNS = (
+    "SECUCODE,SECURITY_CODE,SECURITY_NAME_ABBR,UNUSUAL_TYPE,START_DATE,END_DATE,"
+    "INFO_CODE,NOTICE_DATE,UNUSUAL_REASON,UNUSUAL_REASON_TYPE,MRAKET_TYPE,"
+    "PREDICT_START_DATE,PREDICT_END_DATE,IS_HIS"
+)
+
+
+def fetch_regulatory_unusual(is_his: str = "0", page_size: int = 500) -> list[dict]:
+    """
+    拉取交易所「严重异常波动 / 重点监控」名单（UNUSUAL_TYPE=002）。
+    is_his="0" 当前在监管；"1" 历史。自动翻页。
+
+    数据完整性：任一页失败 → 返回空列表（视为本次不可用），调用方据此保留旧数据、
+    不做清除，避免「部分结果」被误当作全集。
+    """
+    items: list[dict] = []
+    page_no = 1
+    pages: int | None = None
+    complete = True
+
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=20) as client:
+        while True:
+            params = {
+                "pageNumber": page_no,
+                "pageSize": page_size,
+                "sortColumns": "NOTICE_DATE,END_DATE",
+                "sortTypes": "-1,-1",
+                "source": "SECURITIES",
+                "client": "APP",
+                "reportName": "RPT_APP_UNUSUALBASIC",
+                "columns": _REGULATORY_COLUMNS,
+                "quoteColumns": "",
+                "filter": f'(UNUSUAL_TYPE="002")(IS_HIS="{is_his}")',
+            }
+            try:
+                resp = client.get(REGULATORY_UNUSUAL_URL, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                print(f"[fetcher] 重点监管名单第 {page_no} 页失败: {e}（本次视为不可用）")
+                complete = False
+                break
+
+            result = data.get("result") or {}
+            page_data = result.get("data") or []
+            if pages is None:
+                pages = int(result.get("pages") or 1)
+
+            items.extend(page_data)
+
+            if not page_data or page_no >= (pages or 1):
+                break
+            page_no += 1
+            time.sleep(0.2)
+
+    if not complete:
+        return []
+    return items

@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { Layout } from '@/components/layout/Layout'
 import Dashboard from '@/pages/Dashboard'
 import StockPool from '@/pages/StockPool'
+import Watchlist from '@/pages/Watchlist'
 import StockDetail from '@/pages/StockDetail'
 import SectorConfig from '@/pages/SectorConfig'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="stocks" element={<StockPool />} />
+          <Route path="watchlist" element={<Watchlist />} />
           <Route path="stocks/:code" element={<StockDetail />} />
           <Route path="sector-config" element={<ProtectedRoute><SectorConfig /></ProtectedRoute>} />
           <Route path="sector-trend" element={<SectorTrend />} />
