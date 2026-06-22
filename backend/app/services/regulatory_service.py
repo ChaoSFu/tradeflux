@@ -152,9 +152,13 @@ def get_regulatory_watchlist(db: Session) -> RegulatoryWatchlistResponse:
     ending_soon.sort(key=_rk)                # 最快解除在前
     recently_released.sort(key=_rk, reverse=True)  # 最近解除在前（days_remaining 越接近0越前）
 
+    from ..services.deviation_service import get_approaching_regulation
+    approaching = get_approaching_regulation(db)
+
     return RegulatoryWatchlistResponse(
         as_of=today,
         monitoring=monitoring,
         ending_soon=ending_soon,
         recently_released=recently_released,
+        approaching=approaching,
     )

@@ -866,3 +866,75 @@ def fetch_regulatory_unusual(is_his: str = "0", page_size: int = 500) -> list[di
     if not complete:
         return []
     return items
+
+
+def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dict]:
+    """
+    拉取指数日线（用于偏离值基准）。secid 形如 '1.000001'（上证）/'0.399006'（创业板指）。
+    返回 [{'date': 'YYYY-MM-DD', 'close': float, 'pct_change': float}, ...]，按日期升序。
+    失败返回空列表。
+    klines 字段：f51 日期, f53 收盘, f59 涨跌幅%。
+    """
+    end_date = date.today().strftime("%Y%m%d")
+    try:
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
+            resp = client.get(KLINE_URL, params={
+                "secid": secid,
+                "fields1": "f1,f2,f3,f4,f5,f6",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+                "lmt": days,
+                "klt": 101,
+                "fqt": 1,
+                "end": end_date,
+            })
+            payload = resp.json()
+        raw = (payload.get("data") or {}).get("klines") or []
+    except Exception as e:
+        print(f"[fetcher] 指数 {secid} 东财K线失败: {e}（回退腾讯）")
+        raw = []  # 落到下方腾讯兜底
+
+    out: list[dict] = []
+    for line in raw:
+        parts = line.split(",")
+        if len(parts) < 9:
+            continue
+        try:
+            out.append({
+                "date": parts[0],
+                "close": float(parts[2]),
+                "pct_change": float(parts[8]),
+            })
+        except (ValueError, IndexError):
+            continue
+    if not out:
+        # 东财被限流/返回空 → 回退腾讯
+        return _fetch_index_kline_tencent(secid, days=days, timeout=timeout)
+    return out
+
+
+def _fetch_index_kline_tencent(secid: str, days: int = 70, timeout: int = 15) -> list[dict]:
+    """指数日线腾讯兜底源。secid '1.000001'→'sh000001'，'0.399006'→'sz399006'。
+    腾讯无涨跌幅字段，用相邻收盘价计算。"""
+    market, _, code = secid.partition(".")
+    full = f"{'sh' if market == '1' else 'sz'}{code}"
+    try:
+        with httpx.Client(headers=TENCENT_HEADERS, timeout=timeout) as client:
+            resp = client.get(TENCENT_KLINE_URL, params={"param": f"{full},day,,,{days},qfq"})
+            data = resp.json()
+        node = data.get("data", {}).get(full, {})
+        raw = node.get("day") or node.get("qfqday") or []
+    except Exception as e:
+        print(f"[fetcher] 指数 {secid} 腾讯兜底失败: {e}")
+        return []
+
+    out: list[dict] = []
+    prev_close: float | None = None
+    for bar in raw:
+        try:
+            d, close = bar[0], float(bar[2])
+        except (ValueError, IndexError):
+            continue
+        pct = ((close - prev_close) / prev_close * 100) if prev_close else 0.0
+        out.append({"date": d, "close": close, "pct_change": round(pct, 4)})
+        prev_close = close
+    return out

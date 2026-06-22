@@ -26,8 +26,25 @@ class RegulatoryItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ApproachingItem(BaseModel):
+    security_code: str
+    security_name: Optional[str] = None
+    direction: str          # up | down
+    window: str             # 10d | 30d
+    cum_deviation: float    # 累计偏离值 %
+    threshold: float        # 触发阈值 %
+    approach: float         # 接近度 = 累计偏离值 / 阈值（≥1 表示已达标）
+    coverage: int           # 实际参与计算的交易日数
+    full_window: bool       # 是否取满窗口（False=数据不足，仅供参考）
+    rule_label: str
+    stock: Optional[StockResponse] = None
+
+    model_config = {"from_attributes": True}
+
+
 class RegulatoryWatchlistResponse(BaseModel):
     as_of: date
     monitoring: List[RegulatoryItem]
     ending_soon: List[RegulatoryItem]
     recently_released: List[RegulatoryItem]
+    approaching: List[ApproachingItem]
