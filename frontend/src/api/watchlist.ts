@@ -27,8 +27,9 @@ export interface ApproachingItem {
   cum_deviation: number   // 累计偏离值 %
   threshold: number       // 触发阈值 %
   approach: number        // 接近度 = 累计偏离值 / 阈值
-  coverage: number        // 参与计算的交易日数
-  full_window: boolean    // 是否取满窗口
+  coverage: number        // 累计天数
+  full_window: boolean
+  target_rate: number | null  // 今日还需涨跌幅 % 即触发
   rule_label: string
   stock: Stock | null
 }

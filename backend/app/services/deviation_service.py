@@ -4,6 +4,7 @@
 偏离值 = 个股涨跌幅 − 对应板块基准指数涨跌幅；累计偏离值（连续 N 个交易日）逼近
 严重异常波动阈值（10日±100% / 30日±200%）即「即将进入监管」。
 """
+import re
 import time
 from datetime import date, timedelta
 from typing import Optional
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 from ..models.market_index import IndexDailySnapshot
 from ..models.stock import Stock, StockDailySnapshot
 from ..schemas.regulatory import ApproachingItem
-from ..services.eastmoney_fetcher import fetch_index_kline
+from ..services.eastmoney_fetcher import fetch_index_kline, fetch_watch_unusual_fluctuate
 from ..services.strong_stock_service import _enrich_stocks_bulk
 
 # 基准指数：index_code → secid（东财 K线）。如需校准，改这里即可。
@@ -105,94 +106,63 @@ def _index_pct_maps(db: Session) -> dict[str, dict[date, float]]:
     return maps
 
 
+_THRESH_RE = re.compile(r"([+-]?\d+)%")
+
+
 def get_approaching_regulation(db: Session, exclude_codes: Optional[set] = None) -> list[ApproachingItem]:
     """
-    计算候选池个股的累计偏离值，返回逼近严重异常波动阈值（接近度≥APPROACH_FLOOR）的个股。
-    exclude_codes：已在监管名单（活跃/近期解除）的代码，剔除以保证「即将进入」是前瞻信号。
+    「即将进入监管」直接采用东财官方「严重异动预警」(RPT_WATCH_UNUSUAL_FLUCTUATE)的预计算偏离值，
+    取最新交易日、未触发(IS_HAPPEN=0)、接近度∈[floor,1) 的个股，按接近度降序。
+    exclude_codes：已在监管名单（活跃/近期解除）的代码，剔除以保证前瞻语义。
     """
     exclude_codes = exclude_codes or set()
-    index_maps = _index_pct_maps(db)
-    if not index_maps:
+    rows = fetch_watch_unusual_fluctuate()
+    if not rows:
         return []
 
-    # 候选池 = stocks 表（强势池 + 涨跌停），取最近 ~45 个交易日快照
-    floor_date = date.today() - timedelta(days=70)
-    snaps = (
-        db.query(StockDailySnapshot.stock_id, StockDailySnapshot.date, StockDailySnapshot.pct_change)
-        .filter(StockDailySnapshot.date >= floor_date)
-        .all()
-    )
-    pct_by_stock: dict[int, dict[date, float]] = {}
-    for sid, d, pct in snaps:
-        if pct is None:
+    # 每只股票按接近度保留最高的一条规则
+    best_by_code: dict[str, tuple[float, dict, float]] = {}
+    for r in rows:
+        if str(r.get("IS_HAPPEN")) != "0":
+            continue  # 已触发 → 不算"即将进入"
+        code = (r.get("SECURITY_CODE") or "").strip()
+        name = (r.get("SECURITY_NAME_ABBR") or "").strip()
+        if not code or code in exclude_codes or "退" in name:
             continue
-        pct_by_stock.setdefault(sid, {})[d] = pct
-
-    stocks = db.query(Stock).all()
-    results: list[tuple[float, ApproachingItem, Stock]] = []
-
-    for st in stocks:
-        if st.code in exclude_codes:
-            continue  # 已在监管名单（活跃/近期解除）→ 不算"即将进入"
-        if "退" in (st.name or ""):
-            continue  # 退市整理期个股是噪音，剔除
-        idx_code = board_index_code(st.code)
-        if not idx_code or idx_code not in index_maps:
+        m = _THRESH_RE.search(r.get("UNUSUAL_TYPE") or "")
+        dv = r.get("DEVUATION_VALUE")
+        if not m or dv is None:
+            continue  # 计次类（无 % 阈值）暂不计接近度
+        threshold = float(m.group(1))
+        if threshold == 0:
             continue
-        idx_pct = index_maps[idx_code]
-        spct = pct_by_stock.get(st.id)
-        if not spct:
+        approach = dv / threshold
+        if approach < APPROACH_FLOOR or approach >= 1.0:
             continue
-        # 个股与指数共有的交易日（升序），取最近 30 个
-        common = sorted(d for d in spct if d in idx_pct)
-        if len(common) < 5:
-            continue
-        recent = common[-30:]
+        prev = best_by_code.get(code)
+        if prev is None or approach > prev[0]:
+            best_by_code[code] = (approach, r, threshold)
 
-        best_ratio = -1e9
-        best: Optional[tuple] = None
-        for window, direction, threshold, label in THRESHOLDS:
-            win_dates = recent[-window:]
-            if len(win_dates) < min(window, 5):
-                continue
-            # 钳制单日涨跌幅至 ±21%（覆盖各板涨跌停上限），杜绝停牌复牌/次新等脏数据撑爆累计偏离
-            cum = sum(_clamp_pct(spct[d]) - idx_pct[d] for d in win_dates)
-            ratio = cum / threshold  # 同向时为正，越接近 1 越逼近触发
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best = (window, direction, threshold, label, cum, len(win_dates))
+    ranked = sorted(best_by_code.items(), key=lambda kv: kv[1][0], reverse=True)[:TOP_N]
+    codes = [c for c, _ in ranked]
+    stocks = db.query(Stock).filter(Stock.code.in_(codes)).all() if codes else []
+    stock_map = {resp.code: resp for resp in _enrich_stocks_bulk(stocks, db)}
 
-        # 接近度 < floor 跳过；≥1 表示已达标（已触发/已进监管），不属于"即将进入"
-        if best is None or best_ratio < APPROACH_FLOOR or best_ratio >= 1.0:
-            continue
-        window, direction, threshold, label, cum, coverage = best
-        results.append((
-            best_ratio,
-            ApproachingItem(
-                security_code=st.code,
-                security_name=st.name,
-                direction=direction,
-                window=f"{window}d",
-                cum_deviation=round(cum, 2),
-                threshold=threshold,
-                approach=round(best_ratio, 3),
-                coverage=coverage,
-                full_window=(coverage >= window),
-                rule_label=label,
-                stock=None,
-            ),
-            st,
-        ))
-
-    results.sort(key=lambda x: x[0], reverse=True)
-    top = results[:TOP_N]
-
-    # 富化命中个股
-    enriched = {s.code: r for s, r in zip(
-        [t[2] for t in top], _enrich_stocks_bulk([t[2] for t in top], db)
-    )}
     items: list[ApproachingItem] = []
-    for _, item, _st in top:
-        item.stock = enriched.get(item.security_code)  # type: ignore[assignment]
-        items.append(item)
+    for code, (approach, r, threshold) in ranked:
+        days = int(r.get("MAX_DAYS") or 0)
+        items.append(ApproachingItem(
+            security_code=code,
+            security_name=(r.get("SECURITY_NAME_ABBR") or "").strip() or None,
+            direction="up" if threshold > 0 else "down",
+            window=f"{days}日",
+            cum_deviation=round(float(r.get("DEVUATION_VALUE")), 2),
+            threshold=threshold,
+            approach=round(approach, 3),
+            coverage=days,
+            full_window=True,
+            target_rate=r.get("CHANGE_RATE_TARGET"),
+            rule_label=(r.get("UNUSUAL_TYPE") or "").strip(),
+            stock=stock_map.get(code),
+        ))
     return items

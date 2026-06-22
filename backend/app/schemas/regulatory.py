@@ -34,8 +34,9 @@ class ApproachingItem(BaseModel):
     cum_deviation: float    # 累计偏离值 %
     threshold: float        # 触发阈值 %
     approach: float         # 接近度 = 累计偏离值 / 阈值（≥1 表示已达标）
-    coverage: int           # 实际参与计算的交易日数
-    full_window: bool       # 是否取满窗口（False=数据不足，仅供参考）
+    coverage: int           # 累计天数（MAX_DAYS）
+    full_window: bool       # 是否取满窗口
+    target_rate: Optional[float] = None  # 今日还需涨跌幅 % 即触发
     rule_label: str
     stock: Optional[StockResponse] = None
 

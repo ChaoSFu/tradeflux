@@ -868,6 +868,46 @@ def fetch_regulatory_unusual(is_his: str = "0", page_size: int = 500) -> list[di
     return items
 
 
+WATCH_UNUSUAL_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
+_WATCH_COLUMNS = (
+    "SECURITY_CODE,SECURITY_NAME_ABBR,TRADE_DATE,MARKET_CODE,CHANGE_RATE,"
+    "MAX_DAYS,DEVUATION_VALUE,CHANGE_RATE_TARGET,IS_HAPPEN,UNUSUAL_TYPE"
+)
+
+
+def fetch_watch_unusual_fluctuate(page_size: int = 500, timeout: int = 20) -> list[dict]:
+    """
+    东财官方「严重异动预警」(RPT_WATCH_UNUSUAL_FLUCTUATE)——预计算的累计偏离值与逼近度。
+    含字段：DEVUATION_VALUE(累计偏离值)、MAX_DAYS(天数)、CHANGE_RATE_TARGET(今日还需涨跌%)、
+    IS_HAPPEN(0未触发/1已触发)、UNUSUAL_TYPE(规则原文)。
+    按 TRADE_DATE 降序取最新交易日那批；失败返回空。
+    """
+    try:
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
+            resp = client.get(WATCH_UNUSUAL_URL, params={
+                "reportName": "RPT_WATCH_UNUSUAL_FLUCTUATE",
+                "columns": _WATCH_COLUMNS,
+                "pageNumber": 1,
+                "pageSize": page_size,
+                "sortColumns": "TRADE_DATE",
+                "sortTypes": "-1",
+                "source": "SECURITIES",
+                "client": "APP",
+            })
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        print(f"[fetcher] 严重异动预警接口失败: {e}")
+        return []
+
+    rows = (data.get("result") or {}).get("data") or []
+    if not rows:
+        return []
+    # 仅保留最新交易日那批（已按 TRADE_DATE 降序）
+    latest = (rows[0].get("TRADE_DATE") or "")[:10]
+    return [r for r in rows if (r.get("TRADE_DATE") or "")[:10] == latest]
+
+
 def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dict]:
     """
     拉取指数日线（用于偏离值基准）。secid 形如 '1.000001'（上证）/'0.399006'（创业板指）。

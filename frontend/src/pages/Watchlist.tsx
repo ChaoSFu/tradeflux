@@ -177,12 +177,14 @@ function ApproachRow({ it, maxes, onClick }: {
       </td>
       <td className="px-3 py-2.5">
         <span className={cn('text-xs', dirColor)}>{it.rule_label}</span>
-        {!it.full_window && <span className="text-text-muted/60 text-xs ml-1">· 数据不足{it.coverage}日</span>}
       </td>
       <td className={cn('px-3 py-2.5 text-right font-mono text-xs', dirColor)}>
         {it.cum_deviation > 0 ? '+' : ''}{it.cum_deviation}% <span className="text-text-muted/60">/ {it.threshold}%</span>
       </td>
       <td className="px-3 py-2.5 w-40"><ApproachBar approach={it.approach} direction={it.direction} /></td>
+      <td className="px-3 py-2.5 text-right font-mono text-xs text-text-secondary">
+        {it.target_rate == null ? '—' : `${it.target_rate > 0 ? '+' : ''}${it.target_rate}%`}
+      </td>
       <td className={cn('px-3 py-2.5 text-right font-mono text-xs', pctColor(s?.today_pct_change))}>
         {pctStr(s?.today_pct_change)}
       </td>
@@ -208,6 +210,7 @@ function ApproachTable({ items, maxes, onClickStock }: {
             <th className="px-3 py-2 text-left font-medium">逼近规则</th>
             <th className="px-3 py-2 text-right font-medium">累计偏离 / 阈值</th>
             <th className="px-3 py-2 text-left font-medium">接近度</th>
+            <th className="px-3 py-2 text-right font-medium">还需触发</th>
             <th className="px-3 py-2 text-right font-medium">今日涨幅</th>
           </tr>
         </thead>
@@ -270,7 +273,7 @@ export default function Watchlist() {
       <Card title={`即将进入监管 · 偏离值预警 (${approaching.length})`} action={<Gauge className="w-3.5 h-3.5 text-accent" />}>
         <ApproachTable items={approaching} maxes={maxes} onClickStock={onClickStock} />
         <div className="text-xs text-text-muted/70 mt-2 px-1">
-          接近度 = 累计偏离值 / 严重异常波动阈值（10日±100% / 30日±200% / 10日-50% / 30日-70%）。偏离值 = 个股涨跌幅 − 对应板块指数涨跌幅。
+          数据来自东财官方「严重异动预警」（已算好的累计偏离值，含连续N日±100%/±200%/-50%/-70% 等规则）。接近度 = 累计偏离值 / 阈值；「还需触发」= 今日还需涨跌幅即触发。仅列未触发个股。
         </div>
       </Card>
 
