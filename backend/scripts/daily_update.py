@@ -1215,11 +1215,9 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         sig_count = db.query(Signal).filter(Signal.date == target_date).count()
         log.end(detail=f"信号 {sig_count} 条")
 
-        log.summary()
-
         # ── 重点监管名单同步（独立步骤，失败不影响主流程）──────────────────
-        # 注：「即将进入监管」预警改用东财官方 RPT_WATCH_UNUSUAL_FLUCTUATE，
-        # 实时拉取，无需本地指数偏离值管道。
+        # 注：「即将进入监管」预警改用东财实时接口，无需本地指数偏离值管道。
+        # 须在 log.summary() 之前执行——summary() 会关闭日志文件。
         try:
             from app.services.regulatory_service import sync_regulatory_unusual
             reg = sync_regulatory_unusual(db)
@@ -1230,6 +1228,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         except Exception as e:
             log.info(f"[regulatory] 重点监管名单同步失败（不影响主流程）: {e}")
             db.rollback()
+
+        log.summary()
 
     except Exception as e:
         import traceback
