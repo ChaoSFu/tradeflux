@@ -908,6 +908,31 @@ def fetch_watch_unusual_fluctuate(page_size: int = 500, timeout: int = 20) -> li
     return [r for r in rows if (r.get("TRADE_DATE") or "")[:10] == latest]
 
 
+PRICE_ANOMALY_URL = "https://dycalchis.eastmoney.com/price-anomaly/list"
+
+
+def fetch_price_anomaly_list(page_size: int = 400, timeout: int = 15) -> list[dict]:
+    """
+    东财实时「严重异动预测」(dycalchis)。返回当日实时列表，每条字段：
+      c=代码 n=名称 m=市场 x=累计偏离值 d=天数 t=今日还需涨跌幅% a=今日涨跌幅%
+      e=规则(4:10日+100% 5:10日-50% 6:30日+200% 7:30日-70%) o=状态(2:今日可触发 0:消退)
+    失败返回空。
+    """
+    try:
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
+            resp = client.get(PRICE_ANOMALY_URL, params={
+                "team": "h5", "product": "EastMoney", "client": "WAP",
+                "version": "9001", "name": "WAP", "user": "12",
+                "pageSize": page_size, "pageNo": 1, "sortKey": 0, "sortDir": 0,
+            })
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        print(f"[fetcher] 实时严重异动预测接口失败: {e}")
+        return []
+    return data.get("data") or []
+
+
 def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dict]:
     """
     拉取指数日线（用于偏离值基准）。secid 形如 '1.000001'（上证）/'0.399006'（创业板指）。

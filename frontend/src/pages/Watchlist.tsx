@@ -273,7 +273,7 @@ export default function Watchlist() {
       <Card title={`即将进入监管 · 偏离值预警 (${approaching.length})`} action={<Gauge className="w-3.5 h-3.5 text-accent" />}>
         <ApproachTable items={approaching} maxes={maxes} onClickStock={onClickStock} />
         <div className="text-xs text-text-muted/70 mt-2 px-1">
-          数据来自东财官方「严重异动预警」（已算好的累计偏离值，含连续N日±100%/±200%/-50%/-70% 等规则）。接近度 = 累计偏离值 / 阈值；「还需触发」= 今日还需涨跌幅即触发。仅列未触发个股。
+数据来自东财实时「严重异动预测」（官方累计偏离值，连续10/30日±100%/±200%/-50%/-70% 规则）。接近度 = 累计偏离值 / 阈值；「还需触发」= 今日还需涨跌幅即触发。仅列今日仍可触发的个股（已排除今日下跌+窗口滚动导致无法触发的消退股）。
         </div>
       </Card>
 
