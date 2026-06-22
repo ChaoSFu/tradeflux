@@ -132,13 +132,15 @@ def get_approaching_regulation(db: Session, exclude_codes: Optional[set] = None)
         if r.get("o") != 2:
             continue  # 仅"今日可触发"的活跃风险
         rule = _RULE_BY_E.get(r.get("e"))
-        if not rule:
-            continue  # 仅严重异动四规则
+        if not rule or rule[0] != "up":
+            continue  # 仅涨幅累计偏离监管（不关心跌幅）
         code = (r.get("c") or "").strip()
         name = (r.get("n") or "").strip()
         x = r.get("x")
-        if not code or code in exclude_codes or "退" in name or x is None:
+        if not code or code in exclude_codes or x is None:
             continue
+        if "退" in name or "ST" in name.upper():
+            continue  # 剔除退市整理期 + ST 股
         approach = x / rule[1]
         prev = best_by_code.get(code)
         if prev is None or approach > prev[0]:
