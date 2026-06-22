@@ -4,7 +4,6 @@
 偏离值 = 个股涨跌幅 − 对应板块基准指数涨跌幅；累计偏离值（连续 N 个交易日）逼近
 严重异常波动阈值（10日±100% / 30日±200%）即「即将进入监管」。
 """
-import re
 import time
 from datetime import date, timedelta
 from typing import Optional
@@ -14,7 +13,7 @@ from sqlalchemy.orm import Session
 from ..models.market_index import IndexDailySnapshot
 from ..models.stock import Stock, StockDailySnapshot
 from ..schemas.regulatory import ApproachingItem
-from ..services.eastmoney_fetcher import fetch_index_kline, fetch_watch_unusual_fluctuate
+from ..services.eastmoney_fetcher import fetch_index_kline, fetch_price_anomaly_list
 from ..services.strong_stock_service import _enrich_stocks_bulk
 
 # 基准指数：index_code → secid（东财 K线）。如需校准，改这里即可。
@@ -106,42 +105,44 @@ def _index_pct_maps(db: Session) -> dict[str, dict[date, float]]:
     return maps
 
 
-_THRESH_RE = re.compile(r"([+-]?\d+)%")
+# dycalchis e 字段 → (方向, 阈值, 规则文案)
+_RULE_BY_E: dict[int, tuple[str, float, str]] = {
+    4: ("up",   100.0, "连续10日涨幅偏离值累计→+100%"),
+    6: ("up",   200.0, "连续30日涨幅偏离值累计→+200%"),
+    5: ("down", -50.0, "连续10日跌幅偏离值累计→-50%"),
+    7: ("down", -70.0, "连续30日跌幅偏离值累计→-70%"),
+}
 
 
 def get_approaching_regulation(db: Session, exclude_codes: Optional[set] = None) -> list[ApproachingItem]:
     """
-    「即将进入监管」直接采用东财官方「严重异动预警」(RPT_WATCH_UNUSUAL_FLUCTUATE)的预计算偏离值，
-    取最新交易日、未触发(IS_HAPPEN=0)、接近度∈[floor,1) 的个股，按接近度降序。
+    「即将进入监管」采用东财实时「严重异动预测」(dycalchis price-anomaly/list)，
+    仅取 o=2（东财判定"今日可触发"，已排除如今日下跌+窗口滚动导致无法触发的消退股），
+    严重异动四规则(e∈4/5/6/7)，按接近度降序。
     exclude_codes：已在监管名单（活跃/近期解除）的代码，剔除以保证前瞻语义。
     """
     exclude_codes = exclude_codes or set()
-    rows = fetch_watch_unusual_fluctuate()
+    rows = fetch_price_anomaly_list()
     if not rows:
         return []
 
-    # 每只股票按接近度保留最高的一条规则
-    best_by_code: dict[str, tuple[float, dict, float]] = {}
+    # 每只股票保留接近度最高的一条 o=2 规则
+    best_by_code: dict[str, tuple[float, dict, tuple]] = {}
     for r in rows:
-        if str(r.get("IS_HAPPEN")) != "0":
-            continue  # 已触发 → 不算"即将进入"
-        code = (r.get("SECURITY_CODE") or "").strip()
-        name = (r.get("SECURITY_NAME_ABBR") or "").strip()
-        if not code or code in exclude_codes or "退" in name:
+        if r.get("o") != 2:
+            continue  # 仅"今日可触发"的活跃风险
+        rule = _RULE_BY_E.get(r.get("e"))
+        if not rule:
+            continue  # 仅严重异动四规则
+        code = (r.get("c") or "").strip()
+        name = (r.get("n") or "").strip()
+        x = r.get("x")
+        if not code or code in exclude_codes or "退" in name or x is None:
             continue
-        m = _THRESH_RE.search(r.get("UNUSUAL_TYPE") or "")
-        dv = r.get("DEVUATION_VALUE")
-        if not m or dv is None:
-            continue  # 计次类（无 % 阈值）暂不计接近度
-        threshold = float(m.group(1))
-        if threshold == 0:
-            continue
-        approach = dv / threshold
-        if approach < APPROACH_FLOOR or approach >= 1.0:
-            continue
+        approach = x / rule[1]
         prev = best_by_code.get(code)
         if prev is None or approach > prev[0]:
-            best_by_code[code] = (approach, r, threshold)
+            best_by_code[code] = (approach, r, rule)
 
     ranked = sorted(best_by_code.items(), key=lambda kv: kv[1][0], reverse=True)[:TOP_N]
     codes = [c for c, _ in ranked]
@@ -149,20 +150,21 @@ def get_approaching_regulation(db: Session, exclude_codes: Optional[set] = None)
     stock_map = {resp.code: resp for resp in _enrich_stocks_bulk(stocks, db)}
 
     items: list[ApproachingItem] = []
-    for code, (approach, r, threshold) in ranked:
-        days = int(r.get("MAX_DAYS") or 0)
+    for code, (approach, r, rule) in ranked:
+        direction, threshold, label = rule
+        days = int(r.get("d") or 0)
         items.append(ApproachingItem(
             security_code=code,
-            security_name=(r.get("SECURITY_NAME_ABBR") or "").strip() or None,
-            direction="up" if threshold > 0 else "down",
+            security_name=(r.get("n") or "").strip() or None,
+            direction=direction,
             window=f"{days}日",
-            cum_deviation=round(float(r.get("DEVUATION_VALUE")), 2),
+            cum_deviation=round(float(r.get("x")), 2),
             threshold=threshold,
             approach=round(approach, 3),
             coverage=days,
             full_window=True,
-            target_rate=r.get("CHANGE_RATE_TARGET"),
-            rule_label=(r.get("UNUSUAL_TYPE") or "").strip(),
+            target_rate=r.get("t"),
+            rule_label=label,
             stock=stock_map.get(code),
         ))
     return items
