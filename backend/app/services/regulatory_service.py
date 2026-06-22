@@ -101,6 +101,15 @@ def get_regulatory_watchlist(db: Session) -> RegulatoryWatchlistResponse:
                 best[r.security_code] = r
         return list(best.values())
 
+    # 只关心涨幅累计偏离监管，剔除跌幅类与 ST/退市股
+    def _keep(r: RegulatoryUnusual) -> bool:
+        name = (r.security_name or "").upper()
+        if "ST" in name or "退" in name:
+            return False
+        return _direction(r.reason_type) != "down"
+
+    records = [r for r in records if _keep(r)]
+
     # 活跃监管：今日仍在监管期内（predict_end 缺失视为活跃）
     active = _dedup_by_code([
         r for r in records
