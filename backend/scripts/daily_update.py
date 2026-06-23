@@ -213,27 +213,43 @@ def _sync_missing_sector_relations(db, limit_move_stocks: list, log=None) -> int
 _MIN_SNAPSHOTS_FOR_DB_REBUILD = 60
 
 
-def _snapshots_to_klinebars(snaps: list) -> List[KLineBar]:
+def _snapshots_to_klinebars(snaps: list, code: str = "", is_st: bool = False) -> List[KLineBar]:
     """
     将已排序的 StockDailySnapshot 列表转换为 KLineBar 列表。
     open/high/low 在 compute_window_stats 中未被使用，填 0.0。
     close_price 为 None（老快照迁移前无此字段）时降级为 0.0，
     此时 MA60/MA30 计算结果为 0，阶段判定回退为 "normal"（可接受的保守策略）。
+
+    涨跌停标志：当 code 提供且相邻收盘价可用时，按收盘价 + 0.005 容差重新判定，
+    自动修正历史快照里旧逻辑（浮点取整漏判）落库的 is_limit_up/down；
+    否则降级用存储值。这样每次 DB 重建都会重算正确的涨停天数/连板等指标。
     """
+    snaps = sorted(snaps, key=lambda s: s.date)
+    lp = get_limit_pct(code, is_st) if code else None
     bars: List[KLineBar] = []
+    prev_close = 0.0
     for s in snaps:
+        close = s.close_price or 0.0
+        is_lu, is_ld = bool(s.is_limit_up), bool(s.is_limit_down)
+        if lp is not None and close > 0 and prev_close > 0:
+            actual = lp + 0.1
+            lu_price = round(prev_close * (1 + actual / 100), 2)
+            ld_price = round(prev_close * (1 - actual / 100), 2)
+            is_lu = close >= lu_price - 0.005
+            is_ld = close <= ld_price + 0.005
         bars.append(KLineBar(
             date=s.date,
             open_price=0.0,
-            close_price=s.close_price or 0.0,
+            close_price=close,
             high_price=0.0,
             low_price=0.0,
             pct_change=s.pct_change or 0.0,
             turnover_rate=s.turnover_rate or 0.0,
-            is_limit_up=bool(s.is_limit_up),
-            is_limit_down=bool(s.is_limit_down),
+            is_limit_up=is_lu,
+            is_limit_down=is_ld,
             is_broken_board=bool(s.is_broken_board),
         ))
+        prev_close = close
     return bars
 
 
@@ -313,7 +329,7 @@ def _build_klines_from_db(
         snaps = snaps_by_stock.get(sid, []) if sid else []
         if len(snaps) >= _MIN_SNAPSHOTS_FOR_DB_REBUILD:
             db_group.append(info)
-            db_klines_map[info.code] = _snapshots_to_klinebars(snaps)
+            db_klines_map[info.code] = _snapshots_to_klinebars(snaps, info.code, info.is_st)
         else:
             full_group.append(info)
 
