@@ -124,8 +124,9 @@ def _parse_kline_bar(line: str, is_st: bool = False, limit_pct: float = 9.90) ->
         actual_limit = limit_pct + 0.1
         lu_price = round(prev_close * (1 + actual_limit / 100), 2)
         ld_price = round(prev_close * (1 - actual_limit / 100), 2)
-        is_lu = close_p >= lu_price
-        is_ld = close_p <= ld_price
+        # 容差 0.005：规避浮点取整（如 51.699 vs 涨停价 51.70）导致漏判
+        is_lu = close_p >= lu_price - 0.005
+        is_ld = close_p <= ld_price + 0.005
     else:
         prev_close = 0.0
         is_lu = pct >= limit_pct
@@ -451,8 +452,9 @@ def _parse_tencent_klines(
             actual_limit = limit_pct + 0.1
             lu_price = round(prev_close * (1 + actual_limit / 100), 2)
             ld_price = round(prev_close * (1 - actual_limit / 100), 2)
-            is_lu = close_p >= lu_price
-            is_ld = close_p <= ld_price
+            # 容差 0.005：规避浮点取整（如 51.699 vs 涨停价 51.70）导致漏判
+            is_lu = close_p >= lu_price - 0.005
+            is_ld = close_p <= ld_price + 0.005
         else:
             is_lu = pct >= limit_pct
             is_ld = pct <= -limit_pct
