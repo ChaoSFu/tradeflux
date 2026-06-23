@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { fetchStrongPool, fetchLimitMoves } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
-import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag, RegulatoryTag } from '@/components/common/SectorTags'
+import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag, RegulatoryTag, YesterdayLimitTag } from '@/components/common/SectorTags'
 import { useSectorLeaders } from '@/hooks/useSectorLeaders'
 import { useRegulatoryStatus, type RegStatus } from '@/hooks/useRegulatoryStatus'
 import {
@@ -513,8 +513,10 @@ function StockRow({
           )}
           {regStatus && <RegulatoryTag status={regStatus} />}
         </div>
-        {(leaderTags.length > 0 || leadSectors.length > 0) && (
+        {(leaderTags.length > 0 || leadSectors.length > 0 || stock.yesterday_is_limit_up || stock.yesterday_is_limit_down) && (
           <div className="flex flex-wrap gap-0.5 mt-0.5">
+            {stock.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
+            {stock.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
             {leaderTags.map(t => <LeaderTag key={t} label={t} />)}
             {leadSectors.map(n => <SectorLeaderTag key={n} name={n} />)}
           </div>

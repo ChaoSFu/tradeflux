@@ -133,6 +133,22 @@ export function RegulatoryTag({ status, title }: { status: RegStatus; title?: st
   )
 }
 
+// ─── 昨日涨停/跌停徽章（一致性强、需谨慎）────────────────────────────────────
+
+export function YesterdayLimitTag({ dir }: { dir: 'up' | 'down' }) {
+  const up = dir === 'up'
+  return (
+    <span
+      title={up ? '昨日涨停，一致性强，谨慎追高' : '昨日跌停，一致性强，谨慎抄底'}
+      className={`inline-flex items-center px-1 py-px text-[9px] font-bold rounded border whitespace-nowrap leading-tight ${
+        up ? 'bg-up/15 text-up border-up/30' : 'bg-down/15 text-down border-down/30'
+      }`}
+    >
+      {up ? '昨涨停' : '昨跌停'}
+    </span>
+  )
+}
+
 // ─── Sector leader badge (colored like SectorTag, ★ prefix) ──────────────────
 
 export function SectorLeaderTag({ name }: { name: string }) {

@@ -37,6 +37,9 @@ export interface Stock {
   today_pct_change: number | null
   today_board_count: number | null        // 连续涨停数
   today_limit_down_count: number | null   // 连续跌停数
+  // 上一交易日是否涨/跌停（一致性强、需谨慎）
+  yesterday_is_limit_up: boolean
+  yesterday_is_limit_down: boolean
 }
 
 export interface StockSnapshot {

@@ -7,7 +7,7 @@ import { Star, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import type { Stock } from '@/types'
 import { useSectorTags } from '@/hooks/useSectorTags'
-import { SectorRankTags, LeaderTag, RegulatoryTag } from '@/components/common/SectorTags'
+import { SectorRankTags, LeaderTag, RegulatoryTag, YesterdayLimitTag } from '@/components/common/SectorTags'
 import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
 import { useRegulatoryStatus } from '@/hooks/useRegulatoryStatus'
 
@@ -325,8 +325,11 @@ export function SectorSection({
                       <div className="font-mono text-accent/90">{stock.code}</div>
                       {(() => {
                         const lts = getLeaderTags(stock, leaderMaxes)
-                        return lts.length > 0 ? (
+                        const yLu = stock.yesterday_is_limit_up, yLd = stock.yesterday_is_limit_down
+                        return (lts.length > 0 || yLu || yLd) ? (
                           <div className="flex flex-wrap gap-0.5 mt-0.5">
+                            {yLu && <YesterdayLimitTag dir="up" />}
+                            {yLd && <YesterdayLimitTag dir="down" />}
                             {lts.map((t) => <LeaderTag key={t} label={t} />)}
                           </div>
                         ) : null

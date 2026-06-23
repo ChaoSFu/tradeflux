@@ -144,6 +144,22 @@ def _enrich_stocks_bulk(stocks: List[Stock], db: Session) -> List[StockResponse]
     # 当前最新交易日（全局）：today_* 仅在该股最新快照==此日期时有效，否则视为今日无数据
     latest_td = db.query(sqlfunc.max(StockDailySnapshot.date)).scalar()
 
+    # 上一交易日（全局）+ 各股当日快照：用于「昨日涨停/跌停」标签
+    prev_td = (
+        db.query(sqlfunc.max(StockDailySnapshot.date))
+        .filter(StockDailySnapshot.date < latest_td)
+        .scalar()
+        if latest_td else None
+    )
+    prev_snap_map: dict[int, StockDailySnapshot] = {}
+    if prev_td:
+        for s in (
+            db.query(StockDailySnapshot)
+            .filter(StockDailySnapshot.stock_id.in_(stock_ids), StockDailySnapshot.date == prev_td)
+            .all()
+        ):
+            prev_snap_map[s.stock_id] = s
+
     # ── 3. primary_sector_id → Sector (批量，用于 sector_phase 展示) ────────
     primary_sids = {s.primary_sector_id for s in stocks if s.primary_sector_id}
     primary_sector_objs: dict[int, Sector] = {}
@@ -164,6 +180,11 @@ def _enrich_stocks_bulk(stocks: List[Stock], db: Session) -> List[StockResponse]
         data.today_pct_change = snap.pct_change if is_today else None
         data.today_board_count = snap.board_count if is_today else None
         data.today_limit_down_count = snap.limit_down_count if is_today else None
+
+        # 昨日涨停/跌停（仅对当前在交易的股票有效，避免停牌/滞后误判）
+        prev_snap = prev_snap_map.get(stock.id)
+        data.yesterday_is_limit_up = bool(prev_snap.is_limit_up) if (is_today and prev_snap) else False
+        data.yesterday_is_limit_down = bool(prev_snap.is_limit_down) if (is_today and prev_snap) else False
 
         # ── 主板块：直接读落库值（与仪表盘/龙头等模块一致）───────────────────
         if stock.primary_sector_id and stock.primary_sector_name:
