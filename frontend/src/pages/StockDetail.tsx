@@ -5,6 +5,8 @@ import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { PhaseTag } from '@/components/common/PhaseTag'
+import { RegulatoryTag, YesterdayLimitTag } from '@/components/common/SectorTags'
+import { useRegulatoryStatus } from '@/hooks/useRegulatoryStatus'
 import { StockPriceChart } from '@/components/charts/StockPriceChart'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { ArrowLeft, TrendingUp, ShieldAlert, Zap, BarChart2 } from 'lucide-react'
@@ -19,6 +21,7 @@ import { pct, pctColor } from '@/utils/format'
 export default function StockDetail() {
   const { code } = useParams<{ code: string }>()
   const navigate = useNavigate()
+  const regStatus = useRegulatoryStatus()
 
   const { data: stock, isLoading: loadingStock } = useQuery({
     queryKey: ['stock', code],
@@ -61,6 +64,9 @@ export default function StockDetail() {
             <span className="font-mono text-sm text-accent">{stock.code}</span>
             {stock.is_leader && <Badge variant="dragon">龙头</Badge>}
             {stock.in_strong_pool && <Badge variant="up">强股池</Badge>}
+            {regStatus.get(stock.code) && <RegulatoryTag status={regStatus.get(stock.code)!} />}
+            {stock.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
+            {stock.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
           </div>
           <div className="flex items-center gap-3 mt-0.5 text-xs text-text-muted">
             <span>{stock.market}</span>

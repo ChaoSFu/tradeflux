@@ -4,7 +4,7 @@ import { ShieldAlert, Clock, Activity, Gauge } from 'lucide-react'
 import { fetchRegulatoryWatchlist, type RegulatoryItem, type ApproachingItem } from '@/api/watchlist'
 import { Card } from '@/components/ui/card'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
-import { SectorTag, OverflowBadge, LeaderTag } from '@/components/common/SectorTags'
+import { SectorTag, OverflowBadge, LeaderTag, YesterdayLimitTag } from '@/components/common/SectorTags'
 import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
 import { cn } from '@/utils/cn'
 
@@ -51,8 +51,10 @@ function RegRow({ it, maxes, onClick }: {
       <td className="px-3 py-2.5">
         <div className="font-mono text-accent text-xs">{it.security_code}</div>
         <div className="text-text-primary font-medium whitespace-nowrap">{it.security_name ?? '—'}</div>
-        {leaderTags.length > 0 && (
+        {(leaderTags.length > 0 || s?.yesterday_is_limit_up || s?.yesterday_is_limit_down) && (
           <div className="flex flex-wrap gap-0.5 mt-0.5">
+            {s?.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
+            {s?.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
             {leaderTags.map((t) => <LeaderTag key={t} label={t} />)}
           </div>
         )}
@@ -163,8 +165,12 @@ function ApproachRow({ it, maxes, onClick }: {
       <td className="px-3 py-2.5">
         <div className="font-mono text-accent text-xs">{it.security_code}</div>
         <div className="text-text-primary font-medium whitespace-nowrap">{it.security_name ?? '—'}</div>
-        {leaderTags.length > 0 && (
-          <div className="flex flex-wrap gap-0.5 mt-0.5">{leaderTags.map((t) => <LeaderTag key={t} label={t} />)}</div>
+        {(leaderTags.length > 0 || s?.yesterday_is_limit_up || s?.yesterday_is_limit_down) && (
+          <div className="flex flex-wrap gap-0.5 mt-0.5">
+            {s?.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
+            {s?.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
+            {leaderTags.map((t) => <LeaderTag key={t} label={t} />)}
+          </div>
         )}
       </td>
       <td className="px-3 py-2.5 max-w-[200px]">
