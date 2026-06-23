@@ -11,6 +11,9 @@ import {
 import { cn } from '@/utils/cn'
 import { Zap, Filter } from 'lucide-react'
 import type { RiskLevel } from '@/types'
+import { RegulatoryTag, YesterdayLimitTag } from '@/components/common/SectorTags'
+import { useRegulatoryStatus } from '@/hooks/useRegulatoryStatus'
+import { useStockByCode } from '@/hooks/useStockByCode'
 
 const SIGNAL_TYPES = [
   { value: '', label: '全部类型' },
@@ -50,6 +53,8 @@ export default function Signals() {
   const items = data?.items ?? []
   const total = data?.total ?? 0
   const totalPages = Math.ceil(total / 20)
+  const regStatus = useRegulatoryStatus()
+  const stockByCode = useStockByCode()
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -100,6 +105,9 @@ export default function Signals() {
                   <div className="flex items-center gap-2 flex-wrap mb-2">
                     <span className="font-semibold text-text-primary">{sig.stock_name ?? '未知'}</span>
                     <span className="font-mono text-xs text-accent">{sig.stock_code}</span>
+                    {regStatus.get(sig.stock_code ?? '') && <RegulatoryTag status={regStatus.get(sig.stock_code ?? '')!} />}
+                    {stockByCode.get(sig.stock_code ?? '')?.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
+                    {stockByCode.get(sig.stock_code ?? '')?.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
                     {sig.sector_name && (
                       <Badge variant="muted">{sig.sector_name}</Badge>
                     )}

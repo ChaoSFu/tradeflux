@@ -23,7 +23,7 @@ import type { RiskLevel, ProfitEffectGroup, SectorProfitEffect, Stock } from '@/
 import { useSectorTags, type SectorTagData } from '@/hooks/useSectorTags'
 import { useDragonStocks } from '@/hooks/useDragonStocks'
 import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
-import { SectorRankTags, LeaderTag, RegulatoryTag } from '@/components/common/SectorTags'
+import { SectorRankTags, LeaderTag, RegulatoryTag, YesterdayLimitTag } from '@/components/common/SectorTags'
 import { useRegulatoryStatus } from '@/hooks/useRegulatoryStatus'
 
 const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> = {
@@ -251,6 +251,12 @@ export default function Dashboard() {
   const dragonStocks = useDragonStocks()
   const leaderMaxes = useLeaderUniverseMaxes()
   const regStatus = useRegulatoryStatus()  // code → 监管状态（警示徽章）
+  // code → Stock（用于龙头股/弱转强卡片补「昨涨停/昨跌停」标签）
+  const stockByCode = useMemo(() => {
+    const m = new Map<string, Stock>()
+    for (const s of [...allStocks, ...dragonStocks]) m.set(s.code, s)
+    return m
+  }, [allStocks, dragonStocks])
   // code → 龙头标签（仅总龙头有；用于龙头股/弱转强等卡片行内补标签）
   const dragonTagsByCode = useMemo(
     () => new Map(dragonStocks.map((s) => [s.code, getLeaderTags(s, leaderMaxes)])),
@@ -577,6 +583,8 @@ export default function Dashboard() {
                         <span className="font-medium text-sm text-text-primary">{l.stock_name}</span>
                         <span className="text-xs text-text-muted">{l.stock_code}</span>
                         {regStatus.get(l.stock_code) && <RegulatoryTag status={regStatus.get(l.stock_code)!} />}
+                        {stockByCode.get(l.stock_code)?.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
+                        {stockByCode.get(l.stock_code)?.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
                       </div>
                       {(dragonTagsByCode.get(l.stock_code)?.length ?? 0) > 0 && (
                         <div className="flex flex-wrap gap-0.5 mt-0.5">
@@ -609,6 +617,8 @@ export default function Dashboard() {
                       <span className="font-medium text-sm text-text-primary">{c.stock_name}</span>
                       <span className="text-xs text-text-muted">{c.stock_code}</span>
                       {regStatus.get(c.stock_code) && <RegulatoryTag status={regStatus.get(c.stock_code)!} />}
+                      {stockByCode.get(c.stock_code)?.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
+                      {stockByCode.get(c.stock_code)?.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
                       {dragonTagsByCode.get(c.stock_code)?.map((t) => <LeaderTag key={t} label={t} />)}
                     </div>
                     <div className="flex items-center gap-1.5">
