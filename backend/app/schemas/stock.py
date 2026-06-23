@@ -58,6 +58,9 @@ class StockResponse(StockBase):
     today_pct_change: Optional[float] = None        # 今日涨跌幅 %
     today_board_count: Optional[int] = None         # 当前连续涨停数（截至今日快照）
     today_limit_down_count: Optional[int] = None    # 当前连续跌停数（截至今日快照）
+    # 上一交易日是否涨/跌停（一致性强、需谨慎；仅对当前在交易的股票有效）
+    yesterday_is_limit_up: bool = False
+    yesterday_is_limit_down: bool = False
 
     model_config = {"from_attributes": True}
 
