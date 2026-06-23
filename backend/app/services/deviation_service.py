@@ -122,15 +122,13 @@ def get_approaching_regulation(db: Session, exclude_codes: Optional[set] = None)
     exclude_codes：已在监管名单（活跃/近期解除）的代码，剔除以保证前瞻语义。
     """
     exclude_codes = exclude_codes or set()
-    rows = fetch_price_anomaly_list()
+    rows, is_open = fetch_price_anomaly_list()
     if not rows:
         return []
 
-    # 每只股票保留接近度最高的一条 o=2 规则
+    # 每只股票保留接近度最高的一条规则
     best_by_code: dict[str, tuple[float, dict, tuple]] = {}
     for r in rows:
-        if r.get("o") != 2:
-            continue  # 仅"今日可触发"的活跃风险
         rule = _RULE_BY_E.get(r.get("e"))
         if not rule or rule[0] != "up":
             continue  # 仅涨幅累计偏离监管（不关心跌幅）
@@ -142,6 +140,14 @@ def get_approaching_regulation(db: Session, exclude_codes: Optional[set] = None)
         if "退" in name or "ST" in name.upper():
             continue  # 剔除退市整理期 + ST 股
         approach = x / rule[1]
+        # 盘后：东财 o=2 即"将触发"（已排除消退股），直接采用；
+        # 盘中：o 不区分将触发，用接近度（未触发即 approach<1，排除已触发 o=1）
+        if is_open:
+            if r.get("o") == 1 or not (APPROACH_FLOOR <= approach < 1.0):
+                continue
+        else:
+            if r.get("o") != 2:
+                continue
         prev = best_by_code.get(code)
         if prev is None or approach > prev[0]:
             best_by_code[code] = (approach, r, rule)
