@@ -920,12 +920,13 @@ def fetch_watch_unusual_fluctuate(page_size: int = 500, timeout: int = 20) -> li
 PRICE_ANOMALY_URL = "https://dycalchis.eastmoney.com/price-anomaly/list"
 
 
-def fetch_price_anomaly_list(page_size: int = 400, timeout: int = 15) -> list[dict]:
+def fetch_price_anomaly_list(page_size: int = 400, timeout: int = 15) -> tuple[list[dict], bool]:
     """
-    东财实时「严重异动预测」(dycalchis)。返回当日实时列表，每条字段：
-      c=代码 n=名称 m=市场 x=累计偏离值 d=天数 t=今日还需涨跌幅% a=今日涨跌幅%
-      e=规则(4:10日+100% 5:10日-50% 6:30日+200% 7:30日-70%) o=状态(2:今日可触发 0:消退)
-    失败返回空。
+    东财实时「严重异动预测」(dycalchis)。返回 (列表, is_open)。
+    字段：c=代码 n=名称 m=市场 x=累计偏离值 d=天数 t=今日还需涨跌幅% a=今日涨跌幅%
+      e=规则(4:10日+100% 5:10日-50% 6:30日+200% 7:30日-70%)
+      o=状态（盘后 open=0：2=将触发/0=消退；盘中 open=1：1=已触发/0=未触发）
+    is_open：True=盘中（o 不区分将触发，需用接近度判定）。失败返回 ([], False)。
     """
     try:
         with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
@@ -938,8 +939,8 @@ def fetch_price_anomaly_list(page_size: int = 400, timeout: int = 15) -> list[di
             data = resp.json()
     except Exception as e:
         print(f"[fetcher] 实时严重异动预测接口失败: {e}")
-        return []
-    return data.get("data") or []
+        return [], False
+    return (data.get("data") or [], bool(data.get("open")))
 
 
 def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dict]:
