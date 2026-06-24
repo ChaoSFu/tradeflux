@@ -160,6 +160,23 @@ def _enrich_stocks_bulk(stocks: List[Stock], db: Session) -> List[StockResponse]
         ):
             prev_snap_map[s.stock_id] = s
 
+    # 近30日累计涨幅（用于「距严异空间」近似：涨幅严重异动 30日+200%）──────────
+    cum30_map: dict[int, float] = {}
+    if latest_td:
+        td_rows = (
+            db.query(StockDailySnapshot.date)
+            .filter(StockDailySnapshot.date <= latest_td)
+            .distinct().order_by(StockDailySnapshot.date.desc()).limit(30).all()
+        )
+        if td_rows:
+            td30 = td_rows[-1][0]
+            for sid, total in (
+                db.query(StockDailySnapshot.stock_id, sqlfunc.sum(StockDailySnapshot.pct_change))
+                .filter(StockDailySnapshot.stock_id.in_(stock_ids), StockDailySnapshot.date >= td30)
+                .group_by(StockDailySnapshot.stock_id).all()
+            ):
+                cum30_map[sid] = float(total or 0.0)
+
     # ── 3. primary_sector_id → Sector (批量，用于 sector_phase 展示) ────────
     primary_sids = {s.primary_sector_id for s in stocks if s.primary_sector_id}
     primary_sector_objs: dict[int, Sector] = {}
@@ -185,6 +202,13 @@ def _enrich_stocks_bulk(stocks: List[Stock], db: Session) -> List[StockResponse]
         prev_snap = prev_snap_map.get(stock.id)
         data.yesterday_is_limit_up = bool(prev_snap.is_limit_up) if (is_today and prev_snap) else False
         data.yesterday_is_limit_down = bool(prev_snap.is_limit_down) if (is_today and prev_snap) else False
+
+        # 距涨幅严重异动「上涨空间」近似 = min(10日到+100%, 30日到+200%) 的剩余累计涨幅
+        # 用累计涨幅近似偏离值（不扣指数，偏保守）。已触发(<=0) 或数据不足 → None。
+        cum10 = stock.pct_change_10d or 0.0
+        cum30 = cum30_map.get(stock.id, cum10)
+        room = min(100.0 - cum10, 200.0 - cum30)
+        data.severe_up_room = round(room, 1) if room > 0 else None
 
         # ── 主板块：直接读落库值（与仪表盘/龙头等模块一致）───────────────────
         if stock.primary_sector_id and stock.primary_sector_name:

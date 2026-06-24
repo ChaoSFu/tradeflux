@@ -67,7 +67,7 @@ export default function StockDetail() {
             {stock.is_leader && <Badge variant="dragon">龙头</Badge>}
             {stock.in_strong_pool && <Badge variant="up">强股池</Badge>}
             {regStatus.get(stock.code) && <RegulatoryTag status={regStatus.get(stock.code)!} />}
-            {severeTargets.get(stock.code) && <SevereTargetTag target={severeTargets.get(stock.code)!.target_rate} approach={severeTargets.get(stock.code)!.approach} />}
+            <SevereTargetTag target={severeTargets.get(stock.code)?.target_rate} approach={severeTargets.get(stock.code)?.approach} room={stock.severe_up_room} />
             {stock.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
             {stock.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
           </div>

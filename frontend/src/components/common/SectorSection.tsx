@@ -329,9 +329,10 @@ export function SectorSection({
                         const lts = getLeaderTags(stock, leaderMaxes)
                         const yLu = stock.yesterday_is_limit_up, yLd = stock.yesterday_is_limit_down
                         const sev = severeTargets.get(stock.code)
-                        return (lts.length > 0 || yLu || yLd || sev) ? (
+                        const room = stock.severe_up_room
+                        return (lts.length > 0 || yLu || yLd || sev || (room != null && room <= 60)) ? (
                           <div className="flex flex-wrap gap-0.5 mt-0.5">
-                            {sev && <SevereTargetTag target={sev.target_rate} approach={sev.approach} />}
+                            <SevereTargetTag target={sev?.target_rate} approach={sev?.approach} room={room} />
                             {yLu && <YesterdayLimitTag dir="up" />}
                             {yLd && <YesterdayLimitTag dir="down" />}
                             {lts.map((t) => <LeaderTag key={t} label={t} />)}
