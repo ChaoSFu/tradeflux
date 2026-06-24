@@ -3,9 +3,10 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { fetchStrongPool, fetchLimitMoves } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
-import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag, RegulatoryTag, YesterdayLimitTag } from '@/components/common/SectorTags'
+import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag, RegulatoryTag, YesterdayLimitTag, SevereTargetTag } from '@/components/common/SectorTags'
 import { useSectorLeaders } from '@/hooks/useSectorLeaders'
 import { useRegulatoryStatus, type RegStatus } from '@/hooks/useRegulatoryStatus'
+import { useSevereTargets, type SevereTarget } from '@/hooks/useSevereTargets'
 import {
   useLeaderUniverseMaxes, getLeaderTags, dragonPrimary,
   type LeaderMaxes,
@@ -209,6 +210,7 @@ export default function StockPool() {
   // ── 板块龙头（完全支配，由板块分析页数据决定）────────────────────────────
   const sectorLeaders = useSectorLeaders()  // Map<stockId, primarySector>
   const regStatus = useRegulatoryStatus()   // code → 监管状态（警示徽章）
+  const severeTargets = useSevereTargets()   // code → 还需涨幅%触发严重异动
 
   const grouped = useMemo(() => {
     const map = new Map<GroupKey, Stock[]>(GROUPS.map((g) => [g.key, []]))
@@ -387,6 +389,7 @@ export default function StockPool() {
                       leaderMaxes={leaderMaxes}
                       sectorLeaders={sectorLeaders}
                       regStatus={regStatus.get(stock.code)}
+                      severe={severeTargets.get(stock.code)}
                       onClick={() => navigate(`/stocks/${stock.code}`)}
                     />
                   ))
@@ -479,6 +482,7 @@ function StockRow({
   leaderMaxes,
   sectorLeaders,
   regStatus,
+  severe,
   onClick,
 }: {
   stock: Stock
@@ -486,6 +490,7 @@ function StockRow({
   leaderMaxes: LeaderMaxes
   sectorLeaders: Map<number, string>   // stockId → primarySector
   regStatus?: RegStatus
+  severe?: SevereTarget
   onClick: () => void
 }) {
   const sectors = stock.sectors ?? []
@@ -513,8 +518,9 @@ function StockRow({
           )}
           {regStatus && <RegulatoryTag status={regStatus} />}
         </div>
-        {(leaderTags.length > 0 || leadSectors.length > 0 || stock.yesterday_is_limit_up || stock.yesterday_is_limit_down) && (
+        {(leaderTags.length > 0 || leadSectors.length > 0 || stock.yesterday_is_limit_up || stock.yesterday_is_limit_down || severe) && (
           <div className="flex flex-wrap gap-0.5 mt-0.5">
+            {severe && <SevereTargetTag target={severe.target_rate} approach={severe.approach} />}
             {stock.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
             {stock.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
             {leaderTags.map(t => <LeaderTag key={t} label={t} />)}

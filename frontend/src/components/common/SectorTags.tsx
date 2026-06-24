@@ -133,6 +133,23 @@ export function RegulatoryTag({ status, title }: { status: RegStatus; title?: st
   )
 }
 
+// ─── 严重异动触发徽章（再涨 X% 触发涨幅严重异常波动）──────────────────────────
+
+export function SevereTargetTag({ target, approach }: { target: number | null; approach?: number }) {
+  if (target == null) return null
+  const urgent = (approach ?? 0) >= 0.9
+  return (
+    <span
+      title={`今日再涨 ${target.toFixed(2)}% 即触发严重异常波动监管${approach != null ? `（接近度 ${(approach * 100).toFixed(0)}%）` : ''}`}
+      className={`inline-flex items-center px-1 py-px text-[9px] font-bold rounded border whitespace-nowrap leading-tight ${
+        urgent ? 'bg-up/20 text-up border-up/40' : 'bg-orange-500/12 text-orange-400 border-orange-500/30'
+      }`}
+    >
+      严异+{target.toFixed(1)}%
+    </span>
+  )
+}
+
 // ─── 昨日涨停/跌停徽章（一致性强、需谨慎）────────────────────────────────────
 
 export function YesterdayLimitTag({ dir }: { dir: 'up' | 'down' }) {
