@@ -23,8 +23,9 @@ import type { RiskLevel, ProfitEffectGroup, SectorProfitEffect, Stock } from '@/
 import { useSectorTags, type SectorTagData } from '@/hooks/useSectorTags'
 import { useDragonStocks } from '@/hooks/useDragonStocks'
 import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
-import { SectorRankTags, LeaderTag, RegulatoryTag, YesterdayLimitTag } from '@/components/common/SectorTags'
+import { SectorRankTags, LeaderTag, RegulatoryTag, YesterdayLimitTag, SevereTargetTag } from '@/components/common/SectorTags'
 import { useRegulatoryStatus } from '@/hooks/useRegulatoryStatus'
+import { useSevereTargets } from '@/hooks/useSevereTargets'
 
 const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> = {
   bull_frenzy: 'dragon',
@@ -251,6 +252,7 @@ export default function Dashboard() {
   const dragonStocks = useDragonStocks()
   const leaderMaxes = useLeaderUniverseMaxes()
   const regStatus = useRegulatoryStatus()  // code → 监管状态（警示徽章）
+  const severeTargets = useSevereTargets()  // code → 还需涨幅%触发严重异动
   // code → Stock（用于龙头股/弱转强卡片补「昨涨停/昨跌停」标签）
   const stockByCode = useMemo(() => {
     const m = new Map<string, Stock>()
@@ -583,6 +585,7 @@ export default function Dashboard() {
                         <span className="font-medium text-sm text-text-primary">{l.stock_name}</span>
                         <span className="text-xs text-text-muted">{l.stock_code}</span>
                         {regStatus.get(l.stock_code) && <RegulatoryTag status={regStatus.get(l.stock_code)!} />}
+                        {severeTargets.get(l.stock_code) && <SevereTargetTag target={severeTargets.get(l.stock_code)!.target_rate} approach={severeTargets.get(l.stock_code)!.approach} />}
                         {stockByCode.get(l.stock_code)?.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
                         {stockByCode.get(l.stock_code)?.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
                       </div>
@@ -617,6 +620,7 @@ export default function Dashboard() {
                       <span className="font-medium text-sm text-text-primary">{c.stock_name}</span>
                       <span className="text-xs text-text-muted">{c.stock_code}</span>
                       {regStatus.get(c.stock_code) && <RegulatoryTag status={regStatus.get(c.stock_code)!} />}
+                      {severeTargets.get(c.stock_code) && <SevereTargetTag target={severeTargets.get(c.stock_code)!.target_rate} approach={severeTargets.get(c.stock_code)!.approach} />}
                       {stockByCode.get(c.stock_code)?.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
                       {stockByCode.get(c.stock_code)?.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
                       {dragonTagsByCode.get(c.stock_code)?.map((t) => <LeaderTag key={t} label={t} />)}

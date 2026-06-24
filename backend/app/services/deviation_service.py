@@ -114,6 +114,38 @@ _RULE_BY_E: dict[int, tuple[str, float, str]] = {
 }
 
 
+def get_severe_up_targets() -> dict[str, dict]:
+    """
+    全平台用：code → {target_rate, approach, days, threshold}。
+    取东财实时「严重异动预测」中【涨幅严重异动、未触发】的票，每只保留最逼近(接近度最高)的一条，
+    target_rate = 今日还需涨幅 % 即触发。非 ST/退市。
+    """
+    rows, _ = fetch_price_anomaly_list()
+    out: dict[str, dict] = {}
+    for r in rows:
+        rule = _RULE_BY_E.get(r.get("e"))
+        if not rule or rule[0] != "up":
+            continue
+        code = (r.get("c") or "").strip()
+        name = (r.get("n") or "").strip()
+        x = r.get("x")
+        if not code or x is None or "退" in name or "ST" in name.upper():
+            continue
+        approach = x / rule[1]
+        if approach >= 1.0:
+            continue  # 已触发
+        cur = {
+            "target_rate": r.get("t"),
+            "approach": round(approach, 3),
+            "days": int(r.get("d") or 0),
+            "threshold": rule[1],
+        }
+        prev = out.get(code)
+        if prev is None or cur["approach"] > prev["approach"]:
+            out[code] = cur
+    return out
+
+
 def get_approaching_regulation(db: Session, exclude_codes: Optional[set] = None) -> list[ApproachingItem]:
     """
     「即将进入监管」采用东财实时「严重异动预测」(dycalchis price-anomaly/list)，

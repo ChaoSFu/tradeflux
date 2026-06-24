@@ -7,9 +7,10 @@ import { Star, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import type { Stock } from '@/types'
 import { useSectorTags } from '@/hooks/useSectorTags'
-import { SectorRankTags, LeaderTag, RegulatoryTag, YesterdayLimitTag } from '@/components/common/SectorTags'
+import { SectorRankTags, LeaderTag, RegulatoryTag, YesterdayLimitTag, SevereTargetTag } from '@/components/common/SectorTags'
 import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
 import { useRegulatoryStatus } from '@/hooks/useRegulatoryStatus'
+import { useSevereTargets } from '@/hooks/useSevereTargets'
 
 // ─── Group helpers ────────────────────────────────────────────────────────────
 
@@ -151,6 +152,7 @@ export function SectorSection({
   // 全市场龙头标签基准（与活跃股池「总龙头」一致），用于行内展示个股龙头标签
   const leaderMaxes = useLeaderUniverseMaxes()
   const regStatus = useRegulatoryStatus()  // code → 监管状态（警示徽章）
+  const severeTargets = useSevereTargets()  // code → 还需涨幅%触发严重异动
 
   // 默认（未点列头）：按分组+龙头分排序；点列头：按该列数值排序
   const sortedStocks = useMemo(() => {
@@ -326,8 +328,10 @@ export function SectorSection({
                       {(() => {
                         const lts = getLeaderTags(stock, leaderMaxes)
                         const yLu = stock.yesterday_is_limit_up, yLd = stock.yesterday_is_limit_down
-                        return (lts.length > 0 || yLu || yLd) ? (
+                        const sev = severeTargets.get(stock.code)
+                        return (lts.length > 0 || yLu || yLd || sev) ? (
                           <div className="flex flex-wrap gap-0.5 mt-0.5">
+                            {sev && <SevereTargetTag target={sev.target_rate} approach={sev.approach} />}
                             {yLu && <YesterdayLimitTag dir="up" />}
                             {yLd && <YesterdayLimitTag dir="down" />}
                             {lts.map((t) => <LeaderTag key={t} label={t} />)}

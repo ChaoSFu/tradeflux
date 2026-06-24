@@ -44,3 +44,13 @@ export interface RegulatoryWatchlistResponse {
 
 export const fetchRegulatoryWatchlist = () =>
   client.get<RegulatoryWatchlistResponse>('/watchlist/regulatory').then((r) => r.data)
+
+export interface SevereTarget {
+  target_rate: number | null  // 今日还需涨幅 % 触发
+  approach: number            // 接近度
+  days: number                // 累计天数
+  threshold: number           // 阈值(+100/+200)
+}
+
+export const fetchSevereTargets = () =>
+  client.get<Record<string, SevereTarget>>('/watchlist/severe-targets').then((r) => r.data)

@@ -11,9 +11,10 @@ import {
 import { cn } from '@/utils/cn'
 import { Zap, Filter } from 'lucide-react'
 import type { RiskLevel } from '@/types'
-import { RegulatoryTag, YesterdayLimitTag } from '@/components/common/SectorTags'
+import { RegulatoryTag, YesterdayLimitTag, SevereTargetTag } from '@/components/common/SectorTags'
 import { useRegulatoryStatus } from '@/hooks/useRegulatoryStatus'
 import { useStockByCode } from '@/hooks/useStockByCode'
+import { useSevereTargets } from '@/hooks/useSevereTargets'
 
 const SIGNAL_TYPES = [
   { value: '', label: '全部类型' },
@@ -55,6 +56,7 @@ export default function Signals() {
   const totalPages = Math.ceil(total / 20)
   const regStatus = useRegulatoryStatus()
   const stockByCode = useStockByCode()
+  const severeTargets = useSevereTargets()
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -106,6 +108,7 @@ export default function Signals() {
                     <span className="font-semibold text-text-primary">{sig.stock_name ?? '未知'}</span>
                     <span className="font-mono text-xs text-accent">{sig.stock_code}</span>
                     {regStatus.get(sig.stock_code ?? '') && <RegulatoryTag status={regStatus.get(sig.stock_code ?? '')!} />}
+                    {severeTargets.get(sig.stock_code ?? '') && <SevereTargetTag target={severeTargets.get(sig.stock_code ?? '')!.target_rate} approach={severeTargets.get(sig.stock_code ?? '')!.approach} />}
                     {stockByCode.get(sig.stock_code ?? '')?.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
                     {stockByCode.get(sig.stock_code ?? '')?.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
                     {sig.sector_name && (
