@@ -4,7 +4,8 @@ import { fetchPoolPrompts, updatePoolPrompts } from '@/api/admin'
 import { Card } from '@/components/ui/card'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
-import { RotateCcw, Save, Info } from 'lucide-react'
+import { useAuthStore } from '@/store/auth'
+import { RotateCcw, Save, Info, Lock } from 'lucide-react'
 
 interface FieldProps {
   title: string
@@ -12,11 +13,12 @@ interface FieldProps {
   value: string
   defaultValue: string
   custom: boolean
+  editable: boolean
   onChange: (v: string) => void
   onReset: () => void
 }
 
-function PromptField({ title, hint, value, defaultValue, custom, onChange, onReset }: FieldProps) {
+function PromptField({ title, hint, value, defaultValue, custom, editable, onChange, onReset }: FieldProps) {
   return (
     <Card title={title} action={
       <span className={cn('text-xs px-1.5 py-0.5 rounded', custom ? 'bg-accent/15 text-accent' : 'bg-bg-elevated text-text-muted')}>
@@ -30,17 +32,23 @@ function PromptField({ title, hint, value, defaultValue, custom, onChange, onRes
         value={value}
         onChange={(e) => onChange(e.target.value)}
         rows={4}
-        className="w-full bg-bg-elevated border border-bg-border rounded p-2.5 text-sm text-text-primary font-mono leading-relaxed focus:outline-none focus:border-accent/50 resize-y"
+        readOnly={!editable}
+        className={cn(
+          'w-full bg-bg-elevated border border-bg-border rounded p-2.5 text-sm text-text-primary font-mono leading-relaxed resize-y focus:outline-none',
+          editable ? 'focus:border-accent/50' : 'opacity-70 cursor-not-allowed',
+        )}
       />
       <div className="flex items-center justify-between mt-2">
-        <button
-          onClick={onReset}
-          className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
-          title="恢复为代码内默认 prompt"
-        >
-          <RotateCcw className="w-3 h-3" /> 恢复默认
-        </button>
-        {value.trim() !== defaultValue.trim() && (
+        {editable ? (
+          <button
+            onClick={onReset}
+            className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
+            title="恢复为代码内默认 prompt"
+          >
+            <RotateCcw className="w-3 h-3" /> 恢复默认
+          </button>
+        ) : <span />}
+        {editable && value.trim() !== defaultValue.trim() && (
           <span className="text-xs text-warn">已修改，未保存</span>
         )}
       </div>
@@ -50,6 +58,7 @@ function PromptField({ title, hint, value, defaultValue, custom, onChange, onRes
 
 export default function PoolConfig() {
   const qc = useQueryClient()
+  const isLoggedIn = useAuthStore((s) => s.isLoggedIn)
   const { data, isLoading } = useQuery({ queryKey: ['pool-prompts'], queryFn: fetchPoolPrompts })
 
   const [strong, setStrong] = useState('')
@@ -83,12 +92,19 @@ export default function PoolConfig() {
         </div>
       </div>
 
+      {!isLoggedIn && (
+        <div className="card p-3 flex items-center gap-2 text-sm text-warn border border-warn/30">
+          <Lock className="w-4 h-4 shrink-0" /> 当前为只读查看，修改 prompt 需登录后操作。
+        </div>
+      )}
+
       <PromptField
         title="强势池 Prompt"
         hint="决定强势股池成员。例：主板非ST；非退市股；近60日涨停天数大于9 或 近20日涨幅前10。"
         value={strong}
         defaultValue={data.default_strong_pool_keyword}
         custom={data.is_strong_custom}
+        editable={isLoggedIn}
         onChange={setStrong}
         onReset={() => setStrong(data.default_strong_pool_keyword)}
       />
@@ -99,10 +115,12 @@ export default function PoolConfig() {
         value={limit}
         defaultValue={data.default_limit_move_keyword}
         custom={data.is_limit_custom}
+        editable={isLoggedIn}
         onChange={setLimit}
         onReset={() => setLimit(data.default_limit_move_keyword)}
       />
 
+      {isLoggedIn && (
       <div className="flex items-center gap-3">
         <button
           onClick={() => mut.mutate({ strong_pool_keyword: strong, limit_move_keyword: limit })}
@@ -117,6 +135,7 @@ export default function PoolConfig() {
         {savedMsg && <span className="text-sm text-up">{savedMsg}</span>}
         {mut.isError && <span className="text-sm text-down">保存失败（需登录权限）</span>}
       </div>
+      )}
     </div>
   )
 }

@@ -23,7 +23,7 @@ export default function App() {
           <Route path="watchlist" element={<Watchlist />} />
           <Route path="stocks/:code" element={<StockDetail />} />
           <Route path="sector-config" element={<ProtectedRoute><SectorConfig /></ProtectedRoute>} />
-          <Route path="pool-config" element={<ProtectedRoute><PoolConfig /></ProtectedRoute>} />
+          <Route path="pool-config" element={<PoolConfig />} />
           <Route path="sector-trend" element={<SectorTrend />} />
           <Route path="sector-emotion" element={<SectorEmotion />} />
           <Route path="signals" element={<Signals />} />

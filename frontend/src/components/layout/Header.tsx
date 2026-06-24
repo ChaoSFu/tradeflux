@@ -554,7 +554,7 @@ export function Header({ title }: { title: string }) {
           </NavLink>
         )}
 
-        {isLoggedIn && (
+        {(
           <NavLink
             to="/pool-config"
             title="股池 Prompt 配置"
