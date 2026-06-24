@@ -518,9 +518,9 @@ function StockRow({
           )}
           {regStatus && <RegulatoryTag status={regStatus} />}
         </div>
-        {(leaderTags.length > 0 || leadSectors.length > 0 || stock.yesterday_is_limit_up || stock.yesterday_is_limit_down || severe) && (
+        {(leaderTags.length > 0 || leadSectors.length > 0 || stock.yesterday_is_limit_up || stock.yesterday_is_limit_down || severe || (stock.severe_up_room != null && stock.severe_up_room <= 60)) && (
           <div className="flex flex-wrap gap-0.5 mt-0.5">
-            {severe && <SevereTargetTag target={severe.target_rate} approach={severe.approach} />}
+            <SevereTargetTag target={severe?.target_rate} approach={severe?.approach} room={stock.severe_up_room} />
             {stock.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
             {stock.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
             {leaderTags.map(t => <LeaderTag key={t} label={t} />)}

@@ -585,7 +585,7 @@ export default function Dashboard() {
                         <span className="font-medium text-sm text-text-primary">{l.stock_name}</span>
                         <span className="text-xs text-text-muted">{l.stock_code}</span>
                         {regStatus.get(l.stock_code) && <RegulatoryTag status={regStatus.get(l.stock_code)!} />}
-                        {severeTargets.get(l.stock_code) && <SevereTargetTag target={severeTargets.get(l.stock_code)!.target_rate} approach={severeTargets.get(l.stock_code)!.approach} />}
+                        <SevereTargetTag target={severeTargets.get(l.stock_code)?.target_rate} approach={severeTargets.get(l.stock_code)?.approach} room={stockByCode.get(l.stock_code)?.severe_up_room ?? null} />
                         {stockByCode.get(l.stock_code)?.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
                         {stockByCode.get(l.stock_code)?.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
                       </div>
@@ -620,7 +620,7 @@ export default function Dashboard() {
                       <span className="font-medium text-sm text-text-primary">{c.stock_name}</span>
                       <span className="text-xs text-text-muted">{c.stock_code}</span>
                       {regStatus.get(c.stock_code) && <RegulatoryTag status={regStatus.get(c.stock_code)!} />}
-                      {severeTargets.get(c.stock_code) && <SevereTargetTag target={severeTargets.get(c.stock_code)!.target_rate} approach={severeTargets.get(c.stock_code)!.approach} />}
+                      <SevereTargetTag target={severeTargets.get(c.stock_code)?.target_rate} approach={severeTargets.get(c.stock_code)?.approach} room={stockByCode.get(c.stock_code)?.severe_up_room ?? null} />
                       {stockByCode.get(c.stock_code)?.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
                       {stockByCode.get(c.stock_code)?.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
                       {dragonTagsByCode.get(c.stock_code)?.map((t) => <LeaderTag key={t} label={t} />)}

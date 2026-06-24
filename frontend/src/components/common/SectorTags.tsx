@@ -135,17 +135,34 @@ export function RegulatoryTag({ status, title }: { status: RegStatus; title?: st
 
 // ─── 严重异动触发徽章（再涨 X% 触发涨幅严重异常波动）──────────────────────────
 
-export function SevereTargetTag({ target, approach }: { target: number | null; approach?: number }) {
-  if (target == null) return null
-  const urgent = (approach ?? 0) >= 0.9
+export function SevereTargetTag(
+  { target, approach, room, roomCap = 60 }:
+  { target?: number | null; approach?: number; room?: number | null; roomCap?: number },
+) {
+  // 官方精确（东财实时·今日还需涨幅）优先；否则用本地近似上涨空间
+  if (target != null) {
+    const urgent = (approach ?? 0) >= 0.9
+    return (
+      <span
+        title={`今日再涨 ${target.toFixed(2)}% 即触发涨幅严重异常波动${approach != null ? `（接近度 ${(approach * 100).toFixed(0)}%）` : ''}`}
+        className={`inline-flex items-center px-1 py-px text-[9px] font-bold rounded border whitespace-nowrap leading-tight ${
+          urgent ? 'bg-up/20 text-up border-up/40' : 'bg-orange-500/12 text-orange-400 border-orange-500/30'
+        }`}
+      >
+        严异+{target.toFixed(1)}%
+      </span>
+    )
+  }
+  if (room == null || room > roomCap) return null
+  const urgent = room <= 20
   return (
     <span
-      title={`今日再涨 ${target.toFixed(2)}% 即触发严重异常波动监管${approach != null ? `（接近度 ${(approach * 100).toFixed(0)}%）` : ''}`}
+      title={`距触发涨幅严重异常波动约还需累计上涨 ${room.toFixed(1)}%（近似值，未扣指数偏离）`}
       className={`inline-flex items-center px-1 py-px text-[9px] font-bold rounded border whitespace-nowrap leading-tight ${
-        urgent ? 'bg-up/20 text-up border-up/40' : 'bg-orange-500/12 text-orange-400 border-orange-500/30'
+        urgent ? 'bg-up/15 text-up border-up/35' : 'bg-orange-500/10 text-orange-400/90 border-orange-500/25'
       }`}
     >
-      严异+{target.toFixed(1)}%
+      空间~{room.toFixed(0)}%
     </span>
   )
 }

@@ -108,7 +108,7 @@ export default function Signals() {
                     <span className="font-semibold text-text-primary">{sig.stock_name ?? '未知'}</span>
                     <span className="font-mono text-xs text-accent">{sig.stock_code}</span>
                     {regStatus.get(sig.stock_code ?? '') && <RegulatoryTag status={regStatus.get(sig.stock_code ?? '')!} />}
-                    {severeTargets.get(sig.stock_code ?? '') && <SevereTargetTag target={severeTargets.get(sig.stock_code ?? '')!.target_rate} approach={severeTargets.get(sig.stock_code ?? '')!.approach} />}
+                    <SevereTargetTag target={severeTargets.get(sig.stock_code ?? '')?.target_rate} approach={severeTargets.get(sig.stock_code ?? '')?.approach} room={stockByCode.get(sig.stock_code ?? '')?.severe_up_room ?? null} />
                     {stockByCode.get(sig.stock_code ?? '')?.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
                     {stockByCode.get(sig.stock_code ?? '')?.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
                     {sig.sector_name && (

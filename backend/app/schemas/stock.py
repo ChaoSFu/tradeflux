@@ -61,6 +61,8 @@ class StockResponse(StockBase):
     # 上一交易日是否涨/跌停（一致性强、需谨慎；仅对当前在交易的股票有效）
     yesterday_is_limit_up: bool = False
     yesterday_is_limit_down: bool = False
+    # 距「涨幅严重异动」的近似上涨空间 %（还需累计涨多少触发；已触发/数据不足为 None）
+    severe_up_room: Optional[float] = None
 
     model_config = {"from_attributes": True}
 

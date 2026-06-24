@@ -40,6 +40,8 @@ export interface Stock {
   // 上一交易日是否涨/跌停（一致性强、需谨慎）
   yesterday_is_limit_up: boolean
   yesterday_is_limit_down: boolean
+  // 距「涨幅严重异动」近似上涨空间 %（还需累计涨多少触发；已触发/数据不足为 null）
+  severe_up_room: number | null
 }
 
 export interface StockSnapshot {
