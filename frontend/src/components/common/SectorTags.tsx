@@ -136,7 +136,7 @@ export function RegulatoryTag({ status, title }: { status: RegStatus; title?: st
 // ─── 严重异动触发徽章（再涨 X% 触发涨幅严重异常波动）──────────────────────────
 
 export function SevereTargetTag(
-  { target, approach, room, roomCap = 60 }:
+  { target, approach, room, roomCap = Infinity }:
   { target?: number | null; approach?: number; room?: number | null; roomCap?: number },
 ) {
   // 官方精确（东财实时·今日还需涨幅）优先；否则用本地近似上涨空间
