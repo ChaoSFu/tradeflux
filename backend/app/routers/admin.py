@@ -18,6 +18,29 @@ from app.auth import require_auth
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+
+# ── 选股 API prompt 配置（强势池 / 涨跌停池）──────────────────────────────────
+class PoolPromptUpdate(BaseModel):
+    strong_pool_keyword: Optional[str] = None  # None=不改；空字符串=恢复默认
+    limit_move_keyword: Optional[str] = None
+
+
+@router.get("/pool-prompts")
+def get_pool_prompts(db: Session = Depends(get_db)):
+    from app.services.pool_config_service import get_pool_keywords
+    return get_pool_keywords(db)
+
+
+@router.put("/pool-prompts")
+def update_pool_prompts(payload: PoolPromptUpdate, db: Session = Depends(get_db),
+                        _: str = Depends(require_auth)):
+    from app.services.pool_config_service import set_pool_keyword, get_pool_keywords, KEY_STRONG, KEY_LIMIT
+    if payload.strong_pool_keyword is not None:
+        set_pool_keyword(db, KEY_STRONG, payload.strong_pool_keyword)
+    if payload.limit_move_keyword is not None:
+        set_pool_keyword(db, KEY_LIMIT, payload.limit_move_keyword)
+    return get_pool_keywords(db)
+
 # ── 进程级互斥锁文件（与 cron 任务共享，防止并发执行）─────────────────────────
 DAILY_UPDATE_LOCK_FILE = "/tmp/tradeflux_daily_update.lock"
 

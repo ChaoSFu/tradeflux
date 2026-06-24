@@ -800,11 +800,18 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # ── 第1步：确定候选股（通过东财选股 API）──────────────────
         log.begin("确定候选股")
 
+        # 读取可编辑的选股 API prompt（界面可改；未设置则用默认常量）
+        from app.services.pool_config_service import get_pool_keywords
+        _kw = get_pool_keywords(db)
+        strong_kw, limit_kw = _kw["strong_pool_keyword"], _kw["limit_move_keyword"]
+        log.info(f"强势池 prompt（{'自定义' if _kw['is_strong_custom'] else '默认'}）: {strong_kw}")
+        log.info(f"涨跌停 prompt（{'自定义' if _kw['is_limit_custom'] else '默认'}）: {limit_kw}")
+
         # 并发调两个东财选股 API（with_names=True 顺带带回股票名，省去全市场拉取）
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2) as ex:
-            fut_strong = ex.submit(fetch_strong_pool_codes, with_names=True)
-            fut_limit  = ex.submit(fetch_limit_move_codes, with_detail=True)
+            fut_strong = ex.submit(fetch_strong_pool_codes, keyword=strong_kw, with_names=True)
+            fut_limit  = ex.submit(fetch_limit_move_codes, keyword=limit_kw, with_detail=True)
             api_pool_names    = fut_strong.result()   # {code: name}
             api_limit_detail  = fut_limit.result()    # {code: {"name", "limit_dir"}}
 

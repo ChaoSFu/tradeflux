@@ -60,3 +60,21 @@ export interface LastUpdateStatus {
 
 export const fetchLastUpdateStatus = () =>
   client.get<LastUpdateStatus>('/admin/update/last').then((r) => r.data)
+
+// ── 选股 API prompt 配置（强势池 / 涨跌停池）───────────────────────────────────
+export interface PoolPrompts {
+  strong_pool_keyword: string
+  limit_move_keyword: string
+  is_strong_custom: boolean
+  is_limit_custom: boolean
+  default_strong_pool_keyword: string
+  default_limit_move_keyword: string
+}
+
+export const fetchPoolPrompts = () =>
+  client.get<PoolPrompts>('/admin/pool-prompts').then((r) => r.data)
+
+export const updatePoolPrompts = (payload: {
+  strong_pool_keyword?: string | null
+  limit_move_keyword?: string | null
+}) => client.put<PoolPrompts>('/admin/pool-prompts', payload).then((r) => r.data)
