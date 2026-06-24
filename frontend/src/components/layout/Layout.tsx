@@ -7,6 +7,7 @@ const TITLES: Record<string, string> = {
   '/stocks': '活跃股池 Active Pool',
   '/watchlist': '重点监控 Regulatory Monitor',
   '/sector-config': '板块展示配置 Sector Config',
+  '/pool-config': '股池 Prompt 配置 Pool Config',
   '/sector-trend': '趋势板块 Sector Trend',
   '/sector-emotion': '情绪板块 Sector Emotion',
   '/sector-ranking': '板块涨幅排名 Sector Ranking',
