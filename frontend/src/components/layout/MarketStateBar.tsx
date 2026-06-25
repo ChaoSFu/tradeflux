@@ -4,7 +4,7 @@
  */
 import { useQuery } from '@tanstack/react-query'
 import { fetchMarketState, fetchProfitEffect } from '@/api/marketState'
-import { fetchLimitMoves } from '@/api/stocks'
+import { fetchLimitMoves, fetchLimitMovesTrend } from '@/api/stocks'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { MARKET_PHASE_LABELS, EMOTION_CYCLE_LABELS } from '@/utils/format'
@@ -39,6 +39,17 @@ export function MarketStateBar() {
   } as any)
   const limitUpCount = (up as any)?.items?.length ?? null
   const limitDownCount = (down as any)?.items?.length ?? null
+
+  // 30日均值（与走势图同源）→ 比值 = 当日 / 30日均值
+  const { data: trend } = useQuery({
+    queryKey: ['limit-moves-trend', 30],
+    queryFn: () => fetchLimitMovesTrend(30),
+  } as any)
+  const last30: any[] = ((trend as any) ?? []).slice(-30)
+  const avgUp30 = last30.length ? last30.reduce((s, p) => s + p.limit_up_count, 0) / last30.length : null
+  const avgDown30 = last30.length ? last30.reduce((s, p) => s + p.limit_down_count, 0) / last30.length : null
+  const upRatio = limitUpCount != null && avgUp30 ? limitUpCount / avgUp30 : null
+  const downRatio = limitDownCount != null && avgDown30 ? limitDownCount / avgDown30 : null
 
   if (!state) return null
 
@@ -77,11 +88,28 @@ export function MarketStateBar() {
         {limitUpCount != null && (
           <Cell label="涨停 · 极端做多">
             <span className="font-mono text-base font-bold text-up">{limitUpCount}</span>
+            {upRatio != null && (
+              <span
+                title={`当日涨停 ${limitUpCount} / 涨停30日均值 ${avgUp30!.toFixed(1)} = ${upRatio.toFixed(2)}（>1 做多意愿强）`}
+                className={cn('text-xs font-mono font-medium', upRatio >= 1 ? 'text-up' : 'text-text-muted')}
+              >
+                {upRatio.toFixed(2)}×
+              </span>
+            )}
           </Cell>
         )}
         {limitDownCount != null && (
           <Cell label="跌停 · 极端做空">
             <span className="font-mono text-base font-bold text-down">{limitDownCount}</span>
+            {downRatio != null && (
+              <span
+                title={`当日跌停 ${limitDownCount} / 跌停30日均值 ${avgDown30!.toFixed(1)} = ${downRatio.toFixed(2)}（远大于1 风险极大）`}
+                className={cn('text-xs font-mono font-bold',
+                  downRatio >= 2 ? 'text-down' : downRatio >= 1 ? 'text-down/80' : 'text-text-muted')}
+              >
+                {downRatio.toFixed(2)}×
+              </span>
+            )}
           </Cell>
         )}
 
