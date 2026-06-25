@@ -304,21 +304,6 @@ export default function Dashboard() {
     return new Map(groups.map((g) => [g.name, g]))
   }, [dragonStocks])
 
-  // 各龙头分组「赚钱效应 30日均值」(用于今日/均值比值；仅取有数据的交易日)
-  const groupAvg30 = useMemo(() => {
-    const acc: Record<string, { sum: number; n: number }> = {}
-    for (const pt of (history ?? []) as any[]) {
-      for (const g of (pt.profit_effect_groups ?? []) as ProfitEffectGroup[]) {
-        if ((g.stock_count ?? 0) <= 0) continue
-        const a = acc[g.key] ?? { sum: 0, n: 0 }
-        a.sum += g.avg_pct; a.n += 1; acc[g.key] = a
-      }
-    }
-    const out: Record<string, number> = {}
-    for (const k in acc) out[k] = acc[k].n ? acc[k].sum / acc[k].n : 0
-    return out
-  }, [history])
-
   const toggleSector = (name: string) =>
     setExpandedSector((prev) => (prev === name ? null : name))
 
@@ -399,33 +384,22 @@ export default function Dashboard() {
                 )}
               </div>
 
-              {/* ── 强势龙头赚钱效应（只关注涨停龙头 / 震荡龙头）── */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                {pe.groups.filter((g: ProfitEffectGroup) => g.key === 'limit_up' || g.key === 'oscillation').map((g: ProfitEffectGroup) => {
+              {/* ── 分组赚钱效应 ── */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                {pe.groups.map((g: ProfitEffectGroup) => {
                   const s = GROUP_STYLES[g.key] ?? { border: 'border-border', dot: 'bg-text-muted' }
-                  const avg30 = groupAvg30[g.key]
-                  const ratio = g.stock_count > 0 && avg30 && avg30 > 0 ? g.avg_pct / avg30 : null
                   return (
                     <div key={g.key} className={cn('card p-3 border', s.border)}>
                       <div className="flex items-center gap-1.5 mb-2">
                         <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', s.dot)} />
-                        <p className="text-xs text-text-secondary font-medium truncate">{g.label}赚钱效应</p>
+                        <p className="text-xs text-text-secondary font-medium truncate">{g.label}</p>
                       </div>
-                      <div className="flex items-baseline gap-2 mb-2">
-                        <span className={cn('text-2xl font-mono font-bold', pctColor(g.avg_pct))}>
+                      <div className="flex items-baseline gap-1 mb-2">
+                        <span className={cn('text-xl font-mono font-bold', pctColor(g.avg_pct))}>
                           {g.stock_count > 0 ? pctSign(g.avg_pct) : '--'}
                         </span>
                         {g.stock_count > 0 && (
                           <span className="text-xs text-text-muted">{g.stock_count}只</span>
-                        )}
-                        {ratio != null && (
-                          <span
-                            title={`今日 ${pctSign(g.avg_pct)} / 30日均值 ${pctSign(avg30)} = ${ratio.toFixed(2)}（>1 强于近月均值）`}
-                            className={cn('ml-auto text-xs font-mono font-bold px-1.5 py-0.5 rounded',
-                              ratio >= 1 ? 'bg-up/15 text-up' : 'bg-bg-elevated text-text-muted')}
-                          >
-                            {ratio.toFixed(2)}× 30日均
-                          </span>
                         )}
                       </div>
                       {g.stock_count > 0 ? (

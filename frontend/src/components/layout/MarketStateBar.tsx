@@ -3,7 +3,7 @@
  * 复用到所有页面顶部。后续可在此扩展更多情绪温度关键指标。
  */
 import { useQuery } from '@tanstack/react-query'
-import { fetchMarketState, fetchProfitEffect } from '@/api/marketState'
+import { fetchMarketState, fetchProfitEffect, fetchMarketHistory } from '@/api/marketState'
 import { fetchLimitMoves, fetchLimitMovesTrend } from '@/api/stocks'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
@@ -66,6 +66,24 @@ export function MarketStateBar() {
   const attack5 = rankTop5('rank_5d')
   const attack10 = rankTop5('rank_10d')
 
+  // 龙头分组赚钱效应：今日 avg_pct（来自 profit-effect）+ 30日均值（来自 market-history）
+  const { data: history } = useQuery({ queryKey: ['market-history', 30], queryFn: () => fetchMarketHistory(30) })
+  const groupAvg30: Record<string, number> = (() => {
+    const acc: Record<string, { sum: number; n: number }> = {}
+    for (const pt of (history ?? []) as any[]) {
+      for (const g of (pt.profit_effect_groups ?? []) as any[]) {
+        if ((g.stock_count ?? 0) <= 0) continue
+        const a = acc[g.key] ?? { sum: 0, n: 0 }
+        a.sum += g.avg_pct; a.n += 1; acc[g.key] = a
+      }
+    }
+    const out: Record<string, number> = {}
+    for (const k in acc) out[k] = acc[k].n ? acc[k].sum / acc[k].n : 0
+    return out
+  })()
+  const groupToday: Record<string, any> = {}
+  for (const g of ((pe as any)?.groups ?? [])) groupToday[g.key] = g
+
   if (!state) return null
 
   return (
@@ -99,6 +117,27 @@ export function MarketStateBar() {
             </>
           ) : <span className="text-text-muted text-xs">—</span>}
         </Cell>
+
+        {(['limit_up', 'oscillation'] as const).map((key) => {
+          const g = groupToday[key]
+          if (!g || g.stock_count <= 0) return null
+          const avg30 = groupAvg30[key]
+          const ratio = avg30 && avg30 > 0 ? g.avg_pct / avg30 : null
+          const label = key === 'limit_up' ? '涨停龙头赚钱' : '震荡龙头赚钱'
+          return (
+            <Cell key={key} label={label}>
+              <span className={cn('font-mono text-base font-bold', pctColor(g.avg_pct))}>{pctSign(g.avg_pct)}</span>
+              {ratio != null && (
+                <span
+                  title={`今日 ${pctSign(g.avg_pct)} / 30日均值 ${pctSign(avg30)} = ${ratio.toFixed(2)}（>1 强于近月均值）`}
+                  className={cn('text-xs font-mono font-medium', ratio >= 1 ? 'text-up' : 'text-text-muted')}
+                >
+                  {ratio.toFixed(2)}×
+                </span>
+              )}
+            </Cell>
+          )
+        })}
 
         {limitUpCount != null && (
           <Cell label="涨停 · 极端做多">

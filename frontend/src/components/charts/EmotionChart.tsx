@@ -18,8 +18,7 @@ const GROUP_CONFIG: Record<string, { label: string; color: string; dash?: string
   weakening:   { label: '昨日走弱龙头', color: '#F59E0B', dash: '3 3' },
   broken:      { label: '昨日破位龙头', color: '#26C281', dash: '2 4' },
 }
-// 只关注强势龙头（涨停 / 震荡），走弱/破位不展示
-const GROUP_KEYS = ['limit_up', 'oscillation'] as const
+const GROUP_KEYS = ['limit_up', 'oscillation', 'weakening', 'broken'] as const
 
 const C_MAIN  = '#5EA6FF'
 const L_MAIN  = '强势股均涨幅'
