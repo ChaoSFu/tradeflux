@@ -4,6 +4,7 @@
  */
 import { useQuery } from '@tanstack/react-query'
 import { fetchMarketState, fetchProfitEffect } from '@/api/marketState'
+import { fetchLimitMoves } from '@/api/stocks'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { MARKET_PHASE_LABELS, EMOTION_CYCLE_LABELS } from '@/utils/format'
@@ -27,6 +28,17 @@ function Cell({ label, children }: { label: string; children: React.ReactNode })
 export function MarketStateBar() {
   const { data: state } = useQuery({ queryKey: ['market-state'], queryFn: fetchMarketState })
   const { data: pe } = useQuery({ queryKey: ['profit-effect'], queryFn: fetchProfitEffect })
+  // 全市场涨跌停家数（与「涨跌停概览」同源同缓存）
+  const { data: up } = useQuery({
+    queryKey: ['limit-moves', 'limit_up'],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_up' }),
+  } as any)
+  const { data: down } = useQuery({
+    queryKey: ['limit-moves', 'limit_down'],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_down' }),
+  } as any)
+  const limitUpCount = (up as any)?.items?.length ?? null
+  const limitDownCount = (down as any)?.items?.length ?? null
 
   if (!state) return null
 
@@ -62,14 +74,14 @@ export function MarketStateBar() {
           ) : <span className="text-text-muted text-xs">—</span>}
         </Cell>
 
-        {pe?.has_data && (
+        {limitUpCount != null && (
           <Cell label="涨停 · 极端做多">
-            <span className="font-mono text-base font-bold text-up">{pe.overall_limit_up_count}</span>
+            <span className="font-mono text-base font-bold text-up">{limitUpCount}</span>
           </Cell>
         )}
-        {pe?.has_data && (
+        {limitDownCount != null && (
           <Cell label="跌停 · 极端做空">
-            <span className="font-mono text-base font-bold text-down">{pe.overall_limit_down_count}</span>
+            <span className="font-mono text-base font-bold text-down">{limitDownCount}</span>
           </Cell>
         )}
 
