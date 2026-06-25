@@ -8,6 +8,8 @@ import { fetchLimitMoves, fetchLimitMovesTrend } from '@/api/stocks'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { MARKET_PHASE_LABELS, EMOTION_CYCLE_LABELS } from '@/utils/format'
+import { useSectorTags } from '@/hooks/useSectorTags'
+import { SectorTag } from '@/components/common/SectorTags'
 import { cn } from '@/utils/cn'
 
 const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> = {
@@ -50,6 +52,19 @@ export function MarketStateBar() {
   const avgDown30 = last30.length ? last30.reduce((s, p) => s + p.limit_down_count, 0) / last30.length : null
   const upRatio = limitUpCount != null && avgUp30 ? limitUpCount / avgUp30 : null
   const downRatio = limitDownCount != null && avgDown30 ? limitDownCount / avgDown30 : null
+
+  // 进攻板块：5日 / 10日涨幅排名前5（5日龙1~5 / 10日龙1~5）
+  const { byName: sectorTags } = useSectorTags()
+  const rankTop5 = (key: 'rank_5d' | 'rank_10d') => {
+    const arr: { name: string; rank: number }[] = []
+    sectorTags.forEach((t, name) => {
+      const r = t[key]
+      if (r != null && r >= 1 && r <= 5) arr.push({ name, rank: r })
+    })
+    return arr.sort((a, b) => a.rank - b.rank)
+  }
+  const attack5 = rankTop5('rank_5d')
+  const attack10 = rankTop5('rank_10d')
 
   if (!state) return null
 
@@ -120,6 +135,25 @@ export function MarketStateBar() {
 
         <div className="ml-auto text-[10px] text-text-muted/70 self-center">⚠️ 仅供辅助分析，不构成投资建议</div>
       </div>
+
+      {/* 进攻板块：5日 / 10日涨幅前5 */}
+      {(attack5.length > 0 || attack10.length > 0) && (
+        <div className="mt-2 pt-2 border-t border-bg-border/40 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs">
+          <span className="text-[10px] text-text-muted shrink-0">进攻板块</span>
+          {attack5.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="text-[10px] text-up shrink-0">5日强</span>
+              {attack5.map((s) => <SectorTag key={`5-${s.name}`} name={s.name} />)}
+            </div>
+          )}
+          {attack10.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="text-[10px] text-accent shrink-0">10日强</span>
+              {attack10.map((s) => <SectorTag key={`10-${s.name}`} name={s.name} />)}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
