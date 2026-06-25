@@ -1,6 +1,7 @@
 import { Outlet, useLocation } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Header } from './Header'
+import { MarketStateBar } from './MarketStateBar'
 
 const TITLES: Record<string, string> = {
   '/': '强势股概览 Strong Overview',
@@ -26,6 +27,7 @@ export function Layout() {
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <Header title={title} />
         <main className="flex-1 overflow-auto p-5">
+          <MarketStateBar />
           <Outlet />
         </main>
       </div>
