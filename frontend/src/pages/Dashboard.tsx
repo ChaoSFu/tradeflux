@@ -315,63 +315,7 @@ export default function Dashboard() {
   return (
     <div className="space-y-5 animate-fade-in">
 
-      {/* ── Market State Banner ── */}
-      {state && (
-        <div className="card p-4 border-l-4" style={{ borderLeftColor: '#4F9CF9' }}>
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-            <div>
-              <p className="label">市场阶段</p>
-              <div className="flex items-center gap-2 mt-1">
-                <Badge variant={PHASE_BADGE[state.market_phase] ?? 'accent'}>
-                  {MARKET_PHASE_LABELS[state.market_phase] ?? state.market_phase}
-                </Badge>
-                <span className="text-text-secondary text-xs">
-                  {EMOTION_CYCLE_LABELS[state.emotion_cycle] ?? state.emotion_cycle}
-                </span>
-              </div>
-            </div>
-            <div>
-              <p className="label">情绪温度</p>
-              <div className="mt-1 flex items-center gap-3">
-                <span className="font-mono text-lg text-accent">{state.emotional_temperature.toFixed(0)}</span>
-                <Progress value={state.emotional_temperature} className="w-24" />
-              </div>
-            </div>
-            <div>
-              <p className="label">赚钱效应</p>
-              {pe?.has_data ? (
-                <div className="mt-1 flex items-center gap-2">
-                  <span className={cn('font-mono text-lg font-bold', pctColor(pe.overall_avg_pct))}>
-                    {pctSign(pe.overall_avg_pct)}
-                  </span>
-                  <span className="text-xs text-text-muted">
-                    <span className="text-up">↑{pe.overall_up_count}</span>
-                    {' / '}
-                    <span className="text-down">↓{pe.overall_down_count}</span>
-                  </span>
-                </div>
-              ) : (
-                <div className="mt-1 flex items-center gap-2">
-                  <span className="font-mono text-up">{state.profit_effect_score.toFixed(0)}</span>
-                  <span className="text-text-muted">/</span>
-                  <span className="font-mono text-down">{state.loss_effect_score.toFixed(0)}</span>
-                  <span className="text-xs text-text-muted">亏钱效应</span>
-                </div>
-              )}
-            </div>
-            <div>
-              <p className="label">建议仓位</p>
-              <div className="mt-1 flex items-center gap-3">
-                <span className="font-mono text-lg text-warn">{state.suggested_position_level.toFixed(0)}%</span>
-                <Progress value={state.suggested_position_level} className="w-20" color="#F59E0B" />
-              </div>
-            </div>
-            <div className="ml-auto text-xs text-text-muted">
-              ⚠️ 仅供辅助分析，不构成投资建议
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 市场状态条已抽到全局 Layout（MarketStateBar），各页顶部统一展示 */}
 
       {/* ════════════════════════════════════════════════════════════════════════
           赚钱效应模块
