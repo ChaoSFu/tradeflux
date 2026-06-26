@@ -55,7 +55,7 @@ export function MarketStateBar() {
 
   // 进攻板块：5日 / 10日涨幅排名前5（5日龙1~5 / 10日龙1~5）
   const { byName: sectorTags } = useSectorTags()
-  const rankTop5 = (key: 'rank_5d' | 'rank_10d') => {
+  const rankTop5 = (key: 'rank_5d' | 'rank_10d' | 'rank_20d') => {
     const arr: { name: string; rank: number }[] = []
     sectorTags.forEach((t, name) => {
       const r = t[key]
@@ -65,6 +65,13 @@ export function MarketStateBar() {
   }
   const attack5 = rankTop5('rank_5d')
   const attack10 = rankTop5('rank_10d')
+  const attack20 = rankTop5('rank_20d')
+  // 归并：跨 5/10/20 日强出现次数（越多越有持续力），只取出现 ≥2 次的
+  const sustained = (() => {
+    const cnt = new Map<string, number>()
+    for (const a of [attack5, attack10, attack20]) for (const s of a) cnt.set(s.name, (cnt.get(s.name) ?? 0) + 1)
+    return [...cnt.entries()].filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  })()
 
   // 龙头分组赚钱效应：今日 avg_pct（来自 profit-effect）+ 30日均值（来自 market-history）
   const { data: history } = useQuery({ queryKey: ['market-history', 30], queryFn: () => fetchMarketHistory(30) })
@@ -191,6 +198,25 @@ export function MarketStateBar() {
               {attack10.map((s) => <SectorTag key={`10-${s.name}`} name={s.name} />)}
             </div>
           )}
+          {attack20.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="text-[10px] text-warn shrink-0">20日强</span>
+              {attack20.map((s) => <SectorTag key={`20-${s.name}`} name={s.name} />)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 持续板块：5/10/20 日强归并，出现≥2次（有持续力），次数越多越靠前 */}
+      {sustained.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="text-[10px] text-text-muted shrink-0" title="在 5/10/20 日强势板块中出现 ≥2 次，体现持续力">持续板块</span>
+          {sustained.map(([name, c]) => (
+            <span key={`sus-${name}`} className="inline-flex items-center gap-1">
+              <SectorTag name={name} />
+              <span className={cn('text-[10px] font-mono font-bold', c >= 3 ? 'text-up' : 'text-text-secondary')}>×{c}</span>
+            </span>
+          ))}
         </div>
       )}
     </div>
