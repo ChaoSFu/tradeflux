@@ -2,14 +2,18 @@
  * MarketStateBar — 全局市场状态条（市场阶段/情绪温度/赚钱效应/涨跌停家数/建议仓位）
  * 复用到所有页面顶部。后续可在此扩展更多情绪温度关键指标。
  */
+import { useState, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { fetchMarketState, fetchProfitEffect, fetchMarketHistory } from '@/api/marketState'
-import { fetchLimitMoves, fetchLimitMovesTrend } from '@/api/stocks'
+import { fetchLimitMoves, fetchLimitMovesTrend, fetchStrongPool } from '@/api/stocks'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { MARKET_PHASE_LABELS, EMOTION_CYCLE_LABELS } from '@/utils/format'
 import { useSectorTags } from '@/hooks/useSectorTags'
 import { SectorTag } from '@/components/common/SectorTags'
+import { SectorSection, buildSectorGroups } from '@/components/common/SectorSection'
+import type { Stock } from '@/types'
 import { cn } from '@/utils/cn'
 
 const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> = {
@@ -17,6 +21,14 @@ const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> 
 }
 const pctColor = (v: number) => (v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-secondary')
 const pctSign = (v: number) => (v >= 0 ? `+${v.toFixed(2)}%` : `${v.toFixed(2)}%`)
+
+function ClickSector({ name, active, onClick }: { name: string; active: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className={cn('rounded transition-shadow', active && 'ring-1 ring-accent')} title="查看该板块强势股">
+      <SectorTag name={name} />
+    </button>
+  )
+}
 
 function Cell({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -41,6 +53,24 @@ export function MarketStateBar() {
   } as any)
   const limitUpCount = (up as any)?.items?.length ?? null
   const limitDownCount = (down as any)?.items?.length ?? null
+
+  // 点击板块 → 展开该板块强势股列表（与板块赚钱效应点击一致）
+  const navigate = useNavigate()
+  const [expandedSector, setExpandedSector] = useState<string | null>(null)
+  const { data: strongPool } = useQuery({
+    queryKey: ['strong-pool-sector-analysis'],
+    queryFn: () => fetchStrongPool({ page: 1, page_size: 500 }),
+  } as any)
+  const sectorGroupMap = useMemo(() => {
+    const seen = new Set<number>(); const merged: Stock[] = []
+    for (const s of [
+      ...((strongPool as any)?.items ?? []),
+      ...((up as any)?.items ?? []),
+      ...((down as any)?.items ?? []),
+    ] as Stock[]) { if (!seen.has(s.id)) { seen.add(s.id); merged.push(s) } }
+    return new Map(buildSectorGroups(merged).map((g) => [g.name, g]))
+  }, [strongPool, up, down])
+  const toggleSector = (name: string) => setExpandedSector((p) => (p === name ? null : name))
 
   // 30日均值（与走势图同源）→ 比值 = 当日 / 30日均值
   const { data: trend } = useQuery({
@@ -94,6 +124,7 @@ export function MarketStateBar() {
   if (!state) return null
 
   return (
+    <>
     <div className="card px-4 py-2.5 border-l-4 mb-4" style={{ borderLeftColor: '#4F9CF9' }}>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <Cell label="市场阶段">
@@ -189,19 +220,19 @@ export function MarketStateBar() {
           {attack5.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap">
               <span className="text-[10px] text-up shrink-0">5日强</span>
-              {attack5.map((s) => <SectorTag key={`5-${s.name}`} name={s.name} />)}
+              {attack5.map((s) => <ClickSector key={`5-${s.name}`} name={s.name} active={expandedSector === s.name} onClick={() => toggleSector(s.name)} />)}
             </div>
           )}
           {attack10.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap">
               <span className="text-[10px] text-accent shrink-0">10日强</span>
-              {attack10.map((s) => <SectorTag key={`10-${s.name}`} name={s.name} />)}
+              {attack10.map((s) => <ClickSector key={`10-${s.name}`} name={s.name} active={expandedSector === s.name} onClick={() => toggleSector(s.name)} />)}
             </div>
           )}
           {attack20.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap">
               <span className="text-[10px] text-warn shrink-0">20日强</span>
-              {attack20.map((s) => <SectorTag key={`20-${s.name}`} name={s.name} />)}
+              {attack20.map((s) => <ClickSector key={`20-${s.name}`} name={s.name} active={expandedSector === s.name} onClick={() => toggleSector(s.name)} />)}
             </div>
           )}
         </div>
@@ -213,12 +244,23 @@ export function MarketStateBar() {
           <span className="text-[10px] text-text-muted shrink-0" title="在 5/10/20 日强势板块中出现 ≥2 次，体现持续力">持续板块</span>
           {sustained.map(([name, c]) => (
             <span key={`sus-${name}`} className="inline-flex items-center gap-1">
-              <SectorTag name={name} />
+              <ClickSector name={name} active={expandedSector === name} onClick={() => toggleSector(name)} />
               <span className={cn('text-[10px] font-mono font-bold', c >= 3 ? 'text-up' : 'text-text-secondary')}>×{c}</span>
             </span>
           ))}
         </div>
       )}
-    </div>
+      </div>
+
+      {/* 点击板块展开：该板块强势股列表（沿用 SectorSection） */}
+      {expandedSector && sectorGroupMap.get(expandedSector) && (
+        <SectorSection
+          group={sectorGroupMap.get(expandedSector)!}
+          collapsed={false}
+          onToggle={() => setExpandedSector(null)}
+          onClickStock={(code) => navigate(`/stocks/${code}`)}
+        />
+      )}
+    </>
   )
 }
