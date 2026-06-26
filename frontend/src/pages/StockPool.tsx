@@ -201,13 +201,19 @@ export default function StockPool() {
     return merged
   }, [strongData, upData, downData, universe])
 
-  // 板块筛选（客户端，按 stock.sectors）
+  // 板块筛选（客户端，按 stock.sectors；可搜索）
   const [sectorFilter, setSectorFilter] = useState('')
+  const [sectorQuery, setSectorQuery] = useState('')
+  const [sectorOpen, setSectorOpen] = useState(false)
   const sectorOptions = useMemo(() => {
     const cnt = new Map<string, number>()
     for (const s of allStocks) for (const n of s.sectors ?? []) cnt.set(n, (cnt.get(n) ?? 0) + 1)
     return [...cnt.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
   }, [allStocks])
+  const sectorMatched = useMemo(() => {
+    const q = sectorQuery.trim()
+    return (q ? sectorOptions.filter(([n]) => n.includes(q)) : sectorOptions).slice(0, 50)
+  }, [sectorOptions, sectorQuery])
   const filteredStocks = useMemo(
     () => (sectorFilter ? allStocks.filter((s) => (s.sectors ?? []).includes(sectorFilter)) : allStocks),
     [allStocks, sectorFilter],
@@ -297,26 +303,50 @@ export default function StockPool() {
             </button>
           ))}
         </div>
-        {/* 板块筛选 */}
+        {/* 板块筛选（可搜索） */}
         <div className="relative">
-          <select
-            value={sectorFilter}
-            onChange={(e) => setSectorFilter(e.target.value)}
+          <input
+            value={sectorOpen ? sectorQuery : sectorFilter}
+            placeholder="按板块筛选…"
+            onFocus={() => { setSectorOpen(true); setSectorQuery('') }}
+            onChange={(e) => setSectorQuery(e.target.value)}
+            onBlur={() => setTimeout(() => setSectorOpen(false), 150)}
             className={cn(
-              'appearance-none bg-bg-card border rounded-lg pl-3 pr-7 py-1.5 text-sm focus:outline-none cursor-pointer max-w-[180px]',
-              sectorFilter ? 'border-accent/50 text-accent' : 'border-bg-border text-text-secondary',
+              'bg-bg-card border rounded-lg pl-3 pr-7 py-1.5 text-sm focus:outline-none w-44',
+              sectorFilter && !sectorOpen ? 'border-accent/50 text-accent' : 'border-bg-border text-text-primary focus:border-accent/50',
             )}
-          >
-            <option value="">全部板块</option>
-            {sectorOptions.map(([name, c]) => (
-              <option key={name} value={name}>{name}（{c}）</option>
-            ))}
-          </select>
-          <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted pointer-events-none" />
+          />
+          {sectorFilter ? (
+            <button
+              onMouseDown={(e) => { e.preventDefault(); setSectorFilter(''); setSectorQuery('') }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-secondary"
+              title="清除板块筛选"
+            >✕</button>
+          ) : (
+            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted pointer-events-none" />
+          )}
+          {sectorOpen && (
+            <div className="absolute z-30 left-0 mt-1 w-56 max-h-72 overflow-auto bg-bg-card border border-bg-border rounded-lg shadow-xl py-1">
+              <button
+                onMouseDown={(e) => { e.preventDefault(); setSectorFilter(''); setSectorOpen(false) }}
+                className="w-full text-left px-3 py-1.5 text-sm text-text-muted hover:bg-bg-elevated"
+              >全部板块</button>
+              {sectorMatched.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-text-muted">无匹配板块</div>
+              ) : sectorMatched.map(([name, c]) => (
+                <button
+                  key={name}
+                  onMouseDown={(e) => { e.preventDefault(); setSectorFilter(name); setSectorOpen(false) }}
+                  className={cn('w-full flex items-center justify-between gap-2 px-3 py-1.5 text-sm hover:bg-bg-elevated',
+                    name === sectorFilter ? 'text-accent' : 'text-text-secondary')}
+                >
+                  <span className="truncate">{name}</span>
+                  <span className="text-xs text-text-muted font-mono shrink-0">{c}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
-        {sectorFilter && (
-          <button onClick={() => setSectorFilter('')} className="text-xs text-text-muted hover:text-text-secondary">清除</button>
-        )}
         <div className="ml-auto text-xs text-text-muted">共 {total} 只{unitLabel}</div>
       </div>
 
