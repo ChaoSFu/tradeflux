@@ -201,7 +201,19 @@ export default function StockPool() {
     return merged
   }, [strongData, upData, downData, universe])
 
-  const total = allStocks.length
+  // 板块筛选（客户端，按 stock.sectors）
+  const [sectorFilter, setSectorFilter] = useState('')
+  const sectorOptions = useMemo(() => {
+    const cnt = new Map<string, number>()
+    for (const s of allStocks) for (const n of s.sectors ?? []) cnt.set(n, (cnt.get(n) ?? 0) + 1)
+    return [...cnt.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  }, [allStocks])
+  const filteredStocks = useMemo(
+    () => (sectorFilter ? allStocks.filter((s) => (s.sectors ?? []).includes(sectorFilter)) : allStocks),
+    [allStocks, sectorFilter],
+  )
+
+  const total = filteredStocks.length
   const unitLabel = universe === 'strong' ? '强势股' : universe === 'limit' ? '涨跌停股' : '活跃股'
 
   // ── Global leader maxes：对比【强势池+涨停+跌停】合并全集（与涨跌停池页一致）──
@@ -214,7 +226,7 @@ export default function StockPool() {
 
   const grouped = useMemo(() => {
     const map = new Map<GroupKey, Stock[]>(GROUPS.map((g) => [g.key, []]))
-    for (const stock of allStocks) {
+    for (const stock of filteredStocks) {
       // 全部 tab：所有股票
       map.get('all')!.push(stock)
       // Phase groups (mutually exclusive)
@@ -227,7 +239,7 @@ export default function StockPool() {
       }
     }
     return map
-  }, [allStocks, globalLeaderMaxes, sectorLeaders])
+  }, [filteredStocks, globalLeaderMaxes, sectorLeaders])
 
   const activeDef = GROUPS.find((g) => g.key === activeTab)!
   // 当前是否由 sortDragon 控制顺序（未点列头 + 全部/总龙头 tab）
@@ -285,6 +297,26 @@ export default function StockPool() {
             </button>
           ))}
         </div>
+        {/* 板块筛选 */}
+        <div className="relative">
+          <select
+            value={sectorFilter}
+            onChange={(e) => setSectorFilter(e.target.value)}
+            className={cn(
+              'appearance-none bg-bg-card border rounded-lg pl-3 pr-7 py-1.5 text-sm focus:outline-none cursor-pointer max-w-[180px]',
+              sectorFilter ? 'border-accent/50 text-accent' : 'border-bg-border text-text-secondary',
+            )}
+          >
+            <option value="">全部板块</option>
+            {sectorOptions.map(([name, c]) => (
+              <option key={name} value={name}>{name}（{c}）</option>
+            ))}
+          </select>
+          <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted pointer-events-none" />
+        </div>
+        {sectorFilter && (
+          <button onClick={() => setSectorFilter('')} className="text-xs text-text-muted hover:text-text-secondary">清除</button>
+        )}
         <div className="ml-auto text-xs text-text-muted">共 {total} 只{unitLabel}</div>
       </div>
 
