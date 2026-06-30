@@ -22,10 +22,13 @@ const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> 
 const pctColor = (v: number) => (v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-secondary')
 const pctSign = (v: number) => (v >= 0 ? `+${v.toFixed(2)}%` : `${v.toFixed(2)}%`)
 
-function ClickSector({ name, active, onClick }: { name: string; active: boolean; onClick: () => void }) {
+function ClickSector({ name, pct, active, onClick }: { name: string; pct?: number | null; active: boolean; onClick: () => void }) {
   return (
-    <button onClick={onClick} className={cn('rounded transition-shadow', active && 'ring-1 ring-accent')} title="查看该板块强势股">
+    <button onClick={onClick} className={cn('inline-flex items-center gap-0.5 rounded transition-shadow', active && 'ring-1 ring-accent')} title="查看该板块强势股">
       <SectorTag name={name} />
+      {pct != null && (
+        <span className={cn('text-[10px] font-mono font-medium', pctColor(pct))}>{pctSign(pct)}</span>
+      )}
     </button>
   )
 }
@@ -220,19 +223,19 @@ export function MarketStateBar() {
           {attack5.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap">
               <span className="text-[10px] text-up shrink-0">5日强</span>
-              {attack5.map((s) => <ClickSector key={`5-${s.name}`} name={s.name} active={expandedSector === s.name} onClick={() => toggleSector(s.name)} />)}
+              {attack5.map((s) => <ClickSector key={`5-${s.name}`} name={s.name} pct={sectorTags.get(s.name)?.pct_today} active={expandedSector === s.name} onClick={() => toggleSector(s.name)} />)}
             </div>
           )}
           {attack10.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap">
               <span className="text-[10px] text-accent shrink-0">10日强</span>
-              {attack10.map((s) => <ClickSector key={`10-${s.name}`} name={s.name} active={expandedSector === s.name} onClick={() => toggleSector(s.name)} />)}
+              {attack10.map((s) => <ClickSector key={`10-${s.name}`} name={s.name} pct={sectorTags.get(s.name)?.pct_today} active={expandedSector === s.name} onClick={() => toggleSector(s.name)} />)}
             </div>
           )}
           {attack20.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap">
               <span className="text-[10px] text-warn shrink-0">20日强</span>
-              {attack20.map((s) => <ClickSector key={`20-${s.name}`} name={s.name} active={expandedSector === s.name} onClick={() => toggleSector(s.name)} />)}
+              {attack20.map((s) => <ClickSector key={`20-${s.name}`} name={s.name} pct={sectorTags.get(s.name)?.pct_today} active={expandedSector === s.name} onClick={() => toggleSector(s.name)} />)}
             </div>
           )}
         </div>
@@ -244,7 +247,7 @@ export function MarketStateBar() {
           <span className="text-[10px] text-text-muted shrink-0" title="在 5/10/20 日强势板块中出现 ≥2 次，体现持续力">持续板块</span>
           {sustained.map(([name, c]) => (
             <span key={`sus-${name}`} className="inline-flex items-center gap-1">
-              <ClickSector name={name} active={expandedSector === name} onClick={() => toggleSector(name)} />
+              <ClickSector name={name} pct={sectorTags.get(name)?.pct_today} active={expandedSector === name} onClick={() => toggleSector(name)} />
               <span className={cn('text-[10px] font-mono font-bold', c >= 3 ? 'text-up' : 'text-text-secondary')}>×{c}</span>
             </span>
           ))}
