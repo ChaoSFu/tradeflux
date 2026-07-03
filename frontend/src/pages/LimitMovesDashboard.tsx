@@ -289,20 +289,6 @@ export default function LimitMovesDashboard() {
 
       {/* ── Stat cards ─────────────────────────────────────────────────── */}
       <div className="flex items-center gap-3 flex-wrap">
-        {/* 日期选择：查看历史涨跌停 */}
-        <div className="card px-3 py-2.5 flex items-center gap-2">
-          <span className="text-xs text-text-muted">日期</span>
-          <select
-            value={selDate}
-            onChange={(e) => setSelDate(e.target.value)}
-            className={cn('bg-bg-elevated border rounded px-2 py-1 text-sm focus:outline-none cursor-pointer',
-              selDate ? 'border-accent/50 text-accent' : 'border-bg-border text-text-primary')}
-          >
-            <option value="">最新（今日）</option>
-            {dateOptions.map((d) => <option key={d} value={d}>{d}</option>)}
-          </select>
-          {selDate && <span className="text-[10px] px-1.5 py-0.5 rounded bg-warn/15 text-warn">历史</span>}
-        </div>
         <StatCard
           icon={<ArrowUp className="w-4 h-4" />}
           label={selDate ? '当日涨停' : '今日涨停'}
@@ -376,6 +362,21 @@ export default function LimitMovesDashboard() {
           <DomPanel title="跌停主导板块 · 退潮" hint="近5/10日「当日跌停最多板块」出现次数，次数越多=该板块持续爆发跌停" d5={domFreq.down5} d10={domFreq.down10} accent="down" />
         </div>
       )}
+
+      {/* 日期选择：仅影响下方「集中板块 / 二板」等当日数据（不影响上方走势图与主导统计） */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs text-text-muted">查看日期</span>
+        <select
+          value={selDate}
+          onChange={(e) => setSelDate(e.target.value)}
+          className={cn('bg-bg-card border rounded-lg px-2.5 py-1.5 text-sm focus:outline-none cursor-pointer',
+            selDate ? 'border-accent/50 text-accent' : 'border-bg-border text-text-primary')}
+        >
+          <option value="">最新（今日）</option>
+          {dateOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+        </select>
+        {selDate && <span className="text-[10px] px-1.5 py-0.5 rounded bg-warn/15 text-warn">历史 · 仅影响下方集中板块/二板</span>}
+      </div>
 
       {/* ── Sector hotspot ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-4">
