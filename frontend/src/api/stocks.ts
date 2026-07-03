@@ -24,6 +24,7 @@ export const fetchLimitMoves = (params?: {
   page_size?: number
   search?: string
   move_type?: 'limit_up' | 'limit_down'
+  date?: string   // 历史交易日 YYYY-MM-DD，不传=最新
 }) => client.get<StockListResponse>('/stocks/limit-moves', { params }).then((r) => r.data)
 
 export const fetchLimitMovesTrend = (days = 20) =>
