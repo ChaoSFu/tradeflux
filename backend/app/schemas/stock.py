@@ -107,3 +107,8 @@ class LimitMoveTrendPoint(BaseModel):
     date: str
     limit_up_count: int
     limit_down_count: int
+    # 当日涨停最多 / 跌停最多的板块及其数量（关注板块口径）
+    top_up_sector: Optional[str] = None
+    top_up_sector_count: Optional[int] = None
+    top_down_sector: Optional[str] = None
+    top_down_sector_count: Optional[int] = None
