@@ -7,7 +7,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { fetchLimitMoves, fetchLimitMovesTrend } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
-import { getSectorColor } from '@/components/common/SectorTags'
+import { getSectorColor, SectorTag } from '@/components/common/SectorTags'
 import { SectorSection } from '@/components/common/SectorSection'
 import { ArrowUp, ArrowDown, TrendingUp } from 'lucide-react'
 import { cn } from '@/utils/cn'
@@ -164,6 +164,20 @@ export default function LimitMovesDashboard() {
 
   const limitUps:   Stock[] = (upData   as any)?.items ?? []
   const limitDowns: Stock[] = (downData as any)?.items ?? []
+
+  // 近5/10日「每日涨停最多 / 跌停最多板块」出现次数统计（识别酝酿/退潮主线）
+  const domFreq = useMemo(() => {
+    const raw: any[] = (trendData as any) ?? []
+    const count = (field: string, days: number) => {
+      const m = new Map<string, number>()
+      for (const p of raw.slice(-days)) if (p[field]) m.set(p[field], (m.get(p[field]) ?? 0) + 1)
+      return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    }
+    return {
+      up5: count('top_up_sector', 5), up10: count('top_up_sector', 10),
+      down5: count('top_down_sector', 5), down10: count('top_down_sector', 10),
+    }
+  }, [trendData])
 
   // ── Trend chart data ──────────────────────────────────────────────────────
   const chartData = useMemo(() => {
@@ -355,6 +369,14 @@ export default function LimitMovesDashboard() {
         </div>
       </div>
 
+      {/* ── 近期主导板块统计（每日涨停/跌停最多板块的出现次数）── */}
+      {((trendData as any)?.length ?? 0) > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <DomPanel title="涨停主导板块 · 酝酿" hint="近5/10日「当日涨停最多板块」出现次数，次数越多=该板块持续爆发涨停" d5={domFreq.up5} d10={domFreq.up10} accent="up" />
+          <DomPanel title="跌停主导板块 · 退潮" hint="近5/10日「当日跌停最多板块」出现次数，次数越多=该板块持续爆发跌停" d5={domFreq.down5} d10={domFreq.down10} accent="down" />
+        </div>
+      )}
+
       {/* ── Sector hotspot ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-4">
         <SectorHotspot
@@ -418,6 +440,36 @@ export default function LimitMovesDashboard() {
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
+
+function DomPanel({ title, hint, d5, d10, accent }: {
+  title: string; hint: string; d5: [string, number][]; d10: [string, number][]; accent: 'up' | 'down'
+}) {
+  const Row = ({ label, items }: { label: string; items: [string, number][] }) => (
+    <div className="flex items-start gap-2 py-1.5">
+      <span className="text-xs text-text-muted shrink-0 w-10 pt-0.5">{label}</span>
+      {items.length ? (
+        <div className="flex flex-wrap gap-1.5">
+          {items.map(([name, c]) => (
+            <span key={name} className="inline-flex items-center gap-1">
+              <SectorTag name={name} />
+              <span className={cn('text-[10px] font-mono font-bold', accent === 'up' ? 'text-up' : 'text-down')}>×{c}</span>
+            </span>
+          ))}
+        </div>
+      ) : <span className="text-xs text-text-muted">—</span>}
+    </div>
+  )
+  return (
+    <div className="card p-4">
+      <div className={cn('text-sm font-semibold mb-1', accent === 'up' ? 'text-up' : 'text-down')}>{title}</div>
+      <p className="text-xs text-text-muted mb-2 leading-relaxed">{hint}</p>
+      <div className="divide-y divide-bg-border/40">
+        <Row label="近5日" items={d5} />
+        <Row label="近10日" items={d10} />
+      </div>
+    </div>
+  )
+}
 
 function StatCard({ icon, label, value, sub, color }: {
   icon: React.ReactNode; label: string; value: number | null; sub: string | null; color: 'up' | 'down'
