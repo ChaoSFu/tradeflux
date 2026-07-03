@@ -81,8 +81,9 @@ function buildSectorStats(upStocks: Stock[], downStocks: Stock[]): SectorStat[] 
 
 function CustomTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null
+  const d = payload[0]?.payload ?? {}
   return (
-    <div className="card p-2.5 text-xs space-y-1 shadow-xl border border-bg-border/60">
+    <div className="card p-2.5 text-xs space-y-1 shadow-xl border border-bg-border/60 min-w-[180px]">
       <div className="text-text-muted mb-1">{label}</div>
       {payload.map((p: any) => (
         <div key={p.name} className="flex items-center gap-2">
@@ -91,6 +92,22 @@ function CustomTooltip({ active, payload, label }: any) {
           <span className="font-mono ml-auto font-semibold" style={{ color: p.color }}>{p.value}</span>
         </div>
       ))}
+      {(d._topUp || d._topDown) && (
+        <div className="pt-1 mt-1 border-t border-bg-border/40 space-y-0.5">
+          {d._topUp && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-up">涨停最多</span>
+              <span className="text-text-primary ml-auto">{d._topUp} <span className="font-mono text-up font-bold">×{d._topUpN}</span></span>
+            </div>
+          )}
+          {d._topDown && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-down">跌停最多</span>
+              <span className="text-text-primary ml-auto">{d._topDown} <span className="font-mono text-down font-bold">×{d._topDownN}</span></span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -153,6 +170,8 @@ export default function LimitMovesDashboard() {
         '跌停': p.limit_down_count,
         '涨停30日均值': round1(avgUp),
         '跌停30日均值': round1(avgDown),
+        _topUp: p.top_up_sector, _topUpN: p.top_up_sector_count,
+        _topDown: p.top_down_sector, _topDownN: p.top_down_sector_count,
       }
     })
   }, [trendData])

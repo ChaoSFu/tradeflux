@@ -386,11 +386,45 @@ def get_limit_moves_trend(db: Session, days: int = 20) -> list[LimitMoveTrendPoi
         .limit(days)
         .all()
     )
+    dates = [r.date for r in rows]
+
+    # 每日涨停最多 / 跌停最多的板块（关注板块口径，一只票计入其每个关注板块）
+    def _top_sector_by_date(limit_col) -> dict:
+        best: dict = {}
+        if not dates:
+            return best
+        q = (
+            db.query(StockDailySnapshot.date, Sector.name, sqlfunc.count().label("c"))
+            .join(Stock, Stock.id == StockDailySnapshot.stock_id)
+            .join(StockSectorRelation, StockSectorRelation.stock_id == Stock.id)
+            .join(Sector, Sector.id == StockSectorRelation.sector_id)
+            .filter(
+                Stock.is_st == False,  # noqa: E712
+                StockDailySnapshot.date.in_(dates),
+                limit_col == True,  # noqa: E712
+                Sector.is_watched == True,  # noqa: E712
+            )
+            .group_by(StockDailySnapshot.date, Sector.name)
+            .all()
+        )
+        for d, name, c in q:
+            cur = best.get(d)
+            if cur is None or int(c) > cur[1]:
+                best[d] = (name, int(c))
+        return best
+
+    top_up = _top_sector_by_date(StockDailySnapshot.is_limit_up)
+    top_down = _top_sector_by_date(StockDailySnapshot.is_limit_down)
+
     return [
         LimitMoveTrendPoint(
             date=str(r.date),
             limit_up_count=int(r.limit_up_count or 0),
             limit_down_count=int(r.limit_down_count or 0),
+            top_up_sector=top_up.get(r.date, (None, None))[0],
+            top_up_sector_count=top_up.get(r.date, (None, None))[1],
+            top_down_sector=top_down.get(r.date, (None, None))[0],
+            top_down_sector_count=top_down.get(r.date, (None, None))[1],
         )
         for r in reversed(rows)
     ]

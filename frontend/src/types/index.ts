@@ -264,6 +264,10 @@ export interface LimitMoveTrendPoint {
   date: string
   limit_up_count: number
   limit_down_count: number
+  top_up_sector: string | null
+  top_up_sector_count: number | null
+  top_down_sector: string | null
+  top_down_sector_count: number | null
 }
 
 export interface MarketHistoryPoint {
