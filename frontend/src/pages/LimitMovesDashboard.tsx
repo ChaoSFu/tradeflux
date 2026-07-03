@@ -137,20 +137,30 @@ export default function LimitMovesDashboard() {
     })
   }
 
+  // 选择历史交易日（''=最新）
+  const [selDate, setSelDate] = useState('')
+  const dateKey = selDate || 'latest'
+
   const { data: upData,   isLoading: upLoading }   = useQuery({
-    queryKey: ['limit-moves', 'limit_up'],
-    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_up' }),
+    queryKey: ['limit-moves', 'limit_up', dateKey],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_up', date: selDate || undefined }),
   } as any)
 
   const { data: downData, isLoading: downLoading } = useQuery({
-    queryKey: ['limit-moves', 'limit_down'],
-    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_down' }),
+    queryKey: ['limit-moves', 'limit_down', dateKey],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_down', date: selDate || undefined }),
   } as any)
 
   const { data: trendData, isLoading: trendLoading } = useQuery({
     queryKey: ['limit-moves-trend', 30],
     queryFn: () => fetchLimitMovesTrend(30),
   } as any)
+
+  // 可选日期（近30个交易日，来自 trend），最新在前
+  const dateOptions: string[] = useMemo(
+    () => ((trendData as any) ?? []).map((p: any) => p.date).reverse(),
+    [trendData],
+  )
 
   const limitUps:   Stock[] = (upData   as any)?.items ?? []
   const limitDowns: Stock[] = (downData as any)?.items ?? []
@@ -265,16 +275,30 @@ export default function LimitMovesDashboard() {
 
       {/* ── Stat cards ─────────────────────────────────────────────────── */}
       <div className="flex items-center gap-3 flex-wrap">
+        {/* 日期选择：查看历史涨跌停 */}
+        <div className="card px-3 py-2.5 flex items-center gap-2">
+          <span className="text-xs text-text-muted">日期</span>
+          <select
+            value={selDate}
+            onChange={(e) => setSelDate(e.target.value)}
+            className={cn('bg-bg-elevated border rounded px-2 py-1 text-sm focus:outline-none cursor-pointer',
+              selDate ? 'border-accent/50 text-accent' : 'border-bg-border text-text-primary')}
+          >
+            <option value="">最新（今日）</option>
+            {dateOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+          {selDate && <span className="text-[10px] px-1.5 py-0.5 rounded bg-warn/15 text-warn">历史</span>}
+        </div>
         <StatCard
           icon={<ArrowUp className="w-4 h-4" />}
-          label="今日涨停"
+          label={selDate ? '当日涨停' : '今日涨停'}
           value={dataLoading ? null : limitUps.length}
           sub={dataLoading ? null : `近10日均 ${avg.up}`}
           color="up"
         />
         <StatCard
           icon={<ArrowDown className="w-4 h-4" />}
-          label="今日跌停"
+          label={selDate ? '当日跌停' : '今日跌停'}
           value={dataLoading ? null : limitDowns.length}
           sub={dataLoading ? null : `近10日均 ${avg.down}`}
           color="down"

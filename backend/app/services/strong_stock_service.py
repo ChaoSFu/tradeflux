@@ -91,10 +91,11 @@ def _enrich_stock_response(stock: Stock, db: Session) -> StockResponse:
 # Bulk enrichment (used for list endpoints — avoids N+1 queries)
 # ---------------------------------------------------------------------------
 
-def _enrich_stocks_bulk(stocks: List[Stock], db: Session) -> List[StockResponse]:
+def _enrich_stocks_bulk(stocks: List[Stock], db: Session, as_of_date=None) -> List[StockResponse]:
     """
     Enrich a list of stocks with sector tags and today's limit-up status.
     Uses 3 bulk queries regardless of list size (avoids N+1).
+    as_of_date：指定历史交易日 → today_*/连板/各周期指标均取该日快照（查看历史涨跌停）。
     """
     if not stocks:
         return []
@@ -119,32 +120,40 @@ def _enrich_stocks_bulk(stocks: List[Stock], db: Session) -> List[StockResponse]
     for rel in rels:
         rels_by_stock[rel.stock_id].append(rel)
 
-    # ── 2. Latest snapshot per stock ─────────────────────────────────────
-    subq = (
-        db.query(
-            StockDailySnapshot.stock_id,
-            sqlfunc.max(StockDailySnapshot.date).label("max_date"),
+    # ── 2. 目标日快照 per stock（默认最新交易日；as_of_date 指定则取该历史日）──
+    if as_of_date is not None:
+        target_td = as_of_date
+        snaps_list = (
+            db.query(StockDailySnapshot)
+            .filter(StockDailySnapshot.stock_id.in_(stock_ids), StockDailySnapshot.date == as_of_date)
+            .all()
         )
-        .filter(StockDailySnapshot.stock_id.in_(stock_ids))
-        .group_by(StockDailySnapshot.stock_id)
-        .subquery()
-    )
-    snaps_list = (
-        db.query(StockDailySnapshot)
-        .join(
-            subq,
-            and_(
-                StockDailySnapshot.stock_id == subq.c.stock_id,
-                StockDailySnapshot.date == subq.c.max_date,
-            ),
+    else:
+        target_td = db.query(sqlfunc.max(StockDailySnapshot.date)).scalar()
+        subq = (
+            db.query(
+                StockDailySnapshot.stock_id,
+                sqlfunc.max(StockDailySnapshot.date).label("max_date"),
+            )
+            .filter(StockDailySnapshot.stock_id.in_(stock_ids))
+            .group_by(StockDailySnapshot.stock_id)
+            .subquery()
         )
-        .all()
-    )
+        snaps_list = (
+            db.query(StockDailySnapshot)
+            .join(
+                subq,
+                and_(
+                    StockDailySnapshot.stock_id == subq.c.stock_id,
+                    StockDailySnapshot.date == subq.c.max_date,
+                ),
+            )
+            .all()
+        )
     snap_map: dict[int, StockDailySnapshot] = {s.stock_id: s for s in snaps_list}
-    # 当前最新交易日（全局）：today_* 仅在该股最新快照==此日期时有效，否则视为今日无数据
-    latest_td = db.query(sqlfunc.max(StockDailySnapshot.date)).scalar()
+    latest_td = target_td  # today_* 仅在该股快照==此日期时有效
 
-    # 上一交易日（全局）+ 各股当日快照：用于「昨日涨停/跌停」标签
+    # 上一交易日 + 各股当日快照：用于「昨日涨停/跌停」标签
     prev_td = (
         db.query(sqlfunc.max(StockDailySnapshot.date))
         .filter(StockDailySnapshot.date < latest_td)
@@ -198,6 +207,21 @@ def _enrich_stocks_bulk(stocks: List[Stock], db: Session) -> List[StockResponse]
         data.today_board_count = snap.board_count if is_today else None
         data.today_limit_down_count = snap.limit_down_count if is_today else None
 
+        # 历史口径：各周期指标改用该日快照的落库值
+        if as_of_date is not None and snap:
+            data.board_count_60d = snap.board_count_60d
+            data.board_down_count_60d = snap.board_down_count_60d
+            data.limit_up_days_60d = snap.limit_up_days_60d
+            data.limit_up_days_20d = snap.limit_up_days_20d
+            data.limit_up_days_10d = snap.limit_up_days_10d
+            data.pct_change_60d = snap.pct_change_60d
+            data.pct_change_20d = snap.pct_change_20d
+            data.pct_change_10d = snap.pct_change_10d
+            data.phase = snap.phase
+            data.leader_score = snap.leader_score
+            data.risk_score = snap.risk_score
+            data.emotion_score = snap.emotion_score
+
         # 昨日涨停/跌停（仅对当前在交易的股票有效，避免停牌/滞后误判）
         prev_snap = prev_snap_map.get(stock.id)
         data.yesterday_is_limit_up = bool(prev_snap.is_limit_up) if (is_today and prev_snap) else False
@@ -205,10 +229,13 @@ def _enrich_stocks_bulk(stocks: List[Stock], db: Session) -> List[StockResponse]
 
         # 距涨幅严重异动「上涨空间」近似 = min(10日到+100%, 30日到+200%) 的剩余累计涨幅
         # 用累计涨幅近似偏离值（不扣指数，偏保守）。已触发(<=0) 或数据不足 → None。
-        cum10 = stock.pct_change_10d or 0.0
-        cum30 = cum30_map.get(stock.id, cum10)
-        room = min(100.0 - cum10, 200.0 - cum30)
-        data.severe_up_room = round(room, 1) if room > 0 else None
+        if as_of_date is not None:
+            data.severe_up_room = None  # 实时口径，不适用于历史
+        else:
+            cum10 = stock.pct_change_10d or 0.0
+            cum30 = cum30_map.get(stock.id, cum10)
+            room = min(100.0 - cum10, 200.0 - cum30)
+            data.severe_up_room = round(room, 1) if room > 0 else None
 
         # ── 主板块：直接读落库值（与仪表盘/龙头等模块一致）───────────────────
         if stock.primary_sector_id and stock.primary_sector_name:
@@ -317,22 +344,23 @@ def get_limit_moves_pool(
     page_size: int = 500,
     search: Optional[str] = None,
     move_type: Optional[str] = None,  # 'limit_up' | 'limit_down' | None (both)
+    date=None,                         # 指定历史交易日；None=最新交易日
 ) -> StockListResponse:
     """
-    Non-ST stocks filtered by today's price action:
+    Non-ST stocks filtered by price action on target date (默认最新交易日)：
       move_type='limit_up'   → is_limit_up = True
       move_type='limit_down' → is_limit_down = True
       move_type=None         → both (OR)
-    Sorted by pct_change desc (limit-up first).
+    Sorted by pct_change desc (limit-up first). date 指定则查看历史涨跌停。
     """
-    latest_date = db.query(sqlfunc.max(StockDailySnapshot.date)).scalar()
-    if not latest_date:
+    target_date = date or db.query(sqlfunc.max(StockDailySnapshot.date)).scalar()
+    if not target_date:
         return StockListResponse(items=[], total=0, page=page, page_size=page_size)
 
     q = (
         db.query(Stock)
         .join(StockDailySnapshot, StockDailySnapshot.stock_id == Stock.id)
-        .filter(StockDailySnapshot.date == latest_date)
+        .filter(StockDailySnapshot.date == target_date)
         .filter(Stock.is_st == False)  # noqa: E712
     )
 
@@ -358,7 +386,7 @@ def get_limit_moves_pool(
     total = q.count()
     stocks = q.offset((page - 1) * page_size).limit(page_size).all()
     return StockListResponse(
-        items=_enrich_stocks_bulk(stocks, db),
+        items=_enrich_stocks_bulk(stocks, db, as_of_date=date),
         total=total,
         page=page,
         page_size=page_size,

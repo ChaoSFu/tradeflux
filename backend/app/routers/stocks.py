@@ -56,10 +56,18 @@ def list_limit_moves(
     page_size: int = Query(500, ge=1, le=1000),
     search: Optional[str] = None,
     move_type: Optional[str] = Query(None, pattern="^(limit_up|limit_down)$"),
+    date: Optional[str] = Query(None, description="历史交易日 YYYY-MM-DD，不传=最新"),
     db: Session = Depends(get_db),
 ):
-    """非ST股中今日涨停/跌停的股票列表。move_type=limit_up|limit_down|不传(两者)。"""
-    return get_limit_moves_pool(db, page, page_size, search, move_type)
+    """非ST股中指定交易日涨停/跌停的股票列表。move_type=limit_up|limit_down|不传(两者)；date 指定历史日。"""
+    from datetime import date as _date
+    d = None
+    if date:
+        try:
+            d = _date.fromisoformat(date)
+        except ValueError:
+            d = None
+    return get_limit_moves_pool(db, page, page_size, search, move_type, date=d)
 
 
 @router.get("/{code}", response_model=StockResponse)
