@@ -3,7 +3,7 @@
  * 功能：近期涨停/跌停趋势曲线 + 板块集中度（饼图 + 排名列表 + 跨板块分析）
  */
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueries } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   fetchLimitMoves, fetchLimitMovesTrend,
@@ -25,9 +25,8 @@ import type { Stock, SectorLimitTrendOption, SectorLimitTrendPoint } from '@/typ
 const C_UP   = '#FF4560'
 const C_DOWN = '#26C281'
 const C_OTHER = '#505570'
-// 叠加板块曲线（区别于大盘红/绿）
-const C_SEC_UP   = '#FFB020'
-const C_SEC_DOWN = '#4E9CF5'
+// 走势图最多同时叠加的板块数（再多图就看不清了）
+const MAX_OVERLAY = 4
 
 // ─── Sector stat with stock tracking ─────────────────────────────────────────
 
@@ -162,17 +161,24 @@ export default function LimitMovesDashboard() {
     queryFn: () => fetchLimitMovesTrend(30),
   } as any)
 
-  // 叠加板块：手动选一个板块，在走势图上叠加该板块每日涨停/跌停数
-  const [selSector, setSelSector] = useState<string | null>(null)
+  // 叠加板块：可多选（≤MAX_OVERLAY），在走势图上叠加各板块每日涨停/跌停数，对比板块间走势相关性
+  const [selSectors, setSelSectors] = useState<string[]>([])
+  const toggleSector = (name: string) =>
+    setSelSectors(prev => prev.includes(name)
+      ? prev.filter(n => n !== name)
+      : prev.length >= MAX_OVERLAY ? prev : [...prev, name])
   const { data: sectorOptions } = useQuery({
     queryKey: ['sector-limit-trend-options', 30],
     queryFn: () => fetchSectorLimitTrendOptions(30),
   } as any)
-  const { data: sectorTrend, isLoading: sectorTrendLoading } = useQuery({
-    queryKey: ['sector-limit-trend', selSector, 30],
-    queryFn: () => fetchSectorLimitTrend(selSector!, 30),
-    enabled: !!selSector,
-  } as any)
+  const sectorTrendQueries = useQueries({
+    queries: selSectors.map(name => ({
+      queryKey: ['sector-limit-trend', name, 30],
+      queryFn: () => fetchSectorLimitTrend(name, 30),
+      staleTime: 5 * 60_000,
+    })),
+  })
+  const sectorTrendLoading = sectorTrendQueries.some(q => q.isLoading)
 
   // 可选日期（近30个交易日，来自 trend），最新在前
   const dateOptions: string[] = useMemo(
@@ -198,19 +204,17 @@ export default function LimitMovesDashboard() {
   }, [trendData])
 
   // ── Trend chart data ──────────────────────────────────────────────────────
-  const chartData = useMemo(() => {
+  const chartDataBase = useMemo(() => {
     const raw: any[] = (trendData as any) ?? []
     const W = 30  // 滚动窗口：近30个交易日
     const round1 = (v: number) => Math.round(v * 10) / 10
-    // 叠加板块的每日涨跌停数（按日期对齐）
-    const secByDate = new Map<string, SectorLimitTrendPoint>()
-    for (const sp of ((sectorTrend as any) ?? []) as SectorLimitTrendPoint[]) secByDate.set(sp.date, sp)
     return raw.map((p, i) => {
       const win = raw.slice(Math.max(0, i - W + 1), i + 1)
       const avgUp   = win.reduce((s, q) => s + q.limit_up_count,   0) / win.length
       const avgDown = win.reduce((s, q) => s + q.limit_down_count, 0) / win.length
-      const row: any = {
+      return {
         date: format(new Date(p.date), 'MM/dd'),
+        _rawDate: p.date,
         '涨停': p.limit_up_count,
         '跌停': p.limit_down_count,
         '涨停30日均值': round1(avgUp),
@@ -218,14 +222,27 @@ export default function LimitMovesDashboard() {
         _topUp: p.top_up_sector, _topUpN: p.top_up_sector_count,
         _topDown: p.top_down_sector, _topDownN: p.top_down_sector_count,
       }
-      if (selSector && secByDate.size > 0) {
-        const sp = secByDate.get(p.date)
-        row[`${selSector}·涨停`] = sp?.limit_up_count ?? 0
-        row[`${selSector}·跌停`] = sp?.limit_down_count ?? 0
-      }
-      return row
     })
-  }, [trendData, selSector, sectorTrend])
+  }, [trendData])
+
+  // 叠加板块序列（数据量小，每次渲染直接合并；selSectors 长度可变，不适合 useMemo 依赖）
+  const sectorSeries = selSectors.map((name, i) => ({
+    name,
+    color: getSectorColor(name),
+    byDate: new Map(
+      ((((sectorTrendQueries[i]?.data as any) ?? []) as SectorLimitTrendPoint[]).map(p => [p.date, p])),
+    ),
+  }))
+  const chartData = chartDataBase.map(row => {
+    const out: any = { ...row }
+    for (const s of sectorSeries) {
+      if (s.byDate.size === 0) continue
+      const sp = s.byDate.get(row._rawDate)
+      out[`${s.name}·涨停`] = sp?.limit_up_count ?? 0
+      out[`${s.name}·跌停`] = sp?.limit_down_count ?? 0
+    }
+    return out
+  })
 
   const avg = useMemo(() => {
     const raw: any[] = (trendData as any) ?? []
@@ -349,14 +366,15 @@ export default function LimitMovesDashboard() {
       {/* ── Trend chart ────────────────────────────────────────────────── */}
       <div className="card p-4 space-y-2">
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <span className="text-sm font-semibold text-text-primary">近期涨停 / 跌停走势</span>
             <SectorPicker
               options={((sectorOptions as any) ?? []) as SectorLimitTrendOption[]}
-              value={selSector}
-              onChange={setSelSector}
+              values={selSectors}
+              onToggle={toggleSector}
+              onClear={() => setSelSectors([])}
             />
-            {selSector && sectorTrendLoading && (
+            {sectorTrendLoading && (
               <span className="text-xs text-text-muted animate-pulse">加载板块数据…</span>
             )}
           </div>
@@ -386,12 +404,10 @@ export default function LimitMovesDashboard() {
                 <Line type="monotone" dataKey="跌停" stroke={C_DOWN} strokeWidth={2} dot={false} activeDot={{ r: 4 }} hide={hiddenLines.has('跌停')} />
                 <Line type="monotone" dataKey="涨停30日均值" stroke={C_UP}   strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.5} dot={false} activeDot={false} hide={hiddenLines.has('涨停30日均值')} />
                 <Line type="monotone" dataKey="跌停30日均值" stroke={C_DOWN} strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.5} dot={false} activeDot={false} hide={hiddenLines.has('跌停30日均值')} />
-                {selSector && (
-                  <Line type="monotone" dataKey={`${selSector}·涨停`} stroke={C_SEC_UP} strokeWidth={2} dot={{ r: 2, fill: C_SEC_UP, strokeWidth: 0 }} activeDot={{ r: 4 }} hide={hiddenLines.has(`${selSector}·涨停`)} />
-                )}
-                {selSector && (
-                  <Line type="monotone" dataKey={`${selSector}·跌停`} stroke={C_SEC_DOWN} strokeWidth={2} strokeDasharray="6 3" dot={{ r: 2, fill: C_SEC_DOWN, strokeWidth: 0 }} activeDot={{ r: 4 }} hide={hiddenLines.has(`${selSector}·跌停`)} />
-                )}
+                {sectorSeries.flatMap(s => [
+                  <Line key={`${s.name}-up`} type="monotone" dataKey={`${s.name}·涨停`} stroke={s.color} strokeWidth={2} dot={{ r: 2, fill: s.color, strokeWidth: 0 }} activeDot={{ r: 4 }} hide={hiddenLines.has(`${s.name}·涨停`)} />,
+                  <Line key={`${s.name}-down`} type="monotone" dataKey={`${s.name}·跌停`} stroke={s.color} strokeWidth={1.5} strokeDasharray="6 3" strokeOpacity={0.75} dot={false} activeDot={{ r: 3 }} hide={hiddenLines.has(`${s.name}·跌停`)} />,
+                ])}
               </LineChart>
             </ResponsiveContainer>
           )}
@@ -485,11 +501,12 @@ export default function LimitMovesDashboard() {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-/** 可搜索板块选择器：选中后在走势图上叠加该板块每日涨停/跌停曲线 */
-function SectorPicker({ options, value, onChange }: {
+/** 可搜索板块多选器：选中后在走势图上叠加各板块每日涨停/跌停曲线（≤MAX_OVERLAY 个） */
+function SectorPicker({ options, values, onToggle, onClear }: {
   options: SectorLimitTrendOption[]
-  value: string | null
-  onChange: (v: string | null) => void
+  values: string[]
+  onToggle: (name: string) => void
+  onClear: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
@@ -497,48 +514,45 @@ function SectorPicker({ options, value, onChange }: {
     const s = q.trim().toLowerCase()
     return s ? options.filter(o => o.name.toLowerCase().includes(s)) : options
   }, [options, q])
+  const full = values.length >= MAX_OVERLAY
 
   return (
-    <div className="relative">
-      <div className="flex items-center gap-1">
-        <button
-          onClick={() => { setOpen(o => !o); setQ('') }}
-          className={cn(
-            'flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs transition-colors',
-            value
-              ? 'border-[#FFB020]/50 text-[#FFB020] bg-[#FFB020]/10'
-              : 'border-bg-border text-text-muted hover:text-text-secondary hover:border-bg-border/80',
-          )}
+    <div className="relative flex items-center gap-1.5 flex-wrap">
+      {/* 已选板块 chips */}
+      {values.map(name => (
+        <span
+          key={name}
+          className="flex items-center gap-1.5 px-2 py-1 rounded-lg border text-xs"
+          style={{ borderColor: `${getSectorColor(name)}80`, color: getSectorColor(name), backgroundColor: `${getSectorColor(name)}14` }}
         >
-          {value ? (
-            <>
-              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: getSectorColor(value) }} />
-              {value}
-            </>
-          ) : (
-            <>
-              <Search className="w-3 h-3" />
-              叠加板块走势
-            </>
-          )}
-          <ChevronDown className={cn('w-3 h-3 transition-transform', open && 'rotate-180')} />
+          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: getSectorColor(name) }} />
+          {name}
+          <X className="w-3 h-3 cursor-pointer opacity-70 hover:opacity-100" onClick={() => onToggle(name)} />
+        </span>
+      ))}
+      {values.length > 1 && (
+        <button
+          onClick={onClear}
+          className="text-[10px] px-1.5 py-1 rounded text-text-muted hover:text-text-primary hover:bg-bg-elevated"
+          title="清除全部叠加板块"
+        >
+          清空
         </button>
-        {value && (
-          <button
-            onClick={() => onChange(null)}
-            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-bg-elevated"
-            title="清除叠加板块"
-          >
-            <X className="w-3 h-3" />
-          </button>
-        )}
-      </div>
+      )}
+      <button
+        onClick={() => { setOpen(o => !o); setQ('') }}
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-bg-border text-xs text-text-muted hover:text-text-secondary hover:border-bg-border/80 transition-colors"
+      >
+        <Search className="w-3 h-3" />
+        {values.length ? '继续叠加' : '叠加板块走势'}
+        <ChevronDown className={cn('w-3 h-3 transition-transform', open && 'rotate-180')} />
+      </button>
 
       {open && (
         <>
           {/* 点击外部关闭 */}
           <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
-          <div className="absolute z-30 mt-1.5 w-72 card border border-bg-border/70 shadow-2xl overflow-hidden">
+          <div className="absolute top-full left-0 z-30 mt-1.5 w-72 card border border-bg-border/70 shadow-2xl overflow-hidden">
             <div className="p-2 border-b border-bg-border/40">
               <div className="flex items-center gap-1.5 bg-bg-elevated rounded-lg px-2 py-1.5">
                 <Search className="w-3.5 h-3.5 text-text-muted shrink-0" />
@@ -555,27 +569,40 @@ function SectorPicker({ options, value, onChange }: {
               {filtered.length === 0 ? (
                 <div className="py-6 text-center text-xs text-text-muted">无匹配板块</div>
               ) : (
-                filtered.slice(0, 60).map((o) => (
-                  <div
-                    key={o.name}
-                    onClick={() => { onChange(o.name); setOpen(false) }}
-                    className={cn(
-                      'px-3 py-1.5 flex items-center gap-2 text-xs cursor-pointer hover:bg-bg-elevated',
-                      value === o.name && 'bg-bg-elevated',
-                    )}
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: getSectorColor(o.name) }} />
-                    <span className="text-text-primary truncate">{o.name}</span>
-                    <span className="ml-auto font-mono shrink-0 space-x-1.5">
-                      {o.limit_up_total > 0 && <span className="text-up">涨{o.limit_up_total}</span>}
-                      {o.limit_down_total > 0 && <span className="text-down">跌{o.limit_down_total}</span>}
-                    </span>
-                  </div>
-                ))
+                filtered.slice(0, 60).map((o) => {
+                  const checked = values.includes(o.name)
+                  const disabled = !checked && full
+                  return (
+                    <div
+                      key={o.name}
+                      onClick={() => { if (!disabled) onToggle(o.name) }}
+                      className={cn(
+                        'px-3 py-1.5 flex items-center gap-2 text-xs',
+                        disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-bg-elevated',
+                        checked && 'bg-bg-elevated',
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'w-3 h-3 rounded border shrink-0 flex items-center justify-center',
+                          checked ? 'border-accent bg-accent/20 text-accent' : 'border-bg-border',
+                        )}
+                      >
+                        {checked && <span className="text-[9px] leading-none">✓</span>}
+                      </span>
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: getSectorColor(o.name) }} />
+                      <span className="text-text-primary truncate">{o.name}</span>
+                      <span className="ml-auto font-mono shrink-0 space-x-1.5">
+                        {o.limit_up_total > 0 && <span className="text-up">涨{o.limit_up_total}</span>}
+                        {o.limit_down_total > 0 && <span className="text-down">跌{o.limit_down_total}</span>}
+                      </span>
+                    </div>
+                  )
+                })
               )}
             </div>
             <div className="px-3 py-1.5 border-t border-bg-border/40 text-[10px] text-text-muted">
-              近30个交易日出现过涨停/跌停的板块 · 按次数排序
+              近30个交易日出现过涨跌停的板块 · 按次数排序 · 最多叠加{MAX_OVERLAY}个
             </div>
           </div>
         </>
