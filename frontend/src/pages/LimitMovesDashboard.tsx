@@ -373,17 +373,6 @@ export default function LimitMovesDashboard() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
                 <XAxis dataKey="date" tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                 <YAxis tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} width={32} />
-                {selSector && (
-                  <YAxis
-                    yAxisId="sector"
-                    orientation="right"
-                    tick={{ fill: C_SEC_UP, fontSize: 11 }}
-                    axisLine={false}
-                    tickLine={false}
-                    width={28}
-                    allowDecimals={false}
-                  />
-                )}
                 <Tooltip content={<CustomTooltip />} />
                 <Legend
                   wrapperStyle={{ fontSize: 12, color: '#A2A9C4', paddingTop: 4, cursor: 'pointer' }}
@@ -398,10 +387,10 @@ export default function LimitMovesDashboard() {
                 <Line type="monotone" dataKey="涨停30日均值" stroke={C_UP}   strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.5} dot={false} activeDot={false} hide={hiddenLines.has('涨停30日均值')} />
                 <Line type="monotone" dataKey="跌停30日均值" stroke={C_DOWN} strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.5} dot={false} activeDot={false} hide={hiddenLines.has('跌停30日均值')} />
                 {selSector && (
-                  <Line yAxisId="sector" type="monotone" dataKey={`${selSector}·涨停`} stroke={C_SEC_UP} strokeWidth={2} dot={{ r: 2, fill: C_SEC_UP, strokeWidth: 0 }} activeDot={{ r: 4 }} hide={hiddenLines.has(`${selSector}·涨停`)} />
+                  <Line type="monotone" dataKey={`${selSector}·涨停`} stroke={C_SEC_UP} strokeWidth={2} dot={{ r: 2, fill: C_SEC_UP, strokeWidth: 0 }} activeDot={{ r: 4 }} hide={hiddenLines.has(`${selSector}·涨停`)} />
                 )}
                 {selSector && (
-                  <Line yAxisId="sector" type="monotone" dataKey={`${selSector}·跌停`} stroke={C_SEC_DOWN} strokeWidth={2} strokeDasharray="6 3" dot={{ r: 2, fill: C_SEC_DOWN, strokeWidth: 0 }} activeDot={{ r: 4 }} hide={hiddenLines.has(`${selSector}·跌停`)} />
+                  <Line type="monotone" dataKey={`${selSector}·跌停`} stroke={C_SEC_DOWN} strokeWidth={2} strokeDasharray="6 3" dot={{ r: 2, fill: C_SEC_DOWN, strokeWidth: 0 }} activeDot={{ r: 4 }} hide={hiddenLines.has(`${selSector}·跌停`)} />
                 )}
               </LineChart>
             </ResponsiveContainer>
