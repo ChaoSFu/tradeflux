@@ -112,3 +112,17 @@ class LimitMoveTrendPoint(BaseModel):
     top_up_sector_count: Optional[int] = None
     top_down_sector: Optional[str] = None
     top_down_sector_count: Optional[int] = None
+
+
+class SectorLimitTrendPoint(BaseModel):
+    """单板块每日涨停/跌停数量（与全市场 trend 的交易日对齐，缺日补零）"""
+    date: str
+    limit_up_count: int
+    limit_down_count: int
+
+
+class SectorLimitTrendOption(BaseModel):
+    """近 N 日出现过涨停/跌停的关注板块（供走势图叠加选择）"""
+    name: str
+    limit_up_total: int
+    limit_down_total: int

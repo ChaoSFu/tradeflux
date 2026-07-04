@@ -17,7 +17,10 @@ from sqlalchemy.orm import Session
 
 from ..models.stock import Stock, StockDailySnapshot
 from ..models.sector import StockSectorRelation, Sector
-from ..schemas.stock import StockResponse, StockListResponse, LimitMoveTrendPoint
+from ..schemas.stock import (
+    StockResponse, StockListResponse, LimitMoveTrendPoint,
+    SectorLimitTrendPoint, SectorLimitTrendOption,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +458,103 @@ def get_limit_moves_trend(db: Session, days: int = 20) -> list[LimitMoveTrendPoi
             top_down_sector_count=top_down.get(r.date, (None, None))[1],
         )
         for r in reversed(rows)
+    ]
+
+
+def _recent_snapshot_dates(db: Session, days: int) -> list:
+    """最近 N 个有快照的交易日（升序）"""
+    rows = (
+        db.query(StockDailySnapshot.date)
+        .distinct()
+        .order_by(StockDailySnapshot.date.desc())
+        .limit(days)
+        .all()
+    )
+    return sorted(r[0] for r in rows)
+
+
+def get_sector_limit_trend_options(db: Session, days: int = 30) -> list[SectorLimitTrendOption]:
+    """
+    近 N 个交易日内出现过涨停/跌停（非ST、关注板块口径）的板块列表，
+    按涨停+跌停总次数降序，供走势图叠加选择。
+    """
+    dates = _recent_snapshot_dates(db, days)
+    if not dates:
+        return []
+    rows = (
+        db.query(
+            Sector.name,
+            sqlfunc.sum(
+                case((StockDailySnapshot.is_limit_up == True, 1), else_=0)  # noqa: E712
+            ).label("up_total"),
+            sqlfunc.sum(
+                case((StockDailySnapshot.is_limit_down == True, 1), else_=0)  # noqa: E712
+            ).label("down_total"),
+        )
+        .join(StockSectorRelation, StockSectorRelation.sector_id == Sector.id)
+        .join(Stock, Stock.id == StockSectorRelation.stock_id)
+        .join(StockDailySnapshot, StockDailySnapshot.stock_id == Stock.id)
+        .filter(
+            Stock.is_st == False,  # noqa: E712
+            Sector.is_watched == True,  # noqa: E712
+            StockDailySnapshot.date.in_(dates),
+            or_(
+                StockDailySnapshot.is_limit_up == True,   # noqa: E712
+                StockDailySnapshot.is_limit_down == True, # noqa: E712
+            ),
+        )
+        .group_by(Sector.name)
+        .all()
+    )
+    opts = [
+        SectorLimitTrendOption(
+            name=name,
+            limit_up_total=int(up or 0),
+            limit_down_total=int(down or 0),
+        )
+        for name, up, down in rows
+    ]
+    opts.sort(key=lambda o: (-(o.limit_up_total + o.limit_down_total), o.name))
+    return opts
+
+
+def get_sector_limit_trend(db: Session, sector_name: str, days: int = 30) -> list[SectorLimitTrendPoint]:
+    """
+    指定板块近 N 个交易日的每日涨停/跌停数量（非ST）。
+    日期与全市场 trend 对齐，无涨跌停的交易日补 0，便于前端叠加曲线。
+    """
+    dates = _recent_snapshot_dates(db, days)
+    if not dates:
+        return []
+    rows = (
+        db.query(
+            StockDailySnapshot.date,
+            sqlfunc.sum(
+                case((StockDailySnapshot.is_limit_up == True, 1), else_=0)  # noqa: E712
+            ).label("up_count"),
+            sqlfunc.sum(
+                case((StockDailySnapshot.is_limit_down == True, 1), else_=0)  # noqa: E712
+            ).label("down_count"),
+        )
+        .join(Stock, Stock.id == StockDailySnapshot.stock_id)
+        .join(StockSectorRelation, StockSectorRelation.stock_id == Stock.id)
+        .join(Sector, Sector.id == StockSectorRelation.sector_id)
+        .filter(
+            Stock.is_st == False,  # noqa: E712
+            Sector.name == sector_name,
+            StockDailySnapshot.date.in_(dates),
+        )
+        .group_by(StockDailySnapshot.date)
+        .all()
+    )
+    by_date = {d: (int(u or 0), int(dn or 0)) for d, u, dn in rows}
+    return [
+        SectorLimitTrendPoint(
+            date=str(d),
+            limit_up_count=by_date.get(d, (0, 0))[0],
+            limit_down_count=by_date.get(d, (0, 0))[1],
+        )
+        for d in dates
     ]
 
 

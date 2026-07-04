@@ -5,11 +5,13 @@ from ..database import get_db
 from ..models.stock import Stock, StockDailySnapshot
 from ..services.strong_stock_service import (
     get_all_stocks, get_strong_pool, get_limit_moves_pool,
-    get_limit_moves_trend, _enrich_stock_response,
+    get_limit_moves_trend, get_sector_limit_trend, get_sector_limit_trend_options,
+    _enrich_stock_response,
 )
 from ..schemas.stock import (
     StockResponse, StockListResponse, StockDailySnapshotResponse,
     StockCreate, StockUpdate, LimitMoveTrendPoint,
+    SectorLimitTrendPoint, SectorLimitTrendOption,
 )
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
@@ -48,6 +50,25 @@ def list_limit_moves_trend(
 ):
     """近 N 个交易日每日涨停/跌停数量趋势（非ST）。"""
     return get_limit_moves_trend(db, days)
+
+
+@router.get("/limit-moves/trend/sector-options", response_model=list[SectorLimitTrendOption])
+def list_sector_limit_trend_options(
+    days: int = Query(30, ge=5, le=60),
+    db: Session = Depends(get_db),
+):
+    """近 N 个交易日出现过涨停/跌停的关注板块（按总次数降序），供走势图叠加选择。"""
+    return get_sector_limit_trend_options(db, days)
+
+
+@router.get("/limit-moves/trend/sector", response_model=list[SectorLimitTrendPoint])
+def get_sector_trend(
+    sector: str = Query(..., min_length=1, description="板块名称"),
+    days: int = Query(30, ge=5, le=60),
+    db: Session = Depends(get_db),
+):
+    """指定板块近 N 个交易日每日涨停/跌停数量（非ST，日期与全市场 trend 对齐、缺日补零）。"""
+    return get_sector_limit_trend(db, sector, days)
 
 
 @router.get("/limit-moves", response_model=StockListResponse)

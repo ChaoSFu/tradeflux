@@ -1,5 +1,8 @@
 import client from './client'
-import type { StockListResponse, StockSnapshot, Stock, LimitMoveTrendPoint } from '@/types'
+import type {
+  StockListResponse, StockSnapshot, Stock, LimitMoveTrendPoint,
+  SectorLimitTrendPoint, SectorLimitTrendOption,
+} from '@/types'
 
 export const fetchStocks = (params?: {
   page?: number
@@ -29,6 +32,12 @@ export const fetchLimitMoves = (params?: {
 
 export const fetchLimitMovesTrend = (days = 20) =>
   client.get<LimitMoveTrendPoint[]>('/stocks/limit-moves/trend', { params: { days } }).then((r) => r.data)
+
+export const fetchSectorLimitTrendOptions = (days = 30) =>
+  client.get<SectorLimitTrendOption[]>('/stocks/limit-moves/trend/sector-options', { params: { days } }).then((r) => r.data)
+
+export const fetchSectorLimitTrend = (sector: string, days = 30) =>
+  client.get<SectorLimitTrendPoint[]>('/stocks/limit-moves/trend/sector', { params: { sector, days } }).then((r) => r.data)
 
 export const fetchStock = (code: string) =>
   client.get<Stock>(`/stocks/${code}`).then((r) => r.data)
