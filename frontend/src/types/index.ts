@@ -270,6 +270,18 @@ export interface LimitMoveTrendPoint {
   top_down_sector_count: number | null
 }
 
+export interface SectorLimitTrendPoint {
+  date: string
+  limit_up_count: number
+  limit_down_count: number
+}
+
+export interface SectorLimitTrendOption {
+  name: string
+  limit_up_total: number
+  limit_down_total: number
+}
+
 export interface MarketHistoryPoint {
   date: string
   profit_effect_score: number
