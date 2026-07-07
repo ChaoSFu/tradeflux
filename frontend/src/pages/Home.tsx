@@ -91,7 +91,7 @@ const UPDATE_ITEMS = [
 
 export default function Home() {
   return (
-    <div className="space-y-6 animate-fade-in max-w-5xl">
+    <div className="space-y-6 animate-fade-in">
 
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
       <div className="card p-6 border border-accent/20 bg-gradient-to-br from-accent/10 via-transparent to-transparent">
@@ -117,7 +117,7 @@ export default function Home() {
       {/* ── 功能模块 ─────────────────────────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-text-primary">功能模块</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           {FEATURES.map(({ to, icon: Icon, name, desc }) => (
             <Link
               key={to}
@@ -142,9 +142,9 @@ export default function Home() {
       {/* ── 数据来源 ─────────────────────────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-text-primary">数据来源</h2>
-        <div className="card divide-y divide-bg-border/40">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           {DATA_SOURCES.map(({ icon: Icon, name, desc }) => (
-            <div key={name} className="p-4 flex gap-3">
+            <div key={name} className="card p-4 flex gap-3">
               <span className="w-8 h-8 rounded-lg bg-bg-elevated flex items-center justify-center shrink-0 text-text-secondary">
                 <Icon className="w-4 h-4" />
               </span>
@@ -154,16 +154,16 @@ export default function Home() {
               </div>
             </div>
           ))}
-          <p className="px-4 py-3 text-xs text-text-muted/80">
-            以上均为公开行情接口，平台仅做数据聚合、指标计算与可视化，不生产行情数据；数据可能存在延迟或缺失，请以交易所披露为准。
-          </p>
         </div>
+        <p className="text-xs text-text-muted/80 px-1">
+          以上均为公开行情接口，平台仅做数据聚合、指标计算与可视化，不生产行情数据；数据可能存在延迟或缺失，请以交易所披露为准。
+        </p>
       </section>
 
       {/* ── 更新机制 ─────────────────────────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-text-primary">数据更新机制</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           {UPDATE_ITEMS.map(({ icon: Icon, name, desc }) => (
             <div key={name} className="card p-4 flex gap-3">
               <span className="w-8 h-8 rounded-lg bg-bg-elevated flex items-center justify-center shrink-0 text-text-secondary">
