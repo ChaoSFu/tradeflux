@@ -59,11 +59,21 @@ export default {
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
         'fade-in': 'fadeIn 0.2s ease-in-out',
+        'fade-in-up': 'fadeInUp 0.5s ease-out backwards',
+        'glow-drift': 'glowDrift 9s ease-in-out infinite',
       },
       keyframes: {
         fadeIn: {
           '0%': { opacity: '0', transform: 'translateY(4px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        fadeInUp: {
+          '0%': { opacity: '0', transform: 'translateY(14px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        glowDrift: {
+          '0%, 100%': { transform: 'translate(0, 0) scale(1)', opacity: '0.55' },
+          '50%': { transform: 'translate(60px, 14px) scale(1.15)', opacity: '0.85' },
         },
       },
     },
