@@ -4,7 +4,8 @@ import { Header } from './Header'
 import { MarketStateBar } from './MarketStateBar'
 
 const TITLES: Record<string, string> = {
-  '/': '强势股概览 Strong Overview',
+  '/': '主页 Home',
+  '/strong': '强势股概览 Strong Overview',
   '/stocks': '活跃股池 Active Pool',
   '/watchlist': '重点监控 Regulatory Monitor',
   '/sector-config': '板块展示配置 Sector Config',
