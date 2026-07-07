@@ -4,7 +4,8 @@
 import { Link } from 'react-router-dom'
 import {
   Flame, LayoutDashboard, TrendingUp, ShieldAlert, Activity, Zap, BookOpen,
-  RefreshCw, Mail, AlertTriangle, Clock, MousePointerClick, ArrowRight, Lock,
+  RefreshCw, Mail, AlertTriangle, MousePointerClick, ArrowRight, Lock,
+  Sunset, Sunrise,
 } from 'lucide-react'
 
 // ─── 功能模块（每个模块一个主题色，用于图标与悬停光效）───────────────────────
@@ -48,11 +49,11 @@ const FEATURES = [
 
 const UPDATE_ITEMS = [
   {
-    icon: Clock, name: '盘后自动更新',
+    icon: Sunset, name: '盘后自动更新',
     desc: '交易日 15:30 后自动全量更新：抓取当日行情名单、重算窗口指标与评分、写入每日快照',
   },
   {
-    icon: Clock, name: '盘前自动更新',
+    icon: Sunrise, name: '盘前自动更新',
     desc: '交易日 9:26–9:28（集合竞价之后、开盘之前）自动刷新一次，修正隔夜口径',
   },
   {
