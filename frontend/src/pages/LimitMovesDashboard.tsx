@@ -305,6 +305,7 @@ export default function LimitMovesDashboard() {
   const dataLoading = upLoading || downLoading
 
   // 点击集中板块 → 展开该板块成员个股（复用 SectorSection，与 Dashboard 一致）
+  // 同一板块的涨停+跌停股合并展示（SectorSection 会按涨停/跌停龙头分组）。
   // 主区(上)与 ≥2板区(下) 各自独立的展开状态，互不影响。
   const navigate = useNavigate()
   type Side = 'up' | 'down'
@@ -312,10 +313,10 @@ export default function LimitMovesDashboard() {
   const [expMain, setExpMain] = useState<Exp>(null)
   const [exp2, setExp2] = useState<Exp>(null)
   const mkToggle = (setter: (fn: (p: Exp) => Exp) => void) =>
-    (name: string, set: Stock[], side: Side) =>
+    (name: string, ups: Stock[], downs: Stock[], side: Side) =>
       setter(p => (p && p.name === name && p.side === side)
         ? null
-        : { name, side, stocks: set.filter(s => (s.sectors ?? []).includes(name)) })
+        : { name, side, stocks: [...ups, ...downs].filter(s => (s.sectors ?? []).includes(name)) })
   const toggleMain = mkToggle(setExpMain)
   const toggle2 = mkToggle(setExp2)
   const renderExp = (exp: Exp, close: () => void) =>
@@ -447,7 +448,7 @@ export default function LimitMovesDashboard() {
           stocks={limitUps}
           color={C_UP}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggleMain(n, limitUps, 'up')}
+          onSelectSector={(n) => toggleMain(n, limitUps, limitDowns, 'up')}
           expandedName={expMain?.side === 'up' ? expMain.name : null}
         />
         <SectorHotspot
@@ -458,7 +459,7 @@ export default function LimitMovesDashboard() {
           stocks={limitDowns}
           color={C_DOWN}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggleMain(n, limitDowns, 'down')}
+          onSelectSector={(n) => toggleMain(n, limitUps, limitDowns, 'down')}
           expandedName={expMain?.side === 'down' ? expMain.name : null}
         />
       </div>
@@ -478,7 +479,7 @@ export default function LimitMovesDashboard() {
           stocks={upStocks2}
           color={C_UP}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggle2(n, upStocks2, 'up')}
+          onSelectSector={(n) => toggle2(n, upStocks2, downStocks2, 'up')}
           expandedName={exp2?.side === 'up' ? exp2.name : null}
         />
         <SectorHotspot
@@ -489,7 +490,7 @@ export default function LimitMovesDashboard() {
           stocks={downStocks2}
           color={C_DOWN}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggle2(n, downStocks2, 'down')}
+          onSelectSector={(n) => toggle2(n, upStocks2, downStocks2, 'down')}
           expandedName={exp2?.side === 'down' ? exp2.name : null}
         />
       </div>
