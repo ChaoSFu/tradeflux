@@ -28,7 +28,8 @@ export function Layout() {
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <Header title={title} />
         <main className="flex-1 overflow-auto p-5">
-          <MarketStateBar />
+          {/* 主页是纯介绍页，不展示市场情绪条 */}
+          {pathname !== '/' && <MarketStateBar />}
           <Outlet />
         </main>
       </div>
