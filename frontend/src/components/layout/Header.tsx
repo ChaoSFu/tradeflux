@@ -39,11 +39,12 @@ interface JobPanelProps {
   description: string
   estimatedTime: string
   locked?: boolean  // 未登录时锁定
+  onLockedClick?: () => void  // 点击「需要登录」→ 弹出登录框
 }
 
 function JobPanel({
   label, icon, status, isRunning, isDone, isError,
-  onTrigger, description, estimatedTime, locked = false,
+  onTrigger, description, estimatedTime, locked = false, onLockedClick,
 }: JobPanelProps) {
   const [showLog, setShowLog] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
@@ -113,13 +114,14 @@ function JobPanel({
             </button>
           )}
           {locked ? (
-            <span
-              className="flex items-center gap-1 text-[10px] px-2 py-1 rounded text-text-muted bg-bg-elevated border border-bg-border cursor-default"
-              title="请先登录"
+            <button
+              onClick={onLockedClick}
+              className="flex items-center gap-1 text-[10px] px-2 py-1 rounded text-warn bg-warn/10 border border-warn/30 hover:bg-warn/20 transition-colors"
+              title="点击登录后即可手动触发"
             >
               <Lock className="w-3 h-3" />
               需要登录
-            </span>
+            </button>
           ) : (
             <button
               onClick={onTrigger}
@@ -171,12 +173,18 @@ function JobPanel({
 
 // ── 数据更新入口（整合按钮 + 下拉面板）────────────────────────────────────────
 
-function DataUpdateMenu() {
+function DataUpdateMenu({ onRequestLogin }: { onRequestLogin: () => void }) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const { isLoggedIn } = useAuthStore()
+
+  // 未登录时点击「需要登录 / 去登录」→ 收起面板并弹出登录框
+  const requestLogin = () => {
+    setOpen(false)
+    onRequestLogin()
+  }
 
   // ── 每日更新任务 ────────────────────────────────────────────────────────────
   const [updatePolling, setUpdatePolling] = useState(false)
@@ -427,6 +435,22 @@ function DataUpdateMenu() {
             </p>
           </div>
 
+          {/* 未登录：登录引导横幅 */}
+          {!isLoggedIn && (
+            <div className="px-4 py-2.5 border-b border-warn/30 bg-warn/10 flex items-center gap-2">
+              <Lock className="w-3.5 h-3.5 text-warn shrink-0" />
+              <p className="text-[11px] text-warn flex-1 leading-relaxed">
+                手动更新为管理能力，登录后才能触发；下方状态与日志可正常查看
+              </p>
+              <button
+                onClick={requestLogin}
+                className="shrink-0 text-[11px] px-2.5 py-1 rounded bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25 transition-colors font-medium"
+              >
+                去登录
+              </button>
+            </div>
+          )}
+
           {/* 数据源降级告警明细 */}
           {degraded && (
             <div className="px-4 py-2.5 border-b border-warn/30 bg-warn/10">
@@ -457,6 +481,7 @@ function DataUpdateMenu() {
             description="选股 API 获取候选股 → K线计算 → 更新强势池 → 刷新板块统计 → 写入复盘。每日收盘后运行。"
             estimatedTime="30 秒"
             locked={!isLoggedIn}
+            onLockedClick={requestLogin}
           />
 
           {/* 板块行情同步（每日） */}
@@ -471,6 +496,7 @@ function DataUpdateMenu() {
             description="每日收盘后运行，更新板块涨跌幅/换手率/市值等行情数据（定时任务自动执行）。"
             estimatedTime="30 秒"
             locked={!isLoggedIn}
+            onLockedClick={requestLogin}
           />
 
           {/* 板块全量同步（每周） */}
@@ -485,6 +511,7 @@ function DataUpdateMenu() {
             description="每周运行一次，同步成份股数量及个股板块关联。板块成员变动或首次部署时使用。"
             estimatedTime="约 1 分钟"
             locked={!isLoggedIn}
+            onLockedClick={requestLogin}
           />
 
           {/* 耗时参考 */}
@@ -539,7 +566,7 @@ export function Header({ title }: { title: string }) {
           </div>
         )}
 
-        <DataUpdateMenu />
+        <DataUpdateMenu onRequestLogin={() => setShowLogin(true)} />
 
         {isLoggedIn && (
           <NavLink
