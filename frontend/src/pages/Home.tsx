@@ -4,7 +4,7 @@
 import { Link } from 'react-router-dom'
 import {
   Flame, LayoutDashboard, TrendingUp, ShieldAlert, Activity, Zap, BookOpen,
-  RefreshCw, Mail, AlertTriangle, Clock, MousePointerClick, ArrowRight,
+  RefreshCw, Mail, AlertTriangle, Clock, MousePointerClick, ArrowRight, Lock,
 } from 'lucide-react'
 
 // ─── 功能模块（每个模块一个主题色，用于图标与悬停光效）───────────────────────
@@ -60,8 +60,8 @@ const UPDATE_ITEMS = [
     desc: '更新失败后 10 分钟自动重试，最多 3 次；两个定时任务互斥，不会并发重复更新',
   },
   {
-    icon: MousePointerClick, name: '手动更新',
-    desc: '顶栏「更新数据」按钮可随时手动触发更新，并实时查看任务进度',
+    icon: MousePointerClick, name: '手动更新', needLogin: true,
+    desc: '顶栏「更新数据」按钮可手动触发更新并实时查看任务进度；手动更新为管理能力，登录后才能使用',
   },
 ]
 
@@ -156,7 +156,7 @@ export default function Home() {
       <section className="space-y-3 animate-fade-in-up" style={{ animationDelay: '260ms' }}>
         <SectionTitle>数据更新机制</SectionTitle>
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-          {UPDATE_ITEMS.map(({ icon: Icon, name, desc }, i) => (
+          {UPDATE_ITEMS.map(({ icon: Icon, name, desc, needLogin }, i) => (
             <div
               key={name}
               style={{ animationDelay: `${300 + i * 60}ms` }}
@@ -167,14 +167,23 @@ export default function Home() {
                 <Icon className="w-[18px] h-[18px]" />
               </span>
               <div className="min-w-0">
-                <div className="text-sm font-medium text-text-primary">{name}</div>
+                <div className="flex items-center gap-1.5 text-sm font-medium text-text-primary">
+                  {name}
+                  {needLogin && (
+                    <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-warn/10 text-warn border border-warn/30">
+                      <Lock className="w-2.5 h-2.5" />
+                      需登录
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs text-text-muted leading-relaxed mt-1">{desc}</p>
               </div>
             </div>
           ))}
         </div>
         <p className="text-xs text-text-muted/80 px-1">
-          数据来自东方财富等公开行情接口，口径为<span className="text-text-secondary">每日快照</span>（非实时行情）；顶栏可查看最近一次定时/手动更新时间。登录后可编辑选股 Prompt 与板块展示配置。
+          数据来自东方财富等公开行情接口，口径为<span className="text-text-secondary">每日快照</span>（非实时行情）；顶栏可查看最近一次定时/手动更新时间。
+          <span className="text-text-secondary">手动更新为管理能力，登录后才能获取</span>；登录后还可编辑选股 Prompt 与板块展示配置。账号获取请见下方联系方式。
         </p>
       </section>
 
