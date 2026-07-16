@@ -67,6 +67,8 @@ def _apply_schema_patches():
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS limit_down_count INTEGER DEFAULT 0 NOT NULL",
         # Snapshot 新增字段（股票阶段，用于历史赚钱效应分组）
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS phase VARCHAR(30)",
+        # Snapshot 新增字段（一字板涨停标记）
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS is_one_word_limit_up BOOLEAN DEFAULT FALSE NOT NULL",
         # DailyReview 新增字段（强势股真实均涨幅）
         "ALTER TABLE daily_reviews ADD COLUMN IF NOT EXISTS strong_pool_avg_pct FLOAT",
         # Stock 主板块字段（计算一致性：所有展示模块读同一个字段）
@@ -86,9 +88,12 @@ def _apply_schema_patches():
         # StockDailySnapshot 联合唯一约束（每只股票每天只能有一条快照）
         "ALTER TABLE stock_daily_snapshots ADD CONSTRAINT uq_snapshot_stock_date UNIQUE (stock_id, date)",
     ]
-    with engine.begin() as conn:
-        for sql in patches:
-            try:
+    # 每条补丁独立事务：Postgres 中任一语句报错会使整个事务进入 aborted 状态，
+    # 若共用事务，末尾 ADD CONSTRAINT（无 IF NOT EXISTS）已存在时报错，
+    # 会导致本次所有新增列一起被回滚。
+    for sql in patches:
+        try:
+            with engine.begin() as conn:
                 conn.execute(text(sql))
-            except Exception:
-                pass  # 字段已存在时静默跳过
+        except Exception:
+            pass  # 字段/约束已存在时静默跳过
