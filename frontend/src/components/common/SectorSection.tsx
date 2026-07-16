@@ -7,7 +7,7 @@ import { Star, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import type { Stock } from '@/types'
 import { useSectorTags } from '@/hooks/useSectorTags'
-import { SectorRankTags, LeaderTag, RegulatoryTag, YesterdayLimitTag, SevereTargetTag } from '@/components/common/SectorTags'
+import { SectorRankTags, LeaderTag, RegulatoryTag, YesterdayLimitTag, SevereTargetTag, OneWordBoardTag } from '@/components/common/SectorTags'
 import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
 import { useRegulatoryStatus } from '@/hooks/useRegulatoryStatus'
 import { useSevereTargets } from '@/hooks/useSevereTargets'
@@ -328,11 +328,13 @@ export function SectorSection({
                       {(() => {
                         const lts = getLeaderTags(stock, leaderMaxes)
                         const yLu = stock.yesterday_is_limit_up, yLd = stock.yesterday_is_limit_down
+                        const oneWord = !!stock.today_is_one_word_limit_up
                         const sev = severeTargets.get(stock.code)
                         const room = stock.severe_up_room
-                        return (lts.length > 0 || yLu || yLd || sev || room != null) ? (
+                        return (lts.length > 0 || yLu || yLd || oneWord || sev || room != null) ? (
                           <div className="flex flex-wrap gap-0.5 mt-0.5">
                             <SevereTargetTag target={sev?.target_rate} approach={sev?.approach} room={room} />
+                            {oneWord && <OneWordBoardTag />}
                             {yLu && <YesterdayLimitTag dir="up" />}
                             {yLd && <YesterdayLimitTag dir="down" />}
                             {lts.map((t) => <LeaderTag key={t} label={t} />)}

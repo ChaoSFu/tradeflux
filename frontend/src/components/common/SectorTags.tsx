@@ -169,6 +169,18 @@ export function SevereTargetTag(
 
 // ─── 昨日涨停/跌停徽章（一致性强、需谨慎）────────────────────────────────────
 
+/** 一字板涨停标签：全天最低价未跌破涨停价（开=低=收=涨停价），仅当日一字板时展示 */
+export function OneWordBoardTag() {
+  return (
+    <span
+      title="一字板涨停：全天未跌破涨停价，盘中基本无法买入"
+      className="inline-flex items-center px-1 py-px text-[9px] font-bold rounded border whitespace-nowrap leading-tight bg-dragon/15 text-dragon border-dragon/40"
+    >
+      一字
+    </span>
+  )
+}
+
 export function YesterdayLimitTag({ dir }: { dir: 'up' | 'down' }) {
   const up = dir === 'up'
   return (

@@ -32,6 +32,7 @@ export interface Stock {
   sectors: string[]
   // Whether today's latest snapshot is a limit-up / limit-down（权威标志）
   today_is_limit_up: boolean
+  today_is_one_word_limit_up?: boolean
   today_is_limit_down: boolean
   // From latest snapshot
   today_pct_change: number | null
