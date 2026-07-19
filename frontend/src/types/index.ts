@@ -286,6 +286,54 @@ export interface SectorLimitTrendOption {
   limit_down_total: number
 }
 
+// ─── 大盘趋势分析 ─────────────────────────────────────────────────────────────
+
+export interface IndexTrendPoint {
+  date: string
+  close: number
+  ma5: number | null
+  ma10: number | null
+  ma20: number | null
+  ma60: number | null
+  ma120: number | null
+  ma250: number | null
+}
+
+export interface IndexSignal {
+  date: string
+  kind: string
+  label: string
+  side: 'bull' | 'bear' | 'warn'
+}
+
+export interface IndexTrendAnalysis {
+  code: string
+  name: string
+  close: number
+  pct_change: number
+  pct_5d: number
+  pct_20d: number
+  score: number
+  state: 'strong' | 'bullish' | 'range' | 'bearish' | 'weak'
+  state_label: string
+  alignment: 'bull' | 'bear' | 'mixed'
+  above_ma5: boolean
+  above_ma10: boolean
+  above_ma20: boolean
+  above_ma60: boolean
+  ma20_slope_pct: number
+  ma60_slope_pct: number
+  bias20: number
+  signals: IndexSignal[]
+  series: IndexTrendPoint[]
+}
+
+export interface MarketTrendResponse {
+  updated_at: string
+  indices: IndexTrendAnalysis[]
+  errors: string[]
+}
+
 export interface MarketHistoryPoint {
   date: string
   profit_effect_score: number

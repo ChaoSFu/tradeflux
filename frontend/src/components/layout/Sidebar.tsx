@@ -26,6 +26,7 @@ type NavEntry     = NavLinkItem | NavGroupItem
 
 const NAV: NavEntry[] = [
   { type: 'link', to: '/', label: '主页', icon: Home },
+  { type: 'link', to: '/market-trend', label: '大盘趋势', icon: TrendingUp },
   {
     type: 'group',
     label: '活跃股分析',
