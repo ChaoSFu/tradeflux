@@ -4,16 +4,20 @@
  */
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { fetchMarketTrend } from '@/api/marketTrend'
+import { fetchMarketTrend, fetchWindvane } from '@/api/marketTrend'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 import { format } from 'date-fns'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend,
+  ResponsiveContainer, Legend, ComposedChart, Bar, Cell, ReferenceLine,
 } from 'recharts'
 import { TrendingUp, TrendingDown, AlertTriangle, BookOpen, ChevronDown, ChevronUp } from 'lucide-react'
-import type { IndexTrendAnalysis, IndexSignal } from '@/types'
+import type { IndexTrendAnalysis, IndexSignal, WindvaneResponse } from '@/types'
+
+// ── 金额格式化 ───────────────────────────────────────────────────────────────
+const wanyi = (v: number) => `${(v / 1e12).toFixed(2)}万亿`
+const yi = (v: number) => `${(v / 1e8).toFixed(1)}亿`
 
 // ─── 状态配色（A股惯例：红强绿弱）────────────────────────────────────────────
 const STATE_META: Record<string, { color: string; bg: string }> = {
@@ -101,6 +105,13 @@ export default function MarketTrend() {
   ), [selected])
 
   const [showMethod, setShowMethod] = useState(false)
+
+  // 市场风向标：融资融券 / 涨跌统计 / 成交分析
+  const { data: wv } = useQuery({
+    queryKey: ['market-windvane'],
+    queryFn: () => fetchWindvane(),
+    staleTime: 5 * 60 * 1000,
+  })
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -309,6 +320,9 @@ export default function MarketTrend() {
         </div>
       )}
 
+      {/* ── 市场资金与盘面（融资融券 / 涨跌统计 / 成交分析）─────────── */}
+      {wv && <WindvaneCards wv={wv} />}
+
       {/* ── 判定方法说明 ─────────────────────────────────────────────── */}
       <div className="card overflow-hidden">
         <button
@@ -361,6 +375,201 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div className="flex items-center justify-between gap-2">
       <span className="text-text-muted">{label}</span>
       {children}
+    </div>
+  )
+}
+
+// ─── 市场风向标三卡片（融资融券 / 涨跌统计 / 成交分析）───────────────────────
+
+function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
+  const m = wv.margin
+  const u = wv.updown
+  const t = wv.turnover
+
+  // 两融图数据（余额万亿 + 上证 + 净买入亿）
+  const marginChart = useMemo(() => (
+    (m?.series ?? []).map(p => ({
+      date: format(new Date(p.date), 'MM/dd'),
+      '两融余额': +(p.balance / 1e12).toFixed(3),
+      '上证指数': p.szzs_close,
+      '融资净买入': +(p.net_buy / 1e8).toFixed(1),
+    }))
+  ), [m])
+
+  // 涨跌分布 9 档（与东财口径一致）
+  const updownChart = useMemo(() => {
+    if (!u) return []
+    const su = (a: number, b: number) => u.up_buckets.slice(a, b).reduce((x, y) => x + y, 0)
+    const sd = (a: number, b: number) => u.down_buckets.slice(a, b).reduce((x, y) => x + y, 0)
+    return [
+      { name: '涨停',   v: u.limit_up,   fill: '#FF2D55' },
+      { name: '涨>5%',  v: su(5, 10),    fill: '#FF4560' },
+      { name: '1~5%',   v: su(1, 5),     fill: '#FF7A8A' },
+      { name: '0~1%',   v: su(0, 1),     fill: '#FFB3BC' },
+      { name: '平盘',   v: u.flat,       fill: '#737A96' },
+      { name: '-0~1%',  v: sd(0, 1),     fill: '#9FE8CB' },
+      { name: '-1~5%',  v: sd(1, 5),     fill: '#4FD6A5' },
+      { name: '跌>5%',  v: sd(5, 10),    fill: '#26C281' },
+      { name: '跌停',   v: u.limit_down, fill: '#0E9F6E' },
+    ]
+  }, [u])
+
+  // 成交额（万亿）
+  const turnoverChart = useMemo(() => (
+    (t?.series ?? []).map(p => ({
+      date: format(new Date(p.date), 'MM/dd'),
+      '成交额': +(p.amount / 1e12).toFixed(3),
+    }))
+  ), [t])
+  const avg60WanYi = t ? +(t.avg60 / 1e12).toFixed(3) : 0
+  const shrink = t ? t.today < t.prev : false
+
+  const axis = { tick: { fill: '#737A96', fontSize: 10 }, axisLine: false, tickLine: false } as any
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-baseline gap-2">
+        <span className="text-sm font-semibold text-text-primary">市场资金与盘面</span>
+        <span className="text-xs text-text-muted">融资融券 · 涨跌统计 · 成交分析（东财公开数据，收盘后口径）</span>
+      </div>
+      {wv.errors.length > 0 && (
+        <div className="flex items-center gap-2 text-xs text-warn bg-warn/10 border border-warn/25 rounded-lg px-3 py-2">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          部分数据暂不可用：{wv.errors.join('；')}
+        </div>
+      )}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+
+        {/* ── 融资融券 ─────────────────────────────────────────────── */}
+        {m && (
+          <div className="card p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-text-primary">融资融券</span>
+              <span className="text-xs text-text-muted">截至 {m.latest_date.slice(5)}</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <div>
+                <div className="text-[10px] text-text-muted">两融余额</div>
+                <div className="text-lg font-bold font-mono text-accent leading-tight">{wanyi(m.balance)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] text-text-muted">融资净买入</div>
+                <div className={cn('text-lg font-bold font-mono leading-tight', m.net_buy >= 0 ? 'text-up' : 'text-down')}>
+                  {m.net_buy >= 0 ? '+' : ''}{yi(m.net_buy)}
+                </div>
+              </div>
+            </div>
+            <div className="h-36">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={marginChart} margin={{ top: 2, right: 0, left: -6, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
+                  <XAxis dataKey="date" {...axis} interval="preserveStartEnd" />
+                  <YAxis yAxisId="l" {...axis} width={38} domain={['auto', 'auto']} tickFormatter={(v: number) => v.toFixed(2)} />
+                  <YAxis yAxisId="r" {...axis} width={36} orientation="right" domain={['auto', 'auto']} tickFormatter={(v: number) => v.toFixed(0)} />
+                  <Tooltip content={<ChartTooltip />} />
+                  <Line yAxisId="l" type="monotone" dataKey="两融余额" stroke="#5EA6FF" strokeWidth={1.8} dot={false} />
+                  <Line yAxisId="r" type="monotone" dataKey="上证指数" stroke="#FFB020" strokeWidth={1.4} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            {/* 净买入柱状条 */}
+            <div className="h-14">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={marginChart} margin={{ top: 0, right: 0, left: -6, bottom: 0 }}>
+                  <XAxis dataKey="date" hide />
+                  <YAxis {...axis} width={38} tickFormatter={(v: number) => v.toFixed(0)} />
+                  <Tooltip content={<ChartTooltip />} />
+                  <ReferenceLine y={0} stroke="#262D40" />
+                  <Bar dataKey="融资净买入" maxBarSize={4}>
+                    {marginChart.map((p, i) => (
+                      <Cell key={i} fill={p['融资净买入'] >= 0 ? '#FF4560' : '#26C281'} />
+                    ))}
+                  </Bar>
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <p className="text-[10px] text-text-muted/80 leading-relaxed">
+              两融余额（蓝）通常与大盘同向：余额持续上升=杠杆资金看多；净买入（下方柱）连续为负代表融资盘撤退
+            </p>
+          </div>
+        )}
+
+        {/* ── 涨跌统计 ─────────────────────────────────────────────── */}
+        {u && (
+          <div className="card p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-text-primary">涨跌统计</span>
+              <span className="text-xs text-text-muted">沪深京</span>
+            </div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              <div className="flex justify-between"><span className="text-text-muted">上涨</span><span className="font-mono font-bold text-up">{u.up}</span></div>
+              <div className="flex justify-between"><span className="text-text-muted">下跌</span><span className="font-mono font-bold text-down">{u.down}</span></div>
+              <div className="flex justify-between"><span className="text-text-muted">涨停 / 自然</span><span className="font-mono text-up">{u.limit_up} / {u.natural_limit_up}</span></div>
+              <div className="flex justify-between"><span className="text-text-muted">跌停 / 自然</span><span className="font-mono text-down">{u.limit_down} / {u.natural_limit_down}</span></div>
+            </div>
+            <div className="h-44">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={updownChart} margin={{ top: 14, right: 0, left: -18, bottom: 0 }}>
+                  <XAxis dataKey="name" {...axis} interval={0} tick={{ fill: '#737A96', fontSize: 9 }} />
+                  <YAxis {...axis} />
+                  <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                  <Bar dataKey="v" name="家数" maxBarSize={26} label={{ position: 'top', fill: '#A2A9C4', fontSize: 9 }}>
+                    {updownChart.map((p, i) => <Cell key={i} fill={p.fill} />)}
+                  </Bar>
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <p className="text-[10px] text-text-muted/80 leading-relaxed">
+              自然涨停/跌停 = 剔除一字板后的数量，更能反映盘中真实做多/做空力量
+            </p>
+          </div>
+        )}
+
+        {/* ── 成交分析 ─────────────────────────────────────────────── */}
+        {t && (
+          <div className="card p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-text-primary">成交分析</span>
+              <span className="text-xs text-text-muted">沪深两市 · 近60日</span>
+            </div>
+            <div className="flex items-center gap-4 text-xs">
+              <div>
+                <div className="text-[10px] text-text-muted">最新成交</div>
+                <div className={cn('text-lg font-bold font-mono leading-tight', shrink ? 'text-down' : 'text-up')}>
+                  {wanyi(t.today)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] text-text-muted">前一日</div>
+                <div className="text-sm font-mono text-text-secondary leading-tight mt-1">{wanyi(t.prev)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] text-text-muted">60日均值</div>
+                <div className="text-sm font-mono text-text-secondary leading-tight mt-1">{wanyi(t.avg60)}</div>
+              </div>
+            </div>
+            <div className="h-[13.5rem]">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={turnoverChart} margin={{ top: 4, right: 0, left: -6, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
+                  <XAxis dataKey="date" {...axis} interval="preserveStartEnd" />
+                  <YAxis {...axis} width={38} domain={['auto', 'auto']} tickFormatter={(v: number) => v.toFixed(1)} />
+                  <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                  <ReferenceLine y={avg60WanYi} stroke="#F59E0B" strokeDasharray="5 4" strokeOpacity={0.7} />
+                  <Bar dataKey="成交额" maxBarSize={8}>
+                    {turnoverChart.map((p, i) => (
+                      <Cell key={i} fill={p['成交额'] >= avg60WanYi ? '#5EA6FF' : '#33415E'} />
+                    ))}
+                  </Bar>
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <p className="text-[10px] text-text-muted/80 leading-relaxed">
+              虚线为60日均量：持续高于均量=市场活跃承接充分；缩量至均量下方=谨慎观望情绪升温
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
