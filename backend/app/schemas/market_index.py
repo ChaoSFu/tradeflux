@@ -4,9 +4,12 @@ from pydantic import BaseModel
 
 
 class IndexTrendPoint(BaseModel):
-    """图表用：单日收盘 + 各均线值"""
+    """图表用：单日OHLC + 各均线值"""
     date: str
     close: float
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
     ma5: Optional[float] = None
     ma10: Optional[float] = None
     ma20: Optional[float] = None
