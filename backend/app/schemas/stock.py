@@ -54,8 +54,9 @@ class StockResponse(StockBase):
     # Whether today's latest snapshot shows a limit-up / limit-down（权威标志，与板块聚合口径一致）
     today_is_limit_up: bool = False
     today_is_limit_down: bool = False
-    # 当日一字板涨停（全天最低价未跌破涨停价）
+    # 当日一字板涨停/跌停（全天未跌破涨停价 / 未涨破跌停价）
     today_is_one_word_limit_up: bool = False
+    today_is_one_word_limit_down: bool = False
     # From latest snapshot — useful for intraday display
     today_pct_change: Optional[float] = None        # 今日涨跌幅 %
     today_board_count: Optional[int] = None         # 当前连续涨停数（截至今日快照）

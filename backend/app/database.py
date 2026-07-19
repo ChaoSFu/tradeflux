@@ -67,8 +67,12 @@ def _apply_schema_patches():
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS limit_down_count INTEGER DEFAULT 0 NOT NULL",
         # Snapshot 新增字段（股票阶段，用于历史赚钱效应分组）
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS phase VARCHAR(30)",
-        # Snapshot 新增字段（一字板涨停标记）
+        # Snapshot 新增字段（一字板涨停/跌停标记）
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS is_one_word_limit_up BOOLEAN DEFAULT FALSE NOT NULL",
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS is_one_word_limit_down BOOLEAN DEFAULT FALSE NOT NULL",
+        # Sector 新增字段（当日一字板涨停/跌停数，daily_update 板块统计写入）
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS one_word_up_count INTEGER DEFAULT 0 NOT NULL",
+        "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS one_word_down_count INTEGER DEFAULT 0 NOT NULL",
         # DailyReview 新增字段（强势股真实均涨幅）
         "ALTER TABLE daily_reviews ADD COLUMN IF NOT EXISTS strong_pool_avg_pct FLOAT",
         # Stock 主板块字段（计算一致性：所有展示模块读同一个字段）

@@ -10,7 +10,7 @@ import {
   fetchSectorLimitTrend, fetchSectorLimitTrendOptions,
 } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
-import { getSectorColor, SectorTag } from '@/components/common/SectorTags'
+import { getSectorColor, SectorTag, OneWordCountTag } from '@/components/common/SectorTags'
 import { SectorSection } from '@/components/common/SectorSection'
 import { ArrowUp, ArrowDown, TrendingUp, Search, X, ChevronDown } from 'lucide-react'
 import { cn } from '@/utils/cn'
@@ -36,6 +36,7 @@ interface SectorStat {
   limit_down: number
   total: number
   up_one_word: number       // 板块内当日一字板涨停数
+  down_one_word: number     // 板块内当日一字板跌停数
   up_max_board: number      // 板块内涨停股最高连板数（today_board_count）
   down_max_board: number    // 板块内跌停股最高连续跌停数（today_limit_down_count）
   up_stock_ids: number[]    // stock IDs in this sector among today's up list
@@ -44,13 +45,13 @@ interface SectorStat {
 
 function buildSectorStats(upStocks: Stock[], downStocks: Stock[]): SectorStat[] {
   const map = new Map<string, {
-    limit_up: number; limit_down: number; up_one_word: number
+    limit_up: number; limit_down: number; up_one_word: number; down_one_word: number
     up_max_board: number; down_max_board: number
     up_ids: number[]; down_ids: number[]
   }>()
   const get = (sec: string) => {
     let e = map.get(sec)
-    if (!e) { e = { limit_up: 0, limit_down: 0, up_one_word: 0, up_max_board: 0, down_max_board: 0, up_ids: [], down_ids: [] }; map.set(sec, e) }
+    if (!e) { e = { limit_up: 0, limit_down: 0, up_one_word: 0, down_one_word: 0, up_max_board: 0, down_max_board: 0, up_ids: [], down_ids: [] }; map.set(sec, e) }
     return e
   }
 
@@ -68,6 +69,7 @@ function buildSectorStats(upStocks: Stock[], downStocks: Stock[]): SectorStat[] 
     for (const sec of s.sectors ?? []) {
       const e = get(sec)
       e.limit_down++; e.down_ids.push(s.id)
+      if (s.today_is_one_word_limit_down) e.down_one_word++
       if (board > e.down_max_board) e.down_max_board = board
     }
   }
@@ -77,7 +79,7 @@ function buildSectorStats(upStocks: Stock[], downStocks: Stock[]): SectorStat[] 
     result.push({
       name, limit_up: v.limit_up, limit_down: v.limit_down,
       total: v.limit_up + v.limit_down,
-      up_one_word: v.up_one_word,
+      up_one_word: v.up_one_word, down_one_word: v.down_one_word,
       up_max_board: v.up_max_board, down_max_board: v.down_max_board,
       up_stock_ids: v.up_ids, down_stock_ids: v.down_ids,
     })
@@ -818,14 +820,9 @@ function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, i
                       <div className="flex items-center justify-between mb-0.5">
                         <span className="text-sm text-text-primary truncate pr-1">{s.name}</span>
                         <span className="flex items-center gap-1.5 shrink-0 font-mono text-xs">
-                          {field === 'limit_up' && s.up_one_word > 0 && (
-                            <span
-                              className="text-[10px] font-bold px-1 py-px rounded border bg-dragon/15 text-dragon border-dragon/40"
-                              title={`板块内 ${s.up_one_word} 只当日一字板涨停（全天未跌破涨停价）`}
-                            >
-                              一字{s.up_one_word}
-                            </span>
-                          )}
+                          {field === 'limit_up'
+                            ? <OneWordCountTag count={s.up_one_word} dir="up" />
+                            : <OneWordCountTag count={s.down_one_word} dir="down" />}
                           {maxBoard > 0 && (
                             <span className="text-text-muted/80">最高{maxBoard}板</span>
                           )}

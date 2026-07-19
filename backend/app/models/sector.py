@@ -30,6 +30,8 @@ class Sector(Base):
     strong_stock_count = Column(Integer, default=0, nullable=False)
     limit_up_count = Column(Integer, default=0, nullable=False)
     limit_down_count = Column(Integer, default=0, nullable=False)
+    one_word_up_count = Column(Integer, default=0, nullable=False)    # 当日一字板涨停数
+    one_word_down_count = Column(Integer, default=0, nullable=False)  # 当日一字板跌停数
     board_height = Column(Integer, default=0, nullable=False)      # highest current boards
     continuity_score = Column(Float, default=0.0, nullable=False)
     risk_score = Column(Float, default=0.0, nullable=False)

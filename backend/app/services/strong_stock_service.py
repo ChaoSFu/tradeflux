@@ -65,6 +65,7 @@ def _enrich_stock_response(stock: Stock, db: Session) -> StockResponse:
     data.today_is_limit_up = bool(latest_snap.is_limit_up) if is_today else False
     data.today_is_limit_down = bool(latest_snap.is_limit_down) if is_today else False
     data.today_is_one_word_limit_up = bool(latest_snap.is_one_word_limit_up) if is_today else False
+    data.today_is_one_word_limit_down = bool(latest_snap.is_one_word_limit_down) if is_today else False
     data.today_pct_change = latest_snap.pct_change if is_today else None
     data.today_board_count = latest_snap.board_count if is_today else None
     data.today_limit_down_count = latest_snap.limit_down_count if is_today else None
@@ -208,6 +209,7 @@ def _enrich_stocks_bulk(stocks: List[Stock], db: Session, as_of_date=None) -> Li
         data.today_is_limit_up = bool(snap.is_limit_up) if is_today else False
         data.today_is_limit_down = bool(snap.is_limit_down) if is_today else False
         data.today_is_one_word_limit_up = bool(snap.is_one_word_limit_up) if is_today else False
+        data.today_is_one_word_limit_down = bool(snap.is_one_word_limit_down) if is_today else False
         data.today_pct_change = snap.pct_change if is_today else None
         data.today_board_count = snap.board_count if is_today else None
         data.today_limit_down_count = snap.limit_down_count if is_today else None

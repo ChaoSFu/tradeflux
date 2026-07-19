@@ -169,14 +169,35 @@ export function SevereTargetTag(
 
 // ─── 昨日涨停/跌停徽章（一致性强、需谨慎）────────────────────────────────────
 
-/** 一字板涨停标签：全天最低价未跌破涨停价（开=低=收=涨停价），仅当日一字板时展示 */
-export function OneWordBoardTag() {
+/** 一字板标签（个股级）：涨停=全天未跌破涨停价（金）；跌停=全天未涨破跌停价（绿）。仅当日一字板时展示 */
+export function OneWordBoardTag({ dir = 'up' }: { dir?: 'up' | 'down' }) {
+  const up = dir === 'up'
   return (
     <span
-      title="一字板涨停：全天未跌破涨停价，盘中基本无法买入"
-      className="inline-flex items-center px-1 py-px text-[9px] font-bold rounded border whitespace-nowrap leading-tight bg-dragon/15 text-dragon border-dragon/40"
+      title={up ? '一字板涨停：全天未跌破涨停价，盘中基本无法买入' : '一字板跌停：全天未涨破跌停价，盘中基本无法卖出'}
+      className={`inline-flex items-center px-1 py-px text-[9px] font-bold rounded border whitespace-nowrap leading-tight ${
+        up ? 'bg-dragon/15 text-dragon border-dragon/40' : 'bg-down/15 text-down border-down/40'
+      }`}
     >
-      一字
+      {up ? '一字' : '一字跌'}
+    </span>
+  )
+}
+
+/** 一字板计数标签（板块级）：一字×N（涨停·金）/ 一字跌×N（跌停·绿）。count<=0 不渲染 */
+export function OneWordCountTag({ count, dir = 'up' }: { count?: number | null; dir?: 'up' | 'down' }) {
+  if (!count || count <= 0) return null
+  const up = dir === 'up'
+  return (
+    <span
+      title={up
+        ? `板块内 ${count} 只当日一字板涨停（全天未跌破涨停价）`
+        : `板块内 ${count} 只当日一字板跌停（全天未涨破跌停价）`}
+      className={`inline-flex items-center px-1 py-px text-[9px] font-bold rounded border whitespace-nowrap leading-tight ${
+        up ? 'bg-dragon/15 text-dragon border-dragon/40' : 'bg-down/15 text-down border-down/40'
+      }`}
+    >
+      {up ? '一字' : '一字跌'}×{count}
     </span>
   )
 }
@@ -260,6 +281,9 @@ export function SectorRankTags({ tagData }: { tagData: SectorTagData | undefined
       )
     }
   }
+  if (tagData.one_word_up_count > 0) {
+    tags.push(<OneWordCountTag key="oneword-up" count={tagData.one_word_up_count} dir="up" />)
+  }
   if (tagData.limit_down_count > 0) {
     tags.push(
       <span
@@ -271,6 +295,9 @@ export function SectorRankTags({ tagData }: { tagData: SectorTagData | undefined
         ⚠ 跌停×{tagData.limit_down_count}
       </span>
     )
+  }
+  if (tagData.one_word_down_count > 0) {
+    tags.push(<OneWordCountTag key="oneword-down" count={tagData.one_word_down_count} dir="down" />)
   }
 
   if (tags.length === 0) return null

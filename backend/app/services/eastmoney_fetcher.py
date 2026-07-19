@@ -74,7 +74,8 @@ class KLineBar:
     is_limit_up: bool = False
     is_limit_down: bool = False
     is_broken_board: bool = False  # 炸板
-    is_one_word_limit_up: bool = False  # 一字板涨停（全天最低价未跌破涨停价）
+    is_one_word_limit_up: bool = False    # 一字板涨停（全天最低价未跌破涨停价）
+    is_one_word_limit_down: bool = False  # 一字板跌停（全天最高价未涨破跌停价）
 
 
 def _should_include_stock(code: str, market: int) -> bool:
@@ -140,8 +141,10 @@ def _parse_kline_bar(line: str, is_st: bool = False, limit_pct: float = 9.90) ->
     else:
         is_broken = False
 
-    # 一字板：涨停且全天最低价未跌破涨停价（涨停时收盘=涨停价，low>=close 即全天一字）
-    is_one_word = is_lu and low_p > 0 and low_p >= close_p - 0.005
+    # 一字板：涨停且全天最低价未跌破涨停价（涨停时收盘=涨停价，low>=close 即全天一字）；
+    # 跌停对称：全天最高价未涨破跌停价（high<=close）
+    is_one_word_up = is_lu and low_p > 0 and low_p >= close_p - 0.005
+    is_one_word_down = is_ld and high_p > 0 and high_p <= close_p + 0.005
 
     return KLineBar(
         date=dt,
@@ -154,7 +157,8 @@ def _parse_kline_bar(line: str, is_st: bool = False, limit_pct: float = 9.90) ->
         is_limit_up=is_lu,
         is_limit_down=is_ld,
         is_broken_board=is_broken,
-        is_one_word_limit_up=is_one_word,
+        is_one_word_limit_up=is_one_word_up,
+        is_one_word_limit_down=is_one_word_down,
     )
 
 
@@ -483,6 +487,7 @@ def _parse_tencent_klines(
             is_limit_down=is_ld,
             is_broken_board=is_broken,
             is_one_word_limit_up=is_lu and low_p > 0 and low_p >= close_p - 0.005,
+            is_one_word_limit_down=is_ld and high_p > 0 and high_p <= close_p + 0.005,
         ))
     return bars
 

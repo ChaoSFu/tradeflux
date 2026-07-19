@@ -19,6 +19,8 @@ export interface SectorTagData {
   rank_board:  number | null
   rank_strong: number | null
   limit_down_count: number
+  one_word_up_count: number     // 当日一字板涨停数
+  one_word_down_count: number   // 当日一字板跌停数
   // 板块级指标（供卡片头展示）
   pct_today:   number   // 今日涨幅（板块指数，pct_change_30d 历史命名实为今日）
   pct_10d:     number
@@ -56,6 +58,8 @@ export function useSectorTags(): SectorTagMaps {
         rank_board:  s.rank_board  ?? null,
         rank_strong: s.rank_strong ?? null,
         limit_down_count: s.limit_down_count ?? 0,
+        one_word_up_count: s.one_word_up_count ?? 0,
+        one_word_down_count: s.one_word_down_count ?? 0,
         pct_today:   s.pct_change_30d ?? 0,
         pct_10d:     s.pct_change_10d ?? 0,
         pct_20d:     s.pct_change_20d ?? 0,

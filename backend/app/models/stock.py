@@ -72,7 +72,8 @@ class StockDailySnapshot(Base):
     is_limit_up = Column(Boolean, default=False, nullable=False)
     is_limit_down = Column(Boolean, default=False, nullable=False)
     is_broken_board = Column(Boolean, default=False, nullable=False)  # 炸板
-    is_one_word_limit_up = Column(Boolean, default=False, nullable=False)  # 一字板涨停（全天未跌破涨停价）
+    is_one_word_limit_up = Column(Boolean, default=False, nullable=False)    # 一字板涨停（全天未跌破涨停价）
+    is_one_word_limit_down = Column(Boolean, default=False, nullable=False)  # 一字板跌停（全天未涨破跌停价）
 
     # 滚动窗口统计
     board_count = Column(Integer, default=0, nullable=False)        # 当前连续涨停数
