@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { Layout } from '@/components/layout/Layout'
 import Home from '@/pages/Home'
+import MarketTrend from '@/pages/MarketTrend'
 import Dashboard from '@/pages/Dashboard'
 import StockPool from '@/pages/StockPool'
 import Watchlist from '@/pages/Watchlist'
@@ -20,6 +21,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Home />} />
+          <Route path="market-trend" element={<MarketTrend />} />
           <Route path="strong" element={<Dashboard />} />
           <Route path="stocks" element={<StockPool />} />
           <Route path="watchlist" element={<Watchlist />} />

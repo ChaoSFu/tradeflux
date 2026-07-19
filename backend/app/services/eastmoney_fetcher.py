@@ -1004,7 +1004,9 @@ def _fetch_index_kline_tencent(secid: str, days: int = 70, timeout: int = 15) ->
     """指数日线腾讯兜底源。secid '1.000001'→'sh000001'，'0.399006'→'sz399006'。
     腾讯无涨跌幅字段，用相邻收盘价计算。"""
     market, _, code = secid.partition(".")
-    full = f"{'sh' if market == '1' else 'sz'}{code}"
+    # 北证指数（899xxx）走 bj 前缀；沪 1→sh，深 0→sz
+    prefix = "bj" if code.startswith("899") else ("sh" if market == "1" else "sz")
+    full = f"{prefix}{code}"
     try:
         with httpx.Client(headers=TENCENT_HEADERS, timeout=timeout) as client:
             resp = client.get(TENCENT_KLINE_URL, params={"param": f"{full},day,,,{days},qfq"})
