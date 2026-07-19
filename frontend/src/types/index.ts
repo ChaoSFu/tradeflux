@@ -334,6 +334,41 @@ export interface MarketTrendResponse {
   errors: string[]
 }
 
+export interface MarginPoint {
+  date: string
+  balance: number
+  net_buy: number
+  szzs_close: number
+}
+
+export interface WindvaneResponse {
+  updated_at: string
+  margin: {
+    latest_date: string
+    balance: number
+    net_buy: number
+    series: MarginPoint[]
+  } | null
+  updown: {
+    up: number
+    down: number
+    flat: number
+    limit_up: number
+    limit_down: number
+    natural_limit_up: number
+    natural_limit_down: number
+    up_buckets: number[]
+    down_buckets: number[]
+  } | null
+  turnover: {
+    today: number
+    prev: number
+    avg60: number
+    series: { date: string; amount: number }[]
+  } | null
+  errors: string[]
+}
+
 export interface MarketHistoryPoint {
   date: string
   profit_effect_score: number
