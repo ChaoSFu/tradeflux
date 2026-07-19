@@ -36,6 +36,7 @@ class StockWindowStats:
     today_is_limit_down: bool
     today_is_broken_board: bool
     today_is_one_word_limit_up: bool
+    today_is_one_word_limit_down: bool
 
     # 滚动窗口
     board_count_current: int       # 当前连续涨停数（截至今日）
@@ -242,6 +243,7 @@ def compute_window_stats(
         today_is_limit_down=today.is_limit_down,
         today_is_broken_board=today.is_broken_board,
         today_is_one_word_limit_up=today.is_one_word_limit_up,
+        today_is_one_word_limit_down=today.is_one_word_limit_down,
         board_count_current=board_count_current,
         limit_down_count_current=limit_down_count_current,
         board_count_60d=max_board,

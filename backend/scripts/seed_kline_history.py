@@ -128,6 +128,7 @@ def main():
                         is_limit_down=bar.is_limit_down,
                         is_broken_board=bar.is_broken_board,
                         is_one_word_limit_up=bar.is_one_word_limit_up,
+                        is_one_word_limit_down=bar.is_one_word_limit_down,
                     ))
                     created += 1
 

@@ -250,6 +250,7 @@ def _snapshots_to_klinebars(snaps: list, code: str = "", is_st: bool = False) ->
             is_broken_board=bool(s.is_broken_board),
             # DB 重建无 OHLC，一字板沿用快照落库值（保留历史判定）
             is_one_word_limit_up=bool(s.is_one_word_limit_up),
+            is_one_word_limit_down=bool(s.is_one_word_limit_down),
         ))
         prev_close = close
     return bars
@@ -399,8 +400,9 @@ def _upsert_snapshot(
     snap.is_limit_up = stats.today_is_limit_up if is_limit_up is None else is_limit_up
     snap.is_limit_down = stats.today_is_limit_down if is_limit_down is None else is_limit_down
     snap.is_broken_board = stats.today_is_broken_board
-    # 一字板仅在最终判定为涨停时成立（选股 API 可能覆盖 K 线的涨停判定）
+    # 一字板仅在最终判定为涨停/跌停时成立（选股 API 可能覆盖 K 线的涨跌停判定）
     snap.is_one_word_limit_up = bool(stats.today_is_one_word_limit_up) and bool(snap.is_limit_up)
+    snap.is_one_word_limit_down = bool(stats.today_is_one_word_limit_down) and bool(snap.is_limit_down)
     snap.board_count = stats.board_count_current
     snap.limit_down_count = stats.limit_down_count_current
     snap.board_count_60d = stats.board_count_60d
@@ -470,6 +472,8 @@ def _refresh_sector_stats(db, target_date) -> None:
         sector.strong_stock_count = len(strong_in_sector)
         sector.limit_up_count   = sum(1 for s in snaps_today if s.is_limit_up)
         sector.limit_down_count = sum(1 for s in snaps_today if s.is_limit_down)
+        sector.one_word_up_count   = sum(1 for s in snaps_today if s.is_one_word_limit_up)
+        sector.one_word_down_count = sum(1 for s in snaps_today if s.is_one_word_limit_down)
         sector.board_height = max(
             (today_snap_map[s.id].board_count for s in strong_in_sector if s.id in today_snap_map),
             default=0,
@@ -1164,6 +1168,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                         is_limit_down=bar.is_limit_down,
                         is_broken_board=bar.is_broken_board,
                         is_one_word_limit_up=bar.is_one_word_limit_up,
+                        is_one_word_limit_down=bar.is_one_word_limit_down,
                     ))
                     existing_pairs.add((sid, bar.date))
                     backfilled += 1
@@ -1193,6 +1198,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 snap.is_limit_up = False
                 snap.is_limit_down = False
                 snap.is_one_word_limit_up = False
+                snap.is_one_word_limit_down = False
             if stale_snaps:
                 db.commit()
                 log.info(f"涨跌停对账：清除过期标记 {len(stale_snaps)} 只")

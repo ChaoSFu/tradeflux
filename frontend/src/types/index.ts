@@ -33,6 +33,7 @@ export interface Stock {
   // Whether today's latest snapshot is a limit-up / limit-down（权威标志）
   today_is_limit_up: boolean
   today_is_one_word_limit_up?: boolean
+  today_is_one_word_limit_down?: boolean
   today_is_limit_down: boolean
   // From latest snapshot
   today_pct_change: number | null
@@ -105,6 +106,8 @@ export interface Sector {
   strong_stock_count: number
   limit_up_count: number
   limit_down_count: number
+  one_word_up_count?: number    // 当日一字板涨停数
+  one_word_down_count?: number  // 当日一字板跌停数
   board_height: number
   continuity_score: number
   risk_score: number

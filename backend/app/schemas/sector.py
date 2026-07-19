@@ -61,6 +61,8 @@ class SectorResponse(SectorBase):
     strong_stock_count: int
     limit_up_count: int
     limit_down_count: int = 0
+    one_word_up_count: int = 0    # 当日一字板涨停数
+    one_word_down_count: int = 0  # 当日一字板跌停数
     board_height: int
     continuity_score: float
     risk_score: float
