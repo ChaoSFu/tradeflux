@@ -507,9 +507,10 @@ function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
                 </div>
               </div>
             </div>
+            {/* 上下两图 syncId 同步：光标滑动时数据联动；左右轴宽一致保证日期对齐 */}
             <div className="h-36">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={marginChart} margin={{ top: 2, right: 0, left: -6, bottom: 0 }}>
+                <LineChart data={marginChart} syncId="margin-sync" margin={{ top: 2, right: 0, left: -6, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
                   <XAxis dataKey="date" {...axis} interval="preserveStartEnd" />
                   <YAxis yAxisId="l" {...axis} width={38} domain={['auto', 'auto']} tickFormatter={(v: number) => v.toFixed(2)} />
@@ -523,12 +524,14 @@ function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
             {/* 净买入柱状条 */}
             <div className="h-14">
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={marginChart} margin={{ top: 0, right: 0, left: -6, bottom: 0 }}>
+                <ComposedChart data={marginChart} syncId="margin-sync" margin={{ top: 0, right: 0, left: -6, bottom: 0 }}>
                   <XAxis dataKey="date" hide />
-                  <YAxis {...axis} width={38} tickFormatter={(v: number) => v.toFixed(0)} />
+                  <YAxis yAxisId="l" {...axis} width={38} tickFormatter={(v: number) => v.toFixed(0)} />
+                  {/* 占位右轴：与上图右轴同宽，保证横向坐标对齐 */}
+                  <YAxis yAxisId="r" orientation="right" width={36} tick={false} axisLine={false} tickLine={false} />
                   <Tooltip content={<ChartTooltip />} />
-                  <ReferenceLine y={0} stroke="#262D40" />
-                  <Bar dataKey="融资净买入" maxBarSize={4}>
+                  <ReferenceLine yAxisId="l" y={0} stroke="#262D40" />
+                  <Bar yAxisId="l" dataKey="融资净买入" maxBarSize={4}>
                     {marginChart.map((p, i) => (
                       <Cell key={i} fill={p['融资净买入'] >= 0 ? '#FF4560' : '#26C281'} />
                     ))}

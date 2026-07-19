@@ -999,7 +999,55 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
             continue
     if not out:
         # 东财被限流/返回空 → 回退腾讯
-        return _fetch_index_kline_tencent(secid, days=days, timeout=timeout)
+        out = _fetch_index_kline_tencent(secid, days=days, timeout=timeout)
+    if len(out) < 61:
+        # 腾讯对北证指数只有最新一根 → 再回退新浪（有北证50完整历史）
+        sina = _fetch_index_kline_sina(secid, days=days, timeout=timeout)
+        if len(sina) > len(out):
+            out = sina
+    return out
+
+
+def _fetch_index_kline_sina(secid: str, days: int = 320, timeout: int = 15) -> list[dict]:
+    """
+    指数日线新浪兜底源（东财被指纹封锁、腾讯无北证指数历史时使用）。
+    返回与 fetch_index_kline 相同的 dict 结构；失败返回空列表。
+    """
+    import json as _json
+    market, _, code = secid.partition(".")
+    prefix = "bj" if code.startswith("899") else ("sh" if market == "1" else "sz")
+    url = (
+        "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_=/CN_MarketDataService.getKLineData"
+        f"?symbol={prefix}{code}&scale=240&ma=no&datalen={days}"
+    )
+    try:
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
+            text = client.get(url).text
+        # JSONP：var _=([...]) → 取第一个 '(' 与最后一个 ')' 之间
+        start, end = text.find("("), text.rfind(")")
+        if start < 0 or end <= start:
+            return []
+        rows = _json.loads(text[start + 1: end])
+    except Exception as e:
+        print(f"[fetcher] 指数 {secid} 新浪兜底失败: {e}")
+        return []
+
+    out: list[dict] = []
+    prev_close: float | None = None
+    for r in rows:
+        try:
+            close = float(r["close"])
+            out.append({
+                "date": str(r["day"]),
+                "open": float(r["open"]),
+                "close": close,
+                "high": float(r["high"]),
+                "low": float(r["low"]),
+                "pct_change": round((close - prev_close) / prev_close * 100, 4) if prev_close else 0.0,
+            })
+            prev_close = close
+        except (KeyError, ValueError, TypeError):
+            continue
     return out
 
 
