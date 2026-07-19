@@ -29,13 +29,36 @@ const STATE_META: Record<string, { color: string; bg: string }> = {
 }
 
 const MA_COLORS: Record<string, string> = {
-  '收盘': '#EDF0F5',
   'MA5': '#FFB020',
   'MA10': '#B47CFF',
   'MA20': '#5EA6FF',
   'MA60': '#FF4560',
   'MA120': '#737A96',
   'MA250': '#4A5068',
+}
+
+// ─── 蜡烛图自定义 shape（recharts range Bar [low, high] 上绘制影线+实体）──────
+function CandleShape(props: any) {
+  const { x, width, y, height, payload } = props
+  const open = payload._open, close = payload._close
+  const high = payload._high, low = payload._low
+  if (open == null || close == null || high == null || low == null || height <= 0) return null
+  const span = high - low
+  const k = span > 0 ? height / span : 0
+  const up = close >= open
+  const color = up ? '#FF4560' : '#26C281'
+  const cx = x + width / 2
+  const openY = y + (high - open) * k
+  const closeY = y + (high - close) * k
+  const bodyTop = Math.min(openY, closeY)
+  const bodyH = Math.max(Math.abs(closeY - openY), 1)
+  const bw = Math.max(width * 0.6, 2)
+  return (
+    <g>
+      <line x1={cx} x2={cx} y1={y} y2={y + height} stroke={color} strokeWidth={1} />
+      <rect x={cx - bw / 2} y={bodyTop} width={bw} height={bodyH} fill={color} />
+    </g>
+  )
 }
 
 const ALIGN_LABEL: Record<string, { text: string; cls: string }> = {
@@ -55,16 +78,36 @@ function Pct({ v, className }: { v: number; className?: string }) {
 // ─── Chart tooltip ────────────────────────────────────────────────────────────
 function ChartTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null
+  const row = payload[0]?.payload ?? {}
+  const hasOHLC = row._open != null && row._close != null
+  const candleUp = hasOHLC && row._close >= row._open
+  const candleColor = candleUp ? '#FF4560' : '#26C281'
   return (
     <div className="card p-2.5 text-xs space-y-0.5 shadow-xl border border-bg-border/60 min-w-[150px]">
       <div className="text-text-muted mb-1">{label}</div>
-      {payload.map((p: any) => (
-        <div key={p.name} className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: p.color }} />
-          <span className="text-text-secondary">{p.name}</span>
-          <span className="font-mono ml-auto" style={{ color: p.color }}>{p.value?.toFixed?.(2) ?? '-'}</span>
-        </div>
-      ))}
+      {payload.map((p: any) => {
+        if (p.dataKey === 'K线') {
+          if (!hasOHLC) return null
+          return (
+            <div key="kline" className="space-y-0.5">
+              {[['开盘', row._open], ['最高', row._high], ['最低', row._low], ['收盘', row._close]].map(([n, v]) => (
+                <div key={n as string} className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: candleColor }} />
+                  <span className="text-text-secondary">{n}</span>
+                  <span className="font-mono ml-auto" style={{ color: candleColor }}>{(v as number)?.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+          )
+        }
+        return (
+          <div key={p.name} className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: p.color }} />
+            <span className="text-text-secondary">{p.name}</span>
+            <span className="font-mono ml-auto" style={{ color: p.color }}>{p.value?.toFixed?.(2) ?? '-'}</span>
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -99,7 +142,10 @@ export default function MarketTrend() {
   const chartData = useMemo(() => (
     (selected?.series ?? []).map(p => ({
       date: format(new Date(p.date), 'MM/dd'),
-      '收盘': p.close, 'MA5': p.ma5, 'MA10': p.ma10, 'MA20': p.ma20,
+      // 蜡烛：range Bar 数据域 [low, high]，OHLC 原值供 shape/tooltip 使用
+      'K线': p.low != null && p.high != null ? [p.low, p.high] : undefined,
+      _open: p.open, _close: p.close, _high: p.high, _low: p.low,
+      'MA5': p.ma5, 'MA10': p.ma10, 'MA20': p.ma20,
       'MA60': p.ma60, 'MA120': p.ma120, 'MA250': p.ma250,
     }))
   ), [selected])
@@ -223,7 +269,7 @@ export default function MarketTrend() {
             </div>
             <div className="h-72">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
                   <XAxis dataKey="date" tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                   <YAxis
@@ -240,21 +286,23 @@ export default function MarketTrend() {
                       <span style={{ opacity: hiddenLines.has(entry?.dataKey ?? value) ? 0.35 : 1 }}>{value}</span>
                     )}
                   />
+                  {/* 蜡烛：range Bar [low, high] + 自定义 shape（红涨绿跌） */}
+                  <Bar dataKey="K线" isAnimationActive={false} shape={<CandleShape />} hide={hiddenLines.has('K线')} legendType="rect" fill="#FF4560" />
                   {Object.entries(MA_COLORS).map(([key, color]) => (
                     <Line
                       key={key}
                       type="monotone"
                       dataKey={key}
                       stroke={color}
-                      strokeWidth={key === '收盘' ? 2.2 : 1.4}
+                      strokeWidth={1.4}
                       strokeDasharray={key === 'MA120' || key === 'MA250' ? '5 4' : undefined}
                       dot={false}
-                      activeDot={key === '收盘' ? { r: 3 } : false}
+                      activeDot={false}
                       connectNulls
                       hide={hiddenLines.has(key)}
                     />
                   ))}
-                </LineChart>
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
           </div>

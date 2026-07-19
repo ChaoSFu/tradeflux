@@ -291,6 +291,9 @@ export interface SectorLimitTrendOption {
 export interface IndexTrendPoint {
   date: string
   close: number
+  open: number | null
+  high: number | null
+  low: number | null
   ma5: number | null
   ma10: number | null
   ma20: number | null

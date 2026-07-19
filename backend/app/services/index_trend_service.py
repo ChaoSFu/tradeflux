@@ -165,6 +165,7 @@ def _analyze_index(meta: dict, bars: List[dict]) -> IndexTrendAnalysis:
     series = [
         IndexTrendPoint(
             date=str(bars[k]['date']), close=r2(closes[k]),
+            open=r2(bars[k].get('open')), high=r2(bars[k].get('high')), low=r2(bars[k].get('low')),
             ma5=r2(ma[5][k]), ma10=r2(ma[10][k]), ma20=r2(ma[20][k]),
             ma60=r2(ma[60][k]), ma120=r2(ma[120][k]), ma250=r2(ma[250][k]),
         )

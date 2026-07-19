@@ -989,7 +989,10 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
         try:
             out.append({
                 "date": parts[0],
+                "open": float(parts[1]),
                 "close": float(parts[2]),
+                "high": float(parts[3]),
+                "low": float(parts[4]),
                 "pct_change": float(parts[8]),
             })
         except (ValueError, IndexError):
@@ -1022,9 +1025,13 @@ def _fetch_index_kline_tencent(secid: str, days: int = 70, timeout: int = 15) ->
     for bar in raw:
         try:
             d, close = bar[0], float(bar[2])
+            open_p, high_p, low_p = float(bar[1]), float(bar[3]), float(bar[4])
         except (ValueError, IndexError):
             continue
         pct = ((close - prev_close) / prev_close * 100) if prev_close else 0.0
-        out.append({"date": d, "close": close, "pct_change": round(pct, 4)})
+        out.append({
+            "date": d, "open": open_p, "close": close,
+            "high": high_p, "low": low_p, "pct_change": round(pct, 4),
+        })
         prev_close = close
     return out
