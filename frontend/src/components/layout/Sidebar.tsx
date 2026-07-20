@@ -2,6 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import { cn } from '@/utils/cn'
 import { useAppStore } from '@/store'
+import { useAuthStore } from '@/store/auth'
 import {
   LayoutDashboard,
   TrendingUp,
@@ -21,7 +22,7 @@ import {
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
 
-type NavLinkItem  = { type: 'link';  to: string; label: string; icon: React.ElementType }
+type NavLinkItem  = { type: 'link';  to: string; label: string; icon: React.ElementType; auth?: boolean }
 type NavGroupItem = { type: 'group'; label: string; icon: React.ElementType; children: NavLinkItem[] }
 type NavEntry     = NavLinkItem | NavGroupItem
 
@@ -50,19 +51,29 @@ const NAV: NavEntry[] = [
   },
   { type: 'link', to: '/signals', label: '弱转强信号', icon: Zap },
   { type: 'link', to: '/review',  label: '日复盘',     icon: BookOpen },
-  { type: 'link', to: '/trade-journal', label: '交易复盘', icon: NotebookPen },
+  // 交易复盘为个人私有数据，仅登录后在导航中出现（未登录用户看不到入口）
+  { type: 'link', to: '/trade-journal', label: '交易复盘', icon: NotebookPen, auth: true },
 ]
 
-// All link items flattened (used in collapsed mode)
-const FLAT_LINKS: NavLinkItem[] = NAV.flatMap((e) =>
-  e.type === 'group' ? e.children : [e],
-)
+// 按登录态过滤（隐藏 auth 项）
+function visibleNav(isLoggedIn: boolean): NavEntry[] {
+  const ok = (l: NavLinkItem) => !l.auth || isLoggedIn
+  return NAV
+    .map((e) => e.type === 'group' ? { ...e, children: e.children.filter(ok) } : e)
+    .filter((e) => e.type === 'group' ? e.children.length > 0 : ok(e))
+}
+const flatten = (nav: NavEntry[]): NavLinkItem[] =>
+  nav.flatMap((e) => e.type === 'group' ? e.children : [e])
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function Sidebar() {
   const { sidebarCollapsed, toggleSidebar } = useAppStore()
+  const isLoggedIn = useAuthStore((s) => s.isLoggedIn)
   const location = useLocation()
+
+  const nav = visibleNav(isLoggedIn)
+  const flatLinks = flatten(nav)
 
   // Track which groups are open; default all groups open
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
@@ -119,7 +130,7 @@ export function Sidebar() {
         {sidebarCollapsed ? (
           // ── Collapsed: flat icon list ──────────────────────────────────────
           <div className="space-y-0.5">
-            {FLAT_LINKS.map(({ to, label, icon: Icon }) => (
+            {flatLinks.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
                 to={to}
@@ -141,7 +152,7 @@ export function Sidebar() {
         ) : (
           // ── Expanded: grouped list ─────────────────────────────────────────
           <div className="space-y-0.5">
-            {NAV.map((entry) => {
+            {nav.map((entry) => {
               if (entry.type === 'link') {
                 const { to, label, icon: Icon } = entry
                 return (
