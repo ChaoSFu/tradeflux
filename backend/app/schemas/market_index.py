@@ -10,6 +10,8 @@ class IndexTrendPoint(BaseModel):
     open: Optional[float] = None
     high: Optional[float] = None
     low: Optional[float] = None
+    volume: Optional[float] = None   # 成交量（东财口径为手；腾讯/新浪源单位一致性仅保证同图内可比）
+    amount: Optional[float] = None   # 成交额（元，仅东财源提供）
     ma5: Optional[float] = None
     ma10: Optional[float] = None
     ma20: Optional[float] = None

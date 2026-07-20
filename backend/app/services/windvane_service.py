@@ -19,13 +19,15 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from datetime import date as date_cls, datetime
 from typing import List, Optional
 
 import httpx
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from .eastmoney_fetcher import HEADERS
+from ..models.market_index import MarketBreadthDaily
 
 DATACENTER_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 UPDOWN_URL = "https://quotederivates.eastmoney.com/datacenter/updowndistribution"
@@ -33,8 +35,8 @@ UPDOWN_URL = "https://quotederivates.eastmoney.com/datacenter/updowndistribution
 # 沪(上证A指) / 深(深证A指) / 京(北证50 代理全市场)
 UPDOWN_MARKETS = [("1", "000002"), ("0", "399002"), ("0", "899050")]
 
-_CACHE_TTL = 600
-_cache: dict = {"ts": None, "resp": None}
+_SYNC_DEBOUNCE = 600     # 库空自愈同步防抖（秒）
+_last_sync_attempt: dict = {"ts": None}
 _lock = threading.Lock()
 
 
@@ -69,6 +71,7 @@ class UpDownData(BaseModel):
 class TurnoverPoint(BaseModel):
     date: str
     amount: float             # 沪深两市成交额（元）
+    amount_hsj: Optional[float] = None  # 含北交所
 
 
 class TurnoverData(BaseModel):
@@ -160,6 +163,28 @@ def _fetch_updown(client: httpx.Client) -> UpDownData:
     )
 
 
+def _fetch_trade_date(client: httpx.Client) -> Optional[dict]:
+    """交易日历：{'today': 'YYYY-MM-DD', 'is_open': bool, 'last': 'YYYY-MM-DD'}；失败返回 None"""
+    try:
+        payload = _get_json(client, DATACENTER_URL, {
+            "reportName": "RPT_DMSK_WINDVANE_DATE",
+            "columns": "TODAY_DATE,IS_OPEN,LAST_DATE,NEXT_DATE",
+            "source": "securities",
+            "client": "APP",
+        })
+        rows = (payload.get("result") or {}).get("data") or []
+        if not rows:
+            return None
+        r = rows[0]
+        return {
+            "today": str(r["TODAY_DATE"])[:10],
+            "is_open": bool(r.get("IS_OPEN")),
+            "last": str(r["LAST_DATE"])[:10],
+        }
+    except Exception:
+        return None
+
+
 def _fetch_turnover(client: httpx.Client) -> TurnoverData:
     payload = _get_json(client, DATACENTER_URL, {
         "reportName": "RPT_DMSK_WINDVANE_SUMTVALLIST",
@@ -173,7 +198,11 @@ def _fetch_turnover(client: httpx.Client) -> TurnoverData:
     if not rows:
         raise ValueError("成交额数据为空")
     series = [
-        TurnoverPoint(date=str(r["TRADE_DATE"])[:10], amount=float(r["DEAL_AMOUNT"] or 0))
+        TurnoverPoint(
+            date=str(r["TRADE_DATE"])[:10],
+            amount=float(r["DEAL_AMOUNT"] or 0),
+            amount_hsj=float(r["DEAL_AMOUNT_HSJ"] or 0),
+        )
         for r in rows
     ]
     avg60 = 0.0
@@ -197,36 +226,199 @@ def _fetch_turnover(client: httpx.Client) -> TurnoverData:
     )
 
 
-def get_windvane(force_refresh: bool = False) -> WindvaneResponse:
-    with _lock:
-        if (
-            not force_refresh
-            and _cache["resp"] is not None
-            and (datetime.now() - _cache["ts"]).total_seconds() < _CACHE_TTL
-        ):
-            return _cache["resp"]
+# ── 数据同步（daily_update 调用；refresh=true 或库空时自愈调用）──────────────
 
-        margin = updown = turnover = None
-        errors: List[str] = []
-        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=15) as client:
-            try:
-                margin = _fetch_margin(client)
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"融资融券: {e}")
-            try:
-                updown = _fetch_updown(client)
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"涨跌统计: {e}")
-            try:
-                turnover = _fetch_turnover(client)
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"成交分析: {e}")
+def sync_market_breadth(db: Session) -> dict:
+    """
+    拉取两融/涨跌统计/成交额并 upsert 入 market_breadth_daily（一天一行，按来源填列）。
+    返回 {'ok': 成功模块数, 'errors': [...]}
+    """
+    margin = updown = turnover = None
+    errors: List[str] = []
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=15) as client:
+        try:
+            margin = _fetch_margin(client)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"融资融券: {e}")
+        try:
+            updown = _fetch_updown(client)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"涨跌统计: {e}")
+        try:
+            turnover = _fetch_turnover(client)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"成交分析: {e}")
 
-        resp = WindvaneResponse(
-            updated_at=datetime.now().isoformat(timespec="seconds"),
-            margin=margin, updown=updown, turnover=turnover, errors=errors,
+    try:
+        # 预取涉及日期的行，避免逐行查询
+        all_dates: set = set()
+        if margin:
+            all_dates |= {p.date for p in margin.series}
+        if turnover:
+            all_dates |= {p.date for p in turnover.series}
+        rows: dict = {}
+        if all_dates:
+            date_objs = [date_cls.fromisoformat(d) for d in all_dates]
+            for r in db.query(MarketBreadthDaily).filter(MarketBreadthDaily.date.in_(date_objs)).all():
+                rows[str(r.date)] = r
+
+        def row_for(d: str) -> MarketBreadthDaily:
+            r = rows.get(d)
+            if r is None:
+                # 预取范围外的日期（如 updown 绑定的今天）：先查库避免撞唯一约束
+                r = (
+                    db.query(MarketBreadthDaily)
+                    .filter(MarketBreadthDaily.date == date_cls.fromisoformat(d))
+                    .first()
+                )
+                if r is None:
+                    r = MarketBreadthDaily(date=date_cls.fromisoformat(d))
+                    db.add(r)
+                rows[d] = r
+            return r
+
+        if margin:
+            for p in margin.series:
+                r = row_for(p.date)
+                r.margin_balance = p.balance
+                r.margin_net_buy = p.net_buy
+                r.szzs_close = p.szzs_close
+        if turnover:
+            for p in turnover.series:
+                r = row_for(p.date)
+                r.deal_amount = p.amount
+                r.deal_amount_hsj = p.amount_hsj
+        if updown:
+            # 涨跌统计接口返回的是「当前实时」数据、无自带日期：
+            #   交易日 → 绑定到今天（盘中多次同步渐进覆盖，15:30 收盘后运行定格为收盘口径）
+            #   非交易日 → 绑定到上一交易日（此时接口数据即上一收盘的最终值）
+            with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=10) as _c:
+                cal = _fetch_trade_date(_c)
+            if cal:
+                bind_date = cal["today"] if cal["is_open"] else cal["last"]
+            else:
+                bind_date = (
+                    turnover.series[-1].date if turnover and turnover.series
+                    else (margin.latest_date if margin else str(date_cls.today()))
+                )
+            r = row_for(bind_date)
+            r.up_count = updown.up
+            r.down_count = updown.down
+            r.flat_count = updown.flat
+            r.limit_up_count = updown.limit_up
+            r.limit_down_count = updown.limit_down
+            r.natural_limit_up = updown.natural_limit_up
+            r.natural_limit_down = updown.natural_limit_down
+            r.up_buckets = updown.up_buckets
+            r.down_buckets = updown.down_buckets
+        db.commit()
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        errors.append(f"入库失败: {e}")
+
+    _last_sync_attempt["ts"] = datetime.now()
+    return {"ok": sum(x is not None for x in (margin, updown, turnover)), "errors": errors}
+
+
+# ── 读取（DB 优先）────────────────────────────────────────────────────────────
+
+def _read_windvane_from_db(db: Session) -> WindvaneResponse:
+    errors: List[str] = []
+
+    # 两融序列（近130个交易日）
+    m_rows = (
+        db.query(MarketBreadthDaily)
+        .filter(MarketBreadthDaily.margin_balance.isnot(None))
+        .order_by(MarketBreadthDaily.date.desc())
+        .limit(130)
+        .all()
+    )
+    m_rows.reverse()
+    margin = None
+    if m_rows:
+        series = [
+            MarginPoint(date=str(r.date), balance=r.margin_balance or 0,
+                        net_buy=r.margin_net_buy or 0, szzs_close=r.szzs_close or 0)
+            for r in m_rows
+        ]
+        margin = MarginData(latest_date=series[-1].date, balance=series[-1].balance,
+                            net_buy=series[-1].net_buy, series=series)
+    else:
+        errors.append("融资融券: 库内暂无数据")
+
+    # 成交额序列（近60个交易日）
+    t_rows = (
+        db.query(MarketBreadthDaily)
+        .filter(MarketBreadthDaily.deal_amount.isnot(None))
+        .order_by(MarketBreadthDaily.date.desc())
+        .limit(60)
+        .all()
+    )
+    t_rows.reverse()
+    turnover = None
+    if t_rows:
+        t_series = [
+            TurnoverPoint(date=str(r.date), amount=r.deal_amount or 0, amount_hsj=r.deal_amount_hsj)
+            for r in t_rows
+        ]
+        turnover = TurnoverData(
+            today=t_series[-1].amount,
+            prev=t_series[-2].amount if len(t_series) > 1 else 0.0,
+            avg60=sum(p.amount for p in t_series) / len(t_series),
+            series=t_series,
         )
-        if margin or updown or turnover:
-            _cache["ts"] = datetime.now()
-            _cache["resp"] = resp
+    else:
+        errors.append("成交分析: 库内暂无数据")
+
+    # 涨跌统计（最新一条有效记录）
+    u_row = (
+        db.query(MarketBreadthDaily)
+        .filter(MarketBreadthDaily.up_count.isnot(None))
+        .order_by(MarketBreadthDaily.date.desc())
+        .first()
+    )
+    updown = None
+    if u_row:
+        updown = UpDownData(
+            up=u_row.up_count or 0, down=u_row.down_count or 0, flat=u_row.flat_count or 0,
+            limit_up=u_row.limit_up_count or 0, limit_down=u_row.limit_down_count or 0,
+            natural_limit_up=u_row.natural_limit_up or 0,
+            natural_limit_down=u_row.natural_limit_down or 0,
+            up_buckets=u_row.up_buckets or [0] * 10,
+            down_buckets=u_row.down_buckets or [0] * 10,
+        )
+    else:
+        errors.append("涨跌统计: 库内暂无数据")
+
+    latest_date = max(
+        [str(m_rows[-1].date) if m_rows else "", str(t_rows[-1].date) if t_rows else "",
+         str(u_row.date) if u_row else ""]
+    )
+    return WindvaneResponse(
+        updated_at=latest_date or datetime.now().date().isoformat(),
+        margin=margin, updown=updown, turnover=turnover, errors=errors,
+    )
+
+
+def get_windvane(db: Session, force_refresh: bool = False) -> WindvaneResponse:
+    """
+    市场风向标数据。读 DB（daily_update 每日同步写入）；
+    refresh=true 强制重新同步；库空时自愈同步一次（10 分钟防抖）。
+    """
+    with _lock:
+        sync_errors: List[str] = []
+        if force_refresh:
+            sync_errors = sync_market_breadth(db).get("errors", [])
+        else:
+            has_any = db.query(MarketBreadthDaily.id).first() is not None
+            if not has_any:
+                last = _last_sync_attempt["ts"]
+                if last is None or (datetime.now() - last).total_seconds() > _SYNC_DEBOUNCE:
+                    sync_errors = sync_market_breadth(db).get("errors", [])
+
+        resp = _read_windvane_from_db(db)
+        # 同步错误合并展示（去重）
+        for e in sync_errors:
+            if e not in resp.errors:
+                resp.errors.append(e)
         return resp

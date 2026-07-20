@@ -1265,6 +1265,24 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"[regulatory] 重点监管名单同步失败（不影响主流程）: {e}")
             db.rollback()
 
+        # ── 大盘趋势数据同步（独立步骤，失败不影响主流程）──────────────────
+        # 指数日线（东财→腾讯→新浪兜底）+ 市场宽度（两融/涨跌统计/成交额）入库，
+        # 大盘趋势页读库展示。
+        try:
+            from app.services.index_trend_service import sync_index_bars
+            from app.services.windvane_service import sync_market_breadth
+            r_idx = sync_index_bars(db)
+            r_brd = sync_market_breadth(db)
+            log.info(
+                f"大盘趋势数据同步：指数 {r_idx['ok']}/5（upsert {r_idx['upserts']} 行）；"
+                f"市场宽度 {r_brd['ok']}/3 模块"
+            )
+            for w in (r_idx.get("errors") or []) + (r_brd.get("errors") or []):
+                api_warnings.append(f"大盘数据: {w}")
+        except Exception as e:
+            log.info(f"[market-trend] 大盘趋势数据同步失败（不影响主流程）: {e}")
+            db.rollback()
+
         log.summary()
 
     except Exception as e:

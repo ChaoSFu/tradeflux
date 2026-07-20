@@ -294,6 +294,8 @@ export interface IndexTrendPoint {
   open: number | null
   high: number | null
   low: number | null
+  volume: number | null
+  amount: number | null
   ma5: number | null
   ma10: number | null
   ma20: number | null
