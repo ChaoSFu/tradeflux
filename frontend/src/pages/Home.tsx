@@ -6,6 +6,7 @@ import {
   Flame, LayoutDashboard, TrendingUp, ShieldAlert, Activity, Zap, BookOpen,
   RefreshCw, Mail, AlertTriangle, MousePointerClick, ArrowRight, Lock,
   Sunset, Sunrise, LineChart, NotebookPen, Telescope, ScanFace,
+  Cpu, User, Bot, Gauge,
 } from 'lucide-react'
 
 // ─── 功能模块（每个模块一个主题色，用于图标与悬停光效）───────────────────────
@@ -85,6 +86,57 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   )
 }
 
+function PartyCard({ icon: Icon, color, name, tag, desc, emphasized }: {
+  icon: React.ElementType; color: string; name: string; tag: string; desc: string; emphasized?: boolean
+}) {
+  return (
+    <div
+      className="card p-4 flex flex-col gap-2 border transition-colors"
+      style={{ borderColor: emphasized ? `${color}66` : undefined, backgroundColor: emphasized ? `${color}0d` : undefined }}
+    >
+      <div className="flex items-center gap-2">
+        <span className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ backgroundColor: `${color}1a`, color }}>
+          <Icon className="w-4 h-4" />
+        </span>
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-text-primary leading-tight">{name}</div>
+          <div className="text-[10px] font-mono mt-0.5" style={{ color }}>{tag}</div>
+        </div>
+      </div>
+      <p className="text-xs text-text-muted leading-relaxed">{desc}</p>
+    </div>
+  )
+}
+
+function RuleCard({ n, title, desc }: { n: string; title: string; desc: string }) {
+  return (
+    <div className="card p-4 border border-bg-border">
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-sm font-bold text-accent">{n}</span>
+        <span className="text-sm font-semibold text-text-primary">{title}</span>
+      </div>
+      <p className="text-xs text-text-muted leading-relaxed mt-1.5">{desc}</p>
+    </div>
+  )
+}
+
+function AbilityCard({ icon: Icon, color, name, maps, desc }: {
+  icon: React.ElementType; color: string; name: string; maps: string; desc: string
+}) {
+  return (
+    <div className="card p-4 border border-bg-border flex flex-col gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ backgroundColor: `${color}1a`, color }}>
+          <Icon className="w-4 h-4" />
+        </span>
+        <span className="text-sm font-semibold text-text-primary">{name}</span>
+        <span className="text-[11px] font-mono" style={{ color }}>{maps}</span>
+      </div>
+      <p className="text-xs text-text-muted leading-relaxed">{desc}</p>
+    </div>
+  )
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -111,38 +163,84 @@ export default function Home() {
               <p className="text-sm text-text-secondary mt-1">客观读懂市场,诚实看清自己——纠正习惯,走向稳定盈利</p>
             </div>
           </div>
-          <p className="text-sm text-text-secondary leading-relaxed mt-5 max-w-3xl">
-            多数人亏钱不是不懂市场,而是<span className="text-text-primary font-medium">做不到知行合一</span>。TradeFlux 把「知」和「行」放在一起对账:
-            一边用数据客观总结指数、板块、个股的运行趋势与情绪冷暖,给你一个不带情绪的市场坐标;
-            一边用你的真实交易数据,暴露被情绪驱动的人性弱点,做出客观评价、指导你纠正习惯。逼近知行合一,才是稳定盈利的路径。
+          <p className="text-base text-text-secondary leading-relaxed mt-5 max-w-3xl">
+            <span className="text-text-primary font-semibold">市场不奖励最聪明的人,奖励最能管住自己的人。</span>
+            TradeFlux 让「客观的市场」照进「主观的你」,用 AI 居中做不带情绪的教练,把「知」一次次拉齐「行」——
+            逼近知行合一,才是稳定盈利的路径。
           </p>
-
-          {/* 两个引擎 */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-5">
-            <div className="rounded-lg border border-accent/25 bg-accent/5 p-3.5">
-              <div className="flex items-center gap-2 text-sm font-semibold text-accent">
-                <Telescope className="w-4 h-4" /> 读市场 · 客观规律引擎
-              </div>
-              <p className="text-xs text-text-muted leading-relaxed mt-1.5">
-                指数均线趋势、板块轮动退潮、涨跌停与情绪温度、建议仓位——回答「现在什么环境、主线在哪、该攻还是该守」。
-              </p>
-            </div>
-            <div className="rounded-lg border border-[#B47CFF]/30 bg-[#B47CFF]/6 p-3.5">
-              <div className="flex items-center gap-2 text-sm font-semibold text-[#B47CFF]">
-                <ScanFace className="w-4 h-4" /> 照自己 · 人性纠偏引擎
-              </div>
-              <p className="text-xs text-text-muted leading-relaxed mt-1.5">
-                记录你的操作,发现逆势加仓、着急回本、不舍空仓等弱点,做出客观评价——回答「我又在重复哪个错、这次怎么管住自己」。
-              </p>
-            </div>
-          </div>
-
           <div className="flex items-center gap-2 mt-5 text-xs text-warn bg-warn/10 border border-warn/20 rounded-lg px-3 py-2 w-fit">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             本平台提供市场数据分析与个人行为复盘,不构成任何投资建议或买卖指令,交易决策请自行承担风险
           </div>
         </div>
       </div>
+
+      {/* ── ① 系统定位：协调三方 ─────────────────────────────────────────── */}
+      <section className="space-y-3 animate-fade-in-up" style={{ animationDelay: '60ms' }}>
+        <SectionTitle>系统定位 · 协调「市场 · 投资者 · AI」三方</SectionTitle>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <PartyCard icon={Activity} color="#5EA6FF" name="市场" tag="客观 · 不可预测"
+            desc="一台把钱从「没纪律的人」转移到「有纪律的人」的机器。它只能顺应,不能预测。系统职责:用数据客观读懂它。" />
+          <PartyCard icon={Cpu} color="#FFD700" name="系统 · AI" tag="桥梁 · 居中翻译" emphasized
+            desc="站在市场与你之间,把市场的客观翻译给你、把你的主观照给你看,做一个不带情绪、只讲证据的教练。" />
+          <PartyCard icon={User} color="#B47CFF" name="投资者" tag="主观 · 情绪驱动"
+            desc="edge 与自我毁灭的共同来源。你的纪律是唯一可训练的优势。系统职责:照见你的弱点并持续纠偏。" />
+        </div>
+        <p className="text-xs text-text-muted px-1">
+          系统的定位 = 让<span className="text-accent">客观的市场</span>与<span className="text-[#B47CFF]">主观的你</span>,在 <span className="text-dragon">AI</span> 的居中翻译下,不断逼近<span className="text-text-secondary">知行合一</span>。
+        </p>
+      </section>
+
+      {/* ── ② 盈利之道：交易理论 ─────────────────────────────────────────── */}
+      <section className="space-y-3 animate-fade-in-up" style={{ animationDelay: '120ms' }}>
+        <SectionTitle>盈利之道 · 交易的理论</SectionTitle>
+        <p className="text-sm text-text-secondary leading-relaxed max-w-3xl">
+          市场扣除成本后是<span className="text-text-primary">负和游戏</span>,平均的参与者必然亏钱。散户拼不过机构的信息与分析,唯一可长期依赖、且可训练的优势是<span className="text-text-primary font-semibold">纪律</span>——在别人做不到时,做到你本就知道该做的事。
+        </p>
+        {/* 盈利公式 */}
+        <div className="card p-4 flex items-center gap-3 flex-wrap border border-bg-border">
+          <span className="text-xs text-text-muted shrink-0">盈利期望</span>
+          <span className="font-mono text-sm text-text-primary">
+            盈利 = <span className="text-up">胜率 × 平均盈利</span> − <span className="text-down">败率 × 平均亏损</span> − <span className="text-warn">成本</span>
+          </span>
+        </div>
+        {/* 四条结构性规则 */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+          <RuleCard n="01" title="顺势" desc="不与趋势为敌。大势为守时,任何逆势买入都在降低胜率。" />
+          <RuleCard n="02" title="截断亏损 · 让利润奔跑" desc="盈亏比是命门。快砍亏损、拿住盈利,才不会被处置效应反噬。" />
+          <RuleCard n="03" title="固定风险仓位" desc="每笔只赌固定比例。越上头下得越重,是爆仓的唯一原因。" />
+          <RuleCard n="04" title="低频 · 高确定性" desc="只做高确定性机会。交易越频繁,成本与情绪犯错越多。" />
+        </div>
+        <div className="rounded-lg border border-accent/25 bg-accent/5 px-4 py-2.5 text-sm text-text-secondary">
+          <span className="text-accent font-semibold">大概率盈利 = 顺应规律 × 执行纪律</span>——四条全是「行为」,不是「预测」。你不需要预测未来,只需要不偏离你已经知道的对的事。
+        </div>
+      </section>
+
+      {/* ── ③ 系统能力：如何帮你盈利 ─────────────────────────────────────── */}
+      <section className="space-y-3 animate-fade-in-up" style={{ animationDelay: '180ms' }}>
+        <SectionTitle>系统能力 · 如何帮你盈利</SectionTitle>
+        <p className="text-sm text-text-muted max-w-3xl">系统的每一项能力,都对应盈利理论里的一环:</p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <AbilityCard icon={Telescope} color="#5EA6FF" name="读市场" maps="→ 帮你顺势 · 判攻守"
+            desc="大盘趋势(均线体系)、板块轮动退潮、涨跌停与一字板、情绪温度与建议仓位——给你一个不带情绪的市场坐标。" />
+          <AbilityCard icon={ScanFace} color="#B47CFF" name="照自己" maps="→ 帮你守纪律"
+            desc="交易复盘记录每一笔操作,检测引擎识别逆势加仓、向下摊平、报复性交易、满仓越线——把你的偏离量化出来。" />
+          <AbilityCard icon={Bot} color="#FFB020" name="AI 教练" maps="→ 帮你缩小知行差 · 进化"
+            desc="叙事化归因、事前良知反问、环境高危预警、按成熟度因材施教——用你自己的数据,做不带情绪的教练。" />
+        </div>
+        {/* 北极星指标 */}
+        <div className="card p-4 flex items-start gap-3 border border-dragon/30 bg-dragon/5">
+          <span className="w-9 h-9 rounded-lg bg-dragon/15 flex items-center justify-center shrink-0 text-dragon">
+            <Gauge className="w-[18px] h-[18px]" />
+          </span>
+          <div>
+            <div className="text-sm font-semibold text-text-primary">北极星 · 知行差指数</div>
+            <p className="text-xs text-text-muted leading-relaxed mt-1">
+              一个头条数字 = 你的操作偏离「客观市场环境」与「你自己定的规则」有多远。看着它逐月缩小,就是你的盈利能力在真实成长——两个引擎,最终缝成这一件事。
+            </p>
+          </div>
+        </div>
+      </section>
 
       {/* ── 功能模块 ─────────────────────────────────────────────────────── */}
       <section className="space-y-3 animate-fade-in-up" style={{ animationDelay: '80ms' }}>
