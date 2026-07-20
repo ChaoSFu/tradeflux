@@ -288,7 +288,7 @@ export interface SectorLimitTrendOption {
 
 // ─── 交易复盘日志 ─────────────────────────────────────────────────────────────
 
-export type TradeAction = '买入' | '加仓' | '减仓' | '卖出' | '清仓'
+export type TradeAction = '买入' | '卖出'  // 加仓/减仓/清仓由系统按持仓状态推导
 export type EmotionTag = '计划内' | '抄底做T' | '逆势加仓' | '回本补救' | '追高' | '其他'
 export type ExitReason = '止损' | '恐慌' | '反弹跑' | '目标达成' | '其他'
 

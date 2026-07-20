@@ -3,14 +3,14 @@ from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel
 
-ACTIONS = {"买入", "加仓", "减仓", "卖出", "清仓"}
-EXIT_ACTIONS = {"减仓", "卖出", "清仓"}
+ACTIONS = {"买入", "卖出"}
+EXIT_ACTIONS = {"卖出"}
 EMOTION_TAGS = {"计划内", "抄底做T", "逆势加仓", "回本补救", "追高", "其他"}
 EXIT_REASONS = {"止损", "恐慌", "反弹跑", "目标达成", "其他"}
 
 
 class TradeJournalCreate(BaseModel):
-    stock_code: str
+    stock_code: Optional[str] = None
     stock_name: Optional[str] = None
     action: str
     trade_time: datetime
@@ -44,7 +44,7 @@ class TradeJournalUpdate(BaseModel):
 
 class TradeJournalResponse(BaseModel):
     id: int
-    stock_code: str
+    stock_code: Optional[str] = None
     stock_name: Optional[str] = None
     action: str
     trade_time: datetime

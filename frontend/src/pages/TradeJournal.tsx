@@ -14,8 +14,8 @@ import { format } from 'date-fns'
 import { Lock, Plus, Trash2, BookOpen, AlertTriangle } from 'lucide-react'
 import type { TradeAction, EmotionTag, ExitReason, TradeJournalEntry } from '@/types'
 
-const ACTIONS: TradeAction[] = ['买入', '加仓', '减仓', '卖出', '清仓']
-const EXIT_ACTIONS = new Set<TradeAction>(['减仓', '卖出', '清仓'])
+const ACTIONS: TradeAction[] = ['买入', '卖出']
+const EXIT_ACTIONS = new Set<TradeAction>(['卖出'])
 const EMOTIONS: EmotionTag[] = ['计划内', '抄底做T', '逆势加仓', '回本补救', '追高', '其他']
 const EXIT_REASONS: ExitReason[] = ['止损', '恐慌', '反弹跑', '目标达成', '其他']
 
@@ -144,7 +144,7 @@ function Journal() {
 
 function Row({ t, onDelete }: { t: TradeJournalEntry; onDelete: () => void }) {
   const isExit = EXIT_ACTIONS.has(t.action)
-  const actionColor = t.action === '买入' || t.action === '加仓' ? 'text-up' : 'text-down'
+  const actionColor = t.action === '买入' ? 'text-up' : 'text-down'
   return (
     <tr className="border-b border-bg-border/20 hover:bg-bg-elevated/40">
       <td className="px-2.5 py-2 font-mono text-text-muted whitespace-nowrap">{format(new Date(t.trade_time), 'MM-dd HH:mm')}</td>
@@ -218,7 +218,7 @@ function EntryForm({ onDone }: { onDone: () => void }) {
   })
 
   const submit = () => {
-    if (!f.stock_code.trim()) return setErr('请填股票代码')
+    if (!f.stock_code.trim() && !f.stock_name.trim()) return setErr('股票代码或名称,至少填一个')
     if (!f.price.trim()) return setErr('请填价格')
     // 事前摩擦：建仓/加仓必须写理由与止损
     if (!isExit && !f.reason.trim()) return setErr('买入必须写理由——这是纪律的第一道闸')
@@ -260,8 +260,8 @@ function EntryForm({ onDone }: { onDone: () => void }) {
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <div><label className={labelCls}>股票代码 *</label><input value={f.stock_code} onChange={set('stock_code')} placeholder="600519" className={inputCls} /></div>
-        <div><label className={labelCls}>名称</label><input value={f.stock_name} onChange={set('stock_name')} placeholder="贵州茅台" className={inputCls} /></div>
+        <div><label className={labelCls}>股票代码</label><input value={f.stock_code} onChange={set('stock_code')} placeholder="600519" className={inputCls} /></div>
+        <div><label className={labelCls}>名称<span className="text-text-muted/60">（与代码填一个）</span></label><input value={f.stock_name} onChange={set('stock_name')} placeholder="贵州茅台" className={inputCls} /></div>
         <div><label className={labelCls}>交易时间 *</label><input type="datetime-local" value={f.trade_time} onChange={set('trade_time')} className={inputCls} /></div>
         <div><label className={labelCls}>价格 *</label><input value={f.price} onChange={set('price')} inputMode="decimal" placeholder="1420.5" className={inputCls} /></div>
         <div><label className={labelCls}>仓位 %</label><input value={f.position_pct} onChange={set('position_pct')} inputMode="decimal" placeholder="20" className={inputCls} /></div>

@@ -73,6 +73,8 @@ def _apply_schema_patches():
         # Sector 新增字段（当日一字板涨停/跌停数，daily_update 板块统计写入）
         "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS one_word_up_count INTEGER DEFAULT 0 NOT NULL",
         "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS one_word_down_count INTEGER DEFAULT 0 NOT NULL",
+        # 交易复盘:代码放开非必填（代码/名称填一个即可）
+        "ALTER TABLE trade_journal ALTER COLUMN stock_code DROP NOT NULL",
         # 指数日线补 OHLC/量额（大盘趋势页K线）
         "ALTER TABLE index_daily_snapshots ADD COLUMN IF NOT EXISTS open FLOAT",
         "ALTER TABLE index_daily_snapshots ADD COLUMN IF NOT EXISTS high FLOAT",
