@@ -11,7 +11,7 @@ import { LoginModal } from '@/components/auth/LoginModal'
 import { useAuthStore } from '@/store/auth'
 import { cn } from '@/utils/cn'
 import { format } from 'date-fns'
-import { Lock, Plus, Trash2, BookOpen, AlertTriangle } from 'lucide-react'
+import { Lock, Plus, Trash2, BookOpen, AlertTriangle, NotebookPen, ScanSearch, ShieldAlert, LineChart } from 'lucide-react'
 import type { TradeAction, EmotionTag, ExitReason, TradeJournalEntry } from '@/types'
 
 const ACTIONS: TradeAction[] = ['买入', '卖出']
@@ -44,28 +44,78 @@ export default function TradeJournal() {
   const [showLogin, setShowLogin] = useState(false)
 
   if (!isLoggedIn) {
-    return (
-      <div className="animate-fade-in">
-        {showLogin && <LoginModal onClose={() => setShowLogin(false)} />}
-        <div className="card max-w-md mx-auto mt-16 p-8 text-center">
-          <div className="w-12 h-12 rounded-xl bg-accent/15 border border-accent/25 flex items-center justify-center mx-auto">
-            <Lock className="w-6 h-6 text-accent" />
-          </div>
-          <h2 className="text-lg font-semibold text-text-primary mt-4">交易复盘 · 个人私有</h2>
-          <p className="text-sm text-text-muted mt-2 leading-relaxed">
-            记录你的每一笔操作,让系统在成百上千笔里发现你反复在犯的错。数据仅你自己可见,登录后使用。
-          </p>
-          <button
-            onClick={() => setShowLogin(true)}
-            className="mt-5 px-4 py-2 rounded-lg bg-accent/15 border border-accent/30 text-accent text-sm hover:bg-accent/25 transition-colors"
-          >
-            登录后开始记录
-          </button>
-        </div>
-      </div>
-    )
+    return <Intro onLogin={() => setShowLogin(true)}>{showLogin && <LoginModal onClose={() => setShowLogin(false)} />}</Intro>
   }
   return <Journal />
+}
+
+// ─── 未登录：功能介绍 ─────────────────────────────────────────────────────────
+
+const FEATURES = [
+  { icon: NotebookPen, title: '记录每一笔操作', desc: '买入/卖出、价格、仓位、买入理由与计划止损。写不出理由就别买——这是纪律的第一道闸。' },
+  { icon: LineChart, title: '自动留存市场环境', desc: '交易当下的情绪温度、市场阶段、建议仓位自动快照,复盘时能还原「你当时在什么环境下做的决策」。' },
+  { icon: ScanSearch, title: '发现你反复犯的错', desc: '在成百上千笔里识别逆势加仓、向下摊平、报复性交易、满仓越线——同类问题越频繁,越重点跟踪。' },
+  { icon: ShieldAlert, title: '照镜子 · 设红线 · 给替代', desc: '把情绪决策变成规则决策:月度行为画像、常驻软肋、按当前行情预警此刻高危行为。' },
+]
+
+function Intro({ onLogin, children }: { onLogin: () => void; children?: React.ReactNode }) {
+  return (
+    <div className="space-y-5 animate-fade-in max-w-4xl">
+      {children}
+
+      {/* Hero */}
+      <div className="card relative overflow-hidden p-7 border border-accent/20">
+        <div className="absolute -top-20 -left-16 w-72 h-52 rounded-full bg-accent/10 blur-3xl pointer-events-none" />
+        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
+        <div className="relative">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center shrink-0">
+              <NotebookPen className="w-5 h-5 text-accent" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-text-primary leading-tight">交易复盘 · 你自己的镜子</h1>
+              <p className="text-sm text-text-secondary mt-0.5">记录操作,让系统发现并纠正你反复在犯的交易错误</p>
+            </div>
+          </div>
+          <p className="text-sm text-text-secondary leading-relaxed mt-4 max-w-2xl">
+            这套系统平时只盯「市场」,这里补上缺失的另一维——<span className="text-text-primary font-medium">你自己</span>。
+            把每一笔真实操作记下来,系统在长期数据里量化你的行为模式:交易太急、逆势加仓、着急回本、不舍空仓……
+            用数据把「这次不一样」的幻觉砸实,把情绪决策变成规则决策。
+          </p>
+          <div className="flex items-center gap-3 mt-5">
+            <button
+              onClick={onLogin}
+              className="px-4 py-2 rounded-lg bg-accent/15 border border-accent/30 text-accent text-sm font-medium hover:bg-accent/25 transition-colors"
+            >
+              登录后开始记录
+            </button>
+            <span className="flex items-center gap-1.5 text-xs text-text-muted">
+              <Lock className="w-3.5 h-3.5" /> 交易数据仅你自己可见
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* 功能点 */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {FEATURES.map(({ icon: Icon, title, desc }) => (
+          <div key={title} className="card p-4 flex gap-3 border border-bg-border">
+            <span className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center shrink-0 text-accent/80">
+              <Icon className="w-[18px] h-[18px]" />
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-text-primary">{title}</div>
+              <p className="text-xs text-text-muted leading-relaxed mt-1">{desc}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <p className="text-xs text-text-muted/70 leading-relaxed pb-2">
+        交易复盘为个人纪律训练工具,记录与分析你自己的操作行为,不预测行情、不给出买卖点、不构成投资建议。
+      </p>
+    </div>
+  )
 }
 
 function Journal() {
