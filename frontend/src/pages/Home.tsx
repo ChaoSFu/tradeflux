@@ -2,6 +2,7 @@
  * 主页 — 平台介绍：功能导航 / 更新机制 / 联系方式
  */
 import { Link } from 'react-router-dom'
+import { cn } from '@/utils/cn'
 import {
   Flame, LayoutDashboard, TrendingUp, ShieldAlert, Activity, Zap, BookOpen,
   RefreshCw, Mail, AlertTriangle, MousePointerClick, ArrowRight, Lock,
@@ -116,6 +117,32 @@ function RuleCard({ n, title, desc }: { n: string; title: string; desc: string }
         <span className="text-sm font-semibold text-text-primary">{title}</span>
       </div>
       <p className="text-xs text-text-muted leading-relaxed mt-1.5">{desc}</p>
+    </div>
+  )
+}
+
+const MILESTONE_TONE: Record<string, string> = {
+  done: 'text-down border-down/40 bg-down/10',
+  next: 'text-warn border-warn/40 bg-warn/10',
+  far: 'text-text-muted border-bg-border bg-bg-elevated',
+}
+const MILESTONE_RAIL: Record<string, string> = { done: '#26C281', next: '#F59E0B', far: '#737A96' }
+
+function MilestoneCard({ status, tone, title, items }: {
+  status: string; tone: 'done' | 'next' | 'far'; title: string; items: string[]
+}) {
+  return (
+    <div className="card p-4 relative overflow-hidden border border-bg-border">
+      <div className="absolute inset-y-0 left-0 w-[3px]" style={{ backgroundColor: MILESTONE_RAIL[tone] }} />
+      <span className={cn('text-[10px] font-mono px-1.5 py-0.5 rounded border', MILESTONE_TONE[tone])}>{status}</span>
+      <div className="text-sm font-semibold text-text-primary mt-2">{title}</div>
+      <ul className="mt-2 space-y-1">
+        {items.map((it) => (
+          <li key={it} className="text-xs text-text-muted leading-relaxed pl-3 relative">
+            <span className="absolute left-0 text-text-muted/60">▸</span>{it}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
@@ -239,6 +266,21 @@ export default function Home() {
               一个头条数字 = 你的操作偏离「客观市场环境」与「你自己定的规则」有多远。看着它逐月缩小,就是你的盈利能力在真实成长——两个引擎,最终缝成这一件事。
             </p>
           </div>
+        </div>
+      </section>
+
+      {/* ── ④ 进化路线 ───────────────────────────────────────────────────── */}
+      <section className="space-y-3 animate-fade-in-up" style={{ animationDelay: '220ms' }}>
+        <SectionTitle>进化路线 · 里程碑</SectionTitle>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+          <MilestoneCard status="已上线" tone="done" title="市场规律引擎 + 数据基建"
+            items={['大盘趋势·涨跌停·板块·情绪温度', '每日自动更新 + 数据入库持久化']} />
+          <MilestoneCard status="已上线" tone="done" title="交易复盘 P1 · 记录与镜子"
+            items={['记录每笔操作 + 事前摩擦', '市场环境快照 · 账号隔离']} />
+          <MilestoneCard status="下一步 · P2" tone="next" title="检测 · 画像 · AI 单笔复盘"
+            items={['检测逆势加仓/摊平/报复/越线', '行为画像 · 我的软肋 · AI 归因']} />
+          <MilestoneCard status="规划 · P3+" tone="far" title="重点跟踪 · 红线 · 进化"
+            items={['环境高危预警 · 周期 AI 总结', '知行差指数 · 交易者成熟度模型']} />
         </div>
       </section>
 
