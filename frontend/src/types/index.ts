@@ -286,6 +286,42 @@ export interface SectorLimitTrendOption {
   limit_down_total: number
 }
 
+// ─── 交易复盘日志 ─────────────────────────────────────────────────────────────
+
+export type TradeAction = '买入' | '加仓' | '减仓' | '卖出' | '清仓'
+export type EmotionTag = '计划内' | '抄底做T' | '逆势加仓' | '回本补救' | '追高' | '其他'
+export type ExitReason = '止损' | '恐慌' | '反弹跑' | '目标达成' | '其他'
+
+export interface TradeJournalEntry {
+  id: number
+  stock_code: string
+  stock_name: string | null
+  action: TradeAction
+  trade_time: string
+  price: number
+  position_pct: number | null
+  reason: string | null
+  planned_stop: number | null
+  target: number | null
+  emotion_tag: EmotionTag | null
+  note: string | null
+  exit_reason: ExitReason | null
+  realized_pnl: number | null
+  pnl_pct: number | null
+  mkt_temperature: number | null
+  mkt_phase: string | null
+  mkt_suggested_position: number | null
+  created_at: string | null
+}
+
+export interface TradeJournalList {
+  items: TradeJournalEntry[]
+  total: number
+  realized_pnl_sum: number
+  win_count: number
+  loss_count: number
+}
+
 // ─── 大盘趋势分析 ─────────────────────────────────────────────────────────────
 
 export interface IndexTrendPoint {
