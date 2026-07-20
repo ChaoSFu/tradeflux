@@ -16,6 +16,7 @@ import {
   Flame,
   ShieldAlert,
   Home,
+  NotebookPen,
 } from 'lucide-react'
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ const NAV: NavEntry[] = [
   },
   { type: 'link', to: '/signals', label: '弱转强信号', icon: Zap },
   { type: 'link', to: '/review',  label: '日复盘',     icon: BookOpen },
+  { type: 'link', to: '/trade-journal', label: '交易复盘', icon: NotebookPen },
 ]
 
 // All link items flattened (used in collapsed mode)

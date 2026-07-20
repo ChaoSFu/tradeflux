@@ -16,6 +16,7 @@ const TITLES: Record<string, string> = {
   '/sector-ranking': '板块涨幅排名 Sector Ranking',
   '/signals': '弱转强信号 Weak-to-Strong',
   '/review': '日复盘 Daily Review',
+  '/trade-journal': '交易复盘 Trade Journal',
   '/limit-moves': '涨跌停概览 Limit Moves',
 }
 
