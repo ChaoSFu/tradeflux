@@ -79,6 +79,8 @@ def create_entry(
     _validate(body)
     if body.action not in ACTIONS:
         raise HTTPException(422, f"action 非法，应为 {ACTIONS}")
+    if not (body.stock_code or "").strip() and not (body.stock_name or "").strip():
+        raise HTTPException(422, "股票代码或名称至少填一个")
 
     entry = TradeJournal(owner=username, **body.model_dump())
 

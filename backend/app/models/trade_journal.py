@@ -19,10 +19,11 @@ class TradeJournal(Base):
     # 归属用户（当前为单管理员账号,预留多用户维度:每人一份私有记录）
     owner = Column(String(64), nullable=False, index=True)
 
-    stock_code = Column(String(16), nullable=False, index=True)
+    # 代码/名称至少填一个（由 API 校验）
+    stock_code = Column(String(16), nullable=True, index=True)
     stock_name = Column(String(64), nullable=True)
 
-    # 买入 | 加仓 | 减仓 | 卖出 | 清仓
+    # 买入 | 卖出（加仓/减仓/清仓由系统按持仓状态后续推导,不作为录入选项）
     action = Column(String(8), nullable=False)
     trade_time = Column(DateTime, nullable=False, index=True)
     price = Column(Float, nullable=False)
