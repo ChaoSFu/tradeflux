@@ -5,12 +5,16 @@ import { Link } from 'react-router-dom'
 import {
   Flame, LayoutDashboard, TrendingUp, ShieldAlert, Activity, Zap, BookOpen,
   RefreshCw, Mail, AlertTriangle, MousePointerClick, ArrowRight, Lock,
-  Sunset, Sunrise,
+  Sunset, Sunrise, LineChart, NotebookPen, Telescope, ScanFace,
 } from 'lucide-react'
 
 // ─── 功能模块（每个模块一个主题色，用于图标与悬停光效）───────────────────────
 
 const FEATURES = [
+  {
+    to: '/market-trend', icon: LineChart, name: '大盘趋势', color: '#5EA6FF',
+    desc: '核心指数均线体系判定（多空排列/月线季线/斜率/乖离）+ 融资融券、涨跌统计、成交分析',
+  },
   {
     to: '/limit-moves', icon: Flame, name: '涨跌停概览', color: '#FF4560',
     desc: '每日涨停/跌停全景：走势曲线、主导板块、集中板块与二板梯队，支持叠加板块曲线对比、历史交易日回看',
@@ -42,6 +46,10 @@ const FEATURES = [
   {
     to: '/review', icon: BookOpen, name: '日复盘', color: '#4E9CF5',
     desc: '每日市场点评与复盘记录，沉淀交易认知',
+  },
+  {
+    to: '/trade-journal', icon: NotebookPen, name: '交易复盘', color: '#B47CFF',
+    desc: '记录你的每一笔操作，让系统发现并纠正你反复在犯的交易错误（个人私有，登录后使用）',
   },
 ]
 
@@ -100,16 +108,38 @@ export default function Home() {
               <h1 className="text-2xl font-bold leading-tight bg-gradient-to-r from-text-primary via-accent to-text-primary bg-clip-text text-transparent">
                 TradeFlux · 短线晴雨表
               </h1>
-              <p className="text-sm text-text-secondary mt-1">A 股短线复盘与市场结构分析平台</p>
+              <p className="text-sm text-text-secondary mt-1">客观读懂市场,诚实看清自己——纠正习惯,走向稳定盈利</p>
             </div>
           </div>
           <p className="text-sm text-text-secondary leading-relaxed mt-5 max-w-3xl">
-            每个交易日自动抓取全市场涨跌停、强势股与板块数据，量化市场情绪温度、赚钱效应与板块轮动，
-            帮助短线交易者快速完成盘后复盘：今天谁在涨、主线在哪里、情绪处于什么阶段、明天该用什么仓位应对。
+            多数人亏钱不是不懂市场,而是<span className="text-text-primary font-medium">做不到知行合一</span>。TradeFlux 把「知」和「行」放在一起对账:
+            一边用数据客观总结指数、板块、个股的运行趋势与情绪冷暖,给你一个不带情绪的市场坐标;
+            一边用你的真实交易数据,暴露被情绪驱动的人性弱点,做出客观评价、指导你纠正习惯。逼近知行合一,才是稳定盈利的路径。
           </p>
+
+          {/* 两个引擎 */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-5">
+            <div className="rounded-lg border border-accent/25 bg-accent/5 p-3.5">
+              <div className="flex items-center gap-2 text-sm font-semibold text-accent">
+                <Telescope className="w-4 h-4" /> 读市场 · 客观规律引擎
+              </div>
+              <p className="text-xs text-text-muted leading-relaxed mt-1.5">
+                指数均线趋势、板块轮动退潮、涨跌停与情绪温度、建议仓位——回答「现在什么环境、主线在哪、该攻还是该守」。
+              </p>
+            </div>
+            <div className="rounded-lg border border-[#B47CFF]/30 bg-[#B47CFF]/6 p-3.5">
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#B47CFF]">
+                <ScanFace className="w-4 h-4" /> 照自己 · 人性纠偏引擎
+              </div>
+              <p className="text-xs text-text-muted leading-relaxed mt-1.5">
+                记录你的操作,发现逆势加仓、着急回本、不舍空仓等弱点,做出客观评价——回答「我又在重复哪个错、这次怎么管住自己」。
+              </p>
+            </div>
+          </div>
+
           <div className="flex items-center gap-2 mt-5 text-xs text-warn bg-warn/10 border border-warn/20 rounded-lg px-3 py-2 w-fit">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-            本平台仅提供市场数据聚合与结构化分析，不构成任何投资建议，交易决策请自行承担风险
+            本平台提供市场数据分析与个人行为复盘,不构成任何投资建议或买卖指令,交易决策请自行承担风险
           </div>
         </div>
       </div>
