@@ -73,6 +73,12 @@ def _apply_schema_patches():
         # Sector 新增字段（当日一字板涨停/跌停数，daily_update 板块统计写入）
         "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS one_word_up_count INTEGER DEFAULT 0 NOT NULL",
         "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS one_word_down_count INTEGER DEFAULT 0 NOT NULL",
+        # 指数日线补 OHLC/量额（大盘趋势页K线）
+        "ALTER TABLE index_daily_snapshots ADD COLUMN IF NOT EXISTS open FLOAT",
+        "ALTER TABLE index_daily_snapshots ADD COLUMN IF NOT EXISTS high FLOAT",
+        "ALTER TABLE index_daily_snapshots ADD COLUMN IF NOT EXISTS low FLOAT",
+        "ALTER TABLE index_daily_snapshots ADD COLUMN IF NOT EXISTS volume FLOAT",
+        "ALTER TABLE index_daily_snapshots ADD COLUMN IF NOT EXISTS amount FLOAT",
         # DailyReview 新增字段（强势股真实均涨幅）
         "ALTER TABLE daily_reviews ADD COLUMN IF NOT EXISTS strong_pool_avg_pct FLOAT",
         # Stock 主板块字段（计算一致性：所有展示模块读同一个字段）

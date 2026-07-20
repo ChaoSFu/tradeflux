@@ -139,16 +139,27 @@ export default function MarketTrend() {
     })
   }
 
+  // 成交副图：有成交额（东财源）用成交额（亿），否则用成交量（万，腾讯/新浪源）
+  const hasAmount = useMemo(
+    () => (selected?.series ?? []).some(p => p.amount != null && p.amount > 0),
+    [selected],
+  )
+  const volKey = hasAmount ? '成交额(亿)' : '成交量(万)'
+
   const chartData = useMemo(() => (
     (selected?.series ?? []).map(p => ({
       date: format(new Date(p.date), 'MM/dd'),
       // 蜡烛：range Bar 数据域 [low, high]，OHLC 原值供 shape/tooltip 使用
       'K线': p.low != null && p.high != null ? [p.low, p.high] : undefined,
       _open: p.open, _close: p.close, _high: p.high, _low: p.low,
+      [volKey]: hasAmount
+        ? (p.amount != null ? +(p.amount / 1e8).toFixed(1) : null)
+        : (p.volume != null ? +(p.volume / 1e4).toFixed(1) : null),
+      _volUp: p.open != null && p.close >= p.open,
       'MA5': p.ma5, 'MA10': p.ma10, 'MA20': p.ma20,
       'MA60': p.ma60, 'MA120': p.ma120, 'MA250': p.ma250,
     }))
-  ), [selected])
+  ), [selected, hasAmount, volKey])
 
   const [showMethod, setShowMethod] = useState(false)
 
@@ -267,9 +278,10 @@ export default function MarketTrend() {
               </span>
               <span className="text-xs text-text-muted">近120个交易日 · 点图例切换均线</span>
             </div>
-            <div className="h-72">
+            {/* 主图（蜡烛+均线）与成交副图 syncId 联动，轴宽一致保证日期对齐 */}
+            <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <ComposedChart data={chartData} syncId="index-sync" margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
                   <XAxis dataKey="date" tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                   <YAxis
@@ -302,6 +314,25 @@ export default function MarketTrend() {
                       hide={hiddenLines.has(key)}
                     />
                   ))}
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            {/* 成交量/成交额副图（红涨绿跌随K线方向） */}
+            <div className="h-16">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={chartData} syncId="index-sync" margin={{ top: 2, right: 8, left: 0, bottom: 0 }}>
+                  <XAxis dataKey="date" hide />
+                  <YAxis
+                    tick={{ fill: '#737A96', fontSize: 10 }} axisLine={false} tickLine={false} width={52}
+                    domain={[0, 'auto']}
+                    tickFormatter={(v: number) => v >= 10000 ? `${(v / 10000).toFixed(1)}亿` : `${v}`}
+                  />
+                  <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                  <Bar dataKey={volKey} isAnimationActive={false} maxBarSize={5}>
+                    {chartData.map((p: any, i: number) => (
+                      <Cell key={i} fill={p._volUp ? 'rgba(255,69,96,0.75)' : 'rgba(38,194,129,0.75)'} />
+                    ))}
+                  </Bar>
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -604,7 +635,8 @@ function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
                 <ComposedChart data={turnoverChart} margin={{ top: 4, right: 0, left: -6, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
                   <XAxis dataKey="date" {...axis} interval="preserveStartEnd" />
-                  <YAxis {...axis} width={38} domain={['auto', 'auto']} tickFormatter={(v: number) => v.toFixed(1)} />
+                  {/* 纵轴从 0 到近60日最大值：柱高差异反映真实量级差 */}
+                  <YAxis {...axis} width={38} domain={[0, 'dataMax']} tickFormatter={(v: number) => v.toFixed(1)} />
                   <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
                   <ReferenceLine y={avg60WanYi} stroke="#F59E0B" strokeDasharray="5 4" strokeOpacity={0.7} />
                   <Bar dataKey="成交额" maxBarSize={8}>

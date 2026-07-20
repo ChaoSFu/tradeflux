@@ -4,7 +4,7 @@ from .signal import Signal
 from .review import DailyReview
 from .screening import ScreeningCriteria
 from .regulatory import RegulatoryUnusual
-from .market_index import IndexDailySnapshot
+from .market_index import IndexDailySnapshot, MarketBreadthDaily
 
 __all__ = [
     "Stock",

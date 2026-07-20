@@ -27,7 +27,10 @@ import threading
 from datetime import datetime
 from typing import List, Optional
 
+from sqlalchemy.orm import Session
+
 from .eastmoney_fetcher import fetch_index_kline
+from ..models.market_index import IndexDailySnapshot
 from ..schemas.market_index import (
     IndexTrendPoint, IndexSignal, IndexTrendAnalysis, MarketTrendResponse,
 )
@@ -44,10 +47,77 @@ INDICES = [
 BIAS_THRESHOLD = 5.0     # 指数乖离率超买/超跌阈值 %
 SIGNAL_LOOKBACK = 10     # 近 N 个交易日内的信号才展示
 CHART_DAYS = 120         # 前端图表返回的交易日数
+HISTORY_BARS = 320       # 同步/读取的日线根数（MA250 留冗余）
 
-_CACHE_TTL = 600         # 秒；东财公开接口，避免每次页面访问都全量拉取
-_cache: dict = {"ts": None, "resp": None}
+# 库内数据不足时的自愈同步防抖（避免远端失败时每次请求都打外部接口）
+_SYNC_DEBOUNCE = 600
+_last_sync_attempt: dict = {"ts": None}
 _lock = threading.Lock()
+
+
+# ── 数据同步（daily_update 调用；refresh=true 或库空时自愈调用）──────────────
+
+def sync_index_bars(db: Session) -> dict:
+    """
+    拉取全部核心指数日线（东财→腾讯→新浪三级兜底）并 upsert 入库。
+    返回 {'ok': 成功指数数, 'upserts': 写入/更新行数, 'errors': [...]}
+    """
+    from datetime import date as _date
+    ok = upserts = 0
+    errors: List[str] = []
+    for meta in INDICES:
+        try:
+            bars = fetch_index_kline(meta["secid"], days=HISTORY_BARS)
+            if not bars:
+                raise ValueError("三源均无数据")
+            existing = {
+                r.date: r for r in db.query(IndexDailySnapshot)
+                .filter(IndexDailySnapshot.index_code == meta["code"])
+                .all()
+            }
+            for b in bars:
+                d = _date.fromisoformat(str(b["date"]))
+                row = existing.get(d)
+                if row is None:
+                    row = IndexDailySnapshot(index_code=meta["code"], date=d)
+                    db.add(row)
+                    existing[d] = row
+                row.close = b.get("close")
+                row.pct_change = b.get("pct_change")
+                row.open = b.get("open")
+                row.high = b.get("high")
+                row.low = b.get("low")
+                row.volume = b.get("volume")
+                # 腾讯/新浪源无成交额：不覆盖已有东财值
+                if b.get("amount") is not None:
+                    row.amount = b.get("amount")
+                upserts += 1
+            db.commit()
+            ok += 1
+        except Exception as e:  # noqa: BLE001
+            db.rollback()
+            errors.append(f"{meta['name']}: {e}")
+    _last_sync_attempt["ts"] = datetime.now()
+    return {"ok": ok, "upserts": upserts, "errors": errors}
+
+
+def _load_bars_from_db(db: Session, code: str) -> List[dict]:
+    rows = (
+        db.query(IndexDailySnapshot)
+        .filter(IndexDailySnapshot.index_code == code, IndexDailySnapshot.close.isnot(None))
+        .order_by(IndexDailySnapshot.date.desc())
+        .limit(HISTORY_BARS)
+        .all()
+    )
+    rows.reverse()
+    return [
+        {
+            "date": str(r.date), "close": r.close, "pct_change": r.pct_change or 0.0,
+            "open": r.open, "high": r.high, "low": r.low,
+            "volume": r.volume, "amount": r.amount,
+        }
+        for r in rows
+    ]
 
 
 def _ma(closes: List[float], i: int, n: int) -> Optional[float]:
@@ -166,6 +236,7 @@ def _analyze_index(meta: dict, bars: List[dict]) -> IndexTrendAnalysis:
         IndexTrendPoint(
             date=str(bars[k]['date']), close=r2(closes[k]),
             open=r2(bars[k].get('open')), high=r2(bars[k].get('high')), low=r2(bars[k].get('low')),
+            volume=bars[k].get('volume'), amount=bars[k].get('amount'),
             ma5=r2(ma[5][k]), ma10=r2(ma[10][k]), ma20=r2(ma[20][k]),
             ma60=r2(ma[60][k]), ma120=r2(ma[120][k]), ma250=r2(ma[250][k]),
         )
@@ -184,35 +255,39 @@ def _analyze_index(meta: dict, bars: List[dict]) -> IndexTrendAnalysis:
     )
 
 
-def get_market_trend(force_refresh: bool = False) -> MarketTrendResponse:
-    """全部核心指数的趋势分析（进程内缓存 10 分钟）"""
+def get_market_trend(db: Session, force_refresh: bool = False) -> MarketTrendResponse:
+    """
+    全部核心指数的趋势分析。数据读 DB（daily_update 每日同步写入）；
+    refresh=true 强制重新同步；库内不足时自愈同步一次（10 分钟防抖）。
+    """
     with _lock:
-        if (
-            not force_refresh
-            and _cache["resp"] is not None
-            and (datetime.now() - _cache["ts"]).total_seconds() < _CACHE_TTL
-        ):
-            return _cache["resp"]
+        sync_errors: List[str] = []
+        if force_refresh:
+            sync_errors = sync_index_bars(db).get("errors", [])
+
+        def _insufficient() -> bool:
+            return any(len(_load_bars_from_db(db, m["code"])) < 61 for m in INDICES)
+
+        if not force_refresh and _insufficient():
+            last = _last_sync_attempt["ts"]
+            if last is None or (datetime.now() - last).total_seconds() > _SYNC_DEBOUNCE:
+                sync_errors = sync_index_bars(db).get("errors", [])
 
         indices: List[IndexTrendAnalysis] = []
-        errors: List[str] = []
+        errors: List[str] = list(sync_errors)
+        latest_update: Optional[str] = None
         for meta in INDICES:
-            try:
-                # 320 根：MA250 年线留冗余；返回 dict {'date','close','pct_change'}
-                bars = fetch_index_kline(meta["secid"], days=320)
-                if len(bars) < 61:
-                    raise ValueError(f"K线不足61根（{len(bars)}）")
-                indices.append(_analyze_index(meta, bars))
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"{meta['name']}: {e}")
+            bars = _load_bars_from_db(db, meta["code"])
+            if len(bars) < 61:
+                if not any(e.startswith(meta["name"]) for e in errors):
+                    errors.append(f"{meta['name']}: 库内K线不足61根（{len(bars)}）")
+                continue
+            indices.append(_analyze_index(meta, bars))
+            if latest_update is None or bars[-1]["date"] > latest_update:
+                latest_update = bars[-1]["date"]
 
-        resp = MarketTrendResponse(
-            updated_at=datetime.now().isoformat(timespec="seconds"),
+        return MarketTrendResponse(
+            updated_at=latest_update or datetime.now().date().isoformat(),
             indices=indices,
             errors=errors,
         )
-        # 全部失败时不缓存，便于下次重试
-        if indices:
-            _cache["ts"] = datetime.now()
-            _cache["resp"] = resp
-        return resp
