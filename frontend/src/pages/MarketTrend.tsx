@@ -544,8 +544,9 @@ function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
                 <LineChart data={marginChart} syncId="margin-sync" margin={{ top: 2, right: 0, left: -6, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
                   <XAxis dataKey="date" {...axis} interval="preserveStartEnd" />
-                  <YAxis yAxisId="l" {...axis} width={38} domain={['auto', 'auto']} tickFormatter={(v: number) => v.toFixed(2)} />
-                  <YAxis yAxisId="r" {...axis} width={36} orientation="right" domain={['auto', 'auto']} tickFormatter={(v: number) => v.toFixed(0)} />
+                  {/* 两融余额与上证叠加对照，均从 0 起,保证同向比较的比例真实 */}
+                  <YAxis yAxisId="l" {...axis} width={38} domain={[0, 'auto']} tickFormatter={(v: number) => v.toFixed(2)} />
+                  <YAxis yAxisId="r" {...axis} width={36} orientation="right" domain={[0, 'auto']} tickFormatter={(v: number) => v.toFixed(0)} />
                   <Tooltip content={<ChartTooltip />} />
                   <Line yAxisId="l" type="monotone" dataKey="两融余额" stroke="#5EA6FF" strokeWidth={1.8} dot={false} />
                   <Line yAxisId="r" type="monotone" dataKey="上证指数" stroke="#FFB020" strokeWidth={1.4} dot={false} />
