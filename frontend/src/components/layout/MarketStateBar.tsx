@@ -105,6 +105,12 @@ export function MarketStateBar() {
     for (const a of [attack5, attack10, attack20]) for (const s of a) cnt.set(s.name, (cnt.get(s.name) ?? 0) + 1)
     return [...cnt.entries()].filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
   })()
+  // 今日最强前 5：当日涨幅最高的 5 个板块
+  const todayTop5 = [...sectorTags.entries()]
+    .filter(([, t]) => t.pct_today != null)
+    .sort((a, b) => (b[1].pct_today ?? -Infinity) - (a[1].pct_today ?? -Infinity))
+    .slice(0, 5)
+    .map(([name]) => name)
 
   // 龙头分组赚钱效应：今日 avg_pct（来自 profit-effect）+ 30日均值（来自 market-history）
   const { data: history } = useQuery({ queryKey: ['market-history', 30], queryFn: () => fetchMarketHistory(30) })
@@ -241,16 +247,29 @@ export function MarketStateBar() {
         </div>
       )}
 
-      {/* 持续板块：5/10/20 日强归并，出现≥2次（有持续力），次数越多越靠前 */}
-      {sustained.length > 0 && (
+      {/* 今日最强前5（当日涨幅最高）+ 持续板块（5/10/20 日强归并出现≥2次） */}
+      {(todayTop5.length > 0 || sustained.length > 0) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
-          <span className="text-[10px] text-text-muted shrink-0" title="在 5/10/20 日强势板块中出现 ≥2 次，体现持续力">持续板块</span>
-          {sustained.map(([name, c]) => (
-            <span key={`sus-${name}`} className="inline-flex items-center gap-1">
-              <ClickSector name={name} pct={sectorTags.get(name)?.pct_today} active={expandedSector === name} onClick={() => toggleSector(name)} />
-              <span className={cn('text-[10px] font-mono font-bold', c >= 3 ? 'text-up' : 'text-text-secondary')}>×{c}</span>
-            </span>
-          ))}
+          {todayTop5.length > 0 && (
+            <>
+              <span className="text-[10px] text-text-muted shrink-0" title="当日涨幅最高的前 5 个板块">今日最强</span>
+              {todayTop5.map((name) => (
+                <ClickSector key={`today-${name}`} name={name} pct={sectorTags.get(name)?.pct_today} active={expandedSector === name} onClick={() => toggleSector(name)} />
+              ))}
+            </>
+          )}
+          {sustained.length > 0 && (
+            <>
+              {todayTop5.length > 0 && <span className="text-bg-border shrink-0 mx-0.5">|</span>}
+              <span className="text-[10px] text-text-muted shrink-0" title="在 5/10/20 日强势板块中出现 ≥2 次，体现持续力">持续板块</span>
+              {sustained.map(([name, c]) => (
+                <span key={`sus-${name}`} className="inline-flex items-center gap-1">
+                  <ClickSector name={name} pct={sectorTags.get(name)?.pct_today} active={expandedSector === name} onClick={() => toggleSector(name)} />
+                  <span className={cn('text-[10px] font-mono font-bold', c >= 3 ? 'text-up' : 'text-text-secondary')}>×{c}</span>
+                </span>
+              ))}
+            </>
+          )}
         </div>
       )}
       </div>
