@@ -13,67 +13,16 @@ import {
 // ─── 功能模块（每个模块一个主题色，用于图标与悬停光效）───────────────────────
 
 const FEATURES = [
-  {
-    to: '/market-trend', icon: LineChart, name: '大盘趋势', color: '#5EA6FF',
-    desc: '核心指数均线体系判定（多空排列/月线季线/斜率/乖离）+ 融资融券、涨跌统计、成交分析',
-  },
-  {
-    to: '/limit-moves', icon: Flame, name: '涨跌停概览', color: '#FF4560',
-    desc: '每日涨停/跌停全景：走势曲线、主导板块、集中板块与二板梯队，支持叠加板块曲线对比、历史交易日回看',
-  },
-  {
-    to: '/strong', icon: LayoutDashboard, name: '强势股概览', color: '#FFD700',
-    desc: '强势股池按板块分组，龙头分 / 情绪分 / 风险分多维评分排序，识别主线与龙头',
-  },
-  {
-    to: '/stocks', icon: TrendingUp, name: '活跃股池', color: '#5EA6FF',
-    desc: '全部活跃候选股列表，支持板块搜索筛选、多字段排序与个股详情跳转',
-  },
-  {
-    to: '/watchlist', icon: ShieldAlert, name: '重点监控', color: '#F59E0B',
-    desc: '交易所严重异常波动名单（监管中 / 即将解除 / 近期解除）+ 即将进入监管的实时预测',
-  },
-  {
-    to: '/sector-trend', icon: Activity, name: '趋势板块', color: '#00E5A0',
-    desc: '5 / 10 / 20 日周期强势板块排行与生命周期阶段（启动→扩张→高潮→分歧→衰退）',
-  },
-  {
-    to: '/sector-emotion', icon: Activity, name: '情绪板块', color: '#B47CFF',
-    desc: '按情绪维度分组的板块视图，观察资金情绪在板块间的分布与迁移',
-  },
-  {
-    to: '/signals', icon: Zap, name: '弱转强信号', color: '#FFB020',
-    desc: '炸板修复、分歧修复、反弹加速三类弱转强形态的自动检测',
-  },
-  {
-    to: '/review', icon: BookOpen, name: '日复盘', color: '#4E9CF5',
-    desc: '每日市场点评与复盘记录，沉淀交易认知',
-  },
-  {
-    to: '/trade-journal', icon: NotebookPen, name: '交易复盘', color: '#B47CFF',
-    desc: '记录你的每一笔操作，让系统发现并纠正你反复在犯的交易错误（个人私有，登录后使用）',
-  },
-]
-
-// ─── 更新机制 ─────────────────────────────────────────────────────────────────
-
-const UPDATE_ITEMS = [
-  {
-    icon: Sunset, name: '盘后自动更新',
-    desc: '交易日 15:30 后自动全量更新：抓取当日行情名单、重算窗口指标与评分、写入每日快照',
-  },
-  {
-    icon: Sunrise, name: '盘前自动更新',
-    desc: '交易日 9:26–9:28（集合竞价之后、开盘之前）自动刷新一次，修正隔夜口径',
-  },
-  {
-    icon: RefreshCw, name: '失败自动重试',
-    desc: '更新失败后 10 分钟自动重试，最多 3 次；两个定时任务互斥，不会并发重复更新',
-  },
-  {
-    icon: MousePointerClick, name: '手动更新', needLogin: true,
-    desc: '顶栏「更新数据」按钮可手动触发更新并实时查看任务进度；手动更新为管理能力，登录后才能使用',
-  },
+  { to: '/market-trend', icon: LineChart, name: '大盘趋势', color: '#5EA6FF', desc: '指数均线趋势 + 市场资金盘面' },
+  { to: '/limit-moves', icon: Flame, name: '涨跌停概览', color: '#FF4560', desc: '每日涨跌停全景与集中板块' },
+  { to: '/strong', icon: LayoutDashboard, name: '强势股概览', color: '#FFD700', desc: '强势股分组与多维评分' },
+  { to: '/stocks', icon: TrendingUp, name: '活跃股池', color: '#5EA6FF', desc: '活跃候选股筛选与排序' },
+  { to: '/watchlist', icon: ShieldAlert, name: '重点监控', color: '#F59E0B', desc: '严重异动名单与监管预警' },
+  { to: '/sector-trend', icon: Activity, name: '趋势板块', color: '#00E5A0', desc: '多周期强势板块与生命周期' },
+  { to: '/sector-emotion', icon: Activity, name: '情绪板块', color: '#B47CFF', desc: '板块资金情绪分布与迁移' },
+  { to: '/signals', icon: Zap, name: '弱转强信号', color: '#FFB020', desc: '三类弱转强形态自动检测' },
+  { to: '/review', icon: BookOpen, name: '日复盘', color: '#4E9CF5', desc: '每日点评与复盘记录' },
+  { to: '/trade-journal', icon: NotebookPen, name: '交易复盘', color: '#B47CFF', desc: '记录操作，发现你反复犯的错' },
 ]
 
 // ─── 分区标题（渐变短杠 + 标题）──────────────────────────────────────────────
@@ -323,39 +272,20 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ── 更新机制 ─────────────────────────────────────────────────────── */}
+      {/* ── 更新机制（精简为一行说明）───────────────────────────────────── */}
       <section className="space-y-3 animate-fade-in-up" style={{ animationDelay: '260ms' }}>
-        <SectionTitle>数据更新机制</SectionTitle>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-          {UPDATE_ITEMS.map(({ icon: Icon, name, desc, needLogin }, i) => (
-            <div
-              key={name}
-              style={{ animationDelay: `${300 + i * 60}ms` }}
-              className="card p-4 flex gap-3 border border-bg-border animate-fade-in-up
-                         transition-all duration-200 hover:border-accent/40 hover:bg-bg-elevated/40"
-            >
-              <span className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center shrink-0 text-accent/80">
-                <Icon className="w-[18px] h-[18px]" />
-              </span>
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5 text-sm font-medium text-text-primary">
-                  {name}
-                  {needLogin && (
-                    <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-warn/10 text-warn border border-warn/30">
-                      <Lock className="w-2.5 h-2.5" />
-                      需登录
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-text-muted leading-relaxed mt-1">{desc}</p>
-              </div>
-            </div>
-          ))}
+        <SectionTitle>数据更新</SectionTitle>
+        <div className="card p-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-text-muted border border-bg-border">
+          <span className="flex items-center gap-1.5"><Sunset className="w-3.5 h-3.5 text-accent/70" />盘后 15:30 自动</span>
+          <span className="flex items-center gap-1.5"><Sunrise className="w-3.5 h-3.5 text-accent/70" />盘前 9:26–9:28 自动</span>
+          <span className="flex items-center gap-1.5"><RefreshCw className="w-3.5 h-3.5 text-accent/70" />失败自动重试</span>
+          <span className="flex items-center gap-1.5"><MousePointerClick className="w-3.5 h-3.5 text-accent/70" />手动更新
+            <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-warn/10 text-warn border border-warn/30"><Lock className="w-2.5 h-2.5" />需登录</span>
+          </span>
+          <span className="w-full text-text-muted/70 leading-relaxed">
+            数据来自东方财富等公开行情接口，口径为每日快照（非实时）；账号获取见下方联系方式。
+          </span>
         </div>
-        <p className="text-xs text-text-muted/80 px-1">
-          数据来自东方财富等公开行情接口，口径为<span className="text-text-secondary">每日快照</span>（非实时行情）；顶栏可查看最近一次定时/手动更新时间。
-          <span className="text-text-secondary">手动更新为管理能力，登录后才能获取</span>；登录后还可编辑选股 Prompt 与板块展示配置。账号获取请见下方联系方式。
-        </p>
       </section>
 
       {/* ── 联系方式 ─────────────────────────────────────────────────────── */}
