@@ -88,6 +88,8 @@ function ChartTooltip({ active, payload, label }: any) {
       {payload.map((p: any) => {
         if (p.dataKey === 'K线') {
           if (!hasOHLC) return null
+          const pct = row._pct as number | null | undefined
+          const pctColor = pct == null ? '#737A96' : pct >= 0 ? '#FF4560' : '#26C281'
           return (
             <div key="kline" className="space-y-0.5">
               {[['开盘', row._open], ['最高', row._high], ['最低', row._low], ['收盘', row._close]].map(([n, v]) => (
@@ -97,6 +99,13 @@ function ChartTooltip({ active, payload, label }: any) {
                   <span className="font-mono ml-auto" style={{ color: candleColor }}>{(v as number)?.toFixed(2)}</span>
                 </div>
               ))}
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: pctColor }} />
+                <span className="text-text-secondary">涨跌幅</span>
+                <span className="font-mono ml-auto" style={{ color: pctColor }}>
+                  {pct == null ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`}
+                </span>
+              </div>
             </div>
           )
         }
@@ -146,20 +155,26 @@ export default function MarketTrend() {
   )
   const volKey = hasAmount ? '成交额(亿)' : '成交量(万)'
 
-  const chartData = useMemo(() => (
-    (selected?.series ?? []).map(p => ({
-      date: format(new Date(p.date), 'MM/dd'),
-      // 蜡烛：range Bar 数据域 [low, high]，OHLC 原值供 shape/tooltip 使用
-      'K线': p.low != null && p.high != null ? [p.low, p.high] : undefined,
-      _open: p.open, _close: p.close, _high: p.high, _low: p.low,
-      [volKey]: hasAmount
-        ? (p.amount != null ? +(p.amount / 1e8).toFixed(1) : null)
-        : (p.volume != null ? +(p.volume / 1e4).toFixed(1) : null),
-      _volUp: p.open != null && p.close >= p.open,
-      'MA5': p.ma5, 'MA10': p.ma10, 'MA20': p.ma20,
-      'MA60': p.ma60, 'MA120': p.ma120, 'MA250': p.ma250,
-    }))
-  ), [selected, hasAmount, volKey])
+  const chartData = useMemo(() => {
+    const series = selected?.series ?? []
+    return series.map((p, i) => {
+      // 当日涨跌幅 = 今收比昨收（序列升序，取前一日收盘）
+      const prevClose = i > 0 ? series[i - 1].close : null
+      const pct = prevClose && p.close != null ? (p.close / prevClose - 1) * 100 : null
+      return {
+        date: format(new Date(p.date), 'MM/dd'),
+        // 蜡烛：range Bar 数据域 [low, high]，OHLC 原值供 shape/tooltip 使用
+        'K线': p.low != null && p.high != null ? [p.low, p.high] : undefined,
+        _open: p.open, _close: p.close, _high: p.high, _low: p.low, _pct: pct,
+        [volKey]: hasAmount
+          ? (p.amount != null ? +(p.amount / 1e8).toFixed(1) : null)
+          : (p.volume != null ? +(p.volume / 1e4).toFixed(1) : null),
+        _volUp: p.open != null && p.close >= p.open,
+        'MA5': p.ma5, 'MA10': p.ma10, 'MA20': p.ma20,
+        'MA60': p.ma60, 'MA120': p.ma120, 'MA250': p.ma250,
+      }
+    })
+  }, [selected, hasAmount, volKey])
 
   const [showMethod, setShowMethod] = useState(false)
 
@@ -544,9 +559,11 @@ function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
                 <LineChart data={marginChart} syncId="margin-sync" margin={{ top: 2, right: 0, left: -6, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
                   <XAxis dataKey="date" {...axis} interval="preserveStartEnd" />
-                  {/* 两融余额与上证叠加对照，均从 0 起,保证同向比较的比例真实 */}
-                  <YAxis yAxisId="l" {...axis} width={38} domain={[0, 'auto']} tickFormatter={(v: number) => v.toFixed(2)} />
-                  <YAxis yAxisId="r" {...axis} width={36} orientation="right" domain={[0, 'auto']} tickFormatter={(v: number) => v.toFixed(0)} />
+                  {/* 左轴：两融余额数据 min/max（凸显波动）；右轴：上证固定 3600–4400,超出则按指数 min/max 扩展 */}
+                  <YAxis yAxisId="l" {...axis} width={38} domain={['dataMin', 'dataMax']} tickFormatter={(v: number) => v.toFixed(2)} />
+                  <YAxis yAxisId="r" {...axis} width={36} orientation="right"
+                    domain={[(min: number) => Math.min(3600, Math.floor(min)), (max: number) => Math.max(4400, Math.ceil(max))]}
+                    tickFormatter={(v: number) => v.toFixed(0)} />
                   <Tooltip content={<ChartTooltip />} />
                   <Line yAxisId="l" type="monotone" dataKey="两融余额" stroke="#5EA6FF" strokeWidth={1.8} dot={false} />
                   <Line yAxisId="r" type="monotone" dataKey="上证指数" stroke="#FFB020" strokeWidth={1.4} dot={false} />
