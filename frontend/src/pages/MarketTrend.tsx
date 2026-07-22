@@ -508,13 +508,22 @@ function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
     ]
   }, [u])
 
-  // 成交额（万亿）
-  const turnoverChart = useMemo(() => (
-    (t?.series ?? []).map(p => ({
+  // 成交额（万亿）；盘中则把今日实时成交额作为最后一根柱追加(标记 _intraday)
+  const turnoverChart = useMemo(() => {
+    const rows = (t?.series ?? []).map(p => ({
       date: format(new Date(p.date), 'MM/dd'),
       '成交额': +(p.amount / 1e12).toFixed(3),
+      _intraday: false,
     }))
-  ), [t])
+    if (t?.intraday_amount != null && t.intraday_date) {
+      rows.push({
+        date: format(new Date(t.intraday_date), 'MM/dd'),
+        '成交额': +(t.intraday_amount / 1e12).toFixed(3),
+        _intraday: true,
+      })
+    }
+    return rows
+  }, [t])
   const avg60WanYi = t ? +(t.avg60 / 1e12).toFixed(3) : 0
   const shrink = t ? t.today < t.prev : false
 
@@ -632,17 +641,36 @@ function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
               <span className="text-sm font-semibold text-text-primary">成交分析</span>
               <span className="text-xs text-text-muted">沪深两市 · 近60日</span>
             </div>
-            <div className="flex items-center gap-4 text-xs">
-              <div>
-                <div className="text-[10px] text-text-muted">最新成交</div>
-                <div className={cn('text-lg font-bold font-mono leading-tight', shrink ? 'text-down' : 'text-up')}>
-                  {wanyi(t.today)}
-                </div>
-              </div>
-              <div>
-                <div className="text-[10px] text-text-muted">前一日</div>
-                <div className="text-sm font-mono text-text-secondary leading-tight mt-1">{wanyi(t.prev)}</div>
-              </div>
+            <div className="flex items-center gap-4 text-xs flex-wrap">
+              {t.is_trading && t.intraday_amount != null ? (
+                <>
+                  <div>
+                    <div className="text-[10px] text-accent flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />盘中实时
+                    </div>
+                    <div className="text-lg font-bold font-mono leading-tight text-accent">{wanyi(t.intraday_amount)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-warn">预估全天</div>
+                    <div className="text-lg font-bold font-mono leading-tight text-warn">≈{wanyi(t.intraday_estimate ?? 0)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-text-muted">昨日</div>
+                    <div className="text-sm font-mono text-text-secondary leading-tight mt-1">{wanyi(t.today)}</div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <div className="text-[10px] text-text-muted">最新成交</div>
+                    <div className={cn('text-lg font-bold font-mono leading-tight', shrink ? 'text-down' : 'text-up')}>{wanyi(t.today)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-text-muted">前一日</div>
+                    <div className="text-sm font-mono text-text-secondary leading-tight mt-1">{wanyi(t.prev)}</div>
+                  </div>
+                </>
+              )}
               <div>
                 <div className="text-[10px] text-text-muted">60日均值</div>
                 <div className="text-sm font-mono text-text-secondary leading-tight mt-1">{wanyi(t.avg60)}</div>
@@ -659,7 +687,7 @@ function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
                   <ReferenceLine y={avg60WanYi} stroke="#F59E0B" strokeDasharray="5 4" strokeOpacity={0.7} />
                   <Bar dataKey="成交额" maxBarSize={8}>
                     {turnoverChart.map((p, i) => (
-                      <Cell key={i} fill={p['成交额'] >= avg60WanYi ? '#5EA6FF' : '#33415E'} />
+                      <Cell key={i} fill={p._intraday ? '#F59E0B' : p['成交额'] >= avg60WanYi ? '#5EA6FF' : '#33415E'} />
                     ))}
                   </Bar>
                 </ComposedChart>

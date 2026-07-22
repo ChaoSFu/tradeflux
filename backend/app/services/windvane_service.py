@@ -21,6 +21,7 @@ from __future__ import annotations
 import threading
 from datetime import date as date_cls, datetime
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import BaseModel
@@ -31,6 +32,12 @@ from ..models.market_index import MarketBreadthDaily
 
 DATACENTER_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 UPDOWN_URL = "https://quotederivates.eastmoney.com/datacenter/updowndistribution"
+PUSH2_ULIST_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+_SH_TZ = ZoneInfo("Asia/Shanghai")
+
+# 盘中实时两市成交额缓存（避免每次请求都打外部接口）
+_RT_TTL = 30
+_rt_cache: dict = {"ts": None, "amount": None}
 
 # 沪(上证A指) / 深(深证A指) / 京(北证50 代理全市场)
 UPDOWN_MARKETS = [("1", "000002"), ("0", "399002"), ("0", "899050")]
@@ -75,10 +82,15 @@ class TurnoverPoint(BaseModel):
 
 
 class TurnoverData(BaseModel):
-    today: float              # 最新一日成交额（元，沪深口径）
+    today: float              # 最新一日成交额（元，沪深口径，收盘入库值）
     prev: float               # 前一日
     avg60: float              # 60日均值
     series: List[TurnoverPoint]
+    # 今日盘中实时（仅当今日为交易日、且收盘数据尚未入库时有值）
+    intraday_date: Optional[str] = None    # 今日日期
+    intraday_amount: Optional[float] = None  # 当前实时两市成交额（元）
+    intraday_estimate: Optional[float] = None  # 预估全天成交额（元，按已过交易时间外推）
+    is_trading: bool = False               # 当前是否处于交易时段（盘中）
 
 
 class WindvaneResponse(BaseModel):
@@ -400,10 +412,86 @@ def _read_windvane_from_db(db: Session) -> WindvaneResponse:
     )
 
 
+def _fetch_realtime_turnover() -> Optional[float]:
+    """
+    盘中实时沪深两市成交额（元）= push2 f6(沪市综指 000001) + f6(深市综指 399106)。
+    与 SUMTVALLIST 的沪深口径一致。带 30s 缓存;失败返回 None。
+    """
+    now = datetime.now()
+    if _rt_cache["amount"] is not None and _rt_cache["ts"] and (now - _rt_cache["ts"]).total_seconds() < _RT_TTL:
+        return _rt_cache["amount"]
+    try:
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=8) as client:
+            r = client.get(PUSH2_ULIST_URL, params={
+                "fields": "f6,f12,f13",
+                "secids": "1.000001,0.399106",
+                "ut": "fa5fd1943c7b386f172d6893dbfba10b",
+            })
+            diff = ((r.json().get("data") or {}).get("diff")) or []
+        total = sum(float(x.get("f6") or 0) for x in diff)
+        if total <= 0:
+            return None
+        _rt_cache["ts"] = now
+        _rt_cache["amount"] = total
+        return total
+    except Exception:
+        return None
+
+
+# A 股日内「累计成交额占全天」经验曲线（U 型:早盘/尾盘重）。分钟(自0点) → 累计占比
+_TURNOVER_PROFILE = [
+    (9 * 60 + 30, 0.00), (10 * 60, 0.20), (10 * 60 + 30, 0.32), (11 * 60, 0.42), (11 * 60 + 30, 0.51),
+    (13 * 60, 0.51), (13 * 60 + 30, 0.61), (14 * 60, 0.71), (14 * 60 + 30, 0.83),
+    (14 * 60 + 57, 0.97), (15 * 60, 1.00),
+]
+
+
+def _session_fraction(now) -> float:
+    """按经验曲线返回「当前累计成交额占全天」比例 0~1（比线性时间外推更贴合早盘重的实况）。"""
+    m = now.hour * 60 + now.minute + now.second / 60.0
+    if m <= _TURNOVER_PROFILE[0][0]:
+        return 0.0
+    if m >= _TURNOVER_PROFILE[-1][0]:
+        return 1.0
+    for (m0, f0), (m1, f1) in zip(_TURNOVER_PROFILE, _TURNOVER_PROFILE[1:]):
+        if m0 <= m <= m1:
+            return f0 if m1 == m0 else f0 + (f1 - f0) * (m - m0) / (m1 - m0)
+    return 1.0
+
+
+def _enrich_intraday(resp: WindvaneResponse) -> None:
+    """
+    交易日盘中/收盘后但未入库时，补今日实时成交额 + 预估全天（就地修改 resp.turnover）。
+    仅当今日为交易日、且今日尚未进入收盘序列时执行。
+    """
+    t = resp.turnover
+    if t is None:
+        return
+    now_sh = datetime.now(_SH_TZ)
+    today = now_sh.date()
+    # 周末直接跳过（节假日交给日历判断:数据源无今日实时时 total 为 None 也会跳过）
+    if now_sh.weekday() >= 5:
+        return
+    # 今日已在收盘序列里（已入库）则不覆盖
+    if t.series and t.series[-1].date >= str(today):
+        return
+    amount = _fetch_realtime_turnover()
+    if not amount:
+        return
+    frac = _session_fraction(now_sh)
+    trading = 0.0 < frac < 1.0
+    estimate = amount / frac if trading and frac > 0.05 else amount
+    t.intraday_date = str(today)
+    t.intraday_amount = amount
+    t.intraday_estimate = estimate
+    t.is_trading = trading
+
+
 def get_windvane(db: Session, force_refresh: bool = False) -> WindvaneResponse:
     """
     市场风向标数据。读 DB（daily_update 每日同步写入）；
     refresh=true 强制重新同步；库空时自愈同步一次（10 分钟防抖）。
+    成交分析额外补今日盘中实时成交额 + 预估全天。
     """
     with _lock:
         sync_errors: List[str] = []
@@ -417,6 +505,10 @@ def get_windvane(db: Session, force_refresh: bool = False) -> WindvaneResponse:
                     sync_errors = sync_market_breadth(db).get("errors", [])
 
         resp = _read_windvane_from_db(db)
+        try:
+            _enrich_intraday(resp)
+        except Exception:  # noqa: BLE001
+            pass
         # 同步错误合并展示（去重）
         for e in sync_errors:
             if e not in resp.errors:

@@ -406,6 +406,10 @@ export interface WindvaneResponse {
     prev: number
     avg60: number
     series: { date: string; amount: number }[]
+    intraday_date: string | null
+    intraday_amount: number | null
+    intraday_estimate: number | null
+    is_trading: boolean
   } | null
   errors: string[]
 }
