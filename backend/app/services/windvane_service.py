@@ -21,7 +21,6 @@ from __future__ import annotations
 import threading
 from datetime import date as date_cls, datetime
 from typing import List, Optional
-from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import BaseModel
@@ -32,12 +31,11 @@ from ..models.market_index import MarketBreadthDaily
 
 DATACENTER_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 UPDOWN_URL = "https://quotederivates.eastmoney.com/datacenter/updowndistribution"
-PUSH2_ULIST_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
-_SH_TZ = ZoneInfo("Asia/Shanghai")
+TRENDS2_URL = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
 
-# 盘中实时两市成交额缓存（避免每次请求都打外部接口）
-_RT_TTL = 30
-_rt_cache: dict = {"ts": None, "amount": None}
+# 盘中分钟数据/外推结果缓存（避免每次请求都打外部接口）
+_TRENDS_TTL = 60
+_trends_cache: dict = {"ts": None, "data": None}
 
 # 沪(上证A指) / 深(深证A指) / 京(北证50 代理全市场)
 UPDOWN_MARKETS = [("1", "000002"), ("0", "399002"), ("0", "899050")]
@@ -412,79 +410,86 @@ def _read_windvane_from_db(db: Session) -> WindvaneResponse:
     )
 
 
-def _fetch_realtime_turnover() -> Optional[float]:
+def _fetch_trends_projection() -> Optional[dict]:
     """
-    盘中实时沪深两市成交额（元）= push2 f6(沪市综指 000001) + f6(深市综指 399106)。
-    与 SUMTVALLIST 的沪深口径一致。带 30s 缓存;失败返回 None。
+    用东财分钟数据（trends2, ndays=2）做「昨日同期」外推——与东财自身口径同源:
+      今日盘中累计 = 今日各分钟成交额之和（沪市综指000001 + 深市综指399106,与SUMTVALLIST同口径）
+      预估全天 = 今日累计 × 昨日全天 ÷ 昨日同一分钟数累计
+    返回 {'date','amount','estimate','is_trading'} 或 None（失败/无数据）。60s 缓存。
     """
     now = datetime.now()
-    if _rt_cache["amount"] is not None and _rt_cache["ts"] and (now - _rt_cache["ts"]).total_seconds() < _RT_TTL:
-        return _rt_cache["amount"]
+    if _trends_cache["data"] is not None and _trends_cache["ts"] and \
+            (now - _trends_cache["ts"]).total_seconds() < _TRENDS_TTL:
+        return _trends_cache["data"]
+
+    tot_today = tot_yday_same = tot_yday_full = 0.0
+    today_str: Optional[str] = None
+    today_minutes = 0
     try:
-        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=8) as client:
-            r = client.get(PUSH2_ULIST_URL, params={
-                "fields": "f6,f12,f13",
-                "secids": "1.000001,0.399106",
-                "ut": "fa5fd1943c7b386f172d6893dbfba10b",
-            })
-            diff = ((r.json().get("data") or {}).get("diff")) or []
-        total = sum(float(x.get("f6") or 0) for x in diff)
-        if total <= 0:
-            return None
-        _rt_cache["ts"] = now
-        _rt_cache["amount"] = total
-        return total
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=10) as client:
+            for secid in ("1.000001", "0.399106"):
+                r = client.get(TRENDS2_URL, params={
+                    "fields1": "f1,f2", "fields2": "f51,f57",
+                    "ut": "fa5fd1943c7b386f172d6893dbfba10b",
+                    "iscr": "0", "iscca": "0", "secid": secid, "time": "0", "ndays": "2",
+                })
+                trends = ((r.json().get("data") or {}).get("trends")) or []
+                by_date: dict[str, list[float]] = {}
+                for line in trends:
+                    parts = line.split(",")
+                    if len(parts) < 2:
+                        continue
+                    d = parts[0][:10]
+                    try:
+                        by_date.setdefault(d, []).append(float(parts[1]))
+                    except ValueError:
+                        continue
+                dates = sorted(by_date)
+                if len(dates) < 2:
+                    continue
+                yday_rows, today_rows = by_date[dates[-2]], by_date[dates[-1]]
+                tot_today += sum(today_rows)
+                tot_yday_full += sum(yday_rows)
+                tot_yday_same += sum(yday_rows[: len(today_rows)])
+                today_str = dates[-1]
+                today_minutes = max(today_minutes, len(today_rows))
     except Exception:
         return None
 
-
-# A 股日内「累计成交额占全天」经验曲线（U 型:早盘/尾盘重）。分钟(自0点) → 累计占比
-_TURNOVER_PROFILE = [
-    (9 * 60 + 30, 0.00), (10 * 60, 0.20), (10 * 60 + 30, 0.32), (11 * 60, 0.42), (11 * 60 + 30, 0.51),
-    (13 * 60, 0.51), (13 * 60 + 30, 0.61), (14 * 60, 0.71), (14 * 60 + 30, 0.83),
-    (14 * 60 + 57, 0.97), (15 * 60, 1.00),
-]
-
-
-def _session_fraction(now) -> float:
-    """按经验曲线返回「当前累计成交额占全天」比例 0~1（比线性时间外推更贴合早盘重的实况）。"""
-    m = now.hour * 60 + now.minute + now.second / 60.0
-    if m <= _TURNOVER_PROFILE[0][0]:
-        return 0.0
-    if m >= _TURNOVER_PROFILE[-1][0]:
-        return 1.0
-    for (m0, f0), (m1, f1) in zip(_TURNOVER_PROFILE, _TURNOVER_PROFILE[1:]):
-        if m0 <= m <= m1:
-            return f0 if m1 == m0 else f0 + (f1 - f0) * (m - m0) / (m1 - m0)
-    return 1.0
+    if today_str is None or tot_today <= 0:
+        return None
+    # A股全天 241 根分钟线（9:30-11:30 + 13:00-15:00）;不足即仍在盘中
+    trading = today_minutes < 241
+    # 开盘前几分钟样本太少,外推不稳定 → 只给盘中值不给预估
+    estimate: Optional[float] = None
+    if not trading:
+        estimate = tot_today
+    elif today_minutes >= 5 and tot_yday_same > 0:
+        estimate = tot_today * tot_yday_full / tot_yday_same
+    data = {"date": today_str, "amount": tot_today, "estimate": estimate, "is_trading": trading}
+    _trends_cache["ts"] = now
+    _trends_cache["data"] = data
+    return data
 
 
 def _enrich_intraday(resp: WindvaneResponse) -> None:
     """
-    交易日盘中/收盘后但未入库时，补今日实时成交额 + 预估全天（就地修改 resp.turnover）。
-    仅当今日为交易日、且今日尚未进入收盘序列时执行。
+    最新交易日数据未入库时（盘中/收盘后未同步），补实时成交额 + 预估全天。
+    日期以分钟数据自带日期为准——周末/节假日 trends2 最新日即上一交易日,
+    已在收盘序列里,自然跳过,无需交易日历判断。
     """
     t = resp.turnover
     if t is None:
         return
-    now_sh = datetime.now(_SH_TZ)
-    today = now_sh.date()
-    # 周末直接跳过（节假日交给日历判断:数据源无今日实时时 total 为 None 也会跳过）
-    if now_sh.weekday() >= 5:
+    proj = _fetch_trends_projection()
+    if not proj:
         return
-    # 今日已在收盘序列里（已入库）则不覆盖
-    if t.series and t.series[-1].date >= str(today):
-        return
-    amount = _fetch_realtime_turnover()
-    if not amount:
-        return
-    frac = _session_fraction(now_sh)
-    trading = 0.0 < frac < 1.0
-    estimate = amount / frac if trading and frac > 0.05 else amount
-    t.intraday_date = str(today)
-    t.intraday_amount = amount
-    t.intraday_estimate = estimate
-    t.is_trading = trading
+    if t.series and t.series[-1].date >= proj["date"]:
+        return  # 已入库,不覆盖
+    t.intraday_date = proj["date"]
+    t.intraday_amount = proj["amount"]
+    t.intraday_estimate = proj["estimate"]
+    t.is_trading = proj["is_trading"]
 
 
 def get_windvane(db: Session, force_refresh: bool = False) -> WindvaneResponse:
