@@ -650,10 +650,12 @@ function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
                     </div>
                     <div className="text-lg font-bold font-mono leading-tight text-accent">{wanyi(t.intraday_amount)}</div>
                   </div>
-                  <div>
-                    <div className="text-[10px] text-warn">预估全天</div>
-                    <div className="text-lg font-bold font-mono leading-tight text-warn">≈{wanyi(t.intraday_estimate ?? 0)}</div>
-                  </div>
+                  {t.intraday_estimate != null && (
+                    <div>
+                      <div className="text-[10px] text-warn">预估全天</div>
+                      <div className="text-lg font-bold font-mono leading-tight text-warn">≈{wanyi(t.intraday_estimate)}</div>
+                    </div>
+                  )}
                   <div>
                     <div className="text-[10px] text-text-muted">昨日</div>
                     <div className="text-sm font-mono text-text-secondary leading-tight mt-1">{wanyi(t.today)}</div>
