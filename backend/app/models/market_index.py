@@ -47,8 +47,11 @@ class MarketBreadthDaily(Base):
     szzs_close = Column(Float, nullable=True)        # 上证收盘（两融对照）
 
     # 成交额（东财 RPT_DMSK_WINDVANE_SUMTVALLIST）
-    deal_amount = Column(Float, nullable=True)       # 沪深两市成交额（元）
+    deal_amount = Column(Float, nullable=True)       # 沪深两市成交额（元，收盘官方值）
     deal_amount_hsj = Column(Float, nullable=True)   # 含北交所
+    # 盘中快照（读取时随实时数据刷新;收盘后 deal_amount 为准,predicted 留存供预测vs实际复盘）
+    intraday_amount = Column(Float, nullable=True)   # 当日盘中最新累计成交额（元）
+    predicted_amount = Column(Float, nullable=True)  # 预测全天成交额（元，差额外推）
 
     # 涨跌统计（quotederivates updowndistribution 三市求和，收盘后口径）
     up_count = Column(Integer, nullable=True)

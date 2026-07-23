@@ -460,23 +460,26 @@ def _fetch_trends_projection() -> Optional[dict]:
         return None
     # A股全天 241 根分钟线（9:30-11:30 + 13:00-15:00）;不足即仍在盘中
     trading = today_minutes < 241
-    # 开盘前几分钟样本太少,外推不稳定 → 只给盘中值不给预估
+    # 差额外推（与东财风向标同款公式）:预测全天 = 今日累计 + (昨日全天 − 昨日同期累计)
+    # 即假设余下时段成交额与昨日相同。开盘前几分钟样本太少不给预估。
     estimate: Optional[float] = None
     if not trading:
         estimate = tot_today
     elif today_minutes >= 5 and tot_yday_same > 0:
-        estimate = tot_today * tot_yday_full / tot_yday_same
+        estimate = tot_today + (tot_yday_full - tot_yday_same)
     data = {"date": today_str, "amount": tot_today, "estimate": estimate, "is_trading": trading}
     _trends_cache["ts"] = now
     _trends_cache["data"] = data
     return data
 
 
-def _enrich_intraday(resp: WindvaneResponse) -> None:
+def _enrich_intraday(resp: WindvaneResponse, db: Optional[Session] = None) -> None:
     """
     最新交易日数据未入库时（盘中/收盘后未同步），补实时成交额 + 预估全天。
     日期以分钟数据自带日期为准——周末/节假日 trends2 最新日即上一交易日,
     已在收盘序列里,自然跳过,无需交易日历判断。
+    盘中值+预测同时落库到 market_breadth_daily 当日行（收盘后官方值由每日
+    数据更新覆盖 deal_amount;predicted_amount 留存供「预测 vs 实际」复盘）。
     """
     t = resp.turnover
     if t is None:
@@ -490,6 +493,20 @@ def _enrich_intraday(resp: WindvaneResponse) -> None:
     t.intraday_amount = proj["amount"]
     t.intraday_estimate = proj["estimate"]
     t.is_trading = proj["is_trading"]
+    # 落库当日盘中快照（与每日数据更新共用同一张表,幂等 upsert）
+    if db is not None:
+        try:
+            d = date_cls.fromisoformat(proj["date"])
+            row = db.query(MarketBreadthDaily).filter(MarketBreadthDaily.date == d).first()
+            if row is None:
+                row = MarketBreadthDaily(date=d)
+                db.add(row)
+            row.intraday_amount = proj["amount"]
+            if proj["estimate"] is not None:
+                row.predicted_amount = proj["estimate"]
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
 
 
 def get_windvane(db: Session, force_refresh: bool = False) -> WindvaneResponse:
@@ -511,7 +528,7 @@ def get_windvane(db: Session, force_refresh: bool = False) -> WindvaneResponse:
 
         resp = _read_windvane_from_db(db)
         try:
-            _enrich_intraday(resp)
+            _enrich_intraday(resp, db)
         except Exception:  # noqa: BLE001
             pass
         # 同步错误合并展示（去重）
