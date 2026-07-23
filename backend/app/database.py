@@ -75,6 +75,9 @@ def _apply_schema_patches():
         "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS one_word_down_count INTEGER DEFAULT 0 NOT NULL",
         # 交易复盘:代码放开非必填（代码/名称填一个即可）
         "ALTER TABLE trade_journal ALTER COLUMN stock_code DROP NOT NULL",
+        # 市场宽度补盘中快照列（盘中成交额/预测全天）
+        "ALTER TABLE market_breadth_daily ADD COLUMN IF NOT EXISTS intraday_amount FLOAT",
+        "ALTER TABLE market_breadth_daily ADD COLUMN IF NOT EXISTS predicted_amount FLOAT",
         # 指数日线补 OHLC/量额（大盘趋势页K线）
         "ALTER TABLE index_daily_snapshots ADD COLUMN IF NOT EXISTS open FLOAT",
         "ALTER TABLE index_daily_snapshots ADD COLUMN IF NOT EXISTS high FLOAT",
