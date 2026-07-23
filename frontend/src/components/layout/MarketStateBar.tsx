@@ -86,6 +86,14 @@ export function MarketStateBar() {
   const upRatio = limitUpCount != null && avgUp30 ? limitUpCount / avgUp30 : null
   const downRatio = limitDownCount != null && avgDown30 ? limitDownCount / avgDown30 : null
 
+  // 行情强弱标注：涨停数>30日均值=强势(>2倍=极端强势)；跌停数>30日均值=弱势(>2倍=极端弱势)
+  const strongLv = upRatio == null ? 0 : upRatio > 2 ? 2 : upRatio > 1 ? 1 : 0
+  const weakLv = downRatio == null ? 0 : downRatio > 2 ? 2 : downRatio > 1 ? 1 : 0
+  // 卡片左边框随最严重信号联动（极端弱势优先提示风险）
+  const regimeBorder =
+    weakLv === 2 ? '#26C281' : strongLv === 2 ? '#FF4560'
+    : weakLv === 1 ? '#26C28199' : strongLv === 1 ? '#FF456099' : '#4F9CF9'
+
   // 进攻板块：5日 / 10日涨幅排名前5（5日龙1~5 / 10日龙1~5）
   const { byName: sectorTags } = useSectorTags()
   const rankTop5 = (key: 'rank_5d' | 'rank_10d' | 'rank_20d') => {
@@ -134,8 +142,35 @@ export function MarketStateBar() {
 
   return (
     <>
-    <div className="card px-4 py-2.5 border-l-4 mb-4" style={{ borderLeftColor: '#4F9CF9' }}>
+    <div className="card px-4 py-2.5 border-l-4 mb-4" style={{ borderLeftColor: regimeBorder }}>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+        {/* 行情强弱标注（显眼位）：涨/跌停数 vs 30日均值 */}
+        {(strongLv > 0 || weakLv > 0) && (
+          <div className="flex items-center gap-1.5">
+            {strongLv > 0 && (
+              <span
+                title={`今日涨停 ${limitUpCount} 只，为30日均值(${avgUp30!.toFixed(1)})的 ${upRatio!.toFixed(2)} 倍`}
+                className={cn('text-xs font-bold px-2 py-1 rounded-md border whitespace-nowrap',
+                  strongLv === 2
+                    ? 'bg-up text-white border-up animate-pulse-slow shadow-[0_0_18px_-2px_#FF4560]'
+                    : 'bg-up/15 text-up border-up/40')}
+              >
+                {strongLv === 2 ? '⚡ 极端强势' : '强势行情'}
+              </span>
+            )}
+            {weakLv > 0 && (
+              <span
+                title={`今日跌停 ${limitDownCount} 只，为30日均值(${avgDown30!.toFixed(1)})的 ${downRatio!.toFixed(2)} 倍，注意风险`}
+                className={cn('text-xs font-bold px-2 py-1 rounded-md border whitespace-nowrap',
+                  weakLv === 2
+                    ? 'bg-down text-white border-down animate-pulse-slow shadow-[0_0_18px_-2px_#26C281]'
+                    : 'bg-down/15 text-down border-down/40')}
+              >
+                {weakLv === 2 ? '⚠ 极端弱势' : '弱势行情'}
+              </span>
+            )}
+          </div>
+        )}
         <Cell label="市场阶段">
           <Badge variant={PHASE_BADGE[state.market_phase] ?? 'accent'}>
             {MARKET_PHASE_LABELS[state.market_phase] ?? state.market_phase}
