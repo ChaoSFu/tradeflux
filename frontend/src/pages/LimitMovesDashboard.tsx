@@ -357,21 +357,30 @@ export default function LimitMovesDashboard() {
   type Exp = { name: string; side: Side } | null
   const [expMain, setExpMain] = useState<Exp>(null)
   const [exp2, setExp2] = useState<Exp>(null)
-  // 「涨跌停 + 强势股」开关：主区/≥2板区各自独立
+  // 连板梯队 / 高弹性板块涨跌停：点击板块标签展开，与「涨停集中板块」同一套数据
+  // 展示逻辑（同一交易日全量涨跌停 + 可选叠加强势股），只是各自独立的展开状态，
+  // 让面板出现在点击处附近，不用滚回页面顶部。
+  const [expLadder, setExpLadder] = useState<Exp>(null)
+  const [expElastic, setExpElastic] = useState<Exp>(null)
+  // 「涨跌停 + 强势股」开关：各展开面板各自独立
   const [showStrongMain, setShowStrongMain] = useState(false)
   const [showStrong2, setShowStrong2] = useState(false)
+  const [showStrongLadder, setShowStrongLadder] = useState(false)
+  const [showStrongElastic, setShowStrongElastic] = useState(false)
 
   const mkToggle = (setter: (fn: (p: Exp) => Exp) => void) =>
     (name: string, side: Side) =>
       setter(p => (p && p.name === name && p.side === side) ? null : { name, side })
   const toggleMain = mkToggle(setExpMain)
   const toggle2 = mkToggle(setExp2)
+  const toggleLadder = mkToggle(setExpLadder)
+  const toggleElastic = mkToggle(setExpElastic)
 
   // 板块内强势股（懒加载：仅当任一「+强势股」开关开启时才拉取，与涨跌停股合并去重）
   const { data: strongPoolData } = useQuery({
     queryKey: ['strong-pool-for-limit-moves'],
     queryFn: () => fetchStrongPool({ page: 1, page_size: 500 }),
-    enabled: showStrongMain || showStrong2,
+    enabled: showStrongMain || showStrong2 || showStrongLadder || showStrongElastic,
     staleTime: 5 * 60_000,
   } as any)
   const strongPoolStocks: Stock[] = (strongPoolData as any)?.items ?? []
@@ -395,13 +404,27 @@ export default function LimitMovesDashboard() {
     return mergeStrong(base, exp2.name, showStrong2)
   }, [exp2, upStocks2, downStocks2, showStrong2, strongPoolStocks])
 
+  // 连板梯队 / 高弹性板块涨跌停的板块点击展开：与「涨停集中板块」同一数据口径
+  // ——当日全量涨跌停股按板块名过滤（不局限于≥2板或高弹性市场子集）。
+  const expLadderStocks = useMemo(() => {
+    if (!expLadder) return []
+    const base = [...limitUps, ...limitDowns].filter(s => (s.sectors ?? []).includes(expLadder.name))
+    return mergeStrong(base, expLadder.name, showStrongLadder)
+  }, [expLadder, limitUps, limitDowns, showStrongLadder, strongPoolStocks])
+
+  const expElasticStocks = useMemo(() => {
+    if (!expElastic) return []
+    const base = [...limitUps, ...limitDowns].filter(s => (s.sectors ?? []).includes(expElastic.name))
+    return mergeStrong(base, expElastic.name, showStrongElastic)
+  }, [expElastic, limitUps, limitDowns, showStrongElastic, strongPoolStocks])
+
   const renderExp = (
     exp: Exp, stocks: Stock[], close: () => void,
     showStrong: boolean, setShowStrong: (v: boolean) => void,
   ) =>
     exp ? (
       <div className="space-y-2">
-        <div className="flex items-center justify-end">
+        <div className="flex items-center justify-start">
           <StrongToggle on={showStrong} onChange={setShowStrong} />
         </div>
         <SectorSection
@@ -594,6 +617,8 @@ export default function LimitMovesDashboard() {
           color={C_UP}
           isLoading={dataLoading}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
+          onClickSector={(n) => toggleLadder(n, 'up')}
+          activeSector={expLadder?.side === 'up' ? expLadder.name : null}
           emptyText="暂无 ≥2连板涨停股"
         />
         <LadderTable
@@ -604,9 +629,12 @@ export default function LimitMovesDashboard() {
           color={C_DOWN}
           isLoading={dataLoading}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
+          onClickSector={(n) => toggleLadder(n, 'down')}
+          activeSector={expLadder?.side === 'down' ? expLadder.name : null}
           emptyText="暂无 ≥2连板跌停股"
         />
       </div>
+      {renderExp(expLadder, expLadderStocks, () => setExpLadder(null), showStrongLadder, setShowStrongLadder)}
 
       {/* ── 高弹性板块涨跌停（创业板/科创板±20%、北交所±30%，与主板±10%区分）── */}
       <div className="flex items-baseline gap-2 pt-1">
@@ -621,6 +649,8 @@ export default function LimitMovesDashboard() {
           color={C_UP}
           isLoading={dataLoading}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
+          onClickSector={(n) => toggleElastic(n, 'up')}
+          activeSector={expElastic?.side === 'up' ? expElastic.name : null}
           emptyText="暂无高弹性板块涨停股"
         />
         <LadderTable
@@ -630,9 +660,12 @@ export default function LimitMovesDashboard() {
           color={C_DOWN}
           isLoading={dataLoading}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
+          onClickSector={(n) => toggleElastic(n, 'down')}
+          activeSector={expElastic?.side === 'down' ? expElastic.name : null}
           emptyText="暂无高弹性板块跌停股"
         />
       </div>
+      {renderExp(expElastic, expElasticStocks, () => setExpElastic(null), showStrongElastic, setShowStrongElastic)}
 
     </div>
   )
@@ -1051,7 +1084,7 @@ function PctCell({ v }: { v: number | null | undefined }) {
   )
 }
 
-function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onClickStock, emptyText }: {
+function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onClickStock, onClickSector, activeSector, emptyText }: {
   title: string
   stocks: Stock[]
   badgeKind: 'board' | 'market'
@@ -1059,6 +1092,8 @@ function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onC
   color: string
   isLoading: boolean
   onClickStock: (code: string) => void
+  onClickSector?: (name: string) => void
+  activeSector?: string | null
   emptyText: string
 }) {
   const badgeFor = (s: Stock): string => {
@@ -1109,7 +1144,18 @@ function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onC
                   </td>
                   <td className="px-3 py-2 max-w-[240px]">
                     <div className="flex flex-wrap gap-1">
-                      {(s.sectors ?? []).slice(0, 3).map(sec => <SectorTag key={sec} name={sec} />)}
+                      {(s.sectors ?? []).slice(0, 3).map(sec => (
+                        <span
+                          key={sec}
+                          onClick={onClickSector ? (e) => { e.stopPropagation(); onClickSector(sec) } : undefined}
+                          className={cn(
+                            onClickSector && 'cursor-pointer transition-transform hover:scale-105',
+                            activeSector === sec && 'ring-1 ring-accent rounded',
+                          )}
+                        >
+                          <SectorTag name={sec} />
+                        </span>
+                      ))}
                       {(s.sectors ?? []).length === 0 && <span className="text-xs text-text-muted">—</span>}
                     </div>
                   </td>
