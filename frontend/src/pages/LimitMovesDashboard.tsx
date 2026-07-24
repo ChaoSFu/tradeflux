@@ -355,6 +355,9 @@ export default function LimitMovesDashboard() {
   const navigate = useNavigate()
   type Side = 'up' | 'down'
   type Exp = { name: string; side: Side } | null
+  // 页面级统一收起/展开：一个按钮控制本页全部股票列表卡片（涨跌停集中板块/
+  // ≥2板/连板梯队/高弹性板块共8张），只影响列表卡片，不影响走势图等其它内容。
+  const [listsCollapsed, setListsCollapsed] = useState(false)
   const [expMain, setExpMain] = useState<Exp>(null)
   const [exp2, setExp2] = useState<Exp>(null)
   // 连板梯队 / 高弹性板块涨跌停：点击板块标签展开，与「涨停集中板块」同一套数据
@@ -543,6 +546,14 @@ export default function LimitMovesDashboard() {
           {dateOptions.map((d) => <option key={d} value={d}>{d}</option>)}
         </select>
         {selDate && <span className="text-[10px] px-1.5 py-0.5 rounded bg-warn/15 text-warn">历史 · 仅影响下方集中板块/二板</span>}
+        <button
+          onClick={() => setListsCollapsed(v => !v)}
+          className="ml-auto flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-bg-border bg-bg-elevated text-text-secondary hover:text-text-primary hover:border-accent/40 transition-colors"
+          title="统一收起/展开本页全部股票列表卡片"
+        >
+          <ChevronDown className={cn('w-3.5 h-3.5 transition-transform', !listsCollapsed && 'rotate-180')} />
+          {listsCollapsed ? '展开全部列表' : '收起全部列表'}
+        </button>
       </div>
 
       {/* ── Sector hotspot ─────────────────────────────────────────────── */}
@@ -555,6 +566,7 @@ export default function LimitMovesDashboard() {
           stocks={limitUps}
           color={C_UP}
           isLoading={dataLoading}
+          collapsed={listsCollapsed}
           onSelectSector={(n) => toggleMain(n, 'up')}
           expandedName={expMain?.side === 'up' ? expMain.name : null}
         />
@@ -566,6 +578,7 @@ export default function LimitMovesDashboard() {
           stocks={limitDowns}
           color={C_DOWN}
           isLoading={dataLoading}
+          collapsed={listsCollapsed}
           onSelectSector={(n) => toggleMain(n, 'down')}
           expandedName={expMain?.side === 'down' ? expMain.name : null}
         />
@@ -586,6 +599,7 @@ export default function LimitMovesDashboard() {
           stocks={upStocks2}
           color={C_UP}
           isLoading={dataLoading}
+          collapsed={listsCollapsed}
           onSelectSector={(n) => toggle2(n, 'up')}
           expandedName={exp2?.side === 'up' ? exp2.name : null}
         />
@@ -597,6 +611,7 @@ export default function LimitMovesDashboard() {
           stocks={downStocks2}
           color={C_DOWN}
           isLoading={dataLoading}
+          collapsed={listsCollapsed}
           onSelectSector={(n) => toggle2(n, 'down')}
           expandedName={exp2?.side === 'down' ? exp2.name : null}
         />
@@ -616,6 +631,7 @@ export default function LimitMovesDashboard() {
           boardKey="today_board_count"
           color={C_UP}
           isLoading={dataLoading}
+          collapsed={listsCollapsed}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
           onClickSector={(n) => toggleLadder(n, 'up')}
           activeSector={expLadder?.side === 'up' ? expLadder.name : null}
@@ -628,6 +644,7 @@ export default function LimitMovesDashboard() {
           boardKey="today_limit_down_count"
           color={C_DOWN}
           isLoading={dataLoading}
+          collapsed={listsCollapsed}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
           onClickSector={(n) => toggleLadder(n, 'down')}
           activeSector={expLadder?.side === 'down' ? expLadder.name : null}
@@ -648,6 +665,7 @@ export default function LimitMovesDashboard() {
           badgeKind="market"
           color={C_UP}
           isLoading={dataLoading}
+          collapsed={listsCollapsed}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
           onClickSector={(n) => toggleElastic(n, 'up')}
           activeSector={expElastic?.side === 'up' ? expElastic.name : null}
@@ -659,6 +677,7 @@ export default function LimitMovesDashboard() {
           badgeKind="market"
           color={C_DOWN}
           isLoading={dataLoading}
+          collapsed={listsCollapsed}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
           onClickSector={(n) => toggleElastic(n, 'down')}
           activeSector={expElastic?.side === 'down' ? expElastic.name : null}
@@ -860,7 +879,7 @@ function StatCard({ icon, label, value, sub, color }: {
 
 // ─── Sector hotspot (donut + ranked list + cross-sector analysis) ─────────────
 
-function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, isLoading, onSelectSector, expandedName }: {
+function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, isLoading, onSelectSector, expandedName, collapsed }: {
   title: string
   sectors: SectorStat[]
   allSectorStats: SectorStat[]
@@ -870,6 +889,7 @@ function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, i
   isLoading: boolean
   onSelectSector?: (name: string) => void
   expandedName?: string | null
+  collapsed?: boolean          // 页面级统一收起/展开（单一开关控制全部股票列表卡片）
 }) {
   // ── Cross-sector (overlap) stocks ─────────────────────────────────────────
   // A stock is "cross-sector" if it appears in 2+ of the top-N shown sectors
@@ -902,7 +922,6 @@ function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, i
   }, [sectors, field])
 
   const totalCount = stocks.length
-
   return (
     <div className="card overflow-hidden p-0">
       {/* ── Header ─────────────────────────────────────────────────────── */}
@@ -929,10 +948,10 @@ function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, i
         )}
       </div>
 
-      {isLoading ? (
+      {collapsed ? null : isLoading ? (
         <div className="p-4"><LoadingRows /></div>
       ) : sectors.length === 0 ? (
-        <div className="py-10 text-center text-text-muted text-sm">暂无数据</div>
+        <div className="py-6 text-center text-text-muted text-sm">暂无数据</div>
       ) : (
         <>
           {/* ── Body: donut chart (left) + ranked list (right) ─────────── */}
@@ -1084,7 +1103,7 @@ function PctCell({ v }: { v: number | null | undefined }) {
   )
 }
 
-function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onClickStock, onClickSector, activeSector, emptyText }: {
+function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onClickStock, onClickSector, activeSector, emptyText, collapsed }: {
   title: string
   stocks: Stock[]
   badgeKind: 'board' | 'market'
@@ -1095,6 +1114,7 @@ function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onC
   onClickSector?: (name: string) => void
   activeSector?: string | null
   emptyText: string
+  collapsed?: boolean          // 页面级统一收起/展开（单一开关控制全部股票列表卡片）
 }) {
   const badgeFor = (s: Stock): string => {
     if (badgeKind === 'board' && boardKey) return `${(s[boardKey] ?? 0) as number}板`
@@ -1103,7 +1123,10 @@ function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onC
   }
   return (
     <div className="card overflow-hidden p-0">
-      <div className="px-4 py-2.5 border-b border-bg-border/40 flex items-center gap-2" style={{ backgroundColor: `${color}0d` }}>
+      <div
+        className="px-4 py-2.5 border-b border-bg-border/40 flex items-center gap-2"
+        style={{ backgroundColor: `${color}0d` }}
+      >
         <span className="font-semibold text-sm" style={{ color }}>{title}</span>
         {!isLoading && (
           <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ color, backgroundColor: `${color}18` }}>
@@ -1111,10 +1134,10 @@ function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onC
           </span>
         )}
       </div>
-      {isLoading ? (
+      {collapsed ? null : isLoading ? (
         <div className="p-4"><LoadingRows /></div>
       ) : stocks.length === 0 ? (
-        <div className="py-8 text-center text-text-muted text-sm">{emptyText}</div>
+        <div className="py-6 text-center text-text-muted text-sm">{emptyText}</div>
       ) : (
         <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
           <table className="w-full text-sm">
