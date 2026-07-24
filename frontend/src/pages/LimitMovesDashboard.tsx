@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   fetchLimitMoves, fetchLimitMovesTrend,
   fetchSectorLimitTrend, fetchSectorLimitTrendOptions,
+  fetchStrongPool,
 } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { getSectorColor, SectorTag, OneWordCountTag } from '@/components/common/SectorTags'
@@ -349,26 +350,67 @@ export default function LimitMovesDashboard() {
   // 点击集中板块 → 展开该板块成员个股（复用 SectorSection，与 Dashboard 一致）
   // 同一板块的涨停+跌停股合并展示（SectorSection 会按涨停/跌停龙头分组）。
   // 主区(上)与 ≥2板区(下) 各自独立的展开状态，互不影响。
+  // Exp 只存 name/side，成员股在下方按开关状态实时计算（而非点击时冻结），
+  // 这样切换「+强势股」开关能立刻反映，不用重新点击板块。
   const navigate = useNavigate()
   type Side = 'up' | 'down'
-  type Exp = { name: string; stocks: Stock[]; side: Side } | null
+  type Exp = { name: string; side: Side } | null
   const [expMain, setExpMain] = useState<Exp>(null)
   const [exp2, setExp2] = useState<Exp>(null)
+  // 「涨跌停 + 强势股」开关：主区/≥2板区各自独立
+  const [showStrongMain, setShowStrongMain] = useState(false)
+  const [showStrong2, setShowStrong2] = useState(false)
+
   const mkToggle = (setter: (fn: (p: Exp) => Exp) => void) =>
-    (name: string, ups: Stock[], downs: Stock[], side: Side) =>
-      setter(p => (p && p.name === name && p.side === side)
-        ? null
-        : { name, side, stocks: [...ups, ...downs].filter(s => (s.sectors ?? []).includes(name)) })
+    (name: string, side: Side) =>
+      setter(p => (p && p.name === name && p.side === side) ? null : { name, side })
   const toggleMain = mkToggle(setExpMain)
   const toggle2 = mkToggle(setExp2)
-  const renderExp = (exp: Exp, close: () => void) =>
+
+  // 板块内强势股（懒加载：仅当任一「+强势股」开关开启时才拉取，与涨跌停股合并去重）
+  const { data: strongPoolData } = useQuery({
+    queryKey: ['strong-pool-for-limit-moves'],
+    queryFn: () => fetchStrongPool({ page: 1, page_size: 500 }),
+    enabled: showStrongMain || showStrong2,
+    staleTime: 5 * 60_000,
+  } as any)
+  const strongPoolStocks: Stock[] = (strongPoolData as any)?.items ?? []
+
+  const mergeStrong = (base: Stock[], sectorName: string, on: boolean): Stock[] => {
+    if (!on) return base
+    const ids = new Set(base.map(s => s.id))
+    const extra = strongPoolStocks.filter(s => (s.sectors ?? []).includes(sectorName) && !ids.has(s.id))
+    return [...base, ...extra]
+  }
+
+  const expMainStocks = useMemo(() => {
+    if (!expMain) return []
+    const base = [...limitUps, ...limitDowns].filter(s => (s.sectors ?? []).includes(expMain.name))
+    return mergeStrong(base, expMain.name, showStrongMain)
+  }, [expMain, limitUps, limitDowns, showStrongMain, strongPoolStocks])
+
+  const exp2Stocks = useMemo(() => {
+    if (!exp2) return []
+    const base = [...upStocks2, ...downStocks2].filter(s => (s.sectors ?? []).includes(exp2.name))
+    return mergeStrong(base, exp2.name, showStrong2)
+  }, [exp2, upStocks2, downStocks2, showStrong2, strongPoolStocks])
+
+  const renderExp = (
+    exp: Exp, stocks: Stock[], close: () => void,
+    showStrong: boolean, setShowStrong: (v: boolean) => void,
+  ) =>
     exp ? (
-      <SectorSection
-        group={{ name: exp.name, stocks: exp.stocks }}
-        collapsed={false}
-        onToggle={close}
-        onClickStock={(code) => navigate(`/stocks/${code}`)}
-      />
+      <div className="space-y-2">
+        <div className="flex items-center justify-end">
+          <StrongToggle on={showStrong} onChange={setShowStrong} />
+        </div>
+        <SectorSection
+          group={{ name: exp.name, stocks }}
+          collapsed={false}
+          onToggle={close}
+          onClickStock={(code) => navigate(`/stocks/${code}`)}
+        />
+      </div>
     ) : null
 
   return (
@@ -490,7 +532,7 @@ export default function LimitMovesDashboard() {
           stocks={limitUps}
           color={C_UP}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggleMain(n, limitUps, limitDowns, 'up')}
+          onSelectSector={(n) => toggleMain(n, 'up')}
           expandedName={expMain?.side === 'up' ? expMain.name : null}
         />
         <SectorHotspot
@@ -501,11 +543,11 @@ export default function LimitMovesDashboard() {
           stocks={limitDowns}
           color={C_DOWN}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggleMain(n, limitUps, limitDowns, 'down')}
+          onSelectSector={(n) => toggleMain(n, 'down')}
           expandedName={expMain?.side === 'down' ? expMain.name : null}
         />
       </div>
-      {renderExp(expMain, () => setExpMain(null))}
+      {renderExp(expMain, expMainStocks, () => setExpMain(null), showStrongMain, setShowStrongMain)}
 
       {/* ── 二板及以上集中板块（过滤首板，看持续强度）─────────────────────── */}
       <div className="flex items-baseline gap-2 pt-1">
@@ -521,7 +563,7 @@ export default function LimitMovesDashboard() {
           stocks={upStocks2}
           color={C_UP}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggle2(n, upStocks2, downStocks2, 'up')}
+          onSelectSector={(n) => toggle2(n, 'up')}
           expandedName={exp2?.side === 'up' ? exp2.name : null}
         />
         <SectorHotspot
@@ -532,11 +574,11 @@ export default function LimitMovesDashboard() {
           stocks={downStocks2}
           color={C_DOWN}
           isLoading={dataLoading}
-          onSelectSector={(n) => toggle2(n, upStocks2, downStocks2, 'down')}
+          onSelectSector={(n) => toggle2(n, 'down')}
           expandedName={exp2?.side === 'down' ? exp2.name : null}
         />
       </div>
-      {renderExp(exp2, () => setExp2(null))}
+      {renderExp(exp2, exp2Stocks, () => setExp2(null), showStrong2, setShowStrong2)}
 
       {/* ── 连板梯队（≥2连板，涨跌停都要）：资金强推方向一目了然 ────────────── */}
       <div className="flex items-baseline gap-2 pt-1">
@@ -593,6 +635,29 @@ export default function LimitMovesDashboard() {
       </div>
 
     </div>
+  )
+}
+
+// ─── 「涨跌停 + 强势股」开关（板块展开面板专用）──────────────────────────────
+
+function StrongToggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      onClick={() => onChange(!on)}
+      title={on ? '当前展示：涨跌停 + 该板块强势股' : '当前展示：仅涨跌停股票，点击叠加该板块强势股'}
+      className={cn(
+        'flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg border transition-colors shrink-0',
+        on ? 'bg-accent/15 text-accent border-accent/40' : 'bg-bg-elevated text-text-muted border-bg-border hover:text-text-secondary',
+      )}
+    >
+      <span className={cn('w-7 h-4 rounded-full relative shrink-0 transition-colors', on ? 'bg-accent' : 'bg-bg-border')}>
+        <span className={cn(
+          'absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform',
+          on && 'translate-x-3',
+        )} />
+      </span>
+      {on ? '涨跌停 + 强势股' : '仅涨跌停'}
+    </button>
   )
 }
 
