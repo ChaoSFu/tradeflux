@@ -28,6 +28,17 @@ const C_OTHER = '#505570'
 // 走势图最多同时叠加的板块数（再多图就看不清了）
 const MAX_OVERLAY = 4
 
+// ─── 高弹性板块判定（涨跌停阈值 >10%：科创板/创业板 ±20%、北交所 ±30%）──────────
+// 与后端 eastmoney_fetcher.get_limit_pct 的前缀口径保持一致
+const isBjMarket = (code: string) => /^(4|8|92)/.test(code)
+const isHighElasticity = (code: string) => code.startsWith('688') || code.startsWith('300') || code.startsWith('301')
+const marketTag = (code: string): string | null => {
+  if (isBjMarket(code)) return '北交所'
+  if (code.startsWith('688')) return '科创板'
+  if (code.startsWith('300') || code.startsWith('301')) return '创业板'
+  return null
+}
+
 // ─── Sector stat with stock tracking ─────────────────────────────────────────
 
 interface SectorStat {
@@ -307,6 +318,32 @@ export default function LimitMovesDashboard() {
     [sectorStats2],
   )
 
+  // ── 连板梯队（≥2连板，涨跌停都要）：直接看个股，反映资金强推的方向 ──────────
+  const upLadder = useMemo(
+    () => [...upStocks2].sort((a, b) =>
+      (b.today_board_count ?? 0) - (a.today_board_count ?? 0)
+      || (b.today_pct_change ?? 0) - (a.today_pct_change ?? 0)),
+    [upStocks2],
+  )
+  const downLadder = useMemo(
+    () => [...downStocks2].sort((a, b) =>
+      (b.today_limit_down_count ?? 0) - (a.today_limit_down_count ?? 0)
+      || (a.today_pct_change ?? 0) - (b.today_pct_change ?? 0)),
+    [downStocks2],
+  )
+
+  // ── 高弹性板块涨跌停（创业板/科创板 ±20%、北交所 ±30%，与主板±10%区分）────
+  const highElasticUp = useMemo(
+    () => limitUps.filter(s => isHighElasticity(s.code) || isBjMarket(s.code))
+      .sort((a, b) => (b.today_pct_change ?? 0) - (a.today_pct_change ?? 0)),
+    [limitUps],
+  )
+  const highElasticDown = useMemo(
+    () => limitDowns.filter(s => isHighElasticity(s.code) || isBjMarket(s.code))
+      .sort((a, b) => (a.today_pct_change ?? 0) - (b.today_pct_change ?? 0)),
+    [limitDowns],
+  )
+
   const dataLoading = upLoading || downLoading
 
   // 点击集中板块 → 展开该板块成员个股（复用 SectorSection，与 Dashboard 一致）
@@ -500,6 +537,58 @@ export default function LimitMovesDashboard() {
         />
       </div>
       {renderExp(exp2, () => setExp2(null))}
+
+      {/* ── 连板梯队（≥2连板，涨跌停都要）：资金强推方向一目了然 ────────────── */}
+      <div className="flex items-baseline gap-2 pt-1">
+        <span className="text-sm font-semibold text-text-primary">连板梯队</span>
+        <span className="text-xs text-text-muted">≥2连板个股列表，涨停跌停均含，板数越高=资金推得越坚决</span>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <LadderPanel
+          title="涨停连板梯队"
+          stocks={upLadder}
+          boardKey="today_board_count"
+          color={C_UP}
+          isLoading={dataLoading}
+          onClickStock={(code) => navigate(`/stocks/${code}`)}
+          emptyText="暂无 ≥2连板涨停股"
+        />
+        <LadderPanel
+          title="跌停连板梯队"
+          stocks={downLadder}
+          boardKey="today_limit_down_count"
+          color={C_DOWN}
+          isLoading={dataLoading}
+          onClickStock={(code) => navigate(`/stocks/${code}`)}
+          emptyText="暂无 ≥2连板跌停股"
+        />
+      </div>
+
+      {/* ── 高弹性板块涨跌停（创业板/科创板±20%、北交所±30%，与主板±10%区分）── */}
+      <div className="flex items-baseline gap-2 pt-1">
+        <span className="text-sm font-semibold text-text-primary">高弹性板块涨跌停</span>
+        <span className="text-xs text-text-muted">涨跌幅阈值 &gt;10% 的市场：创业板 / 科创板（±20%）、北交所（±30%）</span>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <LadderPanel
+          title="高弹性涨停"
+          stocks={highElasticUp}
+          badge={(s) => marketTag(s.code) ?? ''}
+          color={C_UP}
+          isLoading={dataLoading}
+          onClickStock={(code) => navigate(`/stocks/${code}`)}
+          emptyText="暂无高弹性板块涨停股"
+        />
+        <LadderPanel
+          title="高弹性跌停"
+          stocks={highElasticDown}
+          badge={(s) => marketTag(s.code) ?? ''}
+          color={C_DOWN}
+          isLoading={dataLoading}
+          onClickStock={(code) => navigate(`/stocks/${code}`)}
+          emptyText="暂无高弹性板块跌停股"
+        />
+      </div>
 
     </div>
   )
@@ -879,6 +968,73 @@ function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, i
             </div>
           )}
         </>
+      )}
+    </div>
+  )
+}
+
+// ─── Ladder panel（连板梯队 / 高弹性板块涨跌停 · 通用个股列表）────────────────
+
+function LadderPanel({ title, stocks, boardKey, badge, color, isLoading, onClickStock, emptyText }: {
+  title: string
+  stocks: Stock[]
+  boardKey?: 'today_board_count' | 'today_limit_down_count'
+  badge?: (s: Stock) => string
+  color: string
+  isLoading: boolean
+  onClickStock: (code: string) => void
+  emptyText: string
+}) {
+  const getBadge = (s: Stock): string => {
+    if (boardKey) return `${(s[boardKey] ?? 0) as number}板`
+    if (badge) return badge(s)
+    return ''
+  }
+  return (
+    <div className="card overflow-hidden p-0">
+      <div className="px-4 py-2.5 border-b border-bg-border/40 flex items-center gap-2" style={{ backgroundColor: `${color}0d` }}>
+        <span className="font-semibold text-sm" style={{ color }}>{title}</span>
+        {!isLoading && (
+          <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ color, backgroundColor: `${color}18` }}>
+            {stocks.length} 只
+          </span>
+        )}
+      </div>
+      {isLoading ? (
+        <div className="p-4"><LoadingRows /></div>
+      ) : stocks.length === 0 ? (
+        <div className="py-8 text-center text-text-muted text-sm">{emptyText}</div>
+      ) : (
+        <div className="divide-y divide-bg-border/20 max-h-[420px] overflow-y-auto">
+          {stocks.map(s => (
+            <div
+              key={s.id}
+              onClick={() => onClickStock(s.code)}
+              className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-bg-elevated transition-colors"
+            >
+              <span
+                className="text-[11px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap"
+                style={{ color, backgroundColor: `${color}18` }}
+              >
+                {getBadge(s)}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm text-text-primary truncate">{s.name}</span>
+                  <span className="text-xs font-mono text-text-muted/80 shrink-0">{s.code}</span>
+                </div>
+                {(s.sectors ?? []).length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-0.5">
+                    {(s.sectors ?? []).slice(0, 3).map(sec => <SectorTag key={sec} name={sec} />)}
+                  </div>
+                )}
+              </div>
+              <span className="font-mono text-sm font-bold shrink-0" style={{ color }}>
+                {s.today_pct_change != null ? `${s.today_pct_change >= 0 ? '+' : ''}${s.today_pct_change.toFixed(2)}%` : '—'}
+              </span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )
