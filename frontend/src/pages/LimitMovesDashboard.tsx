@@ -543,19 +543,21 @@ export default function LimitMovesDashboard() {
         <span className="text-sm font-semibold text-text-primary">连板梯队</span>
         <span className="text-xs text-text-muted">≥2连板个股列表，涨停跌停均含，板数越高=资金推得越坚决</span>
       </div>
-      <div className="grid grid-cols-2 gap-4">
-        <LadderPanel
+      <div className="space-y-4">
+        <LadderTable
           title="涨停连板梯队"
           stocks={upLadder}
+          badgeKind="board"
           boardKey="today_board_count"
           color={C_UP}
           isLoading={dataLoading}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
           emptyText="暂无 ≥2连板涨停股"
         />
-        <LadderPanel
+        <LadderTable
           title="跌停连板梯队"
           stocks={downLadder}
+          badgeKind="board"
           boardKey="today_limit_down_count"
           color={C_DOWN}
           isLoading={dataLoading}
@@ -569,20 +571,20 @@ export default function LimitMovesDashboard() {
         <span className="text-sm font-semibold text-text-primary">高弹性板块涨跌停</span>
         <span className="text-xs text-text-muted">涨跌幅阈值 &gt;10% 的市场：创业板 / 科创板（±20%）、北交所（±30%）</span>
       </div>
-      <div className="grid grid-cols-2 gap-4">
-        <LadderPanel
+      <div className="space-y-4">
+        <LadderTable
           title="高弹性涨停"
           stocks={highElasticUp}
-          badge={(s) => marketTag(s.code) ?? ''}
+          badgeKind="market"
           color={C_UP}
           isLoading={dataLoading}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
           emptyText="暂无高弹性板块涨停股"
         />
-        <LadderPanel
+        <LadderTable
           title="高弹性跌停"
           stocks={highElasticDown}
-          badge={(s) => marketTag(s.code) ?? ''}
+          badgeKind="market"
           color={C_DOWN}
           isLoading={dataLoading}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
@@ -973,22 +975,31 @@ function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, i
   )
 }
 
-// ─── Ladder panel（连板梯队 / 高弹性板块涨跌停 · 通用个股列表）────────────────
+// ─── Ladder table（连板梯队 / 高弹性板块涨跌停 · 通用个股表格，参考活跃股池样式）──
 
-function LadderPanel({ title, stocks, boardKey, badge, color, isLoading, onClickStock, emptyText }: {
+function PctCell({ v }: { v: number | null | undefined }) {
+  if (v == null) return <span className="text-text-muted">—</span>
+  return (
+    <span className={cn('font-medium', v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-muted')}>
+      {v > 0 ? '+' : ''}{v.toFixed(1)}%
+    </span>
+  )
+}
+
+function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onClickStock, emptyText }: {
   title: string
   stocks: Stock[]
+  badgeKind: 'board' | 'market'
   boardKey?: 'today_board_count' | 'today_limit_down_count'
-  badge?: (s: Stock) => string
   color: string
   isLoading: boolean
   onClickStock: (code: string) => void
   emptyText: string
 }) {
-  const getBadge = (s: Stock): string => {
-    if (boardKey) return `${(s[boardKey] ?? 0) as number}板`
-    if (badge) return badge(s)
-    return ''
+  const badgeFor = (s: Stock): string => {
+    if (badgeKind === 'board' && boardKey) return `${(s[boardKey] ?? 0) as number}板`
+    if (badgeKind === 'market') return marketTag(s.code) ?? '—'
+    return '—'
   }
   return (
     <div className="card overflow-hidden p-0">
@@ -1005,35 +1016,61 @@ function LadderPanel({ title, stocks, boardKey, badge, color, isLoading, onClick
       ) : stocks.length === 0 ? (
         <div className="py-8 text-center text-text-muted text-sm">{emptyText}</div>
       ) : (
-        <div className="divide-y divide-bg-border/20 max-h-[420px] overflow-y-auto">
-          {stocks.map(s => (
-            <div
-              key={s.id}
-              onClick={() => onClickStock(s.code)}
-              className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-bg-elevated transition-colors"
-            >
-              <span
-                className="text-[11px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap"
-                style={{ color, backgroundColor: `${color}18` }}
-              >
-                {getBadge(s)}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm text-text-primary truncate">{s.name}</span>
-                  <span className="text-xs font-mono text-text-muted/80 shrink-0">{s.code}</span>
-                </div>
-                {(s.sectors ?? []).length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-0.5">
-                    {(s.sectors ?? []).slice(0, 3).map(sec => <SectorTag key={sec} name={sec} />)}
-                  </div>
-                )}
-              </div>
-              <span className="font-mono text-sm font-bold shrink-0" style={{ color }}>
-                {s.today_pct_change != null ? `${s.today_pct_change >= 0 ? '+' : ''}${s.today_pct_change.toFixed(2)}%` : '—'}
-              </span>
-            </div>
-          ))}
+        <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 z-10 bg-bg-card">
+              <tr className="border-b border-bg-border/40">
+                <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium whitespace-nowrap">代码 / 名称</th>
+                <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium">板块</th>
+                <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">{badgeKind === 'board' ? '连板' : '市场'}</th>
+                <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">10日涨幅</th>
+                <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">20日涨幅</th>
+                <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">60日涨幅</th>
+                <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">龙头分</th>
+                <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">风险分</th>
+                <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">今日涨幅</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stocks.map(s => (
+                <tr
+                  key={s.id}
+                  onClick={() => onClickStock(s.code)}
+                  className="border-b border-bg-border/25 hover:bg-bg-elevated cursor-pointer transition-colors last:border-0"
+                >
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <div className="font-mono text-accent text-xs">{s.code}</div>
+                    <div className="text-text-primary font-medium">{s.name}</div>
+                  </td>
+                  <td className="px-3 py-2 max-w-[240px]">
+                    <div className="flex flex-wrap gap-1">
+                      {(s.sectors ?? []).slice(0, 3).map(sec => <SectorTag key={sec} name={sec} />)}
+                      {(s.sectors ?? []).length === 0 && <span className="text-xs text-text-muted">—</span>}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <span className="text-[11px] font-mono font-bold px-1.5 py-0.5 rounded" style={{ color, backgroundColor: `${color}18` }}>
+                      {badgeFor(s)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs"><PctCell v={s.pct_change_10d} /></td>
+                  <td className="px-3 py-2 text-right font-mono text-xs"><PctCell v={s.pct_change_20d} /></td>
+                  <td className="px-3 py-2 text-right font-mono text-xs"><PctCell v={s.pct_change_60d} /></td>
+                  <td className="px-3 py-2 text-right font-mono text-xs text-text-secondary">{s.leader_score?.toFixed(0) ?? '—'}</td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    <span className={cn(s.risk_score >= 50 ? 'text-down' : 'text-text-secondary')}>{s.risk_score?.toFixed(0) ?? '—'}</span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    {s.today_pct_change != null ? (
+                      <span className="font-bold" style={{ color: s.today_pct_change >= 0 ? C_UP : C_DOWN }}>
+                        {s.today_pct_change >= 0 ? '+' : ''}{s.today_pct_change.toFixed(2)}%
+                      </span>
+                    ) : <span className="text-text-muted">—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
