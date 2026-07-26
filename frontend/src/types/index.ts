@@ -459,3 +459,58 @@ export interface ProfitEffectData {
   groups: ProfitEffectGroup[]
   sectors: SectorProfitEffect[]
 }
+
+// ─── Market Effect（每日赚钱效应 / 亏钱效应，精简 MVP）────────────────────────
+
+export type CohortType = 'limit_up' | 'first_board' | 'multi_board' | 'limit_down' | 'broken_board' | 'strong_proxy'
+
+export interface CohortOutcome {
+  cohort_type: CohortType
+  label: string
+  member_count: number
+  valid_count: number
+  median_pct_change: number | null
+  red_ratio: number | null
+  large_loss_ratio: number | null
+  advance_ratio: number | null
+  broken_ratio: number | null
+}
+
+export interface EvidenceItem {
+  metric: string
+  raw_value: unknown
+  sample_size: number
+  direction: 'positive' | 'negative'
+}
+
+export interface MarketEffectDailyResponse {
+  trade_date: string
+  profit_strength: number
+  loss_strength: number
+  quadrant: 'benign_spread' | 'strong_divergence' | 'quiet_chaos' | 'loss_spread'
+  lifecycle_state: 'loss_spreading' | 'recovering' | 'profit_confirmed' | 'profit_spreading' | 'loss_warning'
+  breadth_source: 'full_market' | 'tracked_pool'
+  coverage_ratio: number
+  cohorts: Record<CohortType, CohortOutcome>
+  evidence: EvidenceItem[]
+  summary: string
+  formula_version: string
+}
+
+export interface MarketEffectHistoryPoint {
+  trade_date: string
+  profit_strength: number
+  loss_strength: number
+  quadrant: string
+  lifecycle_state: string
+  breadth_source: 'full_market' | 'tracked_pool'
+}
+
+export interface CohortMember {
+  code: string | null
+  name: string | null
+  board_count_before: number | null
+  outcome_pct_change: number | null
+  outcome_board_count: number | null
+  has_outcome: boolean
+}
