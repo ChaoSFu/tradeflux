@@ -6,6 +6,7 @@ from .screening import ScreeningCriteria
 from .regulatory import RegulatoryUnusual
 from .market_index import IndexDailySnapshot, MarketBreadthDaily
 from .trade_journal import TradeJournal
+from .market_effect import MarketEffectDaily
 
 __all__ = [
     "Stock",
@@ -18,4 +19,5 @@ __all__ = [
     "ScreeningCriteria",
     "RegulatoryUnusual",
     "IndexDailySnapshot",
+    "MarketEffectDaily",
 ]
