@@ -355,9 +355,10 @@ export default function LimitMovesDashboard() {
   const navigate = useNavigate()
   type Side = 'up' | 'down'
   type Exp = { name: string; side: Side } | null
-  // 页面级统一收起/展开：一个按钮控制本页全部股票列表卡片（涨跌停集中板块/
-  // ≥2板/连板梯队/高弹性板块共8张），只影响列表卡片，不影响走势图等其它内容。
-  const [listsCollapsed, setListsCollapsed] = useState(false)
+  // 分组收起/展开：涨停+跌停集中板块共享一个按钮，≥2板同理；
+  // 连板梯队与高弹性板块涨跌停各自独立（涨/跌各一个按钮）。
+  const [collapsedMainPair, setCollapsedMainPair] = useState(false)
+  const [collapsed2Pair, setCollapsed2Pair] = useState(false)
   const [expMain, setExpMain] = useState<Exp>(null)
   const [exp2, setExp2] = useState<Exp>(null)
   // 连板梯队 / 高弹性板块涨跌停：点击板块标签展开，与「涨停集中板块」同一套数据
@@ -365,11 +366,8 @@ export default function LimitMovesDashboard() {
   // 让面板出现在点击处附近，不用滚回页面顶部。
   const [expLadder, setExpLadder] = useState<Exp>(null)
   const [expElastic, setExpElastic] = useState<Exp>(null)
-  // 「涨跌停 + 强势股」开关：各展开面板各自独立
-  const [showStrongMain, setShowStrongMain] = useState(false)
-  const [showStrong2, setShowStrong2] = useState(false)
-  const [showStrongLadder, setShowStrongLadder] = useState(false)
-  const [showStrongElastic, setShowStrongElastic] = useState(false)
+  // 「涨跌停 + 强势股」开关：全页共享一个
+  const [showStrong, setShowStrong] = useState(false)
 
   const mkToggle = (setter: (fn: (p: Exp) => Exp) => void) =>
     (name: string, side: Side) =>
@@ -383,7 +381,7 @@ export default function LimitMovesDashboard() {
   const { data: strongPoolData } = useQuery({
     queryKey: ['strong-pool-for-limit-moves'],
     queryFn: () => fetchStrongPool({ page: 1, page_size: 500 }),
-    enabled: showStrongMain || showStrong2 || showStrongLadder || showStrongElastic,
+    enabled: showStrong,
     staleTime: 5 * 60_000,
   } as any)
   const strongPoolStocks: Stock[] = (strongPoolData as any)?.items ?? []
@@ -398,33 +396,30 @@ export default function LimitMovesDashboard() {
   const expMainStocks = useMemo(() => {
     if (!expMain) return []
     const base = [...limitUps, ...limitDowns].filter(s => (s.sectors ?? []).includes(expMain.name))
-    return mergeStrong(base, expMain.name, showStrongMain)
-  }, [expMain, limitUps, limitDowns, showStrongMain, strongPoolStocks])
+    return mergeStrong(base, expMain.name, showStrong)
+  }, [expMain, limitUps, limitDowns, showStrong, strongPoolStocks])
 
   const exp2Stocks = useMemo(() => {
     if (!exp2) return []
     const base = [...upStocks2, ...downStocks2].filter(s => (s.sectors ?? []).includes(exp2.name))
-    return mergeStrong(base, exp2.name, showStrong2)
-  }, [exp2, upStocks2, downStocks2, showStrong2, strongPoolStocks])
+    return mergeStrong(base, exp2.name, showStrong)
+  }, [exp2, upStocks2, downStocks2, showStrong, strongPoolStocks])
 
   // 连板梯队 / 高弹性板块涨跌停的板块点击展开：与「涨停集中板块」同一数据口径
   // ——当日全量涨跌停股按板块名过滤（不局限于≥2板或高弹性市场子集）。
   const expLadderStocks = useMemo(() => {
     if (!expLadder) return []
     const base = [...limitUps, ...limitDowns].filter(s => (s.sectors ?? []).includes(expLadder.name))
-    return mergeStrong(base, expLadder.name, showStrongLadder)
-  }, [expLadder, limitUps, limitDowns, showStrongLadder, strongPoolStocks])
+    return mergeStrong(base, expLadder.name, showStrong)
+  }, [expLadder, limitUps, limitDowns, showStrong, strongPoolStocks])
 
   const expElasticStocks = useMemo(() => {
     if (!expElastic) return []
     const base = [...limitUps, ...limitDowns].filter(s => (s.sectors ?? []).includes(expElastic.name))
-    return mergeStrong(base, expElastic.name, showStrongElastic)
-  }, [expElastic, limitUps, limitDowns, showStrongElastic, strongPoolStocks])
+    return mergeStrong(base, expElastic.name, showStrong)
+  }, [expElastic, limitUps, limitDowns, showStrong, strongPoolStocks])
 
-  const renderExp = (
-    exp: Exp, stocks: Stock[], close: () => void,
-    showStrong: boolean, setShowStrong: (v: boolean) => void,
-  ) =>
+  const renderExp = (exp: Exp, stocks: Stock[], close: () => void) =>
     exp ? (
       <div className="space-y-2">
         <div className="flex items-center justify-start">
@@ -546,17 +541,13 @@ export default function LimitMovesDashboard() {
           {dateOptions.map((d) => <option key={d} value={d}>{d}</option>)}
         </select>
         {selDate && <span className="text-[10px] px-1.5 py-0.5 rounded bg-warn/15 text-warn">历史 · 仅影响下方集中板块/二板</span>}
-        <button
-          onClick={() => setListsCollapsed(v => !v)}
-          className="ml-auto flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-bg-border bg-bg-elevated text-text-secondary hover:text-text-primary hover:border-accent/40 transition-colors"
-          title="统一收起/展开本页全部股票列表卡片"
-        >
-          <ChevronDown className={cn('w-3.5 h-3.5 transition-transform', !listsCollapsed && 'rotate-180')} />
-          {listsCollapsed ? '展开全部列表' : '收起全部列表'}
-        </button>
       </div>
 
       {/* ── Sector hotspot ─────────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 pt-1">
+        <span className="text-sm font-semibold text-text-primary">涨停 / 跌停集中板块</span>
+        <CollapseToggle collapsed={collapsedMainPair} onToggle={() => setCollapsedMainPair(v => !v)} className="ml-auto" />
+      </div>
       <div className="grid grid-cols-2 gap-4">
         <SectorHotspot
           title="涨停集中板块"
@@ -566,7 +557,7 @@ export default function LimitMovesDashboard() {
           stocks={limitUps}
           color={C_UP}
           isLoading={dataLoading}
-          collapsed={listsCollapsed}
+          collapsed={collapsedMainPair}
           onSelectSector={(n) => toggleMain(n, 'up')}
           expandedName={expMain?.side === 'up' ? expMain.name : null}
         />
@@ -578,17 +569,18 @@ export default function LimitMovesDashboard() {
           stocks={limitDowns}
           color={C_DOWN}
           isLoading={dataLoading}
-          collapsed={listsCollapsed}
+          collapsed={collapsedMainPair}
           onSelectSector={(n) => toggleMain(n, 'down')}
           expandedName={expMain?.side === 'down' ? expMain.name : null}
         />
       </div>
-      {renderExp(expMain, expMainStocks, () => setExpMain(null), showStrongMain, setShowStrongMain)}
+      {renderExp(expMain, expMainStocks, () => setExpMain(null))}
 
       {/* ── 二板及以上集中板块（过滤首板，看持续强度）─────────────────────── */}
       <div className="flex items-baseline gap-2 pt-1">
         <span className="text-sm font-semibold text-text-primary">二板及以上集中板块</span>
         <span className="text-xs text-text-muted">过滤首板，反映涨停 / 跌停板块的持续强度</span>
+        <CollapseToggle collapsed={collapsed2Pair} onToggle={() => setCollapsed2Pair(v => !v)} className="ml-auto" />
       </div>
       <div className="grid grid-cols-2 gap-4">
         <SectorHotspot
@@ -599,7 +591,7 @@ export default function LimitMovesDashboard() {
           stocks={upStocks2}
           color={C_UP}
           isLoading={dataLoading}
-          collapsed={listsCollapsed}
+          collapsed={collapsed2Pair}
           onSelectSector={(n) => toggle2(n, 'up')}
           expandedName={exp2?.side === 'up' ? exp2.name : null}
         />
@@ -611,12 +603,12 @@ export default function LimitMovesDashboard() {
           stocks={downStocks2}
           color={C_DOWN}
           isLoading={dataLoading}
-          collapsed={listsCollapsed}
+          collapsed={collapsed2Pair}
           onSelectSector={(n) => toggle2(n, 'down')}
           expandedName={exp2?.side === 'down' ? exp2.name : null}
         />
       </div>
-      {renderExp(exp2, exp2Stocks, () => setExp2(null), showStrong2, setShowStrong2)}
+      {renderExp(exp2, exp2Stocks, () => setExp2(null))}
 
       {/* ── 连板梯队（≥2连板，涨跌停都要）：资金强推方向一目了然 ────────────── */}
       <div className="flex items-baseline gap-2 pt-1">
@@ -631,7 +623,6 @@ export default function LimitMovesDashboard() {
           boardKey="today_board_count"
           color={C_UP}
           isLoading={dataLoading}
-          collapsed={listsCollapsed}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
           onClickSector={(n) => toggleLadder(n, 'up')}
           activeSector={expLadder?.side === 'up' ? expLadder.name : null}
@@ -644,14 +635,13 @@ export default function LimitMovesDashboard() {
           boardKey="today_limit_down_count"
           color={C_DOWN}
           isLoading={dataLoading}
-          collapsed={listsCollapsed}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
           onClickSector={(n) => toggleLadder(n, 'down')}
           activeSector={expLadder?.side === 'down' ? expLadder.name : null}
           emptyText="暂无 ≥2连板跌停股"
         />
       </div>
-      {renderExp(expLadder, expLadderStocks, () => setExpLadder(null), showStrongLadder, setShowStrongLadder)}
+      {renderExp(expLadder, expLadderStocks, () => setExpLadder(null))}
 
       {/* ── 高弹性板块涨跌停（创业板/科创板±20%、北交所±30%，与主板±10%区分）── */}
       <div className="flex items-baseline gap-2 pt-1">
@@ -665,7 +655,6 @@ export default function LimitMovesDashboard() {
           badgeKind="market"
           color={C_UP}
           isLoading={dataLoading}
-          collapsed={listsCollapsed}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
           onClickSector={(n) => toggleElastic(n, 'up')}
           activeSector={expElastic?.side === 'up' ? expElastic.name : null}
@@ -677,14 +666,13 @@ export default function LimitMovesDashboard() {
           badgeKind="market"
           color={C_DOWN}
           isLoading={dataLoading}
-          collapsed={listsCollapsed}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
           onClickSector={(n) => toggleElastic(n, 'down')}
           activeSector={expElastic?.side === 'down' ? expElastic.name : null}
           emptyText="暂无高弹性板块跌停股"
         />
       </div>
-      {renderExp(expElastic, expElasticStocks, () => setExpElastic(null), showStrongElastic, setShowStrongElastic)}
+      {renderExp(expElastic, expElasticStocks, () => setExpElastic(null))}
 
     </div>
   )
@@ -709,6 +697,24 @@ function StrongToggle({ on, onChange }: { on: boolean; onChange: (v: boolean) =>
         )} />
       </span>
       {on ? '涨跌停 + 强势股' : '仅涨跌停'}
+    </button>
+  )
+}
+
+// ─── 收起/展开列表按钮（按功能模块分组，各自独立控制）──────────────────────────
+
+function CollapseToggle({ collapsed, onToggle, className }: { collapsed: boolean; onToggle: () => void; className?: string }) {
+  return (
+    <button
+      onClick={onToggle}
+      title={collapsed ? '展开列表' : '收起列表'}
+      className={cn(
+        'flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg border border-bg-border bg-bg-elevated text-text-muted hover:text-text-secondary hover:border-accent/30 transition-colors shrink-0',
+        className,
+      )}
+    >
+      <ChevronDown className={cn('w-3 h-3 transition-transform', !collapsed && 'rotate-180')} />
+      {collapsed ? '展开' : '收起'}
     </button>
   )
 }
@@ -889,7 +895,7 @@ function SectorHotspot({ title, sectors, allSectorStats, field, stocks, color, i
   isLoading: boolean
   onSelectSector?: (name: string) => void
   expandedName?: string | null
-  collapsed?: boolean          // 页面级统一收起/展开（单一开关控制全部股票列表卡片）
+  collapsed?: boolean          // 分组收起/展开：与同一行的另一张卡片共享同一个开关
 }) {
   // ── Cross-sector (overlap) stocks ─────────────────────────────────────────
   // A stock is "cross-sector" if it appears in 2+ of the top-N shown sectors
@@ -1103,7 +1109,7 @@ function PctCell({ v }: { v: number | null | undefined }) {
   )
 }
 
-function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onClickStock, onClickSector, activeSector, emptyText, collapsed }: {
+function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onClickStock, onClickSector, activeSector, emptyText }: {
   title: string
   stocks: Stock[]
   badgeKind: 'board' | 'market'
@@ -1114,8 +1120,9 @@ function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onC
   onClickSector?: (name: string) => void
   activeSector?: string | null
   emptyText: string
-  collapsed?: boolean          // 页面级统一收起/展开（单一开关控制全部股票列表卡片）
 }) {
+  // 每张卡片各自独立收起/展开（不与其它卡片共享）
+  const [collapsed, setCollapsed] = useState(false)
   const badgeFor = (s: Stock): string => {
     if (badgeKind === 'board' && boardKey) return `${(s[boardKey] ?? 0) as number}板`
     if (badgeKind === 'market') return marketTag(s.code) ?? '—'
@@ -1133,6 +1140,7 @@ function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onC
             {stocks.length} 只
           </span>
         )}
+        <CollapseToggle collapsed={collapsed} onToggle={() => setCollapsed(v => !v)} className="ml-auto" />
       </div>
       {collapsed ? null : isLoading ? (
         <div className="p-4"><LoadingRows /></div>
