@@ -523,8 +523,18 @@ export default function LimitMovesDashboard() {
       {/* ── 近期主导板块统计（每日涨停/跌停最多板块的出现次数）── */}
       {((trendData as any)?.length ?? 0) > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <DomPanel title="涨停主导板块 · 酝酿" hint="近5/10日「当日涨停最多板块」出现次数，次数越多=该板块持续爆发涨停" d5={domFreq.up5} d10={domFreq.up10} accent="up" />
-          <DomPanel title="跌停主导板块 · 退潮" hint="近5/10日「当日跌停最多板块」出现次数，次数越多=该板块持续爆发跌停" d5={domFreq.down5} d10={domFreq.down10} accent="down" />
+          <DomPanel
+            title="涨停主导板块 · 酝酿" hint="近5/10日「当日涨停最多板块」出现次数，次数越多=该板块持续爆发涨停"
+            d5={domFreq.up5} d10={domFreq.up10} accent="up"
+            onSelectSector={(n) => toggleMain(n, 'up')}
+            expandedName={expMain?.side === 'up' ? expMain.name : null}
+          />
+          <DomPanel
+            title="跌停主导板块 · 退潮" hint="近5/10日「当日跌停最多板块」出现次数，次数越多=该板块持续爆发跌停"
+            d5={domFreq.down5} d10={domFreq.down10} accent="down"
+            onSelectSector={(n) => toggleMain(n, 'down')}
+            expandedName={expMain?.side === 'down' ? expMain.name : null}
+          />
         </div>
       )}
 
@@ -831,8 +841,10 @@ function SectorPicker({ options, values, onToggle, onClear }: {
   )
 }
 
-function DomPanel({ title, hint, d5, d10, accent }: {
+function DomPanel({ title, hint, d5, d10, accent, onSelectSector, expandedName }: {
   title: string; hint: string; d5: [string, number][]; d10: [string, number][]; accent: 'up' | 'down'
+  onSelectSector?: (name: string) => void
+  expandedName?: string | null
 }) {
   const Row = ({ label, items }: { label: string; items: [string, number][] }) => (
     <div className="flex items-start gap-2 py-1.5">
@@ -840,7 +852,15 @@ function DomPanel({ title, hint, d5, d10, accent }: {
       {items.length ? (
         <div className="flex flex-wrap gap-1.5">
           {items.map(([name, c]) => (
-            <span key={name} className="inline-flex items-center gap-1">
+            <span
+              key={name}
+              onClick={() => onSelectSector?.(name)}
+              className={cn(
+                'inline-flex items-center gap-1 rounded transition-colors',
+                onSelectSector && 'cursor-pointer hover:bg-bg-elevated',
+                expandedName === name && 'ring-1 ring-inset ring-accent/40',
+              )}
+            >
               <SectorTag name={name} />
               <span className={cn('text-[10px] font-mono font-bold', accent === 'up' ? 'text-up' : 'text-down')}>×{c}</span>
             </span>
