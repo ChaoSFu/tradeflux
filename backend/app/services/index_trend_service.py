@@ -94,6 +94,10 @@ def sync_index_bars(db: Session) -> dict:
                 upserts += 1
             db.commit()
             ok += 1
+            # 东财失败回退腾讯/新浪时最新一根通常没有成交额——不算致命错误（K线本身
+            # 已成功），但值得让页面看得见，别人静默地少一根成交额柱子
+            if bars[-1].get("amount") is None:
+                errors.append(f"{meta['name']}: 已用备用数据源，最新一日成交额缺失")
         except Exception as e:  # noqa: BLE001
             db.rollback()
             errors.append(f"{meta['name']}: {e}")
