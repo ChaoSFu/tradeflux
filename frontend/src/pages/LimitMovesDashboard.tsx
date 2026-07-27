@@ -360,6 +360,9 @@ export default function LimitMovesDashboard() {
   const [collapsedMainPair, setCollapsedMainPair] = useState(false)
   const [collapsed2Pair, setCollapsed2Pair] = useState(false)
   const [expMain, setExpMain] = useState<Exp>(null)
+  // expMain 面板被「主导板块」和「集中板块」两处共用同一份展开状态，靠这个记录
+  // 触发来源，让展开的股票列表紧挨着点击处渲染，而不是固定出现在其中一处。
+  const [expMainOrigin, setExpMainOrigin] = useState<'dom' | 'hotspot'>('hotspot')
   const [exp2, setExp2] = useState<Exp>(null)
   // 连板梯队 / 高弹性板块涨跌停：点击板块标签展开，与「涨停集中板块」同一套数据
   // 展示逻辑（同一交易日全量涨跌停 + 可选叠加强势股），只是各自独立的展开状态，
@@ -372,7 +375,12 @@ export default function LimitMovesDashboard() {
   const mkToggle = (setter: (fn: (p: Exp) => Exp) => void) =>
     (name: string, side: Side) =>
       setter(p => (p && p.name === name && p.side === side) ? null : { name, side })
-  const toggleMain = mkToggle(setExpMain)
+  const toggleMainRaw = mkToggle(setExpMain)
+  const toggleMainFrom = (origin: 'dom' | 'hotspot') => (name: string, side: Side) => {
+    setExpMainOrigin(origin)
+    toggleMainRaw(name, side)
+  }
+  const toggleMain = toggleMainFrom('hotspot')
   const toggle2 = mkToggle(setExp2)
   const toggleLadder = mkToggle(setExpLadder)
   const toggleElastic = mkToggle(setExpElastic)
@@ -526,17 +534,18 @@ export default function LimitMovesDashboard() {
           <DomPanel
             title="涨停主导板块 · 酝酿" hint="近5/10日「当日涨停最多板块」出现次数，次数越多=该板块持续爆发涨停"
             d5={domFreq.up5} d10={domFreq.up10} accent="up"
-            onSelectSector={(n) => toggleMain(n, 'up')}
-            expandedName={expMain?.side === 'up' ? expMain.name : null}
+            onSelectSector={(n) => toggleMainFrom('dom')(n, 'up')}
+            expandedName={expMainOrigin === 'dom' && expMain?.side === 'up' ? expMain.name : null}
           />
           <DomPanel
             title="跌停主导板块 · 退潮" hint="近5/10日「当日跌停最多板块」出现次数，次数越多=该板块持续爆发跌停"
             d5={domFreq.down5} d10={domFreq.down10} accent="down"
-            onSelectSector={(n) => toggleMain(n, 'down')}
-            expandedName={expMain?.side === 'down' ? expMain.name : null}
+            onSelectSector={(n) => toggleMainFrom('dom')(n, 'down')}
+            expandedName={expMainOrigin === 'dom' && expMain?.side === 'down' ? expMain.name : null}
           />
         </div>
       )}
+      {expMainOrigin === 'dom' && renderExp(expMain, expMainStocks, () => setExpMain(null))}
 
       {/* 日期选择：仅影响下方「集中板块 / 二板」等当日数据（不影响上方走势图与主导统计） */}
       <div className="flex items-center gap-2 flex-wrap">
@@ -569,7 +578,7 @@ export default function LimitMovesDashboard() {
           isLoading={dataLoading}
           collapsed={collapsedMainPair}
           onSelectSector={(n) => toggleMain(n, 'up')}
-          expandedName={expMain?.side === 'up' ? expMain.name : null}
+          expandedName={expMainOrigin === 'hotspot' && expMain?.side === 'up' ? expMain.name : null}
         />
         <SectorHotspot
           title="跌停集中板块"
@@ -581,10 +590,10 @@ export default function LimitMovesDashboard() {
           isLoading={dataLoading}
           collapsed={collapsedMainPair}
           onSelectSector={(n) => toggleMain(n, 'down')}
-          expandedName={expMain?.side === 'down' ? expMain.name : null}
+          expandedName={expMainOrigin === 'hotspot' && expMain?.side === 'down' ? expMain.name : null}
         />
       </div>
-      {renderExp(expMain, expMainStocks, () => setExpMain(null))}
+      {expMainOrigin === 'hotspot' && renderExp(expMain, expMainStocks, () => setExpMain(null))}
 
       {/* ── 二板及以上集中板块（过滤首板，看持续强度）─────────────────────── */}
       <div className="flex items-baseline gap-2 pt-1">
