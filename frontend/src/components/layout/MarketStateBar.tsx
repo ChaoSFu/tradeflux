@@ -120,6 +120,15 @@ export function MarketStateBar() {
     .slice(0, 5)
     .map(([name]) => name)
 
+  // 今日涨停最多前 5：当日涨停股所属板块出现次数最高的 5 个（与「涨跌停概览」板块统计同口径）
+  const todayLimitUpTop5: [string, number][] = useMemo(() => {
+    const cnt = new Map<string, number>()
+    for (const s of ((up as any)?.items ?? []) as Stock[]) {
+      for (const sec of s.sectors ?? []) cnt.set(sec, (cnt.get(sec) ?? 0) + 1)
+    }
+    return [...cnt.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 5)
+  }, [up])
+
   // 龙头分组赚钱效应：今日 avg_pct（来自 profit-effect）+ 30日均值（来自 market-history）
   const { data: history } = useQuery({ queryKey: ['market-history', 30], queryFn: () => fetchMarketHistory(30) })
   const groupAvg30: Record<string, number> = (() => {
@@ -282,8 +291,8 @@ export function MarketStateBar() {
         </div>
       )}
 
-      {/* 今日最强前5（当日涨幅最高）+ 持续板块（5/10/20 日强归并出现≥2次） */}
-      {(todayTop5.length > 0 || sustained.length > 0) && (
+      {/* 今日最强前5（当日涨幅最高）+ 今日涨停最多 + 持续板块（5/10/20 日强归并出现≥2次） */}
+      {(todayTop5.length > 0 || todayLimitUpTop5.length > 0 || sustained.length > 0) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
           {todayTop5.length > 0 && (
             <>
@@ -293,9 +302,21 @@ export function MarketStateBar() {
               ))}
             </>
           )}
-          {sustained.length > 0 && (
+          {todayLimitUpTop5.length > 0 && (
             <>
               {todayTop5.length > 0 && <span className="text-bg-border shrink-0 mx-0.5">|</span>}
+              <span className="text-[10px] text-up shrink-0" title="当日涨停股所属板块出现次数最高的 5 个板块">今日涨停最多</span>
+              {todayLimitUpTop5.map(([name, c]) => (
+                <span key={`lu-${name}`} className="inline-flex items-center gap-1">
+                  <ClickSector name={name} pct={sectorTags.get(name)?.pct_today} active={expandedSector === name} onClick={() => toggleSector(name)} />
+                  <span className="text-[10px] font-mono font-bold text-up">×{c}</span>
+                </span>
+              ))}
+            </>
+          )}
+          {sustained.length > 0 && (
+            <>
+              {(todayTop5.length > 0 || todayLimitUpTop5.length > 0) && <span className="text-bg-border shrink-0 mx-0.5">|</span>}
               <span className="text-[10px] text-text-muted shrink-0" title="在 5/10/20 日强势板块中出现 ≥2 次，体现持续力">持续板块</span>
               {sustained.map(([name, c]) => (
                 <span key={`sus-${name}`} className="inline-flex items-center gap-1">
