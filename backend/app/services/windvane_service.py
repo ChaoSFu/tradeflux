@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import date as date_cls, datetime
 from typing import List, Optional
 
@@ -410,54 +411,69 @@ def _read_windvane_from_db(db: Session) -> WindvaneResponse:
     )
 
 
-def _fetch_trends_projection() -> Optional[dict]:
+def _fetch_trends_projection() -> tuple[Optional[dict], Optional[str]]:
     """
     用东财分钟数据（trends2, ndays=2）做「昨日同期」外推——与东财自身口径同源:
       今日盘中累计 = 今日各分钟成交额之和（沪市综指000001 + 深市综指399106,与SUMTVALLIST同口径）
       预估全天 = 今日累计 × 昨日全天 ÷ 昨日同一分钟数累计
-    返回 {'date','amount','estimate','is_trading'} 或 None（失败/无数据）。60s 缓存。
+    返回 (data, error)：
+      - data 非空：正常拿到盘中投影，{'date','amount','estimate','is_trading'}；
+      - data 为空、error 也为空：接口本身没有当日数据（非交易时段等正常情况），不算错误；
+      - error 非空：多次重试后请求仍失败，值得记录排查（比如服务器到东财连接不稳）。
+    60s 缓存；缓存命中时不重试、不返回 error。
     """
     now = datetime.now()
     if _trends_cache["data"] is not None and _trends_cache["ts"] and \
             (now - _trends_cache["ts"]).total_seconds() < _TRENDS_TTL:
-        return _trends_cache["data"]
+        return _trends_cache["data"], None
 
     tot_today = tot_yday_same = tot_yday_full = 0.0
     today_str: Optional[str] = None
     today_minutes = 0
-    try:
-        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=10) as client:
-            for secid in ("1.000001", "0.399106"):
-                r = client.get(TRENDS2_URL, params={
-                    "fields1": "f1,f2", "fields2": "f51,f57",
-                    "ut": "fa5fd1943c7b386f172d6893dbfba10b",
-                    "iscr": "0", "iscca": "0", "secid": secid, "time": "0", "ndays": "2",
-                })
-                trends = ((r.json().get("data") or {}).get("trends")) or []
-                by_date: dict[str, list[float]] = {}
-                for line in trends:
-                    parts = line.split(",")
-                    if len(parts) < 2:
+    last_err: Optional[str] = None
+    for attempt in range(3):  # 最多 3 次，递增退避（与 deviation_service.sync_indices 同款重试策略）
+        tot_today = tot_yday_same = tot_yday_full = 0.0
+        today_str = None
+        today_minutes = 0
+        try:
+            with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=10) as client:
+                for secid in ("1.000001", "0.399106"):
+                    r = client.get(TRENDS2_URL, params={
+                        "fields1": "f1,f2", "fields2": "f51,f57",
+                        "ut": "fa5fd1943c7b386f172d6893dbfba10b",
+                        "iscr": "0", "iscca": "0", "secid": secid, "time": "0", "ndays": "2",
+                    })
+                    trends = ((r.json().get("data") or {}).get("trends")) or []
+                    by_date: dict[str, list[float]] = {}
+                    for line in trends:
+                        parts = line.split(",")
+                        if len(parts) < 2:
+                            continue
+                        d = parts[0][:10]
+                        try:
+                            by_date.setdefault(d, []).append(float(parts[1]))
+                        except ValueError:
+                            continue
+                    dates = sorted(by_date)
+                    if len(dates) < 2:
                         continue
-                    d = parts[0][:10]
-                    try:
-                        by_date.setdefault(d, []).append(float(parts[1]))
-                    except ValueError:
-                        continue
-                dates = sorted(by_date)
-                if len(dates) < 2:
-                    continue
-                yday_rows, today_rows = by_date[dates[-2]], by_date[dates[-1]]
-                tot_today += sum(today_rows)
-                tot_yday_full += sum(yday_rows)
-                tot_yday_same += sum(yday_rows[: len(today_rows)])
-                today_str = dates[-1]
-                today_minutes = max(today_minutes, len(today_rows))
-    except Exception:
-        return None
+                    yday_rows, today_rows = by_date[dates[-2]], by_date[dates[-1]]
+                    tot_today += sum(today_rows)
+                    tot_yday_full += sum(yday_rows)
+                    tot_yday_same += sum(yday_rows[: len(today_rows)])
+                    today_str = dates[-1]
+                    today_minutes = max(today_minutes, len(today_rows))
+            last_err = None
+            break
+        except Exception as e:  # noqa: BLE001
+            last_err = f"{type(e).__name__}: {e}"
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
 
+    if last_err:
+        return None, last_err
     if today_str is None or tot_today <= 0:
-        return None
+        return None, None
     # A股全天 241 根分钟线（9:30-11:30 + 13:00-15:00）;不足即仍在盘中
     trading = today_minutes < 241
     # 差额外推（与东财风向标同款公式）:预测全天 = 今日累计 + (昨日全天 − 昨日同期累计)
@@ -470,25 +486,31 @@ def _fetch_trends_projection() -> Optional[dict]:
     data = {"date": today_str, "amount": tot_today, "estimate": estimate, "is_trading": trading}
     _trends_cache["ts"] = now
     _trends_cache["data"] = data
-    return data
+    return data, None
 
 
-def _enrich_intraday(resp: WindvaneResponse, db: Optional[Session] = None) -> None:
+def _enrich_intraday(resp: WindvaneResponse, db: Optional[Session] = None) -> Optional[str]:
     """
     最新交易日数据未入库时（盘中/收盘后未同步），补实时成交额 + 预估全天。
     日期以分钟数据自带日期为准——周末/节假日 trends2 最新日即上一交易日,
     已在收盘序列里,自然跳过,无需交易日历判断。
     盘中值+预测同时落库到 market_breadth_daily 当日行（收盘后官方值由每日
     数据更新覆盖 deal_amount;predicted_amount 留存供「预测 vs 实际」复盘）。
+
+    返回值：非空字符串表示这次盘中补数抓取失败的原因（调用方决定是否记录/
+    展示）；成功、或当前确实没有可补的数据（非交易时段、官方数据已覆盖今天）
+    时返回 None。
     """
     t = resp.turnover
     if t is None:
-        return
-    proj = _fetch_trends_projection()
+        return None
+    proj, err = _fetch_trends_projection()
+    if err:
+        return err
     if not proj:
-        return
+        return None
     if t.series and t.series[-1].date >= proj["date"]:
-        return  # 已入库,不覆盖
+        return None  # 已入库,不覆盖
     t.intraday_date = proj["date"]
     t.intraday_amount = proj["amount"]
     t.intraday_estimate = proj["estimate"]
@@ -505,8 +527,10 @@ def _enrich_intraday(resp: WindvaneResponse, db: Optional[Session] = None) -> No
             if proj["estimate"] is not None:
                 row.predicted_amount = proj["estimate"]
             db.commit()
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             db.rollback()
+            return f"{type(e).__name__}: {e}"
+    return None
 
 
 def get_windvane(db: Session, force_refresh: bool = False) -> WindvaneResponse:
@@ -528,9 +552,12 @@ def get_windvane(db: Session, force_refresh: bool = False) -> WindvaneResponse:
 
         resp = _read_windvane_from_db(db)
         try:
-            _enrich_intraday(resp, db)
-        except Exception:  # noqa: BLE001
-            pass
+            intraday_err = _enrich_intraday(resp, db)
+        except Exception as e:  # noqa: BLE001
+            intraday_err = f"{type(e).__name__}: {e}"
+        if intraday_err:
+            print(f"[windvane] 盘中成交额补数失败: {intraday_err}", flush=True)
+            sync_errors.append(f"成交分析(盘中实时): {intraday_err}")
         # 同步错误合并展示（去重）
         for e in sync_errors:
             if e not in resp.errors:
