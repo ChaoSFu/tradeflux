@@ -19,7 +19,7 @@ import random
 import string
 from datetime import date
 from dataclasses import dataclass, field
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Set, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 HEADERS = {
@@ -964,22 +964,31 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
     klines 字段：f51 日期, f53 收盘, f59 涨跌幅%。
     """
     end_date = date.today().strftime("%Y%m%d")
-    try:
-        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
-            resp = client.get(KLINE_URL, params={
-                "secid": secid,
-                "fields1": "f1,f2,f3,f4,f5,f6",
-                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-                "lmt": days,
-                "klt": 101,
-                "fqt": 1,
-                "end": end_date,
-            })
-            payload = resp.json()
-        raw = (payload.get("data") or {}).get("klines") or []
-    except Exception as e:
-        print(f"[fetcher] 指数 {secid} 东财K线失败: {e}（回退腾讯）")
-        raw = []  # 落到下方腾讯兜底
+    raw: list = []
+    last_err: Optional[Exception] = None
+    for attempt in range(3):  # 最多 3 次，递增退避（同 deviation_service.sync_indices）；
+        # 避免瞬时断连就回退腾讯丢失当日成交额（腾讯/新浪无成交额字段）
+        try:
+            with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
+                resp = client.get(KLINE_URL, params={
+                    "secid": secid,
+                    "fields1": "f1,f2,f3,f4,f5,f6",
+                    "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+                    "lmt": days,
+                    "klt": 101,
+                    "fqt": 1,
+                    "end": end_date,
+                })
+                payload = resp.json()
+            raw = (payload.get("data") or {}).get("klines") or []
+            last_err = None
+            break
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+    if last_err is not None:
+        print(f"[fetcher] 指数 {secid} 东财K线失败（重试3次后仍失败）: {last_err}（回退腾讯）")
 
     out: list[dict] = []
     for line in raw:
