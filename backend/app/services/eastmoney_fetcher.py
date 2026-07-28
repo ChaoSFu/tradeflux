@@ -37,7 +37,7 @@ _WARMUP_URL = "https://quote.eastmoney.com/zs000001.html"
 
 
 @contextmanager
-def _warmed_client(headers: dict = HEADERS, timeout: int = 15):
+def _warmed_client(headers: dict = HEADERS, timeout: int = 15, tag: str = ""):
     """
     push2his.eastmoney.com 的行情接口对"冷连接直接打接口"会静默丢弃请求
     （TLS 握手、HTTP 请求都正常发出，服务器不返回任何响应），但同一个
@@ -45,12 +45,18 @@ def _warmed_client(headers: dict = HEADERS, timeout: int = 15):
     ——跟具体 cookie 内容无关，只是需要连接不是"冷启动直接打 API"。
     用法与 httpx.Client 一致：`with _warmed_client() as client: ...`。
     预热请求失败不阻断——后续请求仍按原样尝试，失败自有上层重试/兜底处理。
+
+    tag 仅用于日志前缀，方便确认这版代码是否真的在跑、以及预热本身
+    是否成功（和后面接口请求是否成功分开看，出问题时才能定位到底是
+    预热没生效、还是预热成功了但接口依然被拒）。
     """
+    label = f"[warmup{f':{tag}' if tag else ''}]"
     with httpx.Client(headers=headers, timeout=timeout, follow_redirects=True) as client:
         try:
-            client.get(_WARMUP_URL)
-        except Exception:  # noqa: BLE001
-            pass
+            r = client.get(_WARMUP_URL)
+            print(f"{label} 预热请求完成 status={r.status_code} len={len(r.content)}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"{label} 预热请求失败（不阻断，继续按原样尝试正式请求）: {type(e).__name__}: {e}", flush=True)
         yield client
 
 # 纳入范围：主板 + 科创板(688) + 创业板(300/301)
@@ -988,7 +994,7 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
     last_err: Optional[Exception] = None
     for attempt in range(2):  # 预热连接后通常一次就成功；保留1次重试兜底真正的瞬时抖动
         try:
-            with _warmed_client(timeout=timeout) as client:
+            with _warmed_client(timeout=timeout, tag=f"index-kline:{secid}") as client:
                 resp = client.get(KLINE_URL, params={
                     "secid": secid,
                     "fields1": "f1,f2,f3,f4,f5,f6",
@@ -1000,10 +1006,12 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
                 })
                 payload = resp.json()
             raw = (payload.get("data") or {}).get("klines") or []
+            print(f"[fetcher] 指数 {secid} 东财K线请求成功（第{attempt + 1}次尝试）status={resp.status_code} klines={len(raw)}", flush=True)
             last_err = None
             break
         except Exception as e:  # noqa: BLE001
             last_err = e
+            print(f"[fetcher] 指数 {secid} 东财K线第{attempt + 1}次尝试失败: {type(e).__name__}: {e}", flush=True)
             if attempt < 1:
                 time.sleep(1.5)
     if last_err is not None:
