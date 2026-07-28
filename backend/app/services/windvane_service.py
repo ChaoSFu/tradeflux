@@ -27,7 +27,7 @@ import httpx
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from .eastmoney_fetcher import HEADERS
+from .eastmoney_fetcher import HEADERS, _warmed_client
 from ..models.market_index import MarketBreadthDaily
 
 DATACENTER_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
@@ -431,12 +431,12 @@ def _fetch_trends_projection() -> tuple[Optional[dict], Optional[str]]:
     today_str: Optional[str] = None
     today_minutes = 0
     last_err: Optional[str] = None
-    for attempt in range(3):  # 最多 3 次，递增退避（与 deviation_service.sync_indices 同款重试策略）
+    for attempt in range(2):  # 预热连接后通常一次就成功；保留1次重试兜底真正的瞬时抖动
         tot_today = tot_yday_same = tot_yday_full = 0.0
         today_str = None
         today_minutes = 0
         try:
-            with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=10) as client:
+            with _warmed_client(timeout=10) as client:
                 for secid in ("1.000001", "0.399106"):
                     r = client.get(TRENDS2_URL, params={
                         "fields1": "f1,f2", "fields2": "f51,f57",
@@ -467,8 +467,8 @@ def _fetch_trends_projection() -> tuple[Optional[dict], Optional[str]]:
             break
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {e}"
-            if attempt < 2:
-                time.sleep(1.5 * (attempt + 1))
+            if attempt < 1:
+                time.sleep(1.5)
 
     if last_err:
         return None, last_err

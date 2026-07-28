@@ -17,6 +17,7 @@ import httpx
 import time
 import random
 import string
+from contextlib import contextmanager
 from datetime import date
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Tuple, Optional
@@ -32,6 +33,25 @@ HEADERS = {
 
 CLIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+_WARMUP_URL = "https://quote.eastmoney.com/zs000001.html"
+
+
+@contextmanager
+def _warmed_client(headers: dict = HEADERS, timeout: int = 15):
+    """
+    push2his.eastmoney.com 的行情接口对"冷连接直接打接口"会静默丢弃请求
+    （TLS 握手、HTTP 请求都正常发出，服务器不返回任何响应），但同一个
+    连接/会话如果先访问过一次普通网页，紧接着再请求接口就能正常拿到数据
+    ——跟具体 cookie 内容无关，只是需要连接不是"冷启动直接打 API"。
+    用法与 httpx.Client 一致：`with _warmed_client() as client: ...`。
+    预热请求失败不阻断——后续请求仍按原样尝试，失败自有上层重试/兜底处理。
+    """
+    with httpx.Client(headers=headers, timeout=timeout, follow_redirects=True) as client:
+        try:
+            client.get(_WARMUP_URL)
+        except Exception:  # noqa: BLE001
+            pass
+        yield client
 
 # 纳入范围：主板 + 科创板(688) + 创业板(300/301)
 # 排除：北交所(8xxxxx)
@@ -966,10 +986,9 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
     end_date = date.today().strftime("%Y%m%d")
     raw: list = []
     last_err: Optional[Exception] = None
-    for attempt in range(3):  # 最多 3 次，递增退避（同 deviation_service.sync_indices）；
-        # 避免瞬时断连就回退腾讯丢失当日成交额（腾讯/新浪无成交额字段）
+    for attempt in range(2):  # 预热连接后通常一次就成功；保留1次重试兜底真正的瞬时抖动
         try:
-            with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
+            with _warmed_client(timeout=timeout) as client:
                 resp = client.get(KLINE_URL, params={
                     "secid": secid,
                     "fields1": "f1,f2,f3,f4,f5,f6",
@@ -985,10 +1004,10 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
             break
         except Exception as e:  # noqa: BLE001
             last_err = e
-            if attempt < 2:
-                time.sleep(1.5 * (attempt + 1))
+            if attempt < 1:
+                time.sleep(1.5)
     if last_err is not None:
-        print(f"[fetcher] 指数 {secid} 东财K线失败（重试3次后仍失败）: {last_err}（回退腾讯）")
+        print(f"[fetcher] 指数 {secid} 东财K线失败（重试1次后仍失败）: {last_err}（回退腾讯）")
 
     out: list[dict] = []
     for line in raw:
