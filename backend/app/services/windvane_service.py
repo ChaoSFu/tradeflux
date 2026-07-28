@@ -436,13 +436,14 @@ def _fetch_trends_projection() -> tuple[Optional[dict], Optional[str]]:
         today_str = None
         today_minutes = 0
         try:
-            with _warmed_client(timeout=10) as client:
+            with _warmed_client(timeout=10, tag="trends2") as client:
                 for secid in ("1.000001", "0.399106"):
                     r = client.get(TRENDS2_URL, params={
                         "fields1": "f1,f2", "fields2": "f51,f57",
                         "ut": "fa5fd1943c7b386f172d6893dbfba10b",
                         "iscr": "0", "iscca": "0", "secid": secid, "time": "0", "ndays": "2",
                     })
+                    print(f"[windvane:trends2] {secid} 请求完成 status={r.status_code}", flush=True)
                     trends = ((r.json().get("data") or {}).get("trends")) or []
                     by_date: dict[str, list[float]] = {}
                     for line in trends:
@@ -467,6 +468,7 @@ def _fetch_trends_projection() -> tuple[Optional[dict], Optional[str]]:
             break
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {e}"
+            print(f"[windvane:trends2] 第{attempt + 1}次尝试失败: {last_err}", flush=True)
             if attempt < 1:
                 time.sleep(1.5)
 
