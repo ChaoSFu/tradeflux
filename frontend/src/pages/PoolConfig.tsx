@@ -11,6 +11,7 @@ interface FieldProps {
   title: string
   hint: string
   value: string
+  savedValue: string
   defaultValue: string
   custom: boolean
   editable: boolean
@@ -18,7 +19,7 @@ interface FieldProps {
   onReset: () => void
 }
 
-function PromptField({ title, hint, value, defaultValue, custom, editable, onChange, onReset }: FieldProps) {
+function PromptField({ title, hint, value, savedValue, defaultValue, custom, editable, onChange, onReset }: FieldProps) {
   return (
     <Card title={title} action={
       <span className={cn('text-xs px-1.5 py-0.5 rounded', custom ? 'bg-accent/15 text-accent' : 'bg-bg-elevated text-text-muted')}>
@@ -48,7 +49,7 @@ function PromptField({ title, hint, value, defaultValue, custom, editable, onCha
             <RotateCcw className="w-3 h-3" /> 恢复默认
           </button>
         ) : <span />}
-        {editable && value.trim() !== defaultValue.trim() && (
+        {editable && value.trim() !== savedValue.trim() && (
           <span className="text-xs text-warn">已修改，未保存</span>
         )}
       </div>
@@ -102,6 +103,7 @@ export default function PoolConfig() {
         title="强势池 Prompt"
         hint="决定强势股池成员。例：主板非ST；非退市股；近60日涨停天数大于9 或 近20日涨幅前10。"
         value={strong}
+        savedValue={data.strong_pool_keyword}
         defaultValue={data.default_strong_pool_keyword}
         custom={data.is_strong_custom}
         editable={isLoggedIn}
@@ -113,6 +115,7 @@ export default function PoolConfig() {
         title="当日涨跌停池 Prompt"
         hint="决定当日涨停/跌停池成员。例：非ST；非退市股票；涨停股票或者跌停股票。"
         value={limit}
+        savedValue={data.limit_move_keyword}
         defaultValue={data.default_limit_move_keyword}
         custom={data.is_limit_custom}
         editable={isLoggedIn}
