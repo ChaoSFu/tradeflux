@@ -17,6 +17,7 @@ import httpx
 import time
 import random
 import string
+import threading
 from contextlib import contextmanager
 from datetime import date
 from dataclasses import dataclass, field
@@ -58,6 +59,33 @@ def _warmed_client(headers: dict = HEADERS, timeout: int = 15, tag: str = ""):
         except Exception as e:  # noqa: BLE001
             print(f"{label} 预热请求失败（不阻断，继续按原样尝试正式请求）: {type(e).__name__}: {e}", flush=True)
         yield client
+
+
+_thread_local = threading.local()
+
+
+def _thread_warmed_client(headers: dict = HEADERS, timeout: int = 15) -> httpx.Client:
+    """
+    单只股票 K 线请求量小、但批量并发拉取时数量很大（可达上百只），如果
+    每只股票都单独预热一次连接（额外一次网页请求），批量拉取会成倍变慢。
+    这里改为每个工作线程只预热一次、同一线程后续请求复用同一个 Client——
+    ThreadPoolExecutor 的每个线程在一次 fetch_klines_batch 调用内会处理
+    多只股票，预热成本被摊薄到接近可忽略。
+    Client 不主动关闭，随线程结束由 GC 回收（线程是短生命周期的批量任务
+    线程，不会无限累积）。
+    """
+    client = getattr(_thread_local, "client", None)
+    if client is not None:
+        return client
+    client = httpx.Client(headers=headers, timeout=timeout, follow_redirects=True)
+    tid = threading.get_ident()
+    try:
+        r = client.get(_WARMUP_URL)
+        print(f"[warmup:thread-{tid}] 预热请求完成 status={r.status_code} len={len(r.content)}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[warmup:thread-{tid}] 预热请求失败（不阻断，继续按原样尝试正式请求）: {type(e).__name__}: {e}", flush=True)
+    _thread_local.client = client
+    return client
 
 # 纳入范围：主板 + 科创板(688) + 创业板(300/301)
 # 排除：北交所(8xxxxx)
@@ -526,26 +554,26 @@ def _fetch_kline_eastmoney(
     secid = f"{market}.{code}"
     end_date = _date.today().strftime("%Y%m%d")
 
-    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
-        resp = client.get(KLINE_URL, params={
-            "secid": secid,
-            "fields1": "f1,f2,f3,f4,f5,f6",
-            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-            "lmt": days,
-            "klt": 101,
-            "fqt": 1,
-            "end": end_date,
-        })
-        payload = resp.json()
-        data = payload.get("data") or {}
-        klines_raw = data.get("klines") or []
-        bars = [
-            bar for raw in klines_raw
-            if (bar := _parse_kline_bar(raw, is_st, limit_pct)) is not None
-        ]
-        if not bars:
-            raise ValueError("东方财富 K 线返回空数据")
-        return bars
+    client = _thread_warmed_client(timeout=timeout)
+    resp = client.get(KLINE_URL, params={
+        "secid": secid,
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        "lmt": days,
+        "klt": 101,
+        "fqt": 1,
+        "end": end_date,
+    })
+    payload = resp.json()
+    data = payload.get("data") or {}
+    klines_raw = data.get("klines") or []
+    bars = [
+        bar for raw in klines_raw
+        if (bar := _parse_kline_bar(raw, is_st, limit_pct)) is not None
+    ]
+    if not bars:
+        raise ValueError("东方财富 K 线返回空数据")
+    return bars
 
 
 def _fetch_kline_tencent(
@@ -583,8 +611,8 @@ def fetch_kline(
     lp = get_limit_pct(code, is_st)
     try:
         return _fetch_kline_eastmoney(code, market, days, is_st, lp, timeout)
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001
+        print(f"[fetcher] 个股 {market}.{code} 东财K线失败，回退腾讯: {type(e).__name__}: {e}", flush=True)
 
     try:
         return _fetch_kline_tencent(code, market, days, is_st, lp, timeout)
