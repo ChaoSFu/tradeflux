@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import datetime
 from typing import List, Optional
 
@@ -65,7 +66,13 @@ def sync_index_bars(db: Session) -> dict:
     from datetime import date as _date
     ok = upserts = 0
     errors: List[str] = []
-    for meta in INDICES:
+    for i, meta in enumerate(INDICES):
+        if i:
+            time.sleep(1.5)  # 同 deviation_service.sync_indices 的既有做法，低成本保留；
+            # 实测加大到3秒也没能稳定改善指数K线失败率（甚至更差），说明请求节奏
+            # 不是主因，真实原因更像是这固定5个secid被反复高频访问触发的针对性
+            # 限流/封禁（个股因代码分散、天然更像正常用户访问而不受影响）。
+            # 该问题目前靠下方的腾讯/新浪兜底 + 缺量可见提示兜底，未彻底解决。
         try:
             bars = fetch_index_kline(meta["secid"], days=HISTORY_BARS)
             if not bars:
