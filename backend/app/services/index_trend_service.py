@@ -95,14 +95,17 @@ def sync_index_bars(db: Session) -> dict:
             db.commit()
             ok += 1
             # 东财K线失败回退腾讯/新浪时最新一根通常没有成交额——两个备用源都没有
-            # 这个字段。改走另一个东财实时快照接口（push2/stock/get，不是持续被限流
-            # 的push2his历史K线接口）单独补一下，仍失败才算降级、写进警告
-            if row.amount is None:
+            # 这个字段。改走实时快照接口（新浪优先/东财兜底）单独补一下。
+            # 注意：只要K线本身没带成交额就要重新拉一次快照并覆盖，不能只在
+            # row.amount 为空时才拉——否则盘中（未收盘、数据未走完）就补过一次
+            # 的话，那个偏低的盘中快照值会一直卡住，收盘后也不会被真实全天值
+            # 覆盖（此前上证指数就是这样把盘中值当成了收盘值，成交额少了近6倍）
+            if b.get("amount") is None:
                 amt = fetch_index_amount(meta["secid"])
                 if amt is not None:
                     row.amount = amt
                     db.commit()
-                else:
+                elif row.amount is None:
                     errors.append(f"{meta['name']}: 已用备用数据源，最新一日成交额缺失")
         except Exception as e:  # noqa: BLE001
             db.rollback()
