@@ -30,7 +30,7 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
-from .eastmoney_fetcher import fetch_index_kline
+from .eastmoney_fetcher import fetch_index_kline, fetch_index_amount
 from ..models.market_index import IndexDailySnapshot
 from ..schemas.market_index import (
     IndexTrendPoint, IndexSignal, IndexTrendAnalysis, MarketTrendResponse,
@@ -101,10 +101,16 @@ def sync_index_bars(db: Session) -> dict:
                 upserts += 1
             db.commit()
             ok += 1
-            # 东财失败回退腾讯/新浪时最新一根通常没有成交额——不算致命错误（K线本身
-            # 已成功），但值得让页面看得见，别人静默地少一根成交额柱子
-            if bars[-1].get("amount") is None:
-                errors.append(f"{meta['name']}: 已用备用数据源，最新一日成交额缺失")
+            # 东财K线失败回退腾讯/新浪时最新一根通常没有成交额——两个备用源都没有
+            # 这个字段。改走另一个东财实时快照接口（push2/stock/get，不是持续被限流
+            # 的push2his历史K线接口）单独补一下，仍失败才算降级、写进警告
+            if row.amount is None:
+                amt = fetch_index_amount(meta["secid"])
+                if amt is not None:
+                    row.amount = amt
+                    db.commit()
+                else:
+                    errors.append(f"{meta['name']}: 已用备用数据源，最新一日成交额缺失")
         except Exception as e:  # noqa: BLE001
             db.rollback()
             errors.append(f"{meta['name']}: {e}")

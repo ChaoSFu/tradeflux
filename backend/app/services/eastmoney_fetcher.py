@@ -1010,6 +1010,26 @@ def fetch_price_anomaly_list(page_size: int = 400, timeout: int = 15) -> tuple[l
     return (data.get("data") or [], bool(data.get("open")))
 
 
+QUOTE_URL = "https://push2.eastmoney.com/api/qt/stock/get"
+
+
+def fetch_index_amount(secid: str, timeout: int = 15) -> Optional[float]:
+    """
+    指数当日成交额（元）——走实时行情快照接口（push2，非持续被限流的push2his
+    历史K线接口），只取 f48（成交额）这一个字段。用于 K 线因东财限流回退腾讯/
+    新浪、但那两个源没有成交额字段时，单独补齐"最新一日成交额"。
+    失败返回 None（调用方按"仍缺失"处理，不阻断整体流程）。
+    """
+    try:
+        client = _thread_warmed_client(timeout=timeout)
+        resp = client.get(QUOTE_URL, params={"secid": secid, "fields": "f48", "invt": 2, "fltt": 1})
+        amt = (resp.json().get("data") or {}).get("f48")
+        return float(amt) if amt is not None else None
+    except Exception as e:  # noqa: BLE001
+        print(f"[fetcher] 指数 {secid} 实时成交额补数失败: {type(e).__name__}: {e}", flush=True)
+        return None
+
+
 def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dict]:
     """
     拉取指数日线（用于偏离值基准）。secid 形如 '1.000001'（上证）/'0.399006'（创业板指）。
