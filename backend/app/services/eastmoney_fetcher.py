@@ -1022,17 +1022,21 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
     last_err: Optional[Exception] = None
     for attempt in range(2):  # 预热连接后通常一次就成功；保留1次重试兜底真正的瞬时抖动
         try:
-            with _warmed_client(timeout=timeout, tag=f"index-kline:{secid}") as client:
-                resp = client.get(KLINE_URL, params={
-                    "secid": secid,
-                    "fields1": "f1,f2,f3,f4,f5,f6",
-                    "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-                    "lmt": days,
-                    "klt": 101,
-                    "fqt": 1,
-                    "end": end_date,
-                })
-                payload = resp.json()
+            # 复用同线程的长连接（同 _fetch_kline_eastmoney 个股请求的做法），而不是
+            # 像早期版本那样每次尝试都新建一条连接——实测个股批量拉取（复用连接）在
+            # 生产上稳定成功，指数拉取（曾经每次新建连接）持续失败，怀疑是短时间内
+            # 从同一 IP 高频新建连接触发了反爬，而非请求参数或secid本身的问题。
+            client = _thread_warmed_client(timeout=timeout)
+            resp = client.get(KLINE_URL, params={
+                "secid": secid,
+                "fields1": "f1,f2,f3,f4,f5,f6",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+                "lmt": days,
+                "klt": 101,
+                "fqt": 1,
+                "end": end_date,
+            })
+            payload = resp.json()
             raw = (payload.get("data") or {}).get("klines") or []
             print(f"[fetcher] 指数 {secid} 东财K线请求成功（第{attempt + 1}次尝试）status={resp.status_code} klines={len(raw)}", flush=True)
             last_err = None
