@@ -671,6 +671,9 @@ STRONG_POOL_KEYWORD = (
     "近20个交易日涨幅前10;"
 )
 
+# 选股关键词：当日成交额最大的一批股票（用于成交额概览页面）
+TURNOVER_POOL_KEYWORD = "成交额排序前60；成交额大于20亿"
+
 _F10_HEADERS = {
     "Referer": "https://emweb.securities.eastmoney.com/",
     "User-Agent": (
@@ -851,6 +854,98 @@ def fetch_strong_pool_codes(
     if with_names:
         return {c: d["name"] for c, d in details.items()}
     return set(details)
+
+
+def _parse_cn_amount(s: str) -> float:
+    """把 "675.11亿"/"7232.30万"/纯数字字符串统一解析成元。解析失败返回 0.0。"""
+    s = (s or "").strip()
+    if not s:
+        return 0.0
+    try:
+        if s.endswith("亿"):
+            return float(s[:-1]) * 1e8
+        if s.endswith("万"):
+            return float(s[:-1]) * 1e4
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def fetch_turnover_top_stocks(keyword: str, page_size: int = 60) -> list[dict]:
+    """
+    调用东方财富智能选股 search-code 接口（同 fetch_strong_pool_codes 的接口/
+    分页逻辑），用于「成交额排序前N」这类 prompt。选股 API 返回的每条数据本身
+    就带涨跌幅/成交额/换手率等字段，不需要再对每只股票单独拉K线/快照补数据。
+
+    返回按 API 原始顺序（即已按成交额降序）排列的
+    [{"code","name","pct_change","amount","turnover_rate","market"}, ...]。
+    分页过程中任一页失败 → 视为本次不可用，返回空列表（同 fetch_strong_pool_codes
+    的完整性约束，不把「部分结果」当作权威全集）。
+    """
+    custom_data = f'[{{"type":"text","value":"{keyword}","extra":""}}]'
+    out: list[dict] = []
+    seen: set[str] = set()
+    page_no = 1
+    total: Optional[int] = None
+
+    while True:
+        ts = str(int(time.time() * 1_000_000))
+        rid = "".join(random.choices(string.ascii_letters, k=32)) + str(int(time.time() * 1000))
+        body = {
+            "needAmbiguousSuggest": True,
+            "pageSize": page_size,
+            "pageNo": page_no,
+            "fingerprint": "a3b5b577646954c0a1ff47146894e3d1",
+            "matchWord": "",
+            "shareToGuba": False,
+            "timestamp": ts,
+            "requestId": rid,
+            "removedConditionIdList": [],
+            "ownSelectAll": False,
+            "needCorrect": True,
+            "client": "WEB",
+            "product": "",
+            "needShowStockNum": False,
+            "biz": "web_ai_select_stocks",
+            "xcId": "xc11bd34d6790101033c",
+            "gids": [],
+            "dxInfoNew": [],
+            "keyWordNew": keyword,
+            "customDataNew": custom_data,
+        }
+        try:
+            resp = httpx.post(STRONG_POOL_SEARCH_URL, headers=_SEARCH_HEADERS, json=body, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:  # noqa: BLE001
+            print(f"[fetcher] 成交额选股 API 第 {page_no} 页失败: {e}（本次视为不可用）", flush=True)
+            return []
+
+        result = data.get("data", {}).get("result", {})
+        data_list = result.get("dataList", [])
+        if total is None:
+            total = result.get("total", len(data_list))
+
+        for item in data_list:
+            code = (item.get("SECURITY_CODE") or "").strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            out.append({
+                "code": code,
+                "name": (item.get("SECURITY_SHORT_NAME") or "").strip(),
+                "pct_change": float(item.get("CHG") or 0.0),
+                "amount": _parse_cn_amount(item.get("TRADING_VOLUMES")),
+                "turnover_rate": float(item.get("TURNOVER_RATE") or 0.0),
+                "market": (item.get("MARKET_SHORT_NAME") or "").strip(),
+            })
+
+        if not data_list or len(out) >= (total or 0):
+            break
+        page_no += 1
+        time.sleep(0.3)
+
+    return out
 
 
 # 涨跌停选股关键词

@@ -7,6 +7,7 @@ from .regulatory import RegulatoryUnusual
 from .market_index import IndexDailySnapshot, MarketBreadthDaily
 from .trade_journal import TradeJournal
 from .market_effect import MarketEffectDaily
+from .turnover_pool import TurnoverPoolDaily
 
 __all__ = [
     "Stock",
@@ -20,4 +21,5 @@ __all__ = [
     "RegulatoryUnusual",
     "IndexDailySnapshot",
     "MarketEffectDaily",
+    "TurnoverPoolDaily",
 ]

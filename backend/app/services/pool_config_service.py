@@ -7,14 +7,16 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from ..models.app_config import AppConfig
-from ..services.eastmoney_fetcher import STRONG_POOL_KEYWORD, LIMIT_MOVE_KEYWORD
+from ..services.eastmoney_fetcher import STRONG_POOL_KEYWORD, LIMIT_MOVE_KEYWORD, TURNOVER_POOL_KEYWORD
 
 KEY_STRONG = "strong_pool_keyword"
 KEY_LIMIT = "limit_move_keyword"
+KEY_TURNOVER = "turnover_pool_keyword"
 
 DEFAULTS = {
     KEY_STRONG: STRONG_POOL_KEYWORD,
     KEY_LIMIT: LIMIT_MOVE_KEYWORD,
+    KEY_TURNOVER: TURNOVER_POOL_KEYWORD,
 }
 
 
@@ -28,13 +30,17 @@ def get_pool_keywords(db: Session) -> dict:
     """返回当前生效 prompt + 默认值（供 daily_update / 界面用）。"""
     strong = _get(db, KEY_STRONG) or DEFAULTS[KEY_STRONG]
     limit = _get(db, KEY_LIMIT) or DEFAULTS[KEY_LIMIT]
+    turnover = _get(db, KEY_TURNOVER) or DEFAULTS[KEY_TURNOVER]
     return {
         "strong_pool_keyword": strong,
         "limit_move_keyword": limit,
+        "turnover_pool_keyword": turnover,
         "is_strong_custom": _get(db, KEY_STRONG) is not None,
         "is_limit_custom": _get(db, KEY_LIMIT) is not None,
+        "is_turnover_custom": _get(db, KEY_TURNOVER) is not None,
         "default_strong_pool_keyword": DEFAULTS[KEY_STRONG],
         "default_limit_move_keyword": DEFAULTS[KEY_LIMIT],
+        "default_turnover_pool_keyword": DEFAULTS[KEY_TURNOVER],
     }
 
 

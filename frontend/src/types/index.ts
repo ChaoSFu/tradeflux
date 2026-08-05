@@ -514,3 +514,37 @@ export interface CohortMember {
   outcome_board_count: number | null
   has_outcome: boolean
 }
+
+export interface TurnoverStock {
+  code: string
+  name: string
+  rank: number
+  amount: number             // 成交额（元）
+  pct_change: number
+  turnover_rate: number | null
+  sector_name: string | null
+  market: string | null
+  is_new: boolean
+}
+
+export interface TurnoverSectorGroup {
+  name: string
+  count: number
+  avg_pct_change: number
+  up_count: number
+  down_count: number
+  flat_count: number
+  total_amount: number
+  new_count: number
+  bias: 'bullish' | 'bearish' | 'mixed'
+}
+
+export interface TurnoverOverviewResponse {
+  date: string | null
+  stocks: TurnoverStock[]
+  sector_groups: TurnoverSectorGroup[]
+  total_amount: number
+  new_count: number
+  overall_avg_pct: number
+  errors: string[]
+}

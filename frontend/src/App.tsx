@@ -16,6 +16,7 @@ import Signals from '@/pages/Signals'
 import DailyReview from '@/pages/DailyReview'
 import LimitMovesDashboard from '@/pages/LimitMovesDashboard'
 import TradeJournal from '@/pages/TradeJournal'
+import TurnoverOverview from '@/pages/TurnoverOverview'
 
 export default function App() {
   return (
@@ -38,6 +39,7 @@ export default function App() {
           <Route path="trade-journal" element={<TradeJournal />} />
           {/* 涨跌停分析 */}
           <Route path="limit-moves" element={<LimitMovesDashboard />} />
+          <Route path="turnover" element={<TurnoverOverview />} />
         </Route>
       </Routes>
     </BrowserRouter>

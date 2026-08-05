@@ -65,10 +65,13 @@ export const fetchLastUpdateStatus = () =>
 export interface PoolPrompts {
   strong_pool_keyword: string
   limit_move_keyword: string
+  turnover_pool_keyword: string
   is_strong_custom: boolean
   is_limit_custom: boolean
+  is_turnover_custom: boolean
   default_strong_pool_keyword: string
   default_limit_move_keyword: string
+  default_turnover_pool_keyword: string
 }
 
 export const fetchPoolPrompts = () =>
@@ -77,4 +80,5 @@ export const fetchPoolPrompts = () =>
 export const updatePoolPrompts = (payload: {
   strong_pool_keyword?: string | null
   limit_move_keyword?: string | null
+  turnover_pool_keyword?: string | null
 }) => client.put<PoolPrompts>('/admin/pool-prompts', payload).then((r) => r.data)
