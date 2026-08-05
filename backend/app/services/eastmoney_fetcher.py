@@ -612,7 +612,7 @@ def fetch_kline(
     try:
         return _fetch_kline_eastmoney(code, market, days, is_st, lp, timeout)
     except Exception as e:  # noqa: BLE001
-        print(f"[fetcher] 个股 {market}.{code} 东财K线失败，回退腾讯: {type(e).__name__}: {e}", flush=True)
+        print(f"[fetcher] 个股 {market}.{code} 东财K线走兜底源（腾讯）: {type(e).__name__}", flush=True)
 
     try:
         return _fetch_kline_tencent(code, market, days, is_st, lp, timeout)
@@ -1074,35 +1074,25 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
     """
     end_date = date.today().strftime("%Y%m%d")
     raw: list = []
-    last_err: Optional[Exception] = None
-    for attempt in range(2):  # 预热连接后通常一次就成功；保留1次重试兜底真正的瞬时抖动
-        try:
-            # 复用同线程的长连接（同 _fetch_kline_eastmoney 个股请求的做法），而不是
-            # 像早期版本那样每次尝试都新建一条连接——实测个股批量拉取（复用连接）在
-            # 生产上稳定成功，指数拉取（曾经每次新建连接）持续失败，怀疑是短时间内
-            # 从同一 IP 高频新建连接触发了反爬，而非请求参数或secid本身的问题。
-            client = _thread_warmed_client(timeout=timeout)
-            resp = client.get(KLINE_URL, params={
-                "secid": secid,
-                "fields1": "f1,f2,f3,f4,f5,f6",
-                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-                "lmt": days,
-                "klt": 101,
-                "fqt": 1,
-                "end": end_date,
-            })
-            payload = resp.json()
-            raw = (payload.get("data") or {}).get("klines") or []
-            print(f"[fetcher] 指数 {secid} 东财K线请求成功（第{attempt + 1}次尝试）status={resp.status_code} klines={len(raw)}", flush=True)
-            last_err = None
-            break
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-            print(f"[fetcher] 指数 {secid} 东财K线第{attempt + 1}次尝试失败: {type(e).__name__}: {e}", flush=True)
-            if attempt < 1:
-                time.sleep(1.5)
-    if last_err is not None:
-        print(f"[fetcher] 指数 {secid} 东财K线失败（重试1次后仍失败）: {last_err}（回退腾讯）")
+    try:
+        # 复用同线程的长连接（同 _fetch_kline_eastmoney 个股请求的做法）。
+        # 注：这几个固定指数secid长期被东财push2his接口针对性限流，实测重试
+        # 基本不会成功（多次观察attempt2成功率≈0），只会拖长耗时+刷屏日志，
+        # 已改成单次尝试、失败直接走腾讯/新浪兜底（同个股的处理方式一致）。
+        client = _thread_warmed_client(timeout=timeout)
+        resp = client.get(KLINE_URL, params={
+            "secid": secid,
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+            "lmt": days,
+            "klt": 101,
+            "fqt": 1,
+            "end": end_date,
+        })
+        payload = resp.json()
+        raw = (payload.get("data") or {}).get("klines") or []
+    except Exception as e:  # noqa: BLE001
+        print(f"[fetcher] 指数 {secid} 东财K线走兜底源（东财: {type(e).__name__}）", flush=True)
 
     out: list[dict] = []
     for line in raw:
