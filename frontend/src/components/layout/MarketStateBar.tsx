@@ -2,8 +2,8 @@
  * MarketStateBar — 全局市场状态条（市场阶段/情绪温度/赚钱效应/涨跌停家数/建议仓位）
  * 复用到所有页面顶部。后续可在此扩展更多情绪温度关键指标。
  */
-import { useState, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useMemo, useEffect } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { fetchMarketState, fetchProfitEffect, fetchMarketHistory } from '@/api/marketState'
 import { fetchLimitMoves, fetchLimitMovesTrend, fetchStrongPool } from '@/api/stocks'
@@ -59,7 +59,11 @@ export function MarketStateBar() {
 
   // 点击板块 → 展开该板块强势股列表（与板块赚钱效应点击一致）
   const navigate = useNavigate()
+  const { pathname } = useLocation()
   const [expandedSector, setExpandedSector] = useState<string | null>(null)
+  // MarketStateBar 挂载在 Layout 里、跨路由常驻不卸载，切换页面时默认收起，
+  // 避免在别的页面下面拖着一个上个页面展开的板块股票列表
+  useEffect(() => setExpandedSector(null), [pathname])
   const { data: strongPool } = useQuery({
     queryKey: ['strong-pool-sector-analysis'],
     queryFn: () => fetchStrongPool({ page: 1, page_size: 500 }),
