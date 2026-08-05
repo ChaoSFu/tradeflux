@@ -27,7 +27,7 @@ import httpx
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from .eastmoney_fetcher import HEADERS, _warmed_client
+from .eastmoney_fetcher import HEADERS, SINA_HEADERS, _warmed_client
 from ..models.market_index import MarketBreadthDaily
 
 DATACENTER_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
@@ -411,22 +411,77 @@ def _read_windvane_from_db(db: Session) -> WindvaneResponse:
     )
 
 
-def _fetch_trends_projection() -> tuple[Optional[dict], Optional[str]]:
+SINA_MIN_KLINE_URL = (
+    "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_=/CN_MarketDataService.getKLineData"
+)
+
+
+def _sum_by_date(rows: list, key: str) -> dict[str, list[float]]:
+    by_date: dict[str, list[float]] = {}
+    for row in rows:
+        d = str(row.get("day", ""))[:10]
+        try:
+            by_date.setdefault(d, []).append(float(row[key]))
+        except (KeyError, ValueError, TypeError):
+            continue
+    return by_date
+
+
+def _fetch_trends_projection_sina() -> tuple[Optional[dict], Optional[str]]:
+    """
+    「昨日同期」外推的新浪版本——跟东财 trends2 完全独立的服务器/接口。
+    新浪5分钟K线每根bar自带amount（该5分钟区间成交额，非累计），按日期分组
+    求和即可还原「今日累计」「昨日同期累计」「昨日全天」，算法跟
+    _fetch_trends_projection_eastmoney 完全一致，只是数据源和取样粒度不同
+    （5分钟一根，而非1分钟一根）。
+    """
+    tot_today = tot_yday_same = tot_yday_full = 0.0
+    today_str: Optional[str] = None
+    today_bars = 0
+    try:
+        import json as _json
+        with httpx.Client(headers=SINA_HEADERS, follow_redirects=True, timeout=10) as client:
+            for symbol in ("sh000001", "sz399106"):
+                r = client.get(SINA_MIN_KLINE_URL, params={
+                    "symbol": symbol, "scale": 5, "ma": "no", "datalen": 100,
+                })
+                text = r.text
+                start, end = text.find("("), text.rfind(")")
+                if start < 0 or end <= start:
+                    continue
+                rows = _json.loads(text[start + 1: end])
+                by_date = _sum_by_date(rows, "amount")
+                dates = sorted(by_date)
+                if len(dates) < 2:
+                    continue
+                yday_rows, today_rows = by_date[dates[-2]], by_date[dates[-1]]
+                tot_today += sum(today_rows)
+                tot_yday_full += sum(yday_rows)
+                tot_yday_same += sum(yday_rows[: len(today_rows)])
+                today_str = dates[-1]
+                today_bars = max(today_bars, len(today_rows))
+    except Exception as e:  # noqa: BLE001
+        return None, f"{type(e).__name__}: {e}"
+
+    if today_str is None or tot_today <= 0:
+        return None, None
+    # 5分钟K线，A股全天 48 根（9:30-11:30 + 13:00-15:00 = 240分钟/5）；不足即仍在盘中
+    trading = today_bars < 48
+    estimate: Optional[float] = None
+    if not trading:
+        estimate = tot_today
+    elif today_bars >= 1 and tot_yday_same > 0:
+        estimate = tot_today + (tot_yday_full - tot_yday_same)
+    return {"date": today_str, "amount": tot_today, "estimate": estimate, "is_trading": trading}, None
+
+
+def _fetch_trends_projection_eastmoney() -> tuple[Optional[dict], Optional[str]]:
     """
     用东财分钟数据（trends2, ndays=2）做「昨日同期」外推——与东财自身口径同源:
       今日盘中累计 = 今日各分钟成交额之和（沪市综指000001 + 深市综指399106,与SUMTVALLIST同口径）
       预估全天 = 今日累计 × 昨日全天 ÷ 昨日同一分钟数累计
-    返回 (data, error)：
-      - data 非空：正常拿到盘中投影，{'date','amount','estimate','is_trading'}；
-      - data 为空、error 也为空：接口本身没有当日数据（非交易时段等正常情况），不算错误；
-      - error 非空：多次重试后请求仍失败，值得记录排查（比如服务器到东财连接不稳）。
-    60s 缓存；缓存命中时不重试、不返回 error。
+    作为新浪失败时的兜底（详见 _fetch_trends_projection）。
     """
-    now = datetime.now()
-    if _trends_cache["data"] is not None and _trends_cache["ts"] and \
-            (now - _trends_cache["ts"]).total_seconds() < _TRENDS_TTL:
-        return _trends_cache["data"], None
-
     tot_today = tot_yday_same = tot_yday_full = 0.0
     today_str: Optional[str] = None
     today_minutes = 0
@@ -485,7 +540,36 @@ def _fetch_trends_projection() -> tuple[Optional[dict], Optional[str]]:
         estimate = tot_today
     elif today_minutes >= 5 and tot_yday_same > 0:
         estimate = tot_today + (tot_yday_full - tot_yday_same)
-    data = {"date": today_str, "amount": tot_today, "estimate": estimate, "is_trading": trading}
+    return {"date": today_str, "amount": tot_today, "estimate": estimate, "is_trading": trading}, None
+
+
+def _fetch_trends_projection() -> tuple[Optional[dict], Optional[str]]:
+    """
+    盘中成交额外推，默认走新浪5分钟K线（_fetch_trends_projection_sina，跟东财
+    完全独立的服务器），新浪失败或没数据时回退东财trends2分钟数据
+    （_fetch_trends_projection_eastmoney，历史上被针对性限流过，详见
+    index_trend_service.sync_index_bars 里同类问题的排查记录）。
+    返回 (data, error)：
+      - data 非空：正常拿到盘中投影，{'date','amount','estimate','is_trading'}；
+      - data 为空、error 也为空：两个源都没有当日数据（非交易时段等正常情况），不算错误；
+      - error 非空：两个源都请求失败，值得记录排查。
+    60s 缓存；缓存命中时不重试、不返回 error。
+    """
+    now = datetime.now()
+    if _trends_cache["data"] is not None and _trends_cache["ts"] and \
+            (now - _trends_cache["ts"]).total_seconds() < _TRENDS_TTL:
+        return _trends_cache["data"], None
+
+    data, err = _fetch_trends_projection_sina()
+    if data is None:
+        if err:
+            print(f"[windvane:trends2] 新浪分钟数据失败，回退东财: {err}", flush=True)
+        data, err = _fetch_trends_projection_eastmoney()
+
+    if err:
+        return None, err
+    if not data:
+        return None, None
     _trends_cache["ts"] = now
     _trends_cache["data"] = data
     return data, None
