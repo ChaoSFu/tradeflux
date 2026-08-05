@@ -1013,12 +1013,33 @@ def fetch_price_anomaly_list(page_size: int = 400, timeout: int = 15) -> tuple[l
 QUOTE_URL = "https://push2.eastmoney.com/api/qt/stock/get"
 
 
-def fetch_index_amount(secid: str, timeout: int = 15) -> Optional[float]:
+def _fetch_index_amount_sina(secid: str, timeout: int = 10) -> Optional[float]:
     """
-    指数当日成交额（元）——走实时行情快照接口（push2，非持续被限流的push2his
-    历史K线接口），只取 f48（成交额）这一个字段。用于 K 线因东财限流回退腾讯/
-    新浪、但那两个源没有成交额字段时，单独补齐"最新一日成交额"。
-    失败返回 None（调用方按"仍缺失"处理，不阻断整体流程）。
+    指数当日成交额（元）——新浪 hq.sinajs.cn 实时行情接口，跟东财完全独立的
+    数据源/服务器。格式：var hq_str_sh000001="名称,今开,昨收,现价,最高,最低,
+    买一,卖一,成交量,成交额,...";（跟 _batch_sina_pct_change 用的是同一接口）。
+    失败返回 None。
+    """
+    market, _, code = secid.partition(".")
+    prefix = "bj" if code.startswith("899") else ("sh" if market == "1" else "sz")
+    key = f"{prefix}{code}"
+    try:
+        with httpx.Client(headers=SINA_HEADERS, timeout=timeout) as client:
+            resp = client.get(SINA_HQ_URL + key)
+        content = resp.text.split('"')[1]
+        fields = content.split(",")
+        if len(fields) < 10:
+            return None
+        return float(fields[9])
+    except Exception as e:  # noqa: BLE001
+        print(f"[fetcher] 指数 {secid} 新浪实时成交额补数失败: {type(e).__name__}: {e}", flush=True)
+        return None
+
+
+def _fetch_index_amount_eastmoney(secid: str, timeout: int = 15) -> Optional[float]:
+    """
+    指数当日成交额（元）——东财实时行情快照接口（push2，非持续被限流的push2his
+    历史K线接口），只取 f48（成交额）这一个字段。作为新浪失败时的兜底。
     """
     try:
         client = _thread_warmed_client(timeout=timeout)
@@ -1026,8 +1047,22 @@ def fetch_index_amount(secid: str, timeout: int = 15) -> Optional[float]:
         amt = (resp.json().get("data") or {}).get("f48")
         return float(amt) if amt is not None else None
     except Exception as e:  # noqa: BLE001
-        print(f"[fetcher] 指数 {secid} 实时成交额补数失败: {type(e).__name__}: {e}", flush=True)
+        print(f"[fetcher] 指数 {secid} 东财实时成交额补数失败: {type(e).__name__}: {e}", flush=True)
         return None
+
+
+def fetch_index_amount(secid: str, timeout: int = 15) -> Optional[float]:
+    """
+    指数当日成交额（元）——默认走新浪实时行情（跟东财完全独立的服务器，
+    历史上没出现过东财这种针对性限流），失败才回退东财 push2 快照接口。
+    用于 K 线因东财限流回退腾讯/新浪、但那两个源没有成交额字段时，单独
+    补齐"最新一日成交额"。两个源都失败返回 None（调用方按"仍缺失"处理，
+    不阻断整体流程）。
+    """
+    amt = _fetch_index_amount_sina(secid, timeout=min(timeout, 10))
+    if amt is not None:
+        return amt
+    return _fetch_index_amount_eastmoney(secid, timeout=timeout)
 
 
 def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dict]:
