@@ -65,11 +65,18 @@ DYNAMIC_BOARD_KEYWORDS = {
 # 第1步：板块元数据同步（httpx，替换原 curl subprocess）
 # ---------------------------------------------------------------------------
 
-def _fetch_boards_by_fs(fs_code: str, label: str) -> list[dict]:
-    """拉取指定 fs 类型的全量板块列表。"""
+def _fetch_boards_by_fs(fs_code: str, label: str, client: "httpx.Client | None" = None) -> list[dict]:
+    """
+    拉取指定 fs 类型的全量板块列表。
+    client 建议传入调用方持有的复用连接（同一进程内多次分页请求共用一条连接，
+    减少握手次数）；不传则每次自己新建（向后兼容）。
+    """
     all_boards: list[dict] = []
     page = 1
     total = None
+    own_client = client is None
+    if own_client:
+        client = httpx.Client(headers=_HTTP_HEADERS, follow_redirects=True)
 
     while True:
         params = {
@@ -78,15 +85,17 @@ def _fetch_boards_by_fs(fs_code: str, label: str) -> list[dict]:
             "fs": fs_code,
             "fields": "f12,f14,f3,f8,f20,f6,f109,f110,f160,f165",
         }
-        # 最多重试 3 次，每次间隔递增
+        # 最多重试 3 次，每次间隔递增。超时给10s而不是30s——握手真挂了没必要
+        # 傻等30秒才报错，3次重试全部超时的极端情况下 30s×3=90s 比 10s×3=30s
+        # 省下一分钟，且10s对一个正常的JSON API请求已经绰绰有余
         data = None
         for attempt in range(3):
             try:
-                resp = httpx.get(
+                resp = client.get(
                     f"{BASE_URL}/clist/get",
                     params=params,
                     headers=_HTTP_HEADERS,
-                    timeout=30,
+                    timeout=10,
                 )
                 data = resp.json()
                 break
@@ -111,6 +120,8 @@ def _fetch_boards_by_fs(fs_code: str, label: str) -> list[dict]:
         page += 1
         time.sleep(0.3)
 
+    if own_client:
+        client.close()
     return all_boards
 
 
@@ -178,12 +189,14 @@ def sync_board_metadata(db, update_stock_count: bool = True) -> tuple[int, int]:
     print("\n[第1步] 拉取东财全量板块元数据...")
     all_boards: list[tuple[dict, str]] = []
 
-    for fs_code, sector_type, label in BOARD_TYPES:
-        boards = _fetch_boards_by_fs(fs_code, label)
-        print(f"  {label}共 {len(boards)} 个")
-        for b in boards:
-            all_boards.append((b, sector_type))
-        time.sleep(0.5)
+    # 3种板块类型共用一条长连接（不再每页都新建连接），减少握手次数
+    with httpx.Client(headers=_HTTP_HEADERS, follow_redirects=True) as client:
+        for fs_code, sector_type, label in BOARD_TYPES:
+            boards = _fetch_boards_by_fs(fs_code, label, client=client)
+            print(f"  {label}共 {len(boards)} 个")
+            for b in boards:
+                all_boards.append((b, sector_type))
+            time.sleep(0.5)
 
     new_count = updated_count = 0
     for board, sector_type in all_boards:
