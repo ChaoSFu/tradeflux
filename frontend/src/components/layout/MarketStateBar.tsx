@@ -139,8 +139,9 @@ export function MarketStateBar() {
   }, [up])
 
   // 成交额板块效应前 5：成交额概览页「成交额板块效应」默认排序（赚钱效应 avg_pct_change）前5
+  // 保留完整 group（而非只取 name），行内括号展示赚钱效应/大成交额只数，跟板块自身涨幅区分
   const turnoverEffectTop5 = useMemo(
-    () => [...(turnover?.sector_groups ?? [])].sort((a, b) => b.avg_pct_change - a.avg_pct_change).slice(0, 5).map((g) => g.name),
+    () => [...(turnover?.sector_groups ?? [])].sort((a, b) => b.avg_pct_change - a.avg_pct_change).slice(0, 5),
     [turnover],
   )
 
@@ -353,12 +354,20 @@ export function MarketStateBar() {
         </div>
       )}
 
-      {/* 成交额板块效应前5——单独一行 */}
+      {/* 成交额板块效应前5——单独一行。板块 tag 上的 % 是板块自身今日涨幅（跟其他行同一
+          口径）；括号内是成交额概览页的赚钱效应（该板块高成交额股均涨幅）+ 大成交额只数，
+          用括号跟前面的板块涨幅区分开，体现"高成交额资金在这个板块的强度"，而非板块本身涨跌 */}
       {turnoverEffectTop5.length > 0 && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
-          <span className="text-[10px] text-text-muted shrink-0" title="成交额概览页「成交额板块效应」排名前 5 的板块">成交额板块效应</span>
-          {turnoverEffectTop5.map((name) => (
-            <ClickSector key={`to-${name}`} name={name} pct={sectorTags.get(name)?.pct_today} active={expandedSector === name} onClick={() => toggleSector(name)} />
+          <span className="text-[10px] text-text-muted shrink-0" title="成交额概览页「成交额板块效应」排名前 5 的板块；括号内为该板块的赚钱效应（高成交额股均涨幅）与大成交额只数">成交额板块效应</span>
+          {turnoverEffectTop5.map((g) => (
+            <span key={`to-${g.name}`} className="inline-flex items-center gap-0.5">
+              <ClickSector name={g.name} pct={sectorTags.get(g.name)?.pct_today} active={expandedSector === g.name} onClick={() => toggleSector(g.name)} />
+              <span className="text-[10px] font-mono text-text-muted/70">
+                (<span className={pctColor(g.avg_pct_change)}>{pctSign(g.avg_pct_change)}</span>
+                <span className="text-text-muted/50">·{g.count}只</span>)
+              </span>
+            </span>
           ))}
         </div>
       )}
