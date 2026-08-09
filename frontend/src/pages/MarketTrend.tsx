@@ -3,7 +3,7 @@
  * 均线体系（多空排列 / 关键均线 / 斜率 / 金叉死叉 / 乖离率）→ 趋势强度分 + 状态判定
  */
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { fetchMarketTrend, fetchWindvane } from '@/api/marketTrend'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
@@ -184,6 +184,7 @@ export default function MarketTrend() {
     queryKey: ['market-windvane', marginRange],
     queryFn: () => fetchWindvane(false, marginRange),
     staleTime: 5 * 60 * 1000,
+    placeholderData: keepPreviousData, // 切换周期时保留旧数据，避免卡片瞬间消失导致页面跳动
   })
 
   return (
