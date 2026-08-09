@@ -111,6 +111,7 @@ from app.services.eastmoney_fetcher import (
     StockBasicInfo, KLineBar,
     fetch_main_board_stocks, fetch_klines_batch, get_limit_pct,
     fetch_strong_pool_codes, fetch_stock_bk_codes, fetch_limit_move_codes,
+    fetch_turnover_top_stocks,
 )
 from app.services.screening_service import (
     StockWindowStats,
@@ -820,25 +821,31 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 读取可编辑的选股 API prompt（界面可改；未设置则用默认常量）
         from app.services.pool_config_service import get_pool_keywords
         _kw = get_pool_keywords(db)
-        strong_kw, limit_kw = _kw["strong_pool_keyword"], _kw["limit_move_keyword"]
+        strong_kw, limit_kw, turnover_kw = _kw["strong_pool_keyword"], _kw["limit_move_keyword"], _kw["turnover_pool_keyword"]
         log.info(f"强势池 prompt（{'自定义' if _kw['is_strong_custom'] else '默认'}）: {strong_kw}")
         log.info(f"涨跌停 prompt（{'自定义' if _kw['is_limit_custom'] else '默认'}）: {limit_kw}")
 
-        # 并发调两个东财选股 API（with_names=True 顺带带回股票名，省去全市场拉取）
+        # 并发调三个东财选股 API（with_names=True 顺带带回股票名，省去全市场拉取）
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            fut_strong = ex.submit(fetch_strong_pool_codes, keyword=strong_kw, with_names=True)
-            fut_limit  = ex.submit(fetch_limit_move_codes, keyword=limit_kw, with_detail=True)
-            api_pool_names    = fut_strong.result()   # {code: name}
-            api_limit_detail  = fut_limit.result()    # {code: {"name", "limit_dir"}}
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            fut_strong   = ex.submit(fetch_strong_pool_codes, keyword=strong_kw, with_names=True)
+            fut_limit    = ex.submit(fetch_limit_move_codes, keyword=limit_kw, with_detail=True)
+            fut_turnover = ex.submit(fetch_turnover_top_stocks, turnover_kw)
+            api_pool_names    = fut_strong.result()    # {code: name}
+            api_limit_detail  = fut_limit.result()     # {code: {"name", "limit_dir"}}
+            api_turnover_rows = fut_turnover.result()  # [{"code","name",...}, ...]
 
-        api_pool_codes  = set(api_pool_names)
-        api_limit_codes = set(api_limit_detail)
+        api_pool_codes    = set(api_pool_names)
+        api_limit_codes   = set(api_limit_detail)
+        api_turnover_codes = {row["code"] for row in api_turnover_rows}
+        if api_turnover_codes:
+            log.info(f"成交额选股 API: {len(api_turnover_codes)} 只（并入候选股，补全强势股字段）")
         # 选股结果均为「非ST」，故出现在此 map 的股票当日 is_st=False（摘帽自动修正）。
         # 用于刷新已知候选股的 name/is_st，并给新股直接命名，替代全市场列表拉取。
         api_name_map: dict[str, str] = {
             **api_pool_names,
             **{c: d["name"] for c, d in api_limit_detail.items()},
+            **{row["code"]: row["name"] for row in api_turnover_rows},
         }
 
         # 涨跌停 API 是否真正返回数据（决定是否以其为涨跌停的权威来源）。
@@ -882,8 +889,10 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"涨跌停 API 不可用，回退 DB {len(api_limit_codes)} 只")
             api_warnings.append("涨跌停选股 API 调用失败，已回退数据库历史，今日涨跌停数据可能不完整或过时")
 
-        # 候选股 = 强势池 ∪ 涨跌停
-        all_candidate_codes = strong_pool_codes | api_limit_codes
+        # 候选股 = 强势池 ∪ 涨跌停 ∪ 成交额概览今日上榜（并入后，这些高成交额但不常涨跌停
+        # /不常入强势池的大盘股，也能在 Stock 表里留下真实的龙头分/风险分/多周期涨幅，
+        # 而不是永远缺失——否则「成交额概览」板块详情面板里这些股票只能显示"—"）
+        all_candidate_codes = strong_pool_codes | api_limit_codes | api_turnover_codes
 
         # 强势池回收：DB 标记 in_strong_pool 但已不在选股 API 结果的「待退出」股，
         # 并入候选重抓 → 走入池判断(in_pool=code in strong_pool_codes=False)自动回收，

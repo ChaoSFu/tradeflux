@@ -138,6 +138,12 @@ export function MarketStateBar() {
     return [...cnt.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 5)
   }, [up])
 
+  // 成交额板块效应前 5：成交额概览页「成交额板块效应」默认排序（赚钱效应 avg_pct_change）前5
+  const turnoverEffectTop5 = useMemo(
+    () => [...(turnover?.sector_groups ?? [])].sort((a, b) => b.avg_pct_change - a.avg_pct_change).slice(0, 5).map((g) => g.name),
+    [turnover],
+  )
+
   // 龙头分组赚钱效应：今日 avg_pct（来自 profit-effect）+ 30日均值（来自 market-history）
   const { data: history } = useQuery({ queryKey: ['market-history', 30], queryFn: () => fetchMarketHistory(30) })
   const groupAvg30: Record<string, number> = (() => {
@@ -288,8 +294,8 @@ export function MarketStateBar() {
         <div className="ml-auto text-[10px] text-text-muted/70 self-center">⚠️ 仅供辅助分析，不构成投资建议</div>
       </div>
 
-      {/* 进攻板块：5日 / 10日涨幅前5 */}
-      {(attack5.length > 0 || attack10.length > 0) && (
+      {/* 进攻板块：5日 / 10日 / 20日强 + 持续板块（5/10/20 日强归并出现≥2次） */}
+      {(attack5.length > 0 || attack10.length > 0 || attack20.length > 0 || sustained.length > 0) && (
         <div className="mt-2 pt-2 border-t border-bg-border/40 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs">
           <span className="text-[10px] text-text-muted shrink-0">进攻板块</span>
           {attack5.length > 0 && (
@@ -310,35 +316,8 @@ export function MarketStateBar() {
               {attack20.map((s) => <ClickSector key={`20-${s.name}`} name={s.name} pct={sectorTags.get(s.name)?.pct_today} active={expandedSector === s.name} onClick={() => toggleSector(s.name)} />)}
             </div>
           )}
-        </div>
-      )}
-
-      {/* 今日最强前5（当日涨幅最高）+ 今日涨停最多 + 持续板块（5/10/20 日强归并出现≥2次） */}
-      {(todayTop5.length > 0 || todayLimitUpTop5.length > 0 || sustained.length > 0) && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
-          {todayTop5.length > 0 && (
-            <>
-              <span className="text-[10px] text-text-muted shrink-0" title="当日涨幅最高的前 5 个板块">今日最强</span>
-              {todayTop5.map((name) => (
-                <ClickSector key={`today-${name}`} name={name} pct={sectorTags.get(name)?.pct_today} active={expandedSector === name} onClick={() => toggleSector(name)} />
-              ))}
-            </>
-          )}
-          {todayLimitUpTop5.length > 0 && (
-            <>
-              {todayTop5.length > 0 && <span className="text-bg-border shrink-0 mx-0.5">|</span>}
-              <span className="text-[10px] text-up shrink-0" title="当日涨停股所属板块出现次数最高的 5 个板块">今日涨停最多</span>
-              {todayLimitUpTop5.map(([name, c]) => (
-                <span key={`lu-${name}`} className="inline-flex items-center gap-1">
-                  <ClickSector name={name} pct={sectorTags.get(name)?.pct_today} active={expandedSector === name} onClick={() => toggleSector(name)} />
-                  <span className="text-[10px] font-mono font-bold text-up">×{c}</span>
-                </span>
-              ))}
-            </>
-          )}
           {sustained.length > 0 && (
-            <>
-              {(todayTop5.length > 0 || todayLimitUpTop5.length > 0) && <span className="text-bg-border shrink-0 mx-0.5">|</span>}
+            <div className="flex items-center gap-1 flex-wrap">
               <span className="text-[10px] text-text-muted shrink-0" title="在 5/10/20 日强势板块中出现 ≥2 次，体现持续力">持续板块</span>
               {sustained.map(([name, c]) => (
                 <span key={`sus-${name}`} className="inline-flex items-center gap-1">
@@ -346,8 +325,41 @@ export function MarketStateBar() {
                   <span className={cn('text-[10px] font-mono font-bold', c >= 3 ? 'text-up' : 'text-text-secondary')}>×{c}</span>
                 </span>
               ))}
-            </>
+            </div>
           )}
+        </div>
+      )}
+
+      {/* 今日最强前5（当日涨幅最高）——单独一行 */}
+      {todayTop5.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="text-[10px] text-text-muted shrink-0" title="当日涨幅最高的前 5 个板块">今日最强</span>
+          {todayTop5.map((name) => (
+            <ClickSector key={`today-${name}`} name={name} pct={sectorTags.get(name)?.pct_today} active={expandedSector === name} onClick={() => toggleSector(name)} />
+          ))}
+        </div>
+      )}
+
+      {/* 今日涨停最多——单独一行 */}
+      {todayLimitUpTop5.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="text-[10px] text-up shrink-0" title="当日涨停股所属板块出现次数最高的 5 个板块">今日涨停最多</span>
+          {todayLimitUpTop5.map(([name, c]) => (
+            <span key={`lu-${name}`} className="inline-flex items-center gap-1">
+              <ClickSector name={name} pct={sectorTags.get(name)?.pct_today} active={expandedSector === name} onClick={() => toggleSector(name)} />
+              <span className="text-[10px] font-mono font-bold text-up">×{c}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* 成交额板块效应前5——单独一行 */}
+      {turnoverEffectTop5.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="text-[10px] text-text-muted shrink-0" title="成交额概览页「成交额板块效应」排名前 5 的板块">成交额板块效应</span>
+          {turnoverEffectTop5.map((name) => (
+            <ClickSector key={`to-${name}`} name={name} pct={sectorTags.get(name)?.pct_today} active={expandedSector === name} onClick={() => toggleSector(name)} />
+          ))}
         </div>
       )}
       </div>
