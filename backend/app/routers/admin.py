@@ -84,6 +84,58 @@ def _load_last_update() -> dict | None:
     except Exception:
         return None
 
+
+# ── 任务耗时历史（最近10次滚动平均，供前端"约 XX秒"参考展示）───────────────────
+# 手动触发（UI）和定时触发（scheduler.py）共用同一份历史文件，任务实际耗时
+# 跟触发方式无关，混在一起求均值才是真实参考值。
+_JOB_DURATIONS_LEN = 10
+
+def _get_job_durations_path() -> str:
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    return os.path.join(backend_dir, "logs", "job_durations.json")
+
+def record_job_duration(job_key: str, started_at: str, finished_at: str) -> None:
+    """job_key: 'daily_update' | 'board_meta' | 'board_full'。started/finished 为 isoformat 字符串。"""
+    try:
+        seconds = (datetime.fromisoformat(finished_at) - datetime.fromisoformat(started_at)).total_seconds()
+        if seconds <= 0:
+            return
+        path = _get_job_durations_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        data: dict = {}
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+        history = data.get(job_key, [])
+        history.append(round(seconds, 1))
+        data[job_key] = history[-_JOB_DURATIONS_LEN:]
+        with open(path, "w") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def get_job_duration_stats() -> dict:
+    """返回 {job_key: {'avg_secs': float|None, 'count': int}}，count=0 时前端回退到静态估算文案。"""
+    path = _get_job_durations_path()
+    data: dict = {}
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    return {
+        key: {
+            "avg_secs": round(sum(history) / len(history), 1) if history else None,
+            "count": len(history),
+        }
+        for key, history in data.items()
+    }
+
+
 # ── In-memory job state ────────────────────────────────────────────────────────
 _lock = threading.Lock()
 _job: dict = {
@@ -175,6 +227,8 @@ def _capture_update(target_date: date, skip_boards: bool, source: str = "manual"
         message = f"更新完成 {target_date}" + ("（部分数据源降级，详见告警）" if degraded else "")
         _save_last_update(source, "done", _job.get("started_at"), finished, message,
                           degraded=degraded, warnings=warnings)
+        if _job.get("started_at"):
+            record_job_duration("daily_update", _job["started_at"], finished)
         with _lock:
             _job["status"] = "done"
             _job["finished_at"] = finished
@@ -236,10 +290,14 @@ def _capture_sync_boards(meta_only: bool = False) -> None:
         output = buf.getvalue()
         _flush(output)
         _write_log_file(output)
+        finished = datetime.now().isoformat(timespec="seconds")
         with _boards_lock:
             _boards_job["status"] = "done"
-            _boards_job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            _boards_job["finished_at"] = finished
             _boards_job["message"] = "板块元数据更新完成" if meta_only else "板块全量同步完成"
+            started = _boards_job.get("started_at")
+        if started:
+            record_job_duration("board_meta" if meta_only else "board_full", started, finished)
 
     except Exception as exc:  # noqa: BLE001
         output = buf.getvalue()
@@ -298,6 +356,15 @@ def get_update_status():
     """Return current job state."""
     with _lock:
         return dict(_job)
+
+
+@router.get("/job-durations")
+def get_job_durations():
+    """
+    三个数据更新入口最近10次实际运行耗时的滚动平均（手动+定时触发共用同一份
+    历史）。count=0 表示还没有历史数据，前端此时应回退到静态估算文案。
+    """
+    return get_job_duration_stats()
 
 
 @router.post("/sync-boards")

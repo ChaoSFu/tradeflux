@@ -6,8 +6,15 @@ import {
   triggerUpdate, fetchUpdateStatus,
   triggerSyncBoards, fetchSyncBoardsStatus,
   fetchSchedulerStatus, fetchLastUpdateStatus,
+  fetchJobDurations,
 } from '@/api/admin'
-import type { UpdateStatus, SchedulerStatus, LastUpdateStatus } from '@/api/admin'
+import type { UpdateStatus, SchedulerStatus, LastUpdateStatus, JobDurationKey } from '@/api/admin'
+
+// 秒数格式化成"30秒"/"1分5秒"这种展示文案
+function formatSecs(secs: number): string {
+  const s = Math.round(secs)
+  return s >= 60 ? `${Math.floor(s / 60)}分${s % 60}秒` : `${s}秒`
+}
 import { MARKET_PHASE_LABELS } from '@/utils/format'
 import {
   Download, CheckCircle, XCircle,
@@ -70,7 +77,7 @@ function JobPanel({
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-semibold text-text-primary">{label}</span>
-            <span className="text-[10px] text-text-muted shrink-0">约 {estimatedTime}</span>
+            <span className="text-[10px] text-text-muted shrink-0">{estimatedTime}</span>
           </div>
           <p className="text-[10px] text-text-muted mt-0.5 leading-relaxed">{description}</p>
 
@@ -184,6 +191,24 @@ function DataUpdateMenu({ onRequestLogin }: { onRequestLogin: () => void }) {
   const requestLogin = () => {
     setOpen(false)
     onRequestLogin()
+  }
+
+  // 最近10次实际运行耗时的滚动平均（手动+定时触发共用同一份历史，比写死的
+  // 静态估算准）；面板每次打开时重新拉一次，count=0（还没有历史）时用静态
+  // 估算兜底文案
+  const { data: durations } = useQuery({
+    queryKey: ['job-durations'],
+    queryFn: fetchJobDurations,
+    staleTime: 60 * 1000,
+    enabled: open,
+  })
+  const FALLBACK_ESTIMATE: Record<JobDurationKey, string> = {
+    daily_update: '约 30 秒', board_meta: '约 30 秒', board_full: '约 5-8 分钟',
+  }
+  const estimateFor = (key: JobDurationKey): string => {
+    const stat = durations?.[key]
+    if (stat?.count && stat.avg_secs != null) return `约${formatSecs(stat.avg_secs)}（近${stat.count}次均值）`
+    return FALLBACK_ESTIMATE[key]
   }
 
   // ── 每日更新任务 ────────────────────────────────────────────────────────────
@@ -479,7 +504,7 @@ function DataUpdateMenu({ onRequestLogin }: { onRequestLogin: () => void }) {
             isError={updateStatus?.status === 'error'}
             onTrigger={handleUpdate}
             description="选股 API 获取候选股 → K线计算 → 更新强势池 → 刷新板块统计 → 写入复盘 → 大盘趋势数据同步。每日收盘后运行。"
-            estimatedTime="30 秒"
+            estimatedTime={estimateFor('daily_update')}
             locked={!isLoggedIn}
             onLockedClick={requestLogin}
           />
@@ -494,7 +519,7 @@ function DataUpdateMenu({ onRequestLogin }: { onRequestLogin: () => void }) {
             isError={syncStatus?.mode === 'meta' && syncStatus?.status === 'error'}
             onTrigger={handleSyncBoards}
             description="每日收盘后运行，更新板块涨跌幅/换手率/市值等行情数据（定时任务自动执行）。"
-            estimatedTime="30 秒"
+            estimatedTime={estimateFor('board_meta')}
             locked={!isLoggedIn}
             onLockedClick={requestLogin}
           />
@@ -508,8 +533,8 @@ function DataUpdateMenu({ onRequestLogin }: { onRequestLogin: () => void }) {
             isDone={syncStatus?.mode === 'full' && syncStatus?.status === 'done'}
             isError={syncStatus?.mode === 'full' && syncStatus?.status === 'error'}
             onTrigger={handleFullSyncBoards}
-            description="每周运行一次，同步成份股数量及个股板块关联。板块成员变动或首次部署时使用。"
-            estimatedTime="约 1 分钟"
+            description="每周六自动运行一次（也可手动触发），同步成份股数量及个股板块关联，兜底捕获日常同步覆盖不到的变化。"
+            estimatedTime={estimateFor('board_full')}
             locked={!isLoggedIn}
             onLockedClick={requestLogin}
           />

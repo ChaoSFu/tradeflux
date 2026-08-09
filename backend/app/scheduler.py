@@ -39,11 +39,17 @@ def _do_update(log_path: str, today: date) -> dict:
 
     from scripts.daily_update import run_daily_update  # type: ignore
     from scripts.sync_boards import run_sync_boards    # type: ignore
+    from app.routers.admin import record_job_duration  # type: ignore
 
+    t0 = datetime.now().isoformat(timespec="seconds")
     result = run_daily_update(today) or {}
+    t1 = datetime.now().isoformat(timespec="seconds")
+    record_job_duration("daily_update", t0, t1)
     _log(log_path, "SCHED", "✅ 每日数据更新完成，开始板块行情同步...")
 
     run_sync_boards(meta_only=True)
+    t2 = datetime.now().isoformat(timespec="seconds")
+    record_job_duration("board_meta", t1, t2)
     _log(log_path, "SCHED", "✅ 板块行情同步完成")
     return result
 
@@ -176,7 +182,11 @@ def _run_weekly_full_board_sync() -> None:
 
         _log(log_path, "SCHED", "板块全量同步（周度兜底）开始...")
         from scripts.sync_boards import run_sync_boards  # type: ignore
+        from app.routers.admin import record_job_duration  # type: ignore
+        t0 = datetime.now().isoformat(timespec="seconds")
         run_sync_boards(meta_only=False)
+        t1 = datetime.now().isoformat(timespec="seconds")
+        record_job_duration("board_full", t0, t1)
         _log(log_path, "SCHED", "✅ 板块全量同步（周度兜底）完成")
     except Exception as exc:
         _log(log_path, "SCHED", f"❌ 板块全量同步失败: {exc}")

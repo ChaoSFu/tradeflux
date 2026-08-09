@@ -61,6 +61,13 @@ export interface LastUpdateStatus {
 export const fetchLastUpdateStatus = () =>
   client.get<LastUpdateStatus>('/admin/update/last').then((r) => r.data)
 
+// ── 任务耗时历史（最近10次滚动平均）──────────────────────────────────────────
+export type JobDurationKey = 'daily_update' | 'board_meta' | 'board_full'
+export type JobDurationStats = Partial<Record<JobDurationKey, { avg_secs: number | null; count: number }>>
+
+export const fetchJobDurations = () =>
+  client.get<JobDurationStats>('/admin/job-durations').then((r) => r.data)
+
 // ── 选股 API prompt 配置（强势池 / 涨跌停池）───────────────────────────────────
 export interface PoolPrompts {
   strong_pool_keyword: string
