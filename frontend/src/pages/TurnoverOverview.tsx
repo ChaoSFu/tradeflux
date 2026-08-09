@@ -90,44 +90,43 @@ function UpDownBar({ up, flat, down }: { up: number; flat: number; down: number 
   )
 }
 
-function SectorCard({ group, sectorPctToday }: { group: TurnoverSectorGroup; sectorPctToday?: number }) {
+/** 板块行：展示逻辑同强势股概览 SectorEffectCard/SectorRow（板块名/涨跌分布条/涨幅/只数/效应），
+ *  额外插入成交额（本页核心指标）与看多/看空/分歧信号标签。 */
+function SectorRow({ group, sectorPctToday }: { group: TurnoverSectorGroup; sectorPctToday?: number }) {
   const BiasIcon = BIAS_ICON[group.bias]
   return (
-    <Card>
-      <div className="flex items-start justify-between mb-2">
-        <div className="flex items-center gap-1.5">
-          <SectorTag name={group.name} />
-          <span className="text-xs text-text-muted">{group.count} 只</span>
-          {group.new_count > 0 && (
-            <Badge variant="accent" className="gap-0.5">
-              <Sparkles className="w-2.5 h-2.5" /> 新进{group.new_count}
-            </Badge>
-          )}
-        </div>
-        <div className={cn('flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded', BIAS_COLOR[group.bias])}>
-          <BiasIcon className="w-3 h-3" /> {BIAS_LABEL[group.bias]}
-        </div>
+    <div className="w-full flex items-center gap-3 px-2 py-1.5 rounded transition-colors hover:bg-bg-elevated">
+      <div className="w-28 shrink-0 flex items-center gap-1">
+        <SectorTag name={group.name} />
+        {group.new_count > 0 && (
+          <Badge variant="accent" className="gap-0.5 shrink-0">
+            <Sparkles className="w-2.5 h-2.5" />{group.new_count}
+          </Badge>
+        )}
       </div>
-      <div className="flex items-baseline justify-between mb-2">
-        <span className="text-lg font-bold text-text-primary font-mono">{yi(group.total_amount)}</span>
-        <div className="text-right">
-          <span className={cn('text-sm font-mono font-medium', pctColor(group.avg_pct_change))}>
-            效应{pctSign(group.avg_pct_change)}
-          </span>
-          {sectorPctToday != null && (
-            <div className={cn('text-[11px] font-mono', pctColor(sectorPctToday))}>
-              板块{pctSign(sectorPctToday)}
-            </div>
-          )}
-        </div>
+      <div className={cn('flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded shrink-0', BIAS_COLOR[group.bias])}>
+        <BiasIcon className="w-3 h-3" /> {BIAS_LABEL[group.bias]}
       </div>
-      <UpDownBar up={group.up_count} flat={group.flat_count} down={group.down_count} />
-      <div className="flex justify-between text-[11px] text-text-muted mt-1">
-        <span>{group.up_count}涨</span>
-        <span>{group.flat_count}平</span>
-        <span>{group.down_count}跌</span>
+      <div className="flex-1 min-w-[60px]">
+        <UpDownBar up={group.up_count} flat={group.flat_count} down={group.down_count} />
       </div>
-    </Card>
+      <span className="text-sm font-mono font-medium w-20 text-right shrink-0 whitespace-nowrap text-text-primary">
+        {yi(group.total_amount)}
+      </span>
+      <span className={cn('text-sm font-mono font-medium w-16 text-right shrink-0', pctColor(sectorPctToday ?? group.avg_pct_change))}>
+        {pctSign(sectorPctToday ?? group.avg_pct_change)}
+      </span>
+      <span className="text-xs text-text-muted w-20 text-center shrink-0 font-mono">
+        <span className="text-up">{group.up_count}</span>
+        <span className="text-text-muted/60 mx-0.5">/</span>
+        <span className="text-text-muted">{group.flat_count}</span>
+        <span className="text-text-muted/60 mx-0.5">/</span>
+        <span className="text-down">{group.down_count}</span>
+      </span>
+      <span className={cn('text-sm font-mono font-medium w-16 text-right shrink-0', pctColor(group.avg_pct_change))}>
+        {pctSign(group.avg_pct_change)}
+      </span>
+    </div>
   )
 }
 
@@ -214,17 +213,20 @@ export default function TurnoverOverview() {
         </div>
       )}
 
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold text-text-primary">板块赚钱效应 ({sortedGroups.length})</h3>
-          <TurnoverSortControl value={sortKey} onChange={setSortKey} />
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {sortedGroups.map((g) => (
-            <SectorCard key={g.name} group={g} sectorPctToday={sectorPctByName.get(g.name)} />
-          ))}
-        </div>
-      </div>
+      <Card
+        title={`板块赚钱效应 (${sortedGroups.length})`}
+        action={sortedGroups.length > 0 ? <TurnoverSortControl value={sortKey} onChange={setSortKey} /> : undefined}
+      >
+        {sortedGroups.length > 0 ? (
+          <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+            {sortedGroups.map((g) => (
+              <SectorRow key={g.name} group={g} sectorPctToday={sectorPctByName.get(g.name)} />
+            ))}
+          </div>
+        ) : (
+          <div className="text-center text-text-muted text-sm py-6">暂无板块数据</div>
+        )}
+      </Card>
 
       <Card title="成交额明细">
         <div className="overflow-x-auto max-h-[560px] overflow-y-auto">
