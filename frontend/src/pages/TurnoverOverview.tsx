@@ -336,6 +336,16 @@ export default function TurnoverOverview() {
   const toggleSector = (name: string) =>
     setExpandedSector((prev) => (prev === name ? null : name))
 
+  // 整体赚钱效应涨跌分布（同强势股概览 Dashboard 的整体赚钱效应卡片口径），
+  // 只统计涨/平/跌，不含涨停/跌停——本页是成交额前N选股，非涨跌停/龙头池，
+  // 缺乏板块特定涨停阈值（主板10%/创业板科创板20%/北交所30%），不做臆测。
+  const overallCounts = useMemo(() => {
+    const stocks = data?.stocks ?? []
+    const up = stocks.filter((s) => s.pct_change > 0).length
+    const down = stocks.filter((s) => s.pct_change < 0).length
+    return { up, down, flat: stocks.length - up - down }
+  }, [data])
+
   if (isLoading || !data) return <LoadingSpinner />
 
   if (!data.date) {
@@ -372,6 +382,29 @@ export default function TurnoverOverview() {
           {data.errors.join('；')}
         </div>
       )}
+
+      {/* ── 整体赚钱效应（成交额前N选股口径），展示逻辑同强势股概览「赚钱效应」卡片 ── */}
+      <Card title="赚钱效应">
+        <div className="flex flex-wrap items-start gap-6">
+          <div>
+            <p className="text-xs text-text-muted mb-1">当日均涨幅</p>
+            <span className={cn('text-3xl font-mono font-bold', pctColor(data.overall_avg_pct))}>
+              {pctSign(data.overall_avg_pct)}
+            </span>
+          </div>
+          <div className="flex-1 min-w-[200px]">
+            <div className="flex justify-between text-xs mb-1.5">
+              <span className="text-up">↑ {overallCounts.up} 涨</span>
+              <span className="text-text-muted">{overallCounts.flat} 平</span>
+              <span className="text-down">{overallCounts.down} 跌 ↓</span>
+            </div>
+            <UpDownBar up={overallCounts.up} flat={overallCounts.flat} down={overallCounts.down} />
+            <div className="flex gap-3 mt-2 text-xs text-text-muted">
+              <span>共 {data.stocks.length} 只上榜股</span>
+            </div>
+          </div>
+        </div>
+      </Card>
 
       <Card
         title={`成交额板块效应 (${sortedGroups.length})`}
