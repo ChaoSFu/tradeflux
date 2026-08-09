@@ -48,6 +48,8 @@ export function MarketStateBar() {
   const { data: pe } = useQuery({ queryKey: ['profit-effect'], queryFn: fetchProfitEffect })
   // 大成交额赚钱效应（成交额概览页同源缓存 key，两处共享同一次请求）
   const { data: turnover } = useQuery({ queryKey: ['turnover-overview'], queryFn: () => fetchTurnoverOverview() })
+  const turnoverUpCount = turnover?.stocks.filter((s) => s.pct_change > 0).length ?? 0
+  const turnoverDownCount = turnover?.stocks.filter((s) => s.pct_change < 0).length ?? 0
   // 全市场涨跌停家数（与「涨跌停概览」同源同缓存）
   const { data: up } = useQuery({
     queryKey: ['limit-moves', 'limit_up'],
@@ -270,7 +272,11 @@ export function MarketStateBar() {
             <span className={cn('font-mono text-base font-bold', pctColor(turnover.overall_avg_pct))}>
               {pctSign(turnover.overall_avg_pct)}
             </span>
-            <span className="text-xs text-text-muted">{turnover.stocks.length}只</span>
+            <span className="text-xs text-text-muted">
+              <span className="text-up">↑{turnoverUpCount}</span>
+              {' / '}
+              <span className="text-down">↓{turnoverDownCount}</span>
+            </span>
           </Cell>
         )}
 
