@@ -8,7 +8,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { SectorTag } from '@/components/common/SectorTags'
 import { useSectorTags } from '@/hooks/useSectorTags'
 import { cn } from '@/utils/cn'
-import { Coins, Sparkles, TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import { Coins, Sparkles, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp } from 'lucide-react'
 import type { TurnoverSectorGroup, TurnoverStock } from '@/types'
 
 // ─── 板块排序（赚钱效应 / 板块涨幅 / 成交额 / 只数）── 同强势股概览 SectorEffectCard 的排序约定
@@ -90,12 +90,25 @@ function UpDownBar({ up, flat, down }: { up: number; flat: number; down: number 
   )
 }
 
-/** 板块行：展示逻辑同强势股概览 SectorEffectCard/SectorRow（板块名/涨跌分布条/涨幅/只数/效应），
+/** 板块行：展示逻辑同强势股概览 SectorEffectCard/SectorRow（板块名/涨跌分布条/涨幅/只数/效应，点击展开成员），
  *  额外插入成交额（本页核心指标）与看多/看空/分歧信号标签。 */
-function SectorRow({ group, sectorPctToday }: { group: TurnoverSectorGroup; sectorPctToday?: number }) {
+function SectorRow({
+  group, sectorPctToday, active, onClick,
+}: {
+  group: TurnoverSectorGroup
+  sectorPctToday?: number
+  active?: boolean
+  onClick?: () => void
+}) {
   const BiasIcon = BIAS_ICON[group.bias]
   return (
-    <div className="w-full flex items-center gap-3 px-2 py-1.5 rounded transition-colors hover:bg-bg-elevated">
+    <button
+      onClick={onClick}
+      className={cn(
+        'w-full flex items-center gap-3 px-2 py-1.5 rounded transition-colors text-left',
+        active ? 'bg-accent/10 ring-1 ring-accent/30' : 'hover:bg-bg-elevated',
+      )}
+    >
       <div className="w-28 shrink-0 flex items-center gap-1">
         <SectorTag name={group.name} />
         {group.new_count > 0 && (
@@ -126,7 +139,11 @@ function SectorRow({ group, sectorPctToday }: { group: TurnoverSectorGroup; sect
       <span className={cn('text-sm font-mono font-medium w-16 text-right shrink-0', pctColor(group.avg_pct_change))}>
         {pctSign(group.avg_pct_change)}
       </span>
-    </div>
+      {active
+        ? <ChevronUp className="w-3.5 h-3.5 text-accent shrink-0" />
+        : <ChevronDown className="w-3.5 h-3.5 text-text-muted/40 shrink-0" />
+      }
+    </button>
   )
 }
 
@@ -164,6 +181,7 @@ export default function TurnoverOverview() {
   const { data, isLoading } = useQuery({ queryKey: ['turnover-overview'], queryFn: () => fetchTurnoverOverview() })
   const { byName: sectorTagsByName } = useSectorTags()
   const [sortKey, setSortKey] = useState<TurnoverSortKey>('effect')
+  const [expandedSector, setExpandedSector] = useState<string | null>(null)
 
   const sectorPctByName = useMemo(() => {
     const m = new Map<string, number>()
@@ -175,6 +193,20 @@ export default function TurnoverOverview() {
     () => sortTurnoverGroups(data?.sector_groups ?? [], sortKey, sectorPctByName),
     [data, sortKey, sectorPctByName],
   )
+
+  // 板块名 → 成员股（用于点击板块行展开成员列表，同强势股概览点击展开逻辑）
+  const stocksBySectorName = useMemo(() => {
+    const m = new Map<string, TurnoverStock[]>()
+    for (const s of data?.stocks ?? []) {
+      if (!s.sector_name) continue
+      if (!m.has(s.sector_name)) m.set(s.sector_name, [])
+      m.get(s.sector_name)!.push(s)
+    }
+    return m
+  }, [data])
+
+  const toggleSector = (name: string) =>
+    setExpandedSector((prev) => (prev === name ? null : name))
 
   if (isLoading || !data) return <LoadingSpinner />
 
@@ -214,19 +246,50 @@ export default function TurnoverOverview() {
       )}
 
       <Card
-        title={`板块赚钱效应 (${sortedGroups.length})`}
+        title={`成交额板块效应 (${sortedGroups.length})`}
         action={sortedGroups.length > 0 ? <TurnoverSortControl value={sortKey} onChange={setSortKey} /> : undefined}
       >
         {sortedGroups.length > 0 ? (
           <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
             {sortedGroups.map((g) => (
-              <SectorRow key={g.name} group={g} sectorPctToday={sectorPctByName.get(g.name)} />
+              <SectorRow
+                key={g.name}
+                group={g}
+                sectorPctToday={sectorPctByName.get(g.name)}
+                active={expandedSector === g.name}
+                onClick={() => toggleSector(g.name)}
+              />
             ))}
           </div>
         ) : (
           <div className="text-center text-text-muted text-sm py-6">暂无板块数据</div>
         )}
       </Card>
+
+      {/* ── 展开的板块成员列表（点击板块行展开，同强势股概览展开逻辑）── */}
+      {expandedSector && stocksBySectorName.get(expandedSector) && (
+        <Card title={`${expandedSector} 成员股 (${stocksBySectorName.get(expandedSector)!.length})`}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-bg-border/40">
+                  <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium">#</th>
+                  <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium">代码 / 名称</th>
+                  <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium">板块</th>
+                  <th className="text-right px-3 py-2 text-xs text-text-secondary/70 font-medium whitespace-nowrap">成交额</th>
+                  <th className="text-right px-3 py-2 text-xs text-text-secondary/70 font-medium whitespace-nowrap">涨跌幅</th>
+                  <th className="text-right px-3 py-2 text-xs text-text-secondary/70 font-medium whitespace-nowrap">换手率</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stocksBySectorName.get(expandedSector)!.map((s) => (
+                  <StockRow key={s.code} s={s} onClick={() => navigate(`/stocks/${s.code}`)} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       <Card title="成交额明细">
         <div className="overflow-x-auto max-h-[560px] overflow-y-auto">

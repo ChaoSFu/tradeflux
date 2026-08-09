@@ -39,8 +39,8 @@ const NAV: NavEntry[] = [
       { type: 'link', to: '/limit-moves', label: '涨跌停概览', icon: Flame },
       { type: 'link', to: '/strong',      label: '强势股概览', icon: LayoutDashboard },
       { type: 'link', to: '/stocks',      label: '活跃股池',   icon: TrendingUp },
-      { type: 'link', to: '/watchlist',   label: '重点监控',   icon: ShieldAlert },
       { type: 'link', to: '/turnover',    label: '成交额概览', icon: Coins },
+      { type: 'link', to: '/watchlist',   label: '重点监控',   icon: ShieldAlert },
     ],
   },
   {
