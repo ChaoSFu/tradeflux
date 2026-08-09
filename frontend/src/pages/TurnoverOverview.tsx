@@ -5,10 +5,10 @@ import { fetchTurnoverOverview } from '@/api/turnover'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
-import { SectorTag } from '@/components/common/SectorTags'
-import { useSectorTags } from '@/hooks/useSectorTags'
+import { SectorTag, SectorRankTags } from '@/components/common/SectorTags'
+import { useSectorTags, type SectorTagData } from '@/hooks/useSectorTags'
 import { cn } from '@/utils/cn'
-import { Coins, Sparkles, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp } from 'lucide-react'
+import { Coins, Sparkles, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, Star } from 'lucide-react'
 import type { TurnoverSectorGroup, TurnoverStock } from '@/types'
 
 // ─── 板块排序（赚钱效应 / 板块涨幅 / 成交额 / 只数）── 同强势股概览 SectorEffectCard 的排序约定
@@ -75,6 +75,12 @@ const BIAS_COLOR: Record<TurnoverSectorGroup['bias'], string> = {
   bullish: 'text-up bg-up-dim',
   bearish: 'text-down bg-down-dim',
   mixed: 'text-text-muted bg-bg-elevated',
+}
+// 展开面板强调色（同 SectorSection 的 GROUP_META 配色惯例：红=看多/涨，绿=看空/跌）
+const BIAS_ACCENT: Record<TurnoverSectorGroup['bias'], string> = {
+  bullish: '#FF4560',
+  bearish: '#26C281',
+  mixed: '#94A3B8',
 }
 
 /** Horizontal stacked bar: up (green) | flat (muted) | down (red) */
@@ -176,6 +182,128 @@ function StockRow({ s, onClick }: { s: TurnoverStock; onClick: () => void }) {
   )
 }
 
+/** 展开的板块成员详情面板：展示逻辑同强势股概览 SectorSection（点击板块后展开的卡片）——
+ *  强调色左侧竖条 + 板块名/只数/排行标签 + 龙头（本页取成交额最高股）+ 板块级多周期涨幅/强股/连板速览
+ *  （复用 useSectorTags 的板块级数据，跟 SectorSection 头部同一数据源）+ 赚钱效应/涨跌只数 + 成员表。 */
+function SectorDetailPanel({
+  group, stocks, tagData, onClose, onClickStock,
+}: {
+  group: TurnoverSectorGroup
+  stocks: TurnoverStock[]
+  tagData?: SectorTagData
+  onClose: () => void
+  onClickStock: (code: string) => void
+}) {
+  const accentColor = BIAS_ACCENT[group.bias]
+  const leader = stocks[0]  // stocks 保留原始成交额排名顺序，首位即该板块成交额最高股
+
+  return (
+    <div className="card overflow-hidden p-0" style={{ borderColor: `${accentColor}20` }}>
+      <button
+        className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-bg-elevated transition-colors text-left"
+        onClick={onClose}
+      >
+        <div className="w-1 h-5 rounded-full shrink-0" style={{ backgroundColor: accentColor }} />
+        <span className="font-semibold text-sm text-text-primary">{group.name}</span>
+        <span
+          className="text-xs font-mono px-1.5 py-0.5 rounded"
+          style={{ color: accentColor, backgroundColor: `${accentColor}18` }}
+        >
+          {stocks.length} 只
+        </span>
+        {tagData && (
+          <div className="flex flex-wrap gap-1">
+            <SectorRankTags tagData={tagData} />
+          </div>
+        )}
+        {leader && (
+          <span className="flex items-center gap-1 text-xs text-text-muted ml-1">
+            <Star className="w-3 h-3 text-dragon fill-dragon shrink-0" />
+            <span className="text-dragon font-medium">{leader.name}</span>
+            <span className="text-text-muted/85 font-mono">{leader.code}</span>
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-3">
+          {tagData && (
+            <span className="hidden lg:flex items-center gap-2 text-xs font-mono">
+              {([['今', tagData.pct_today], ['10日', tagData.pct_10d], ['20日', tagData.pct_20d], ['60日', tagData.pct_60d]] as const).map(([lab, v]) => (
+                <span key={lab} className="text-text-muted/70">
+                  {lab}
+                  <span className={cn('ml-0.5', v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-muted')}>
+                    {v > 0 ? '+' : ''}{v.toFixed(1)}%
+                  </span>
+                </span>
+              ))}
+              <span className="text-text-secondary">强股 <span className="text-text-primary">{tagData.strong_stock_count}</span></span>
+              <span className="text-text-secondary">连板 <span className="text-text-primary">{tagData.board_height}</span></span>
+            </span>
+          )}
+          <span className="flex items-center gap-1">
+            <span className="text-text-muted/70 text-xs">赚钱效应</span>
+            <span className={cn(
+              'text-xs font-mono font-semibold px-1.5 py-px rounded',
+              pctColor(group.avg_pct_change), group.avg_pct_change > 0 ? 'bg-up/10' : group.avg_pct_change < 0 ? 'bg-down/10' : '',
+            )}>
+              {pctSign(group.avg_pct_change)}
+            </span>
+          </span>
+          <span className="flex items-center gap-1 text-xs font-mono">
+            <span className="text-up">{group.up_count}涨</span>
+            <span className="text-text-muted/70">/</span>
+            <span className="text-down">{group.down_count}跌</span>
+          </span>
+          <ChevronUp className="w-3.5 h-3.5 text-text-muted shrink-0" />
+        </div>
+      </button>
+
+      <div className="border-t border-bg-border/30">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-bg-border/20 bg-bg-elevated/40">
+              <th className="text-left px-3 py-1.5 text-xs text-text-secondary/70 font-medium">#</th>
+              <th className="text-left px-3 py-1.5 text-xs text-text-secondary/70 font-medium">代码 / 名称</th>
+              <th className="text-right px-3 py-1.5 text-xs text-text-secondary/70 font-medium whitespace-nowrap">成交额</th>
+              <th className="text-right px-3 py-1.5 text-xs text-text-secondary/70 font-medium whitespace-nowrap">涨跌幅</th>
+              <th className="text-right px-3 py-1.5 text-xs text-text-secondary/70 font-medium whitespace-nowrap">换手率</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stocks.map((s) => (
+              <tr
+                key={s.code}
+                onClick={() => onClickStock(s.code)}
+                className="border-b border-bg-border/15 last:border-0 cursor-pointer hover:bg-bg-elevated transition-colors"
+              >
+                <td className="px-3 py-2 text-text-muted font-mono text-xs">{s.rank}</td>
+                <td className="px-3 py-2 whitespace-nowrap">
+                  <div className="flex items-center gap-1.5">
+                    <div>
+                      <div className="font-mono text-accent text-xs">{s.code}</div>
+                      <div className="text-text-primary font-medium">{s.name}</div>
+                    </div>
+                    {s.is_new && (
+                      <Badge variant="accent" className="gap-0.5">
+                        <Sparkles className="w-2.5 h-2.5" /> NEW
+                      </Badge>
+                    )}
+                  </div>
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-xs">{yi(s.amount)}</td>
+                <td className="px-3 py-2 text-right font-mono text-xs">
+                  <span className={pctColor(s.pct_change)}>{pctSign(s.pct_change)}</span>
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-xs text-text-secondary">
+                  {s.turnover_rate != null ? `${s.turnover_rate.toFixed(2)}%` : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 export default function TurnoverOverview() {
   const navigate = useNavigate()
   const { data, isLoading } = useQuery({ queryKey: ['turnover-overview'], queryFn: () => fetchTurnoverOverview() })
@@ -266,30 +394,21 @@ export default function TurnoverOverview() {
         )}
       </Card>
 
-      {/* ── 展开的板块成员列表（点击板块行展开，同强势股概览展开逻辑）── */}
-      {expandedSector && stocksBySectorName.get(expandedSector) && (
-        <Card title={`${expandedSector} 成员股 (${stocksBySectorName.get(expandedSector)!.length})`}>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-bg-border/40">
-                  <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium">#</th>
-                  <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium">代码 / 名称</th>
-                  <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium">板块</th>
-                  <th className="text-right px-3 py-2 text-xs text-text-secondary/70 font-medium whitespace-nowrap">成交额</th>
-                  <th className="text-right px-3 py-2 text-xs text-text-secondary/70 font-medium whitespace-nowrap">涨跌幅</th>
-                  <th className="text-right px-3 py-2 text-xs text-text-secondary/70 font-medium whitespace-nowrap">换手率</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stocksBySectorName.get(expandedSector)!.map((s) => (
-                  <StockRow key={s.code} s={s} onClick={() => navigate(`/stocks/${s.code}`)} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
+      {/* ── 展开的板块成员详情（点击板块行展开，展示逻辑同强势股概览 SectorSection）── */}
+      {expandedSector && (() => {
+        const groupData = sortedGroups.find((g) => g.name === expandedSector)
+        const stocks = stocksBySectorName.get(expandedSector)
+        if (!groupData || !stocks) return null
+        return (
+          <SectorDetailPanel
+            group={groupData}
+            stocks={stocks}
+            tagData={sectorTagsByName.get(expandedSector)}
+            onClose={() => setExpandedSector(null)}
+            onClickStock={(code) => navigate(`/stocks/${code}`)}
+          />
+        )
+      })()}
 
       <Card title="成交额明细">
         <div className="overflow-x-auto max-h-[560px] overflow-y-auto">
