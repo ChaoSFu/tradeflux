@@ -6,6 +6,7 @@ import { useState, useMemo, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { fetchMarketState, fetchProfitEffect, fetchMarketHistory } from '@/api/marketState'
+import { fetchTurnoverOverview } from '@/api/turnover'
 import { fetchLimitMoves, fetchLimitMovesTrend, fetchStrongPool } from '@/api/stocks'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
@@ -45,6 +46,8 @@ function Cell({ label, children }: { label: string; children: React.ReactNode })
 export function MarketStateBar() {
   const { data: state } = useQuery({ queryKey: ['market-state'], queryFn: fetchMarketState })
   const { data: pe } = useQuery({ queryKey: ['profit-effect'], queryFn: fetchProfitEffect })
+  // 大成交额赚钱效应（成交额概览页同源缓存 key，两处共享同一次请求）
+  const { data: turnover } = useQuery({ queryKey: ['turnover-overview'], queryFn: () => fetchTurnoverOverview() })
   // 全市场涨跌停家数（与「涨跌停概览」同源同缓存）
   const { data: up } = useQuery({
     queryKey: ['limit-moves', 'limit_up'],
@@ -259,6 +262,15 @@ export function MarketStateBar() {
                 {downRatio.toFixed(2)}×
               </span>
             )}
+          </Cell>
+        )}
+
+        {turnover?.date && (
+          <Cell label="大成交额赚钱效应">
+            <span className={cn('font-mono text-base font-bold', pctColor(turnover.overall_avg_pct))}>
+              {pctSign(turnover.overall_avg_pct)}
+            </span>
+            <span className="text-xs text-text-muted">{turnover.stocks.length}只</span>
           </Cell>
         )}
 
