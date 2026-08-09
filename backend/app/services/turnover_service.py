@@ -60,7 +60,18 @@ def sync_turnover_pool(db: Session) -> dict:
         return {"ok": False, "count": 0, "errors": ["成交额选股 API 不可用（本次未拿到完整分页）"]}
 
     codes = [s["code"] for s in stocks]
-    sector_by_code = _resolve_sector_names(db, codes)
+    # 板块归属短期内基本不变：复用之前任意一天已解析过的结果，只对真正没
+    # 见过的新代码走 F10（这是本函数最慢的一步，60只里通常大半是老面孔）
+    prior_rows = (
+        db.query(TurnoverPoolDaily.stock_code, TurnoverPoolDaily.sector_name)
+        .filter(TurnoverPoolDaily.stock_code.in_(codes))
+        .order_by(TurnoverPoolDaily.date.asc())
+        .all()
+    )
+    known_sectors: dict[str, Optional[str]] = {code: sector for code, sector in prior_rows}
+    codes_to_resolve = [c for c in codes if c not in known_sectors]
+    newly_resolved = _resolve_sector_names(db, codes_to_resolve) if codes_to_resolve else {}
+    sector_by_code = {**known_sectors, **newly_resolved}
 
     today = _date.today()
     db.query(TurnoverPoolDaily).filter(TurnoverPoolDaily.date == today).delete()

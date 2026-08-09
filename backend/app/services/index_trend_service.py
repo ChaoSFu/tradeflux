@@ -24,7 +24,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
@@ -57,26 +57,45 @@ _lock = threading.Lock()
 
 # ── 数据同步（daily_update 调用；refresh=true 或库空时自愈调用）──────────────
 
-def sync_index_bars(db: Session) -> dict:
+def _gap_days(last_date: Optional[date], minimum: int = 5) -> int:
     """
-    拉取全部核心指数日线（东财→腾讯→新浪三级兜底）并 upsert 入库。
+    按库内最新日期算「需要补几天」：last_date 到今天差几天就拉几天（+3天
+    buffer盖住周末/节假日），下限 minimum。天然覆盖"daily_update偶尔漏跑
+    几天"的情况——固定只拉最近N天的话，一旦漏跑超过N天，缺口永远补不上。
+    last_date=None（库里从没有过这个指数的数据）时深度回填 HISTORY_BARS——
+    指数数据没有独立的一次性回填脚本，这个自愈路径就是唯一的建库入口。
+    """
+    if last_date is None:
+        return HISTORY_BARS
+    gap = (date.today() - last_date).days + 3
+    return max(minimum, gap)
+
+
+def sync_index_bars(db: Session, days: Optional[int] = None) -> dict:
+    """
+    拉取核心指数日线（东财→腾讯→新浪三级兜底）并 upsert 入库。
+    days=None（默认）时按每个指数库内最新日期自动算需要补几天，不会永远
+    只看最近几天导致漏跑几天的缺口补不上；也不会像以前那样每次不管三七
+    二十一固定拉 HISTORY_BARS（320天）——历史数据一旦落库不再变化，没必要
+    每次都重复请求+重复写入没变化的历史行。调用方也可以显式传固定天数
+    覆盖这个自动判断。
     返回 {'ok': 成功指数数, 'upserts': 写入/更新行数, 'errors': [...]}
     """
-    from datetime import date as _date
     ok = upserts = 0
     errors: List[str] = []
     for meta in INDICES:
         try:
-            bars = fetch_index_kline(meta["secid"], days=HISTORY_BARS)
-            if not bars:
-                raise ValueError("三源均无数据")
             existing = {
                 r.date: r for r in db.query(IndexDailySnapshot)
                 .filter(IndexDailySnapshot.index_code == meta["code"])
                 .all()
             }
+            fetch_days = days if days is not None else _gap_days(max(existing) if existing else None)
+            bars = fetch_index_kline(meta["secid"], days=fetch_days)
+            if not bars:
+                raise ValueError("三源均无数据")
             for b in bars:
-                d = _date.fromisoformat(str(b["date"]))
+                d = date.fromisoformat(str(b["date"]))
                 row = existing.get(d)
                 if row is None:
                     row = IndexDailySnapshot(index_code=meta["code"], date=d)
@@ -284,7 +303,8 @@ def get_market_trend(db: Session, force_refresh: bool = False) -> MarketTrendRes
         if not force_refresh and _insufficient():
             last = _last_sync_attempt["ts"]
             if last is None or (datetime.now() - last).total_seconds() > _SYNC_DEBOUNCE:
-                sync_errors = sync_index_bars(db).get("errors", [])
+                # 库内数据不足（冷启动）—— 只拉最新几天补不齐61根，这里需要深度回填
+                sync_errors = sync_index_bars(db, days=HISTORY_BARS).get("errors", [])
 
         indices: List[IndexTrendAnalysis] = []
         errors: List[str] = list(sync_errors)

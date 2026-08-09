@@ -1,12 +1,13 @@
 # TradeFlux Backend 技术文档
 
 > 面向开发者的后端架构说明，覆盖目录结构、外部接口依赖、数据链路和数据库表结构。
-> 最后更新：2026-06-05
+> 最后更新：2026-08-09
 
 ---
 
 ## 目录
 
+0. [⭐ 数据更新的核心原则（务必先读）](#0-数据更新的核心原则务必先读)
 1. [目录结构](#1-目录结构)
 2. [技术栈与依赖](#2-技术栈与依赖)
 3. [外部接口依赖](#3-外部接口依赖)
@@ -16,6 +17,56 @@
 7. [路由层说明](#7-路由层说明)
 8. [运维脚本说明](#8-运维脚本说明)
 9. [配置与环境变量](#9-配置与环境变量)
+
+---
+
+## 0. 数据更新的核心原则（务必先读）
+
+> 这条原则在 2026-08 因为一次线上事故被反复确认，新加数据同步逻辑前先看这里，别重蹈覆辙。
+
+**历史数据一旦落库就不会再变，日常同步永远只应该关心"最新发生了什么"，绝不重复请求/重复写入已经确认不会变化的历史行。** 具体落地成两条子原则：
+
+### 0.1 一次性深度回填 vs 日常增量同步，永远分开两条路径
+
+| | 一次性深度回填 | 日常增量同步 |
+|---|---|---|
+| 触发方式 | 独立脚本手动跑一次（如 `backfill_margin_history.py`） | 调度器/`daily_update.py` 每天自动跑 |
+| 拉取范围 | 全部历史（可能几年、几千条） | 只拉"库内最新日期"之后缺的那几天 |
+| 频率 | 一次（除非要重建） | 每天，甚至一天多次 |
+
+**反面教材**（本项目真实踩过的坑）：`index_trend_service.sync_index_bars` 曾经不分场景，每次同步都固定请求 `HISTORY_BARS=320` 天，实际上库里 319 天数据根本没变，白白重复请求+重复写入。改成默认动态计算缺口后，日常同步的写入量从 1600 行（5指数×320天）降到 20~30 行。
+
+### 0.2 增量同步不能写死"只拉最近 N 天"——要按库内实际最新日期动态算缺口
+
+> 这是比 0.1 更容易踩的坑：固定 `days=5` 这种写法，一旦调度器漏跑（服务器故障、部署重启窗口、bug 导致某天同步失败）超过 5 天，缺口永远补不上，因为下一次同步还是只往前看 5 天，除非用总条数之类的粗粒度指标碰巧触发深度回填。
+
+正确写法（`windvane_service._gap_days` / `index_trend_service._gap_days` 是参考实现）：
+
+```python
+def _gap_days(last_date: date | None, minimum: int = 5) -> int:
+    if last_date is None:
+        return DEEP_BACKFILL_DAYS   # 库里从没有过数据，是否深度回填看有没有独立回填脚本
+    gap = (date.today() - last_date).days + 3   # +3 buffer 盖住周末/节假日
+    return max(minimum, gap)
+```
+
+即：每次同步前先查一下"这张表/这个维度目前库内最新日期是哪天"，需要拉的天数 = `max(最小保底天数, 距今缺口天数)`。这样无论是"正常情况只差1天"还是"服务器挂了10天"，都能自动补齐，不需要人工介入或额外监控告警。
+
+`last_date=None`（库里彻底没有数据）时的处理要看这个数据有没有独立的一次性回填脚本：
+- **有**（如两融数据，`backfill_margin_history.py`）→ 增量同步只返回保底天数，深度回填留给专门脚本，避免日常路径里意外触发一次几年数据的大请求。
+- **没有**（如指数K线，没有单独的 `backfill_index_history.py`）→ 增量同步自己承担深度回填职责，返回 `HISTORY_BARS` 之类的大值，因为这条自愈路径就是唯一的建库入口。
+
+### 0.3 三种更新入口，运行周期按"数据变化频率"分层，不要一刀切
+
+以板块同步（`sync_boards.py`）为例，这是目前唯一原生支持分层的模块，新功能可以照这个思路设计：
+
+| 入口 | 更新内容 | 频率 | 目的 |
+|---|---|---|---|
+| **每日数据更新**（`daily_update.py`） | 股票快照、强势池、涨跌停、板块统计等核心数据的**最新一天** | 每个交易日 2 次（盘前/盘后，调度器自动） | 快，保证当天数据能看 |
+| **板块行情同步**（`sync_boards.py --meta-only`） | 板块名称/涨幅/市值等**行情类**字段 | 每个交易日 2 次（跟随每日更新自动触发） | 快，板块卡片数据不过时 |
+| **板块全量同步**（`sync_boards.py`，无参数） | 板块成份股数量 + **全部**跟踪股票的板块归属关联（F10核对） | 每周一次（周六 10:00，调度器自动，也可手动触发） | 慢但全，捕获前两者覆盖不到的变化（比如某只股票板块归属变了，而它当天没有涨跌停不会被日常路径碰到） |
+
+**判断新数据要归到哪一层的经验法则**：数据"今天变了多少"决定归到哪层——每天都可能变的（价格、涨跌幅）归日常路径；很少变但仍需要偶尔核对完整性的（分类归属、静态属性）归周期性兜底路径；两者都不该在每次日常同步里做全量遍历。
 
 ---
 
@@ -144,7 +195,15 @@ AkShare 数据来源于交易所官方公告，提供精确的**上市日期**�
 
 与 AkShare 配合：AkShare 提供股票列表但不含今日涨跌幅，新浪接口批量补充（每批 150 只，约 5–10s）。
 
-### 3.4 腾讯财经（K 线备用）
+### 3.4 中证指数公司官网（上证指数收盘+市盈率）
+
+| 接口 | URL | 用途 |
+|------|-----|------|
+| 指数历史行情 | `https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=000001&startDate=...&endDate=...` | 上证指数收盘价 + 滚动市盈率（`peg` 字段），一次请求返回整个日期区间 |
+
+跟东财完全独立的数据源，收盘价逐日核对与新浪一致；可回溯到 2010 年之前。两融历史全量数据来自东财 `RPTA_RZRQ_LSHJ` 报表（`datacenter.eastmoney.com`，翻页可回溯至 2010-03-31 两融业务开办首日，字段 `RZRQYE`=两融余额、`RZJME`=融资净买入）。一次性回填见 `scripts/backfill_margin_history.py`；日常增量同步用 `_gap_days` 动态算最新几天（见 [§0.2](#02-增量同步不能写死只拉最近-n-天要按库内实际最新日期动态算缺口)）。
+
+### 3.5 腾讯财经（K 线备用）
 
 | 接口 | URL | 用途 |
 |------|-----|------|
@@ -152,7 +211,7 @@ AkShare 数据来源于交易所官方公告，提供精确的**上市日期**�
 
 不含换手率，涨跌幅通过相邻收盘价推算，影响情绪/龙头评分精度但不影响涨跌停判断。
 
-### 3.5 数据源切换策略
+### 3.6 数据源切换策略
 
 ```
 fetch_main_board_stocks():
@@ -291,7 +350,7 @@ POST /api/admin/sync-boards?meta_only=true
 
 #### 模式B：板块全量同步（meta_only=false，每周）
 
-> 耗时：**~5–8 分钟**，每周手动触发一次
+> 耗时：**~5–8 分钟**，调度器每周六 10:00 自动触发一次（`app/scheduler.py::_run_weekly_full_board_sync`），也可在管理页手动触发
 
 ```
 POST /api/admin/sync-boards
@@ -637,6 +696,10 @@ screening_criteria     （独立表，配置项）
 | `weak_to_strong_service.py` | 弱转强形态检测 | `detect_weak_to_strong_candidates()` → Top10 |
 | `market_state_service.py` | 市场状态综合计算 | `get_current_market_state()` |
 | `ai_service.py` | 复盘叙事生成 | `generate_market_review()`, `explain_signal()` |
+| `index_trend_service.py` | 大盘指数趋势分析（均线体系） | `sync_index_bars()`（动态缺口增量同步）, `get_market_trend()` |
+| `windvane_service.py` | 市场风向标（两融/涨跌统计/成交分析） | `sync_market_breadth()`, `get_windvane()`, `fetch_margin_history_full()`（一次性回填用） |
+| `turnover_service.py` | 成交额概览（板块赚钱效应+新进标签） | `sync_turnover_pool()`（板块归属复用历史结果，只对新代码走F10）, `get_turnover_overview()` |
+| `market_effect_service.py` | 赚钱/亏钱效应（冻结群体次日反馈） | `compute_and_cache()`, `get_or_compute()` |
 
 ---
 
@@ -735,6 +798,17 @@ python scripts/backfill_close_price.py
 # 适用于 seed_kline_history 前的辅助补填
 ```
 
+### `backfill_margin_history.py` — 两融历史 + 上证指数市盈率一次性回填
+
+```bash
+python -m scripts.backfill_margin_history
+# 翻页拉取东财两融历史全量（回溯至2010-03-31）+ 调中证指数官网拿同期
+# 上证收盘/市盈率，upsert 进 market_breadth_daily。只写 margin_balance/
+# margin_net_buy/szzs_close/szzs_pe 四个字段，不动同一行其他来源字段。
+# 只需跑一次（新环境部署时）；日常增量由 sync_market_breadth 自动做，
+# 见 §0 数据更新核心原则。
+```
+
 ---
 
 ## 9. 配置与环境变量
@@ -785,16 +859,18 @@ sudo journalctl -u tradeflux --since today | grep SCHED
 ### 数据更新流程
 
 ```
-每个交易日 15:30（随机到 16:30）
-  ↓ 内置调度器自动触发（jitter=3600）
-  ↓ Step1: daily_update.py（~50s）
-  ↓ Step2: sync_boards.py --meta-only（~30s）
+每个交易日 09:27（盘前，随机 ±60s）+ 15:30（盘后，随机 ±3600s）
+  ↓ 内置调度器自动触发
+  ↓ Step1: daily_update.py（~50s，只更新最新一天）
+  ↓ Step2: sync_boards.py --meta-only（~30s，只更新板块行情字段）
   ↓ 失败自动重试，间隔 10 分钟，最多 3 次
   ↓ 结果写入 logs/daily_update_YYYY-MM-DD.log
 
-每周一次（手动，前端下拉框）
+每周六 10:00（内置调度器自动触发，也可管理页手动触发）
   ↓ 板块全量同步（~5-8 分钟）
-  ↓ 更新成份股数量 + 个股板块关联
+  ↓ 更新成份股数量 + 全部跟踪股票的板块关联（不止当日涨跌停股）
+  ↓ 跟每日更新共享同一把文件锁，冲突时直接跳过、失败不重试（下周再跑）
+  ↓ 结果写入 logs/sync_boards_full_YYYY-MM-DD.log
 ```
 
 ### 更新部署流程

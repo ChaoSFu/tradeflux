@@ -147,12 +147,57 @@ def _run_daily_update() -> None:
     _run_with_retry(attempt=1)
 
 
+def _run_weekly_full_board_sync() -> None:
+    """
+    板块全量同步（周度兜底任务）：核对全部跟踪股票的板块归属（个股→板块
+    F10），捕获"每日数据更新/板块行情同步"这两个快路径没覆盖到的变化——
+    daily_update 里的板块关联同步只处理当日涨跌停股票，board 元数据同步
+    （meta_only=True）跳过个股关联，都不会发现"某只股票板块归属变了"这种
+    情况。全量同步成本较高（要过一遍全部跟踪股票），不适合每天跑，放在
+    周六（休市、不抢每日更新的锁）跑一次，专门保证数据完整性。
+    跟每日更新共享同一把锁，避免并发写库冲突；失败不做多次重试——反正
+    下周还会再跑，是兜底任务不是关键路径，没必要像 daily_update 那样重试。
+    """
+    backend_dir = os.path.dirname(os.path.dirname(__file__))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    log_dir = os.path.join(backend_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"sync_boards_full_{date.today().isoformat()}.log")
+
+    lock_fd = None
+    try:
+        lock_fd = open(LOCK_FILE, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            _log(log_path, "SCHED", "❌ 锁已被占用（其他更新任务正在运行），本次跳过，下周再试")
+            return
+
+        _log(log_path, "SCHED", "板块全量同步（周度兜底）开始...")
+        from scripts.sync_boards import run_sync_boards  # type: ignore
+        run_sync_boards(meta_only=False)
+        _log(log_path, "SCHED", "✅ 板块全量同步（周度兜底）完成")
+    except Exception as exc:
+        _log(log_path, "SCHED", f"❌ 板块全量同步失败: {exc}")
+        logger.exception("板块全量同步（周度兜底）异常")
+    finally:
+        if lock_fd:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+            except Exception:
+                pass
+
+
 def create_scheduler() -> BackgroundScheduler:
     """
-    创建并配置后台调度器。两个定时更新（周一至周五）：
-    - 盘后 15:30 触发，jitter=3600（±1h 内随机）
-    - 盘前 09:27 触发，jitter=60（9:26:00~9:28:00，集合竞价后、开盘前随机）
-    两者共享文件锁互斥；max_instances=1；失败后 10 分钟自动重试，最多 3 次。
+    创建并配置后台调度器。三个定时任务：
+    - 盘后 15:30 触发每日数据更新，jitter=3600（±1h 内随机）
+    - 盘前 09:27 触发每日数据更新，jitter=60（9:26:00~9:28:00，集合竞价后、开盘前随机）
+    - 周六 10:00 触发板块全量同步（周度兜底，见 BACKEND.md §0.3）
+    三者共享同一把文件锁互斥；max_instances=1；每日更新失败后 10 分钟自动重试
+    最多 3 次，周度兜底失败不重试（下周还会再跑，非关键路径）。
     """
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
     # 盘后更新（收盘后最终数据）
@@ -186,5 +231,20 @@ def create_scheduler() -> BackgroundScheduler:
         name="盘前数据更新",
         replace_existing=True,
         misfire_grace_time=1800,  # 错过 30 分钟内补跑（避免太晚跑进盘中）
+    )
+    # 板块全量同步（周度兜底）：休市日跑，不抢工作日每日更新的锁
+    scheduler.add_job(
+        _run_weekly_full_board_sync,
+        trigger=CronTrigger(
+            day_of_week="sat",
+            hour=10,
+            minute=0,
+            timezone="Asia/Shanghai",
+        ),
+        max_instances=1,
+        id="weekly_full_board_sync",
+        name="板块全量同步（周度兜底）",
+        replace_existing=True,
+        misfire_grace_time=3600 * 6,  # 错过 6 小时内仍可补跑（非关键路径，宽松些）
     )
     return scheduler

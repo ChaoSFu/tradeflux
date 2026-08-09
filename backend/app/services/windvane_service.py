@@ -339,6 +339,20 @@ def _fetch_turnover(client: httpx.Client) -> TurnoverData:
 
 # ── 数据同步（daily_update 调用；refresh=true 或库空时自愈调用）──────────────
 
+def _gap_days(last_date: Optional[date_cls], minimum: int = 5) -> int:
+    """
+    按库内最新日期算「需要补几天」：last_date 到今天差几天就拉几天（+3天
+    buffer盖住周末/节假日），下限 minimum。天然覆盖"daily_update偶尔漏跑
+    几天"的情况——固定拉最近N天的话，一旦漏跑超过N天，缺口永远补不上。
+    last_date=None（库里还没有过数据）时只返回 minimum，深度回填交给专门
+    的一次性回填脚本，不在这个增量同步路径里现拉几年数据。
+    """
+    if last_date is None:
+        return minimum
+    gap = (date_cls.today() - last_date).days + 3
+    return max(minimum, gap)
+
+
 def sync_market_breadth(db: Session) -> dict:
     """
     拉取两融/涨跌统计/成交额并 upsert 入 market_breadth_daily（一天一行，按来源填列）。
@@ -346,9 +360,16 @@ def sync_market_breadth(db: Session) -> dict:
     """
     margin = updown = turnover = None
     errors: List[str] = []
+    last_margin_date = (
+        db.query(MarketBreadthDaily.date)
+        .filter(MarketBreadthDaily.margin_balance.isnot(None))
+        .order_by(MarketBreadthDaily.date.desc())
+        .limit(1).scalar()
+    )
+    margin_days = _gap_days(last_margin_date)
     with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=15) as client:
         try:
-            margin = _fetch_margin(client)
+            margin = _fetch_margin(client, days=margin_days)
         except Exception as e:  # noqa: BLE001
             errors.append(f"融资融券: {e}")
         try:
