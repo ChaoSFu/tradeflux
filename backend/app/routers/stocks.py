@@ -24,9 +24,11 @@ def list_stocks(
     in_strong_pool: Optional[bool] = None,
     sector_id: Optional[int] = None,
     search: Optional[str] = None,
+    codes: Optional[str] = Query(None, description="逗号分隔的股票代码，按代码精确批量查询，忽略分页"),
     db: Session = Depends(get_db),
 ):
-    return get_all_stocks(db, page, page_size, in_strong_pool, sector_id, search)
+    code_list = [c.strip() for c in codes.split(",") if c.strip()] if codes else None
+    return get_all_stocks(db, page, page_size, in_strong_pool, sector_id, search, code_list)
 
 
 @router.get("/strong-pool", response_model=StockListResponse)

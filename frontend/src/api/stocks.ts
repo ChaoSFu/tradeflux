@@ -10,7 +10,14 @@ export const fetchStocks = (params?: {
   in_strong_pool?: boolean
   sector_id?: number
   search?: string
+  codes?: string
 }) => client.get<StockListResponse>('/stocks', { params }).then((r) => r.data)
+
+// 按代码批量精确查询（忽略分页），用于用其他选股口径的成员补全强势股字段
+export const fetchStocksByCodes = (codes: string[]) =>
+  codes.length
+    ? client.get<StockListResponse>('/stocks', { params: { codes: codes.join(',') } }).then((r) => r.data)
+    : Promise.resolve({ items: [], total: 0, page: 1, page_size: 0 } as StockListResponse)
 
 export const fetchStrongPool = (params?: {
   page?: number

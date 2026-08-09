@@ -320,8 +320,11 @@ def get_all_stocks(
     in_strong_pool: Optional[bool] = None,
     sector_id: Optional[int] = None,
     search: Optional[str] = None,
+    codes: Optional[list[str]] = None,
 ) -> StockListResponse:
     q = db.query(Stock)
+    if codes:
+        q = q.filter(Stock.code.in_(codes))
     if in_strong_pool is not None:
         q = q.filter(Stock.in_strong_pool == in_strong_pool)
     if sector_id:
@@ -334,8 +337,15 @@ def get_all_stocks(
         )
 
     q = q.order_by(Stock.leader_score.desc())
-    total = q.count()
-    stocks = q.offset((page - 1) * page_size).limit(page_size).all()
+
+    if codes:
+        # 按代码精确批量查询（如成交额概览用于补全板块成员的强势股字段），
+        # 数量本身已由调用方限定，不做分页
+        stocks = q.all()
+        total = len(stocks)
+    else:
+        total = q.count()
+        stocks = q.offset((page - 1) * page_size).limit(page_size).all()
 
     return StockListResponse(
         items=_enrich_stocks_bulk(stocks, db),

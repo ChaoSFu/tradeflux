@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { fetchTurnoverOverview } from '@/api/turnover'
+import { fetchStocksByCodes } from '@/api/stocks'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
@@ -9,7 +10,7 @@ import { SectorTag, SectorRankTags } from '@/components/common/SectorTags'
 import { useSectorTags, type SectorTagData } from '@/hooks/useSectorTags'
 import { cn } from '@/utils/cn'
 import { Coins, Sparkles, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, Star } from 'lucide-react'
-import type { TurnoverSectorGroup, TurnoverStock } from '@/types'
+import type { TurnoverSectorGroup, TurnoverStock, Stock } from '@/types'
 
 // ─── 板块排序（赚钱效应 / 板块涨幅 / 成交额 / 只数）── 同强势股概览 SectorEffectCard 的排序约定
 type TurnoverSortKey = 'effect' | 'sector_pct' | 'amount' | 'count'
@@ -182,15 +183,29 @@ function StockRow({ s, onClick }: { s: TurnoverStock; onClick: () => void }) {
   )
 }
 
+/** 强势股字段（连板/涨停/涨幅/龙头分/风险分）不是所有成交额上榜股都有——只有曾进入
+ *  强势股池/涨跌停名单的股票才在 Stock 表里留有记录，纯大盘股常年没有。缺失时显示 —，
+ *  不臆测。 */
+function numOrDash(v: number | null | undefined, suffix = '') {
+  return v != null ? `${v}${suffix}` : <span className="text-text-muted/50">—</span>
+}
+function pctOrDash(v: number | null | undefined) {
+  if (v == null) return <span className="text-text-muted/50">—</span>
+  return <span className={cn(v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-muted')}>{pctSign(v)}</span>
+}
+
 /** 展开的板块成员详情面板：展示逻辑同强势股概览 SectorSection（点击板块后展开的卡片）——
  *  强调色左侧竖条 + 板块名/只数/排行标签 + 龙头（本页取成交额最高股）+ 板块级多周期涨幅/强股/连板速览
- *  （复用 useSectorTags 的板块级数据，跟 SectorSection 头部同一数据源）+ 赚钱效应/涨跌只数 + 成员表。 */
+ *  （复用 useSectorTags 的板块级数据，跟 SectorSection 头部同一数据源）+ 赚钱效应/涨跌只数 + 成员表
+ *  （成员表按代码合并 Stock 强势股字段——连板/涨停/涨幅/龙头分/风险分，仅曾进入强势股池
+ *  /涨跌停名单的股票才有，缺失显示 —）。 */
 function SectorDetailPanel({
-  group, stocks, tagData, onClose, onClickStock,
+  group, stocks, tagData, stockByCode, onClose, onClickStock,
 }: {
   group: TurnoverSectorGroup
   stocks: TurnoverStock[]
   tagData?: SectorTagData
+  stockByCode: Map<string, Stock>
   onClose: () => void
   onClickStock: (code: string) => void
 }) {
@@ -256,47 +271,74 @@ function SectorDetailPanel({
         </div>
       </button>
 
-      <div className="border-t border-bg-border/30">
-        <table className="w-full text-sm">
+      <div className="border-t border-bg-border/30 overflow-x-auto">
+        <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-bg-border/20 bg-bg-elevated/40">
-              <th className="text-left px-3 py-1.5 text-xs text-text-secondary/70 font-medium">#</th>
-              <th className="text-left px-3 py-1.5 text-xs text-text-secondary/70 font-medium">代码 / 名称</th>
-              <th className="text-right px-3 py-1.5 text-xs text-text-secondary/70 font-medium whitespace-nowrap">成交额</th>
-              <th className="text-right px-3 py-1.5 text-xs text-text-secondary/70 font-medium whitespace-nowrap">涨跌幅</th>
-              <th className="text-right px-3 py-1.5 text-xs text-text-secondary/70 font-medium whitespace-nowrap">换手率</th>
+              <th className="text-left  px-3 py-1.5 text-text-secondary/70 font-medium">#</th>
+              <th className="text-left  px-2 py-1.5 text-text-secondary/70 font-medium">股票</th>
+              <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">连续连板</th>
+              <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">10日涨停</th>
+              <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">20日涨停</th>
+              <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">10日涨幅</th>
+              <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">20日涨幅</th>
+              <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">60日涨幅</th>
+              <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">龙头分</th>
+              <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">风险分</th>
+              <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">成交额</th>
+              <th className="text-right px-3 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">今日涨幅</th>
+              <th className="text-right px-3 py-1.5 text-text-secondary/70 font-medium whitespace-nowrap">换手率</th>
             </tr>
           </thead>
           <tbody>
-            {stocks.map((s) => (
-              <tr
-                key={s.code}
-                onClick={() => onClickStock(s.code)}
-                className="border-b border-bg-border/15 last:border-0 cursor-pointer hover:bg-bg-elevated transition-colors"
-              >
-                <td className="px-3 py-2 text-text-muted font-mono text-xs">{s.rank}</td>
-                <td className="px-3 py-2 whitespace-nowrap">
-                  <div className="flex items-center gap-1.5">
-                    <div>
-                      <div className="font-mono text-accent text-xs">{s.code}</div>
-                      <div className="text-text-primary font-medium">{s.name}</div>
+            {stocks.map((s) => {
+              const full = stockByCode.get(s.code)
+              return (
+                <tr
+                  key={s.code}
+                  onClick={() => onClickStock(s.code)}
+                  className="border-b border-bg-border/15 last:border-0 cursor-pointer hover:bg-bg-elevated transition-colors"
+                >
+                  <td className="px-3 py-2 text-text-muted font-mono">{s.rank}</td>
+                  <td className="px-2 py-2 whitespace-nowrap">
+                    <div className="flex items-center gap-1.5">
+                      <div>
+                        <div className="font-mono text-accent">{s.code}</div>
+                        <div className="text-text-primary font-medium">{s.name}</div>
+                      </div>
+                      {s.is_new && (
+                        <Badge variant="accent" className="gap-0.5">
+                          <Sparkles className="w-2.5 h-2.5" /> NEW
+                        </Badge>
+                      )}
                     </div>
-                    {s.is_new && (
-                      <Badge variant="accent" className="gap-0.5">
-                        <Sparkles className="w-2.5 h-2.5" /> NEW
-                      </Badge>
-                    )}
-                  </div>
-                </td>
-                <td className="px-3 py-2 text-right font-mono text-xs">{yi(s.amount)}</td>
-                <td className="px-3 py-2 text-right font-mono text-xs">
-                  <span className={pctColor(s.pct_change)}>{pctSign(s.pct_change)}</span>
-                </td>
-                <td className="px-3 py-2 text-right font-mono text-xs text-text-secondary">
-                  {s.turnover_rate != null ? `${s.turnover_rate.toFixed(2)}%` : '—'}
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="px-2 py-2 font-mono text-right">
+                    {full?.today_board_count ? (
+                      <span className={cn('font-bold', full.today_board_count >= 3 ? 'text-dragon' : 'text-up')}>{full.today_board_count}板</span>
+                    ) : <span className="text-text-muted/50">—</span>}
+                  </td>
+                  <td className="px-2 py-2 font-mono text-right">{numOrDash(full?.limit_up_days_10d)}</td>
+                  <td className="px-2 py-2 font-mono text-right">{numOrDash(full?.limit_up_days_20d)}</td>
+                  <td className="px-2 py-2 font-mono text-right">{pctOrDash(full?.pct_change_10d)}</td>
+                  <td className="px-2 py-2 font-mono text-right">{pctOrDash(full?.pct_change_20d)}</td>
+                  <td className="px-2 py-2 font-mono text-right">{pctOrDash(full?.pct_change_60d)}</td>
+                  <td className="px-2 py-2 font-mono text-right">
+                    {full ? <span className="text-text-secondary">{full.leader_score.toFixed(0)}</span> : <span className="text-text-muted/50">—</span>}
+                  </td>
+                  <td className="px-2 py-2 font-mono text-right">
+                    {full ? <span className={cn(full.risk_score >= 50 ? 'text-down' : 'text-text-secondary')}>{full.risk_score.toFixed(0)}</span> : <span className="text-text-muted/50">—</span>}
+                  </td>
+                  <td className="px-2 py-2 text-right font-mono">{yi(s.amount)}</td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    <span className={cn('font-bold', pctColor(s.pct_change))}>{pctSign(s.pct_change)}</span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-text-secondary">
+                    {s.turnover_rate != null ? `${s.turnover_rate.toFixed(2)}%` : '—'}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -335,6 +377,23 @@ export default function TurnoverOverview() {
 
   const toggleSector = (name: string) =>
     setExpandedSector((prev) => (prev === name ? null : name))
+
+  // 按代码批量补全强势股字段（连板/涨停/涨幅/龙头分/风险分）——只有曾进入强势股池/涨
+  // 跌停名单的股票在 Stock 表里才有记录，覆盖率有限，缺失的成员表格显示 —
+  const turnoverCodes = useMemo(
+    () => [...(data?.stocks ?? [])].map((s) => s.code).sort(),
+    [data],
+  )
+  const { data: enrichResp } = useQuery({
+    queryKey: ['turnover-stock-enrich', turnoverCodes],
+    queryFn: () => fetchStocksByCodes(turnoverCodes),
+    enabled: turnoverCodes.length > 0,
+  })
+  const stockByCode = useMemo(() => {
+    const m = new Map<string, Stock>()
+    for (const s of enrichResp?.items ?? []) m.set(s.code, s)
+    return m
+  }, [enrichResp])
 
   // 整体赚钱效应涨跌分布（同强势股概览 Dashboard 的整体赚钱效应卡片口径），
   // 只统计涨/平/跌，不含涨停/跌停——本页是成交额前N选股，非涨跌停/龙头池，
@@ -437,6 +496,7 @@ export default function TurnoverOverview() {
             group={groupData}
             stocks={stocks}
             tagData={sectorTagsByName.get(expandedSector)}
+            stockByCode={stockByCode}
             onClose={() => setExpandedSector(null)}
             onClickStock={(code) => navigate(`/stocks/${code}`)}
           />
