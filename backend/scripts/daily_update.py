@@ -1038,6 +1038,22 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             db_group, days=db_fetch_days, max_workers=30, delay_between=0.0,
         ) if db_group else {}
 
+        # 高并发批量拉取下，个别股票会因限流/连接重置静默拉空（fetch_kline 内部
+        # 东财→腾讯双重兜底都失败）。若不重试，这些股票会一直被下面"今日无数据，
+        # 降级用历史"吞掉——今日涨跌停/连板数永久卡在缺today这天的旧值，且不会
+        # 自愈：因为下次再跑，同样的高并发批量请求大概率又撞上同样的限流。
+        # 低并发单独重试一轮：脱离批量并发环境后单只股票拉取成功率接近100%。
+        missing_codes = [info for info in db_group if not today_klines.get(info.code)]
+        if missing_codes:
+            log.info(f"  DB重建组 {len(missing_codes)} 只今日K线拉取失败，低并发重试...")
+            retry_klines = fetch_klines_batch(
+                missing_codes, days=db_fetch_days, max_workers=3, delay_between=0.3,
+            )
+            recovered = sum(1 for bars in retry_klines.values() if bars)
+            if recovered:
+                log.info(f"  重试补齐 {recovered}/{len(missing_codes)} 只")
+            today_klines.update(retry_klines)
+
         # 合并：历史快照 + 新拉 bar，按日期并集去重（新数据覆盖同日历史并补齐缺口日）
         klines_map: dict = {}
         for info in full_group:
