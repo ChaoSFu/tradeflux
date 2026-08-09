@@ -683,11 +683,15 @@ _F10_HEADERS = {
 }
 
 
-def fetch_stock_bk_codes(code: str) -> list[str]:
+def fetch_stock_bk_codes(code: str, client: "httpx.Client | None" = None) -> list[str]:
     """
     通过东财 emweb F10 接口获取个股所属板块代码列表。
     返回 ["BK0665", "BK0940", ...] 格式，与 sectors.code 字段直接对应。
     失败时返回空列表，不阻断主流程。
+
+    调用方在并发（ThreadPoolExecutor）批量查询多只股票时应传入共享的
+    httpx.Client（预设 limits 匹配并发数），避免每只股票各开一条新连接
+    重复走 TLS 握手——httpx.Client 对多线程并发调用是线程安全的。
     """
     mkt = "SH" if code.startswith(("6", "5", "9")) else "SZ"
     url = (
@@ -695,7 +699,10 @@ def fetch_stock_bk_codes(code: str) -> list[str]:
         f"?code={mkt}{code}"
     )
     try:
-        resp = httpx.get(url, headers=_F10_HEADERS, timeout=10)
+        if client is not None:
+            resp = client.get(url, headers=_F10_HEADERS, timeout=10)
+        else:
+            resp = httpx.get(url, headers=_F10_HEADERS, timeout=10)
         data = resp.json()
         bk_codes = []
         for item in data.get("ssbk", []):

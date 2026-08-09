@@ -29,22 +29,29 @@ _BIAS_RATIO_THRESHOLD = 0.6
 
 def _resolve_sector_names(db: Session, codes: List[str]) -> dict[str, Optional[str]]:
     """并发查每只股票所属的 is_watched 板块名，命中多个取第一个。"""
+    import httpx
+
     watched = {s.code: s.name for s in db.query(Sector).filter(Sector.is_watched == True).all()}  # noqa: E712
 
-    def fetch_one(code: str):
-        return code, fetch_stock_bk_codes(code)
+    max_workers = 10
+
+    def fetch_one(code: str, client: httpx.Client):
+        return code, fetch_stock_bk_codes(code, client)
 
     result: dict[str, Optional[str]] = {}
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fetch_one, c): c for c in codes}
-        for future in as_completed(futures):
-            code = futures[future]
-            try:
-                _, bk_codes = future.result()
-            except Exception:  # noqa: BLE001
-                result[code] = None
-                continue
-            result[code] = next((watched[bk] for bk in bk_codes if bk in watched), None)
+    with httpx.Client(
+        limits=httpx.Limits(max_connections=max_workers, max_keepalive_connections=max_workers),
+    ) as shared_client:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(fetch_one, c, shared_client): c for c in codes}
+            for future in as_completed(futures):
+                code = futures[future]
+                try:
+                    _, bk_codes = future.result()
+                except Exception:  # noqa: BLE001
+                    result[code] = None
+                    continue
+                result[code] = next((watched[bk] for bk in bk_codes if bk in watched), None)
     return result
 
 

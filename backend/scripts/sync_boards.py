@@ -125,15 +125,19 @@ def _fetch_boards_by_fs(fs_code: str, label: str, client: "httpx.Client | None" 
     return all_boards
 
 
-def _fetch_board_stock_count(bk_code: str) -> int:
+def _fetch_board_stock_count(bk_code: str, client: "httpx.Client | None" = None) -> int:
     """
     调用东财 clist API 获取指定板块的成份股总数。
     fs=b:{bk_code} 时 data.total 即为该板块成份股数量。
     只取第1页1条数据（pz=1），仅用 total 字段，轻量快速。
     失败返回 -1（调用方据此决定是否跳过更新）。
+
+    调用方并发拉取全部板块（888个）时应传入共享 httpx.Client，避免每个
+    板块各开一条新连接重复走 TLS 握手。
     """
+    get = client.get if client is not None else httpx.get
     try:
-        resp = httpx.get(
+        resp = get(
             f"{BASE_URL}/clist/get",
             params={
                 "pn": "1", "pz": "1", "np": "1",
@@ -224,21 +228,30 @@ def sync_board_metadata(db, update_stock_count: bool = True) -> tuple[int, int]:
     code_to_sector = {s.code: s for s in all_sectors}
 
     ok_count = skip_count = 0
+    max_workers = 20
 
-    def _fetch_one(code: str) -> tuple[str, int]:
-        return code, _fetch_board_stock_count(code)
+    def _fetch_one(code: str, client: httpx.Client) -> tuple[str, int]:
+        return code, _fetch_board_stock_count(code, client=client)
 
-    with ThreadPoolExecutor(max_workers=20) as executor:
-        futures = {executor.submit(_fetch_one, code): code for code in code_to_sector}
-        for i, future in enumerate(as_completed(futures), 1):
-            code, total = future.result()
-            if total >= 0:  # -1 表示失败，保持原值
-                code_to_sector[code].stock_count = total
-                ok_count += 1
-            else:
-                skip_count += 1
-            if i % 100 == 0:
-                print(f"    进度: {i}/{len(futures)}")
+    # 共享连接池的 Client，888 个板块复用少量长连接，不再各自握手
+    with httpx.Client(
+        headers=_HTTP_HEADERS,
+        limits=httpx.Limits(max_connections=max_workers, max_keepalive_connections=max_workers),
+    ) as shared_client:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_fetch_one, code, shared_client): code
+                for code in code_to_sector
+            }
+            for i, future in enumerate(as_completed(futures), 1):
+                code, total = future.result()
+                if total >= 0:  # -1 表示失败，保持原值
+                    code_to_sector[code].stock_count = total
+                    ok_count += 1
+                else:
+                    skip_count += 1
+                if i % 100 == 0:
+                    print(f"    进度: {i}/{len(futures)}")
 
     db.commit()
     elapsed = time.time() - t0
@@ -315,19 +328,22 @@ def sync_stock_sector_relations(db, max_workers: int = 10) -> dict:
     fetch_results: list[tuple[Stock, list[str]]] = []
     failed = 0
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(fetch_stock_bk_codes, s.code): s
-            for s in stocks
-        }
-        for future in as_completed(futures):
-            stock = futures[future]
-            try:
-                bk_codes = future.result()
-                fetch_results.append((stock, bk_codes))
-            except Exception:
-                failed += 1
-                fetch_results.append((stock, []))
+    with httpx.Client(
+        limits=httpx.Limits(max_connections=max_workers, max_keepalive_connections=max_workers),
+    ) as shared_client:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(fetch_stock_bk_codes, s.code, shared_client): s
+                for s in stocks
+            }
+            for future in as_completed(futures):
+                stock = futures[future]
+                try:
+                    bk_codes = future.result()
+                    fetch_results.append((stock, bk_codes))
+                except Exception:
+                    failed += 1
+                    fetch_results.append((stock, []))
 
     elapsed = time.time() - t0
     print(f"  F10 拉取完成: {len(fetch_results)-failed}/{len(stocks)} 只，耗时 {elapsed:.1f}s")

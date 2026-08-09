@@ -133,6 +133,7 @@ def _sync_missing_sector_relations(db, limit_move_stocks: list, log=None) -> int
     数据来源：东财 emweb F10 接口（CoreConception）。
     只关联 is_watched=True 的板块，动态噪声板块自动过滤。
     """
+    import httpx
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     if not limit_move_stocks:
@@ -161,18 +162,26 @@ def _sync_missing_sector_relations(db, limit_move_stocks: list, log=None) -> int
         for s in db.query(Sector).filter(Sector.is_watched == True).all()  # noqa
     }
 
-    # 并发拉取各股的板块归属
-    def fetch_one(stock) -> tuple:
-        return stock, fetch_stock_bk_codes(stock.code)
+    # 并发拉取各股的板块归属（共享连接池，避免每只股票各开一条新连接）
+    max_workers = 10
+
+    def fetch_one(stock, client) -> tuple:
+        return stock, fetch_stock_bk_codes(stock.code, client)
 
     results: list[tuple] = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fetch_one, s): s for s in stocks_no_rel}
-        for future in as_completed(futures):
-            try:
-                results.append(future.result())
-            except Exception:
-                pass
+    with httpx.Client(
+        limits=httpx.Limits(max_connections=max_workers, max_keepalive_connections=max_workers),
+    ) as shared_client:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(fetch_one, s, shared_client): s
+                for s in stocks_no_rel
+            }
+            for future in as_completed(futures):
+                try:
+                    results.append(future.result())
+                except Exception:
+                    pass
 
     # 写入关联（单线程操作 DB，跳过已存在的）
     # 先批量读出已有关联，避免重复插入触发 uq_stock_sector 约束
