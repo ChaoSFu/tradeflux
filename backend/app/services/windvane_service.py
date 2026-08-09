@@ -1,7 +1,11 @@
 """
 市场风向标数据（复刻东财「牛熊风向标」页三个模块的数据源）：
-  1. 融资融券：datacenter RPT_DMSK_WINDVANE_MARGIN
-       两融余额 / 融资净买入 / 上证收盘（近半年逐交易日）
+  1. 融资融券：datacenter RPTA_RZRQ_LSHJ（两融历史汇总，可翻页回溯至2010-03-31，
+       字段与旧用的 RPT_DMSK_WINDVANE_MARGIN 逐日核对完全一致：RZRQYE≡两融余额、
+       RZJME≡融资净买入，两者是同一份底层数据，新接口只是不限制翻页深度）
+       + 中证指数官网 csindex.com.cn（上证指数收盘+滚动市盈率，逐日核对与新浪一致）。
+       历史数据一次性回填（backfill_margin_history.py），日常同步只取最新几天，
+       避免不必要地依赖外部接口。
   2. 涨跌统计：quotederivates updowndistribution（沪 000002 + 深 399002 + 京 899050 三市求和）
        响应为编号字段，已对照官方页面逐项破解：
          "1"  数据时间 HHMMSS
@@ -20,7 +24,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import date as date_cls, datetime
+from datetime import date as date_cls, datetime, timedelta
 from typing import List, Optional
 
 import httpx
@@ -33,6 +37,9 @@ from ..models.market_index import MarketBreadthDaily
 DATACENTER_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 UPDOWN_URL = "https://quotederivates.eastmoney.com/datacenter/updowndistribution"
 TRENDS2_URL = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
+MARGIN_HISTORY_REPORT = "RPTA_RZRQ_LSHJ"
+CSINDEX_PERF_URL = "https://www.csindex.com.cn/csindex-home/perf/index-perf"
+SZZS_INDEX_CODE = "000001"  # 中证指数官网口径的上证指数代码
 
 # 盘中分钟数据/外推结果缓存（避免每次请求都打外部接口）
 _TRENDS_TTL = 60
@@ -45,6 +52,12 @@ _SYNC_DEBOUNCE = 600     # 库空自愈同步防抖（秒）
 _last_sync_attempt: dict = {"ts": None}
 _lock = threading.Lock()
 
+# 融资融券图表可选时间周期：'6m' 为默认（保持现状，精确取最新130个交易日）；
+# 其余按日历天数下限过滤；'all' 不设下限。周期 >1y 按周降采样（见 _downsample_weekly）。
+MARGIN_RANGES = ("6m", "1y", "3y", "5y", "all")
+_MARGIN_RANGE_START_DAYS = {"1y": 365, "3y": 365 * 3, "5y": 365 * 5}
+_MARGIN_DOWNSAMPLE_RANGES = ("3y", "5y", "all")
+
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
@@ -53,6 +66,7 @@ class MarginPoint(BaseModel):
     balance: float        # 两融余额（元）
     net_buy: float        # 融资净买入（元）
     szzs_close: float     # 上证指数收盘
+    szzs_pe: Optional[float] = None  # 上证指数滚动市盈率
 
 
 class MarginData(BaseModel):
@@ -113,24 +127,110 @@ def _get_json(client: httpx.Client, url: str, params: dict) -> dict:
         return _json.loads(resp.content.decode("gbk", errors="replace"))
 
 
-def _fetch_margin(client: httpx.Client) -> MarginData:
+def _fetch_margin_history_page(
+    client: httpx.Client, page_number: int, page_size: int = 800,
+) -> tuple[list[dict], int]:
+    """
+    两融历史一页（RPTA_RZRQ_LSHJ，sortTypes=-1 即最新在前）。
+    返回 (rows, total)，rows 为 [{'date','balance','net_buy'}, ...]。
+    """
     payload = _get_json(client, DATACENTER_URL, {
-        "reportName": "RPT_DMSK_WINDVANE_MARGIN",
-        "columns": "PUBLISH_DATE,MARGIN_BALANCE,FIN_NETBUY_AMT,SZZS_CLOSE",
-        "sortTypes": "1",
-        "sortColumns": "PUBLISH_DATE",
-        "source": "securities",
-        "client": "APP",
+        "reportName": MARGIN_HISTORY_REPORT,
+        "columns": "ALL",
+        "source": "WEB",
+        "sortColumns": "DIM_DATE",
+        "sortTypes": "-1",
+        "pageNumber": page_number,
+        "pageSize": page_size,
     })
-    rows = (payload.get("result") or {}).get("data") or []
+    result = payload.get("result") or {}
+    raw = result.get("data") or []
+    rows = [
+        {
+            "date": str(r["DIM_DATE"])[:10],
+            "balance": float(r.get("RZRQYE") or 0),
+            "net_buy": float(r.get("RZJME") or 0),
+        }
+        for r in raw
+    ]
+    return rows, int(result.get("count") or 0)
+
+
+def fetch_margin_history_full(page_size: int = 800) -> list[dict]:
+    """
+    翻页拉取两融余额全部历史（回溯至2010-03-31，约3972条），仅供一次性回填脚本
+    （backfill_margin_history.py）使用，日常同步不调用这个。
+    分页过程中任一页失败 → 视为不可用，返回空列表（不把「部分结果」当作权威全集，
+    同 fetch_strong_pool_codes 的既有约定）。返回按日期升序（最早在前）。
+    """
+    all_rows: list[dict] = []
+    with httpx.Client(headers=HEADERS, timeout=15, follow_redirects=True) as client:
+        page = 1
+        while True:
+            try:
+                rows, total = _fetch_margin_history_page(client, page, page_size)
+            except Exception as e:  # noqa: BLE001
+                print(f"[windvane] 两融历史第{page}页拉取失败: {e}（本次视为不可用）", flush=True)
+                return []
+            all_rows.extend(rows)
+            if not rows or len(all_rows) >= total:
+                break
+            page += 1
+            time.sleep(0.3)
+    all_rows.reverse()
+    return all_rows
+
+
+def fetch_szzs_pe_history(start_date: str, end_date: str) -> dict[str, dict]:
+    """
+    上证指数收盘价 + 滚动市盈率（中证指数官网 csindex.com.cn，跟东财完全独立的
+    数据源）。start_date/end_date 形如 'YYYYMMDD'。一次请求返回整个区间。
+    返回 {'YYYY-MM-DD': {'close': float|None, 'pe': float|None}}；失败返回空字典。
+    """
+    try:
+        with httpx.Client(timeout=15, follow_redirects=True) as client:
+            r = client.get(CSINDEX_PERF_URL, params={
+                "indexCode": SZZS_INDEX_CODE, "startDate": start_date, "endDate": end_date,
+            })
+            data = r.json()
+    except Exception as e:  # noqa: BLE001
+        print(f"[windvane] 上证指数市盈率拉取失败: {e}", flush=True)
+        return {}
+
+    out: dict[str, dict] = {}
+    for row in data.get("data") or []:
+        d = str(row.get("tradeDate") or "")
+        if len(d) != 8:
+            continue
+        date_str = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+        close, pe = row.get("close"), row.get("peg")
+        out[date_str] = {
+            "close": float(close) if close is not None else None,
+            "pe": float(pe) if pe is not None else None,
+        }
+    return out
+
+
+def _fetch_margin(client: httpx.Client, days: int = 5) -> MarginData:
+    """
+    融资融券最新数据（日常同步用）。历史数据由 backfill_margin_history.py 一次性
+    回填，daily_update 之后不再变化，所以这里只取最新几天，不用每次现查半年数据。
+    两融余额/净买入来自 RPTA_RZRQ_LSHJ，上证收盘+市盈率来自中证指数官网，两个
+    独立数据源都只查最新这几天。
+    """
+    rows, _ = _fetch_margin_history_page(client, 1, page_size=days)
     if not rows:
         raise ValueError("两融数据为空")
+    rows = list(reversed(rows))  # 转成升序（最早在前）
+
+    pe_map = fetch_szzs_pe_history(
+        rows[0]["date"].replace("-", ""), date_cls.today().strftime("%Y%m%d"),
+    )
     series = [
         MarginPoint(
-            date=str(r["PUBLISH_DATE"])[:10],
-            balance=float(r["MARGIN_BALANCE"] or 0),
-            net_buy=float(r["FIN_NETBUY_AMT"] or 0),
-            szzs_close=float(r["SZZS_CLOSE"] or 0),
+            date=r["date"], balance=r["balance"], net_buy=r["net_buy"],
+            szzs_close=(pe_map.get(r["date"], {}).get("close") or 0),
+            szzs_pe=pe_map.get(r["date"], {}).get("pe"),
         )
         for r in rows
     ]
@@ -294,6 +394,8 @@ def sync_market_breadth(db: Session) -> dict:
                 r.margin_balance = p.balance
                 r.margin_net_buy = p.net_buy
                 r.szzs_close = p.szzs_close
+                if p.szzs_pe is not None:
+                    r.szzs_pe = p.szzs_pe
         if turnover:
             for p in turnover.series:
                 r = row_for(p.date)
@@ -333,23 +435,37 @@ def sync_market_breadth(db: Session) -> dict:
 
 # ── 读取（DB 优先）────────────────────────────────────────────────────────────
 
-def _read_windvane_from_db(db: Session) -> WindvaneResponse:
+def _downsample_weekly(rows: list) -> list:
+    """每 ISO 周只保留最后一个交易日的行。rows 需按日期升序传入，返回也是升序。"""
+    by_week: dict = {}
+    for r in rows:
+        by_week[r.date.isocalendar()[:2]] = r  # 升序遍历，同周后来的覆盖前面的 → 保留每周最后一条
+    return list(by_week.values())
+
+
+def _read_windvane_from_db(db: Session, margin_range: str = "6m") -> WindvaneResponse:
     errors: List[str] = []
 
-    # 两融序列（近130个交易日）
-    m_rows = (
-        db.query(MarketBreadthDaily)
-        .filter(MarketBreadthDaily.margin_balance.isnot(None))
-        .order_by(MarketBreadthDaily.date.desc())
-        .limit(130)
-        .all()
-    )
-    m_rows.reverse()
+    # 两融序列：'6m' 精确取最新130个交易日（保持现状）；其余按日历天数下限过滤，
+    # 'all' 不设下限；周期较长时按周降采样，避免几千个原始点糊在一张小图上。
+    m_query = db.query(MarketBreadthDaily).filter(MarketBreadthDaily.margin_balance.isnot(None))
+    if margin_range == "6m":
+        m_rows = m_query.order_by(MarketBreadthDaily.date.desc()).limit(130).all()
+        m_rows.reverse()
+    else:
+        start_days = _MARGIN_RANGE_START_DAYS.get(margin_range)
+        if start_days is not None:
+            m_query = m_query.filter(MarketBreadthDaily.date >= date_cls.today() - timedelta(days=start_days))
+        m_rows = m_query.order_by(MarketBreadthDaily.date.asc()).all()
+        if margin_range in _MARGIN_DOWNSAMPLE_RANGES:
+            m_rows = _downsample_weekly(m_rows)
+
     margin = None
     if m_rows:
         series = [
             MarginPoint(date=str(r.date), balance=r.margin_balance or 0,
-                        net_buy=r.margin_net_buy or 0, szzs_close=r.szzs_close or 0)
+                        net_buy=r.margin_net_buy or 0, szzs_close=r.szzs_close or 0,
+                        szzs_pe=r.szzs_pe)
             for r in m_rows
         ]
         margin = MarginData(latest_date=series[-1].date, balance=series[-1].balance,
@@ -619,12 +735,15 @@ def _enrich_intraday(resp: WindvaneResponse, db: Optional[Session] = None) -> Op
     return None
 
 
-def get_windvane(db: Session, force_refresh: bool = False) -> WindvaneResponse:
+def get_windvane(db: Session, force_refresh: bool = False, margin_range: str = "6m") -> WindvaneResponse:
     """
     市场风向标数据。读 DB（daily_update 每日同步写入）；
     refresh=true 强制重新同步；库空时自愈同步一次（10 分钟防抖）。
+    margin_range 控制融资融券图表时间周期，见 MARGIN_RANGES。
     成交分析额外补今日盘中实时成交额 + 预估全天。
     """
+    if margin_range not in MARGIN_RANGES:
+        margin_range = "6m"
     with _lock:
         sync_errors: List[str] = []
         if force_refresh:
@@ -636,7 +755,7 @@ def get_windvane(db: Session, force_refresh: bool = False) -> WindvaneResponse:
                 if last is None or (datetime.now() - last).total_seconds() > _SYNC_DEBOUNCE:
                     sync_errors = sync_market_breadth(db).get("errors", [])
 
-        resp = _read_windvane_from_db(db)
+        resp = _read_windvane_from_db(db, margin_range=margin_range)
         try:
             intraday_err = _enrich_intraday(resp, db)
         except Exception as e:  # noqa: BLE001

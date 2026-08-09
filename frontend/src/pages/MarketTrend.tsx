@@ -13,7 +13,7 @@ import {
   ResponsiveContainer, Legend, ComposedChart, Bar, Cell, ReferenceLine,
 } from 'recharts'
 import { TrendingUp, TrendingDown, AlertTriangle, BookOpen, ChevronDown, ChevronUp } from 'lucide-react'
-import type { IndexTrendAnalysis, IndexSignal, WindvaneResponse } from '@/types'
+import type { IndexTrendAnalysis, IndexSignal, WindvaneResponse, MarginRange } from '@/types'
 
 // ── 金额格式化 ───────────────────────────────────────────────────────────────
 const wanyi = (v: number) => `${(v / 1e12).toFixed(2)}万亿`
@@ -179,9 +179,10 @@ export default function MarketTrend() {
   const [showMethod, setShowMethod] = useState(false)
 
   // 市场风向标：融资融券 / 涨跌统计 / 成交分析
+  const [marginRange, setMarginRange] = useState<MarginRange>('6m')
   const { data: wv } = useQuery({
-    queryKey: ['market-windvane'],
-    queryFn: () => fetchWindvane(),
+    queryKey: ['market-windvane', marginRange],
+    queryFn: () => fetchWindvane(false, marginRange),
     staleTime: 5 * 60 * 1000,
   })
 
@@ -415,7 +416,7 @@ export default function MarketTrend() {
       )}
 
       {/* ── 市场资金与盘面（融资融券 / 涨跌统计 / 成交分析）─────────── */}
-      {wv && <WindvaneCards wv={wv} />}
+      {wv && <WindvaneCards wv={wv} marginRange={marginRange} onMarginRangeChange={setMarginRange} />}
 
       {/* ── 判定方法说明 ─────────────────────────────────────────────── */}
       <div className="card overflow-hidden">
@@ -475,20 +476,33 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 // ─── 市场风向标三卡片（融资融券 / 涨跌统计 / 成交分析）───────────────────────
 
-function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
+const MARGIN_RANGE_LABEL: Record<MarginRange, string> = {
+  '6m': '6个月', '1y': '1年', '3y': '3年', '5y': '5年', all: '全部',
+}
+
+function WindvaneCards({ wv, marginRange, onMarginRangeChange }: {
+  wv: WindvaneResponse
+  marginRange: MarginRange
+  onMarginRangeChange: (r: MarginRange) => void
+}) {
   const m = wv.margin
   const u = wv.updown
   const t = wv.turnover
+  const [rightMetric, setRightMetric] = useState<'index' | 'pe'>('index')
 
-  // 两融图数据（余额万亿 + 上证 + 净买入亿）
+  // 短周期逐日显示 MM/dd；长周期（含降采样）显示年份避免同一天在多年间混淆
+  const dateFmt = marginRange === '6m' || marginRange === '1y' ? 'MM/dd' : 'yy/MM'
+
+  // 两融图数据（余额万亿 + 上证/市盈率 + 净买入亿）
   const marginChart = useMemo(() => (
     (m?.series ?? []).map(p => ({
-      date: format(new Date(p.date), 'MM/dd'),
+      date: format(new Date(p.date), dateFmt),
       '两融余额': +(p.balance / 1e12).toFixed(3),
       '上证指数': p.szzs_close,
+      '市盈率': p.szzs_pe,
       '融资净买入': +(p.net_buy / 1e8).toFixed(1),
     }))
-  ), [m])
+  ), [m, dateFmt])
 
   // 涨跌分布 9 档（与东财口径一致）
   const updownChart = useMemo(() => {
@@ -562,20 +576,58 @@ function WindvaneCards({ wv }: { wv: WindvaneResponse }) {
                 </div>
               </div>
             </div>
+            {/* 时间周期 + 右轴指标切换 */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-0.5">
+                {(Object.keys(MARGIN_RANGE_LABEL) as MarginRange[]).map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => onMarginRangeChange(r)}
+                    className={cn(
+                      'px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors',
+                      marginRange === r ? 'bg-accent text-white' : 'text-text-muted hover:text-text-secondary',
+                    )}
+                  >
+                    {MARGIN_RANGE_LABEL[r]}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-0.5">
+                {([['index', '上证A股'], ['pe', '市盈率']] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setRightMetric(key)}
+                    className={cn(
+                      'px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors',
+                      rightMetric === key ? 'bg-bg-elevated text-warn' : 'text-text-muted hover:text-text-secondary',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
             {/* 上下两图 syncId 同步：光标滑动时数据联动；左右轴宽一致保证日期对齐 */}
             <div className="h-36">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={marginChart} syncId="margin-sync" margin={{ top: 2, right: 0, left: -6, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
                   <XAxis dataKey="date" {...axis} interval="preserveStartEnd" />
-                  {/* 左轴：两融余额数据 min/max（凸显波动）；右轴：上证固定 3600–4400,超出则按指数 min/max 扩展 */}
+                  {/* 左轴：两融余额数据 min/max（凸显波动）；右轴按当前选中指标给合理默认区间，超出则按数据 min/max 扩展 */}
                   <YAxis yAxisId="l" {...axis} width={38} domain={['dataMin', 'dataMax']} tickFormatter={(v: number) => v.toFixed(2)} />
-                  <YAxis yAxisId="r" {...axis} width={36} orientation="right"
-                    domain={[(min: number) => Math.min(3600, Math.floor(min)), (max: number) => Math.max(4400, Math.ceil(max))]}
-                    tickFormatter={(v: number) => v.toFixed(0)} />
+                  {rightMetric === 'index' ? (
+                    <YAxis yAxisId="r" {...axis} width={36} orientation="right"
+                      domain={[(min: number) => Math.min(3600, Math.floor(min)), (max: number) => Math.max(4400, Math.ceil(max))]}
+                      tickFormatter={(v: number) => v.toFixed(0)} />
+                  ) : (
+                    <YAxis yAxisId="r" {...axis} width={36} orientation="right"
+                      domain={[(min: number) => Math.min(8, Math.floor(min)), (max: number) => Math.max(32, Math.ceil(max))]}
+                      tickFormatter={(v: number) => v.toFixed(1)} />
+                  )}
                   <Tooltip content={<ChartTooltip />} />
                   <Line yAxisId="l" type="monotone" dataKey="两融余额" stroke="#5EA6FF" strokeWidth={1.8} dot={false} />
-                  <Line yAxisId="r" type="monotone" dataKey="上证指数" stroke="#FFB020" strokeWidth={1.4} dot={false} />
+                  <Line yAxisId="r" type="monotone" dataKey={rightMetric === 'index' ? '上证指数' : '市盈率'}
+                    stroke="#FFB020" strokeWidth={1.4} dot={false} connectNulls />
                 </LineChart>
               </ResponsiveContainer>
             </div>

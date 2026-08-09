@@ -380,7 +380,10 @@ export interface MarginPoint {
   balance: number
   net_buy: number
   szzs_close: number
+  szzs_pe: number | null
 }
+
+export type MarginRange = '6m' | '1y' | '3y' | '5y' | 'all'
 
 export interface WindvaneResponse {
   updated_at: string

@@ -45,6 +45,7 @@ class MarketBreadthDaily(Base):
     margin_balance = Column(Float, nullable=True)    # 两融余额（元）
     margin_net_buy = Column(Float, nullable=True)    # 融资净买入（元）
     szzs_close = Column(Float, nullable=True)        # 上证收盘（两融对照）
+    szzs_pe = Column(Float, nullable=True)           # 上证指数滚动市盈率（中证指数官方口径）
 
     # 成交额（东财 RPT_DMSK_WINDVANE_SUMTVALLIST）
     deal_amount = Column(Float, nullable=True)       # 沪深两市成交额（元，收盘官方值）

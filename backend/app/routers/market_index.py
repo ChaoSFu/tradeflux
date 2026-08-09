@@ -22,7 +22,8 @@ def list_index_trends(
 @router.get("/windvane", response_model=WindvaneResponse)
 def get_market_windvane(
     refresh: bool = Query(False, description="强制重新同步远端数据"),
+    margin_range: str = Query("6m", description="融资融券图表时间周期：6m/1y/3y/5y/all"),
     db: Session = Depends(get_db),
 ):
     """市场风向标：融资融券/涨跌统计/成交分析（数据读库，daily_update 每日同步）。"""
-    return get_windvane(db, force_refresh=refresh)
+    return get_windvane(db, force_refresh=refresh, margin_range=margin_range)
