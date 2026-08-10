@@ -110,6 +110,10 @@ def get_turnover_overview(db: Session, force_refresh: bool = False) -> dict:
     """
     成交额概览。数据读 DB（daily_update 每日同步写入）；
     refresh=true 强制重新同步；库内当天无数据时自愈同步一次（10 分钟防抖）。
+
+    今天没有数据时（常见于盘前/收盘前，"成交额排序前N"这类选股天然没有结果，
+    不代表接口异常）不展示空白页，退回展示最近一个有数据的交易日——跟大盘趋势
+    等页面的自愈读取约定一致，避免用户在盘前误以为数据没更新/功能坏了。
     """
     errors: List[str] = []
     if force_refresh:
@@ -134,11 +138,25 @@ def get_turnover_overview(db: Session, force_refresh: bool = False) -> dict:
         .all()
     )
     if not rows:
-        return {
-            "date": None, "stocks": [], "sector_groups": [],
-            "total_amount": 0.0, "new_count": 0, "overall_avg_pct": 0.0,
-            "errors": errors or ["暂无成交额数据"],
-        }
+        # 今天确实还没数据（常见于盘前）——退回最近一个有数据的交易日，而非空白页
+        latest_date_row = (
+            db.query(TurnoverPoolDaily.date)
+            .order_by(TurnoverPoolDaily.date.desc())
+            .first()
+        )
+        if latest_date_row:
+            rows = (
+                db.query(TurnoverPoolDaily)
+                .filter(TurnoverPoolDaily.date == latest_date_row[0])
+                .order_by(TurnoverPoolDaily.rank)
+                .all()
+            )
+        if not rows:
+            return {
+                "date": None, "stocks": [], "sector_groups": [],
+                "total_amount": 0.0, "new_count": 0, "overall_avg_pct": 0.0,
+                "errors": errors or ["暂无成交额数据"],
+            }
 
     today_date = rows[0].date
     prev_date_row = (
