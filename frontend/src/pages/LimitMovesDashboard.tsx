@@ -672,6 +672,7 @@ export default function LimitMovesDashboard() {
           title="高弹性涨停"
           stocks={highElasticUp}
           badgeKind="market"
+          boardKey="today_board_count"
           color={C_UP}
           isLoading={dataLoading}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
@@ -683,6 +684,7 @@ export default function LimitMovesDashboard() {
           title="高弹性跌停"
           stocks={highElasticDown}
           badgeKind="market"
+          boardKey="today_limit_down_count"
           color={C_DOWN}
           isLoading={dataLoading}
           onClickStock={(code) => navigate(`/stocks/${code}`)}
@@ -1157,6 +1159,9 @@ function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onC
     if (badgeKind === 'market') return marketTag(s.code) ?? '—'
     return '—'
   }
+  // 高弹性板块涨跌停用 market 徽标占了「连板」这一列，board 数额外补一列展示，
+  // 不重复渲染连板梯队表（badgeKind==='board' 时徽标本身已是连板数，无需再加）
+  const showBoardCol = badgeKind === 'market' && !!boardKey
   return (
     <div className="card overflow-hidden p-0">
       <div
@@ -1183,6 +1188,7 @@ function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onC
                 <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium whitespace-nowrap">代码 / 名称</th>
                 <th className="text-left px-3 py-2 text-xs text-text-secondary/70 font-medium">板块</th>
                 <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">{badgeKind === 'board' ? '连板' : '市场'}</th>
+                {showBoardCol && <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">连板</th>}
                 <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">10日涨幅</th>
                 <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">20日涨幅</th>
                 <th className="px-3 py-2 text-xs text-text-secondary/70 font-medium text-right whitespace-nowrap">60日涨幅</th>
@@ -1224,6 +1230,15 @@ function LadderTable({ title, stocks, badgeKind, boardKey, color, isLoading, onC
                       {badgeFor(s)}
                     </span>
                   </td>
+                  {showBoardCol && (
+                    <td className="px-3 py-2 text-right font-mono text-xs">
+                      {(() => {
+                        const cnt = (boardKey ? (s[boardKey] ?? 0) : 0) as number
+                        if (!cnt) return <span className="text-text-muted">—</span>
+                        return <span className={cn('font-bold', cnt >= 3 ? 'text-dragon' : undefined)} style={cnt >= 3 ? undefined : { color }}>{cnt}板</span>
+                      })()}
+                    </td>
+                  )}
                   <td className="px-3 py-2 text-right font-mono text-xs"><PctCell v={s.pct_change_10d} /></td>
                   <td className="px-3 py-2 text-right font-mono text-xs"><PctCell v={s.pct_change_20d} /></td>
                   <td className="px-3 py-2 text-right font-mono text-xs"><PctCell v={s.pct_change_60d} /></td>
