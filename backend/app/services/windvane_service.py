@@ -77,6 +77,7 @@ class MarginData(BaseModel):
 
 
 class UpDownData(BaseModel):
+    date: str
     up: int
     down: int
     flat: int
@@ -464,7 +465,7 @@ def _downsample_weekly(rows: list) -> list:
     return list(by_week.values())
 
 
-def _read_windvane_from_db(db: Session, margin_range: str = "6m") -> WindvaneResponse:
+def _read_windvane_from_db(db: Session, margin_range: str = "6m", updown_date: Optional[str] = None) -> WindvaneResponse:
     errors: List[str] = []
 
     # 两融序列：'6m' 精确取最新130个交易日（保持现状）；其余按日历天数下限过滤，
@@ -518,16 +519,25 @@ def _read_windvane_from_db(db: Session, margin_range: str = "6m") -> WindvaneRes
     else:
         errors.append("成交分析: 库内暂无数据")
 
-    # 涨跌统计（最新一条有效记录）
-    u_row = (
-        db.query(MarketBreadthDaily)
-        .filter(MarketBreadthDaily.up_count.isnot(None))
-        .order_by(MarketBreadthDaily.date.desc())
-        .first()
-    )
+    # 涨跌统计：不传 updown_date 取最新一条；传了则查那天，查不到再回退最新
+    # （涨跌统计接口本身只有「当前实时」快照、无法像两融那样一次性回填深历史，
+    # 只能靠每日同步逐日累积——可选日期范围仅覆盖开始存储之后的交易日）
+    u_query = db.query(MarketBreadthDaily).filter(MarketBreadthDaily.up_count.isnot(None))
+    u_row = None
+    if updown_date:
+        try:
+            target = date_cls.fromisoformat(updown_date)
+            u_row = u_query.filter(MarketBreadthDaily.date == target).first()
+            if u_row is None:
+                errors.append(f"涨跌统计: {updown_date} 当天无数据，已显示最新")
+        except ValueError:
+            errors.append(f"涨跌统计: 日期格式无效 {updown_date}")
+    if u_row is None:
+        u_row = u_query.order_by(MarketBreadthDaily.date.desc()).first()
     updown = None
     if u_row:
         updown = UpDownData(
+            date=str(u_row.date),
             up=u_row.up_count or 0, down=u_row.down_count or 0, flat=u_row.flat_count or 0,
             limit_up=u_row.limit_up_count or 0, limit_down=u_row.limit_down_count or 0,
             natural_limit_up=u_row.natural_limit_up or 0,
@@ -756,11 +766,30 @@ def _enrich_intraday(resp: WindvaneResponse, db: Optional[Session] = None) -> Op
     return None
 
 
-def get_windvane(db: Session, force_refresh: bool = False, margin_range: str = "6m") -> WindvaneResponse:
+def get_updown_dates(db: Session) -> list[str]:
+    """
+    涨跌统计可选历史日期列表（升序），供前端下拉选择——同市场效应页
+    fetchMarketEffectHistory 的约定。涨跌统计接口本身只有「当前实时」快照、
+    没有历史查询能力，只能从"开始每日同步"那天起逐日累积，不是固定周期。
+    """
+    rows = (
+        db.query(MarketBreadthDaily.date)
+        .filter(MarketBreadthDaily.up_count.isnot(None))
+        .order_by(MarketBreadthDaily.date.asc())
+        .all()
+    )
+    return [str(r[0]) for r in rows]
+
+
+def get_windvane(
+    db: Session, force_refresh: bool = False, margin_range: str = "6m",
+    updown_date: Optional[str] = None,
+) -> WindvaneResponse:
     """
     市场风向标数据。读 DB（daily_update 每日同步写入）；
     refresh=true 强制重新同步；库空时自愈同步一次（10 分钟防抖）。
     margin_range 控制融资融券图表时间周期，见 MARGIN_RANGES。
+    updown_date 指定涨跌统计查看哪一天（不传=最新，历史日期只读库不触发同步）。
     成交分析额外补今日盘中实时成交额 + 预估全天。
     """
     if margin_range not in MARGIN_RANGES:
@@ -776,7 +805,7 @@ def get_windvane(db: Session, force_refresh: bool = False, margin_range: str = "
                 if last is None or (datetime.now() - last).total_seconds() > _SYNC_DEBOUNCE:
                     sync_errors = sync_market_breadth(db).get("errors", [])
 
-        resp = _read_windvane_from_db(db, margin_range=margin_range)
+        resp = _read_windvane_from_db(db, margin_range=margin_range, updown_date=updown_date)
         try:
             intraday_err = _enrich_intraday(resp, db)
         except Exception as e:  # noqa: BLE001

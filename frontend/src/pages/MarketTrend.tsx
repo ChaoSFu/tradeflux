@@ -4,7 +4,7 @@
  */
 import { useMemo, useState } from 'react'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
-import { fetchMarketTrend, fetchWindvane } from '@/api/marketTrend'
+import { fetchMarketTrend, fetchWindvane, fetchUpDownDates } from '@/api/marketTrend'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 import { format } from 'date-fns'
@@ -180,11 +180,18 @@ export default function MarketTrend() {
 
   // 市场风向标：融资融券 / 涨跌统计 / 成交分析
   const [marginRange, setMarginRange] = useState<MarginRange>('6m')
+  const [updownDate, setUpdownDate] = useState<string | undefined>(undefined)
   const { data: wv } = useQuery({
-    queryKey: ['market-windvane', marginRange],
-    queryFn: () => fetchWindvane(false, marginRange),
+    queryKey: ['market-windvane', marginRange, updownDate],
+    queryFn: () => fetchWindvane(false, marginRange, updownDate),
     staleTime: 5 * 60 * 1000,
     placeholderData: keepPreviousData, // 切换周期时保留旧数据，避免卡片瞬间消失导致页面跳动
+  })
+  // 涨跌统计可选历史日期（历史只能从开始每日同步那天起累积，不是固定周期）
+  const { data: updownDates } = useQuery({
+    queryKey: ['updown-dates'],
+    queryFn: fetchUpDownDates,
+    staleTime: 60 * 60 * 1000,
   })
 
   return (
@@ -417,7 +424,16 @@ export default function MarketTrend() {
       )}
 
       {/* ── 市场资金与盘面（融资融券 / 涨跌统计 / 成交分析）─────────── */}
-      {wv && <WindvaneCards wv={wv} marginRange={marginRange} onMarginRangeChange={setMarginRange} />}
+      {wv && (
+        <WindvaneCards
+          wv={wv}
+          marginRange={marginRange}
+          onMarginRangeChange={setMarginRange}
+          updownDate={updownDate}
+          onUpdownDateChange={setUpdownDate}
+          updownDates={updownDates}
+        />
+      )}
 
       {/* ── 判定方法说明 ─────────────────────────────────────────────── */}
       <div className="card overflow-hidden">
@@ -481,10 +497,13 @@ const MARGIN_RANGE_LABEL: Record<MarginRange, string> = {
   '6m': '6个月', '1y': '1年', '3y': '3年', '5y': '5年', all: '全部',
 }
 
-function WindvaneCards({ wv, marginRange, onMarginRangeChange }: {
+function WindvaneCards({ wv, marginRange, onMarginRangeChange, updownDate, onUpdownDateChange, updownDates }: {
   wv: WindvaneResponse
   marginRange: MarginRange
   onMarginRangeChange: (r: MarginRange) => void
+  updownDate?: string
+  onUpdownDateChange: (d: string | undefined) => void
+  updownDates?: string[]
 }) {
   const m = wv.margin
   const u = wv.updown
@@ -659,9 +678,22 @@ function WindvaneCards({ wv, marginRange, onMarginRangeChange }: {
         {/* ── 涨跌统计 ─────────────────────────────────────────────── */}
         {u && (
           <div className="card p-4 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold text-text-primary">涨跌统计</span>
-              <span className="text-xs text-text-muted">沪深京</span>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-text-primary">涨跌统计</span>
+                <span className="text-xs text-text-muted">沪深京 · {u.date}</span>
+              </div>
+              {updownDates && updownDates.length > 0 && (
+                <select
+                  value={updownDate ?? ''}
+                  onChange={(e) => onUpdownDateChange(e.target.value || undefined)}
+                  className={cn('bg-bg-elevated border rounded px-1.5 py-0.5 text-xs focus:outline-none cursor-pointer',
+                    updownDate ? 'border-accent/50 text-accent' : 'border-bg-border text-text-secondary')}
+                >
+                  <option value="">最新（今日）</option>
+                  {[...updownDates].reverse().map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
               <div className="flex justify-between"><span className="text-text-muted">上涨</span><span className="font-mono font-bold text-up">{u.up}</span></div>

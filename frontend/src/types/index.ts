@@ -394,6 +394,7 @@ export interface WindvaneResponse {
     series: MarginPoint[]
   } | null
   updown: {
+    date: string
     up: number
     down: number
     flat: number
