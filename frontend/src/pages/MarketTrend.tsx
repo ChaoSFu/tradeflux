@@ -210,6 +210,16 @@ export default function MarketTrend() {
     }
     return m
   }, [updownSeries])
+  // 涨跌比轴用对数刻度、以1为中心对称——2和0.5到1的像素距离相等，公平体现同等幅度
+  // 的偏多/偏空；上限按实际数据算但封顶（UPDOWN_RATIO_CAP），避免个别极端交易日
+  // （如跌停股极少导致比值飙到几十倍）把整根轴的刻度拉爆、其余正常日子都挤在底部。
+  const UPDOWN_RATIO_CAP = 4
+  const updownAxisK = useMemo(() => {
+    const vals = [...updownRatioByDate.values()].filter((v) => v > 0)
+    if (!vals.length) return 2
+    const maxDev = Math.max(...vals.map((v) => Math.max(v, 1 / v)))
+    return Math.min(Math.max(maxDev, 1.5), UPDOWN_RATIO_CAP)
+  }, [updownRatioByDate])
 
   const chartData = useMemo(() => {
     const series = selected?.series ?? []
@@ -379,10 +389,12 @@ export default function MarketTrend() {
                       yAxisId="overlay"
                       orientation="right"
                       tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} width={52}
-                      domain={['auto', 'auto']}
+                      scale={overlay === 'updown' ? 'log' : 'linear'}
+                      domain={overlay === 'updown' ? [1 / updownAxisK, updownAxisK] : ['auto', 'auto']}
+                      allowDataOverflow={overlay === 'updown'}
                       tickFormatter={(v: number) => {
                         if (overlay === 'margin') return `${v}万亿`
-                        if (overlay === 'updown') return `${v}x`
+                        if (overlay === 'updown') return `${v.toFixed(v < 1 ? 2 : 1)}x`
                         return v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${v}`
                       }}
                     />
@@ -423,8 +435,12 @@ export default function MarketTrend() {
                       stroke="#F59E0B" strokeWidth={1.6} dot={false} connectNulls />
                   )}
                   {overlay === 'updown' && (
-                    <Line yAxisId="overlay" type="monotone" dataKey="_upDownRatio" name="涨跌比(上涨/下跌家数)"
-                      stroke="#FFB020" strokeWidth={1.6} dot={false} connectNulls />
+                    <>
+                      {/* 涨跌比中性参考线：1 = 上涨/下跌家数相同，对数轴下正好落在正中间 */}
+                      <ReferenceLine yAxisId="overlay" y={1} stroke="#737A96" strokeDasharray="4 3" strokeOpacity={0.6} />
+                      <Line yAxisId="overlay" type="monotone" dataKey="_upDownRatio" name="涨跌比(上涨/下跌家数)"
+                        stroke="#FFB020" strokeWidth={1.6} dot={false} connectNulls />
+                    </>
                   )}
                 </ComposedChart>
               </ResponsiveContainer>
