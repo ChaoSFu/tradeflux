@@ -138,7 +138,9 @@ export default function MarketTrend() {
   )
 
   // 图例显隐（默认隐藏长期均线，图面干净）
-  const [hiddenLines, setHiddenLines] = useState<Set<string>>(new Set(['MA120', 'MA250']))
+  const DEFAULT_HIDDEN_LINES = new Set(['MA120', 'MA250'])
+  const ALL_MA_KEYS = Object.keys(MA_COLORS)
+  const [hiddenLines, setHiddenLines] = useState<Set<string>>(DEFAULT_HIDDEN_LINES)
   const toggleLine = (key?: string) => {
     if (!key) return
     setHiddenLines(prev => {
@@ -173,8 +175,13 @@ export default function MarketTrend() {
     staleTime: 60 * 60 * 1000,
   })
 
-  // 主图叠加：不叠加(默认) / 两融余额 / 涨跌统计(上涨/下跌家数) / 成交额，三选一，跟现有展示逻辑一致
+  // 主图叠加：不叠加(默认) / 两融余额 / 涨跌统计(涨跌比) / 成交额，三选一，跟现有展示逻辑一致。
+  // 叠加时默认只留K线（均线全隐藏，避免跟叠加线互相干扰看不清）；切回不叠加恢复默认均线显隐。
   const [overlay, setOverlay] = useState<'none' | 'margin' | 'updown' | 'turnover'>('none')
+  const handleOverlayChange = (next: 'none' | 'margin' | 'updown' | 'turnover') => {
+    setOverlay(next)
+    setHiddenLines(next === 'none' ? DEFAULT_HIDDEN_LINES : new Set(ALL_MA_KEYS))
+  }
   const { data: updownSeries } = useQuery({
     queryKey: ['updown-series'],
     queryFn: () => fetchUpDownSeries(120),
@@ -194,9 +201,13 @@ export default function MarketTrend() {
     for (const p of wv?.turnover?.series ?? []) m.set(format(new Date(p.date), 'MM/dd'), p.amount)
     return m
   }, [wv])
-  const updownByDate = useMemo(() => {
-    const m = new Map<string, { up: number; down: number }>()
-    for (const p of updownSeries ?? []) m.set(format(new Date(p.date), 'MM/dd'), { up: p.up, down: p.down })
+  // 涨跌统计叠加展示涨跌比（上涨家数/下跌家数），单一曲线，比原来上涨/下跌两条线
+  // 更直观：>1 偏多、<1 偏空，走势跟指数对照一目了然
+  const updownRatioByDate = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const p of updownSeries ?? []) {
+      if (p.down > 0) m.set(format(new Date(p.date), 'MM/dd'), +(p.up / p.down).toFixed(2))
+    }
     return m
   }, [updownSeries])
 
@@ -220,11 +231,10 @@ export default function MarketTrend() {
         'MA60': p.ma60, 'MA120': p.ma120, 'MA250': p.ma250,
         _marginBalance: marginByDate.get(dateKey) != null ? +(marginByDate.get(dateKey)! / 1e12).toFixed(3) : null,
         _turnoverAmount: turnoverByDate.get(dateKey) != null ? +(turnoverByDate.get(dateKey)! / 1e8).toFixed(1) : null,
-        _upCount: updownByDate.get(dateKey)?.up ?? null,
-        _downCount: updownByDate.get(dateKey)?.down ?? null,
+        _upDownRatio: updownRatioByDate.get(dateKey) ?? null,
       }
     })
-  }, [selected, hasAmount, volKey, marginByDate, turnoverByDate, updownByDate])
+  }, [selected, hasAmount, volKey, marginByDate, turnoverByDate, updownRatioByDate])
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -340,7 +350,7 @@ export default function MarketTrend() {
                   ] as const).map(([key, label]) => (
                     <button
                       key={key}
-                      onClick={() => setOverlay(key)}
+                      onClick={() => handleOverlayChange(key)}
                       className={cn(
                         'px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors',
                         overlay === key ? 'bg-accent text-white' : 'text-text-muted hover:text-text-secondary',
@@ -370,7 +380,11 @@ export default function MarketTrend() {
                       orientation="right"
                       tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} width={52}
                       domain={['auto', 'auto']}
-                      tickFormatter={(v: number) => overlay === 'margin' ? `${v}万亿` : v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${v}`}
+                      tickFormatter={(v: number) => {
+                        if (overlay === 'margin') return `${v}万亿`
+                        if (overlay === 'updown') return `${v}x`
+                        return v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${v}`
+                      }}
                     />
                   )}
                   <Tooltip content={<ChartTooltip />} />
@@ -409,12 +423,8 @@ export default function MarketTrend() {
                       stroke="#F59E0B" strokeWidth={1.6} dot={false} connectNulls />
                   )}
                   {overlay === 'updown' && (
-                    <>
-                      <Line yAxisId="overlay" type="monotone" dataKey="_upCount" name="上涨家数"
-                        stroke="#FF4560" strokeWidth={1.6} dot={false} connectNulls />
-                      <Line yAxisId="overlay" type="monotone" dataKey="_downCount" name="下跌家数"
-                        stroke="#26C281" strokeWidth={1.6} dot={false} connectNulls />
-                    </>
+                    <Line yAxisId="overlay" type="monotone" dataKey="_upDownRatio" name="涨跌比(上涨/下跌家数)"
+                      stroke="#FFB020" strokeWidth={1.6} dot={false} connectNulls />
                   )}
                 </ComposedChart>
               </ResponsiveContainer>
@@ -429,6 +439,9 @@ export default function MarketTrend() {
                     domain={[0, 'auto']}
                     tickFormatter={(v: number) => v >= 10000 ? `${(v / 10000).toFixed(1)}亿` : `${v}`}
                   />
+                  {/* 主图叠加时右侧多了一条轴，这里补一条同宽度的占位轴（不显示），
+                      否则两张图绘图区宽度不一致，syncId 按索引对齐会跟主图错位 */}
+                  {overlay !== 'none' && <YAxis yAxisId="overlay" orientation="right" hide width={52} />}
                   <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
                   <Bar dataKey={volKey} isAnimationActive={false} maxBarSize={5}>
                     {chartData.map((p: any, i: number) => (
