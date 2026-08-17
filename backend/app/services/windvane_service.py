@@ -766,6 +766,31 @@ def _enrich_intraday(resp: WindvaneResponse, db: Optional[Session] = None) -> Op
     return None
 
 
+class UpDownSeriesPoint(BaseModel):
+    date: str
+    up: int
+    down: int
+
+
+def get_updown_series(db: Session, days: int = 120) -> list[UpDownSeriesPoint]:
+    """
+    涨跌家数时间序列（最近 days 个有数据的交易日，升序），供主图叠加使用。
+    跟 get_updown_dates 同一份数据，这里额外带上 up/down 数值。
+    """
+    rows = (
+        db.query(MarketBreadthDaily)
+        .filter(MarketBreadthDaily.up_count.isnot(None))
+        .order_by(MarketBreadthDaily.date.desc())
+        .limit(days)
+        .all()
+    )
+    rows.reverse()
+    return [
+        UpDownSeriesPoint(date=str(r.date), up=r.up_count or 0, down=r.down_count or 0)
+        for r in rows
+    ]
+
+
 def get_updown_dates(db: Session) -> list[str]:
     """
     涨跌统计可选历史日期列表（升序），供前端下拉选择——同市场效应页

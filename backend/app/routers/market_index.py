@@ -5,7 +5,9 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..schemas.market_index import MarketTrendResponse
 from ..services.index_trend_service import get_market_trend
-from ..services.windvane_service import WindvaneResponse, get_windvane, get_updown_dates
+from ..services.windvane_service import (
+    WindvaneResponse, get_windvane, get_updown_dates, get_updown_series, UpDownSeriesPoint,
+)
 
 router = APIRouter(prefix="/market-trend", tags=["market-trend"])
 
@@ -34,3 +36,12 @@ def get_market_windvane(
 def list_updown_dates(db: Session = Depends(get_db)):
     """涨跌统计可选历史日期列表（升序），供前端下拉选择使用。"""
     return get_updown_dates(db)
+
+
+@router.get("/updown-series", response_model=list[UpDownSeriesPoint])
+def list_updown_series(
+    days: int = Query(120, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """涨跌家数时间序列（升序），供主图叠加涨跌统计使用。"""
+    return get_updown_series(db, days=days)

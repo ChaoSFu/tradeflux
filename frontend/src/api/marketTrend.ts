@@ -19,3 +19,12 @@ export const fetchWindvane = (refresh = false, marginRange: MarginRange = '6m', 
 
 export const fetchUpDownDates = () =>
   client.get<string[]>('/market-trend/updown-dates').then((r) => r.data)
+
+export interface UpDownSeriesPoint {
+  date: string
+  up: number
+  down: number
+}
+
+export const fetchUpDownSeries = (days = 120) =>
+  client.get<UpDownSeriesPoint[]>('/market-trend/updown-series', { params: { days } }).then((r) => r.data)

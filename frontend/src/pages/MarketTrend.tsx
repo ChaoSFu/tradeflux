@@ -4,7 +4,7 @@
  */
 import { useMemo, useState } from 'react'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
-import { fetchMarketTrend, fetchWindvane, fetchUpDownDates } from '@/api/marketTrend'
+import { fetchMarketTrend, fetchWindvane, fetchUpDownDates, fetchUpDownSeries } from '@/api/marketTrend'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 import { format } from 'date-fns'
@@ -155,27 +155,6 @@ export default function MarketTrend() {
   )
   const volKey = hasAmount ? '成交额(亿)' : '成交量(万)'
 
-  const chartData = useMemo(() => {
-    const series = selected?.series ?? []
-    return series.map((p, i) => {
-      // 当日涨跌幅 = 今收比昨收（序列升序，取前一日收盘）
-      const prevClose = i > 0 ? series[i - 1].close : null
-      const pct = prevClose && p.close != null ? (p.close / prevClose - 1) * 100 : null
-      return {
-        date: format(new Date(p.date), 'MM/dd'),
-        // 蜡烛：range Bar 数据域 [low, high]，OHLC 原值供 shape/tooltip 使用
-        'K线': p.low != null && p.high != null ? [p.low, p.high] : undefined,
-        _open: p.open, _close: p.close, _high: p.high, _low: p.low, _pct: pct,
-        [volKey]: hasAmount
-          ? (p.amount != null ? +(p.amount / 1e8).toFixed(1) : null)
-          : (p.volume != null ? +(p.volume / 1e4).toFixed(1) : null),
-        _volUp: p.open != null && p.close >= p.open,
-        'MA5': p.ma5, 'MA10': p.ma10, 'MA20': p.ma20,
-        'MA60': p.ma60, 'MA120': p.ma120, 'MA250': p.ma250,
-      }
-    })
-  }, [selected, hasAmount, volKey])
-
   const [showMethod, setShowMethod] = useState(false)
 
   // 市场风向标：融资融券 / 涨跌统计 / 成交分析
@@ -193,6 +172,59 @@ export default function MarketTrend() {
     queryFn: fetchUpDownDates,
     staleTime: 60 * 60 * 1000,
   })
+
+  // 主图叠加：不叠加(默认) / 两融余额 / 涨跌统计(上涨/下跌家数) / 成交额，三选一，跟现有展示逻辑一致
+  const [overlay, setOverlay] = useState<'none' | 'margin' | 'updown' | 'turnover'>('none')
+  const { data: updownSeries } = useQuery({
+    queryKey: ['updown-series'],
+    queryFn: () => fetchUpDownSeries(120),
+    staleTime: 60 * 60 * 1000,
+    enabled: overlay === 'updown',
+  })
+  // 三个叠加数据源按 MM/dd 建索引，跟主图 K 线的日期格式对齐（叠加数据各自有自己的
+  // 覆盖窗口——两融受 marginRange 影响、成交额固定近60日、涨跌统计从开始同步那天起
+  // 累积，均可能短于主图"近120个交易日"，缺失的日期叠加线自然断开，不臆测补值）
+  const marginByDate = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const p of wv?.margin?.series ?? []) m.set(format(new Date(p.date), 'MM/dd'), p.balance)
+    return m
+  }, [wv])
+  const turnoverByDate = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const p of wv?.turnover?.series ?? []) m.set(format(new Date(p.date), 'MM/dd'), p.amount)
+    return m
+  }, [wv])
+  const updownByDate = useMemo(() => {
+    const m = new Map<string, { up: number; down: number }>()
+    for (const p of updownSeries ?? []) m.set(format(new Date(p.date), 'MM/dd'), { up: p.up, down: p.down })
+    return m
+  }, [updownSeries])
+
+  const chartData = useMemo(() => {
+    const series = selected?.series ?? []
+    return series.map((p, i) => {
+      // 当日涨跌幅 = 今收比昨收（序列升序，取前一日收盘）
+      const prevClose = i > 0 ? series[i - 1].close : null
+      const pct = prevClose && p.close != null ? (p.close / prevClose - 1) * 100 : null
+      const dateKey = format(new Date(p.date), 'MM/dd')
+      return {
+        date: dateKey,
+        // 蜡烛：range Bar 数据域 [low, high]，OHLC 原值供 shape/tooltip 使用
+        'K线': p.low != null && p.high != null ? [p.low, p.high] : undefined,
+        _open: p.open, _close: p.close, _high: p.high, _low: p.low, _pct: pct,
+        [volKey]: hasAmount
+          ? (p.amount != null ? +(p.amount / 1e8).toFixed(1) : null)
+          : (p.volume != null ? +(p.volume / 1e4).toFixed(1) : null),
+        _volUp: p.open != null && p.close >= p.open,
+        'MA5': p.ma5, 'MA10': p.ma10, 'MA20': p.ma20,
+        'MA60': p.ma60, 'MA120': p.ma120, 'MA250': p.ma250,
+        _marginBalance: marginByDate.get(dateKey) != null ? +(marginByDate.get(dateKey)! / 1e12).toFixed(3) : null,
+        _turnoverAmount: turnoverByDate.get(dateKey) != null ? +(turnoverByDate.get(dateKey)! / 1e8).toFixed(1) : null,
+        _upCount: updownByDate.get(dateKey)?.up ?? null,
+        _downCount: updownByDate.get(dateKey)?.down ?? null,
+      }
+    })
+  }, [selected, hasAmount, volKey, marginByDate, turnoverByDate, updownByDate])
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -296,11 +328,29 @@ export default function MarketTrend() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* 均线图 */}
           <div className="card p-4 lg:col-span-2 space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-y-1">
               <span className="text-sm font-semibold text-text-primary">
                 {selected.name} · 收盘与均线系统
               </span>
-              <span className="text-xs text-text-muted">近120个交易日 · 点图例切换均线</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-text-muted">近120个交易日 · 点图例切换均线</span>
+                <div className="flex items-center gap-0.5">
+                  {([
+                    ['none', '不叠加'], ['margin', '两融余额'], ['updown', '涨跌统计'], ['turnover', '成交额'],
+                  ] as const).map(([key, label]) => (
+                    <button
+                      key={key}
+                      onClick={() => setOverlay(key)}
+                      className={cn(
+                        'px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors',
+                        overlay === key ? 'bg-accent text-white' : 'text-text-muted hover:text-text-secondary',
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
             {/* 主图（蜡烛+均线）与成交副图 syncId 联动，轴宽一致保证日期对齐 */}
             <div className="h-64">
@@ -309,10 +359,20 @@ export default function MarketTrend() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
                   <XAxis dataKey="date" tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                   <YAxis
+                    yAxisId="left"
                     tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} width={52}
                     domain={[(min: number) => Math.floor(min * 0.995), (max: number) => Math.ceil(max * 1.005)]}
                     tickFormatter={(v: number) => v.toFixed(0)}
                   />
+                  {overlay !== 'none' && (
+                    <YAxis
+                      yAxisId="overlay"
+                      orientation="right"
+                      tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} width={52}
+                      domain={['auto', 'auto']}
+                      tickFormatter={(v: number) => overlay === 'margin' ? `${v}万亿` : v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${v}`}
+                    />
+                  )}
                   <Tooltip content={<ChartTooltip />} />
                   <Legend
                     wrapperStyle={{ fontSize: 12, color: '#A2A9C4', paddingTop: 4, cursor: 'pointer' }}
@@ -323,10 +383,11 @@ export default function MarketTrend() {
                     )}
                   />
                   {/* 蜡烛：range Bar [low, high] + 自定义 shape（红涨绿跌） */}
-                  <Bar dataKey="K线" isAnimationActive={false} shape={<CandleShape />} hide={hiddenLines.has('K线')} legendType="rect" fill="#FF4560" />
+                  <Bar yAxisId="left" dataKey="K线" isAnimationActive={false} shape={<CandleShape />} hide={hiddenLines.has('K线')} legendType="rect" fill="#FF4560" />
                   {Object.entries(MA_COLORS).map(([key, color]) => (
                     <Line
                       key={key}
+                      yAxisId="left"
                       type="monotone"
                       dataKey={key}
                       stroke={color}
@@ -338,6 +399,23 @@ export default function MarketTrend() {
                       hide={hiddenLines.has(key)}
                     />
                   ))}
+                  {/* 叠加线：三选一，跟主图共用 tooltip/legend，独立右轴避免量纲互相挤压 */}
+                  {overlay === 'margin' && (
+                    <Line yAxisId="overlay" type="monotone" dataKey="_marginBalance" name="两融余额(万亿)"
+                      stroke="#5EA6FF" strokeWidth={1.6} dot={false} connectNulls />
+                  )}
+                  {overlay === 'turnover' && (
+                    <Line yAxisId="overlay" type="monotone" dataKey="_turnoverAmount" name="成交额(亿)"
+                      stroke="#F59E0B" strokeWidth={1.6} dot={false} connectNulls />
+                  )}
+                  {overlay === 'updown' && (
+                    <>
+                      <Line yAxisId="overlay" type="monotone" dataKey="_upCount" name="上涨家数"
+                        stroke="#FF4560" strokeWidth={1.6} dot={false} connectNulls />
+                      <Line yAxisId="overlay" type="monotone" dataKey="_downCount" name="下跌家数"
+                        stroke="#26C281" strokeWidth={1.6} dot={false} connectNulls />
+                    </>
+                  )}
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -575,7 +653,7 @@ function WindvaneCards({ wv, marginRange, onMarginRangeChange, updownDate, onUpd
           部分数据暂不可用：{wv.errors.join('；')}
         </div>
       )}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 gap-4">
 
         {/* ── 融资融券 ─────────────────────────────────────────────── */}
         {m && (
