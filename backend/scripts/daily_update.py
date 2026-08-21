@@ -1331,6 +1331,22 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"[turnover] 成交额概览数据同步失败（不影响主流程）: {e}")
             db.rollback()
 
+        # ── 弱转强雷达：板块每日快照 + 候选池发现（独立步骤，失败不影响主流程）──
+        # 板块快照必须在第5步「刷新板块统计」之后跑（依赖今日 Sector 字段已是最新），
+        # 候选发现依赖 Stock.pct_change_20d / close_price 等同样由本次更新写入的字段。
+        try:
+            from app.services.w2s_sector_gate_service import upsert_sector_daily_snapshot
+            from app.services.w2s_candidate_service import discover_candidates
+            snap_count = upsert_sector_daily_snapshot(db, target_date)
+            cand_stats = discover_candidates(db, target_date)
+            log.info(
+                f"弱转强雷达：板块快照 {snap_count} 条；候选池 raw={cand_stats['prompt1_raw']}/{cand_stats['prompt2_raw']}，"
+                f"verified={cand_stats['verified']}（新增{cand_stats['new']}，续期{cand_stats['renewed']}，失活{cand_stats['expired']}）"
+            )
+        except Exception as e:
+            log.info(f"[weak-to-strong-radar] 板块快照/候选池发现失败（不影响主流程）: {e}")
+            db.rollback()
+
         log.summary()
 
     except Exception as e:

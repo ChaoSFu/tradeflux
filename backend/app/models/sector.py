@@ -83,6 +83,9 @@ class StockSectorRelation(Base):
 
 class SectorDailySnapshot(Base):
     __tablename__ = "sector_daily_snapshots"
+    __table_args__ = (
+        UniqueConstraint("sector_id", "date", name="uq_sector_snapshot_date"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     sector_id = Column(Integer, ForeignKey("sectors.id"), nullable=False, index=True)
@@ -95,6 +98,7 @@ class SectorDailySnapshot(Base):
     continuity_score = Column(Float, default=0.0, nullable=False)
     risk_score = Column(Float, default=0.0, nullable=False)
     emotion_score = Column(Float, default=0.0, nullable=False)
+    amount = Column(Float, default=0.0, nullable=False)  # 成交额（亿元）——弱转强雷达 Sector Momentum 用
 
     leader_stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=True)
 

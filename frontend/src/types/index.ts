@@ -552,3 +552,113 @@ export interface TurnoverOverviewResponse {
   overall_avg_pct: number
   errors: string[]
 }
+
+// ─── 弱转强雷达 ───────────────────────────────────────────────────────────────
+
+export type W2SState = 'WATCH' | 'READY' | 'REPAIRING' | 'CONFIRMING' | 'BUYABLE' | 'WAIT' | 'BLOCK'
+export type W2SLeaderType = 'core' | 'backup' | 'undetermined' | 'non_leader'
+export type W2SSectorCategory =
+  | 'NEW_START' | 'EXPANDING' | 'MAIN_UPTREND' | 'HEALTHY_DIVERGENCE'
+  | 'HIGH_LEVEL_WARNING' | 'DECLINING' | 'DEAD'
+export type W2SRegulatoryRisk = 'LOW' | 'MEDIUM' | 'HIGH' | 'EXTREME'
+
+export interface W2SCandidate {
+  stock_code: string
+  stock_name: string
+  first_seen_date: string
+  last_seen_date: string
+  consecutive_miss_days: number
+  candidate_source: string
+  is_active: boolean
+
+  sector_id: number | null
+  sector_name: string | null
+  sector_category: W2SSectorCategory | null
+  sector_strength_score: number | null
+  sector_momentum_score: number | null
+
+  leader_type: W2SLeaderType | null
+  leader_rank: number | null
+  leader_score: number | null
+
+  current_state: W2SState
+  setup_substate: string | null
+  refresh_sample_count: number
+
+  price: number | null
+  prev_close: number | null
+  ma5: number | null
+  day_open: number | null
+  day_high: number | null
+  day_low: number | null
+  day_amount: number | null
+  turnover_rate: number | null
+
+  auction_gap: number | null
+  limit_price: number | null
+  limit_room: number | null
+
+  regulatory_risk_level: W2SRegulatoryRisk | null
+  signal_enabled: boolean
+
+  trigger_reasons: string | null
+  block_reasons: string | null
+
+  last_refreshed_at: string | null
+  formula_version: string
+}
+
+export interface W2SChecklistGroup {
+  group: 'MARKET' | 'SECTOR' | 'LEADER' | 'DIVERGENCE' | 'SETUP' | 'SPACE' | 'CHIPS' | 'RISK'
+  status: 'pass' | 'fail' | 'phase2'
+  detail: string
+}
+
+export interface W2SCandidateDetail extends W2SCandidate {
+  checklist: W2SChecklistGroup[]
+}
+
+export interface W2SRefreshResult {
+  refreshed: number
+  state_changed: number
+  quote_missing: number
+  duration_ms: number
+  triggered_at: string
+}
+
+export interface W2SRefreshStatus {
+  running: boolean
+  last_result: W2SRefreshResult | null
+  last_error: string | null
+}
+
+export interface W2SEvent {
+  id: number
+  timestamp: string
+  stock_code: string
+  old_state: W2SState | null
+  new_state: W2SState
+  trigger_reasons: string | null
+  block_reasons: string | null
+  sector_phase: string | null
+  leader_type: string | null
+  price: number | null
+  formula_version: string
+}
+
+export interface W2SConfig {
+  prompt1: string
+  prompt2: string
+  is_prompt1_custom: boolean
+  is_prompt2_custom: boolean
+  default_prompt1: string
+  default_prompt2: string
+  w2s_min_yesterday_amount: number
+  w2s_leader_gap_threshold: number
+  w2s_observation_window_days: number
+  w2s_divergence_health_threshold: number
+  w2s_auction_gap_min: number
+  w2s_sector_gate_allowed: string
+  w2s_regulatory_risk_cap: string
+  w2s_formula_version: string
+}

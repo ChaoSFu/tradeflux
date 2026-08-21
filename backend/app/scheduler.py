@@ -19,6 +19,7 @@ from apscheduler.triggers.date import DateTrigger
 logger = logging.getLogger(__name__)
 
 LOCK_FILE = "/tmp/tradeflux_daily_update.lock"
+W2S_LOCK_FILE = "/tmp/tradeflux_w2s_radar.lock"
 MAX_RETRIES = 3
 RETRY_INTERVAL = 600  # 10 分钟
 
@@ -200,6 +201,56 @@ def _run_weekly_full_board_sync() -> None:
                 pass
 
 
+def _run_w2s_refresh() -> None:
+    """
+    弱转强雷达盘前快速刷新：抓一次批量实时报价 + 跑一遍 Sector/Leader Gate +
+    状态机，用独立锁文件（不是 LOCK_FILE），跟 daily_update_preopen（09:27）
+    错开1分钟、锁也不同，互不阻塞——雷达刷新只碰自己的两张新表，没必要被
+    全量更新的多分钟耗时挡住，也不该反过来挡住全量更新。
+    失败不重试：这本来就是"竞价窗口辅助快照"，用户随时能在页面手动点刷新
+    补一次，不是关键路径，不需要 daily_update 那套10分钟重试机制。
+    """
+    backend_dir = os.path.dirname(os.path.dirname(__file__))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    log_dir = os.path.join(backend_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"w2s_radar_{date.today().isoformat()}.log")
+
+    lock_fd = None
+    try:
+        lock_fd = open(W2S_LOCK_FILE, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            _log(log_path, "SCHED", "❌ 雷达锁已被占用（页面手动刷新正在运行），本次跳过")
+            return
+
+        from app.database import SessionLocal  # type: ignore
+        from app.services.w2s_refresh_service import run_refresh  # type: ignore
+        from app.routers.admin import record_job_duration  # type: ignore
+
+        db = SessionLocal()
+        try:
+            t0 = datetime.now().isoformat(timespec="seconds")
+            stats = run_refresh(db)
+            t1 = datetime.now().isoformat(timespec="seconds")
+            record_job_duration("w2s_refresh", t0, t1)
+            _log(log_path, "SCHED", f"✅ 弱转强雷达盘前刷新完成: {stats}")
+        finally:
+            db.close()
+    except Exception as exc:
+        _log(log_path, "SCHED", f"❌ 弱转强雷达盘前刷新失败: {exc}")
+        logger.exception("弱转强雷达盘前刷新异常")
+    finally:
+        if lock_fd:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+            except Exception:
+                pass
+
+
 def create_scheduler() -> BackgroundScheduler:
     """
     创建并配置后台调度器。三个定时任务：
@@ -256,5 +307,22 @@ def create_scheduler() -> BackgroundScheduler:
         name="板块全量同步（周度兜底）",
         replace_existing=True,
         misfire_grace_time=3600 * 6,  # 错过 6 小时内仍可补跑（非关键路径，宽松些）
+    )
+    # 弱转强雷达盘前快速刷新：独立锁文件，跟 daily_update_preopen 错开1分钟，
+    # 互不阻塞。竞价窗口只有5分钟，指望用户正好在那分钟点开页面点刷新不现实，
+    # 这是主动新增的定时任务（不在用户原始规格明文列表里）。
+    scheduler.add_job(
+        _run_w2s_refresh,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=9,
+            minute=26,
+            timezone="Asia/Shanghai",
+        ),
+        max_instances=1,
+        id="w2s_radar_preopen_refresh",
+        name="弱转强雷达盘前刷新",
+        replace_existing=True,
+        misfire_grace_time=300,  # 竞价数据过时几分钟就没意义了，错过5分钟就放弃
     )
     return scheduler

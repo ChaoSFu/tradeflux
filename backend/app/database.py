@@ -27,7 +27,7 @@ def get_db():
 
 
 def init_db():
-    from .models import stock, sector, signal, review, screening, regulatory, market_index, app_config, trade_journal, market_effect  # noqa: F401 - imports trigger table registration
+    from .models import stock, sector, signal, review, screening, regulatory, market_index, app_config, trade_journal, market_effect, weak_to_strong_radar  # noqa: F401 - imports trigger table registration
     Base.metadata.create_all(bind=engine)
     _apply_schema_patches()
 
@@ -102,6 +102,10 @@ def _apply_schema_patches():
         "ALTER TABLE stock_sector_relations ADD CONSTRAINT uq_stock_sector UNIQUE (stock_id, sector_id)",
         # StockDailySnapshot 联合唯一约束（每只股票每天只能有一条快照）
         "ALTER TABLE stock_daily_snapshots ADD CONSTRAINT uq_snapshot_stock_date UNIQUE (stock_id, date)",
+        # SectorDailySnapshot 补成交额字段（弱转强雷达 Sector Momentum 用）+ 联合唯一约束
+        # （该表此前从未被写入，daily_update 现在开始每日 upsert 一条）
+        "ALTER TABLE sector_daily_snapshots ADD COLUMN IF NOT EXISTS amount FLOAT DEFAULT 0.0 NOT NULL",
+        "ALTER TABLE sector_daily_snapshots ADD CONSTRAINT uq_sector_snapshot_date UNIQUE (sector_id, date)",
     ]
     # 每条补丁独立事务：Postgres 中任一语句报错会使整个事务进入 aborted 状态，
     # 若共用事务，末尾 ADD CONSTRAINT（无 IF NOT EXISTS）已存在时报错，

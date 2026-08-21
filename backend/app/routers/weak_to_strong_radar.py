@@ -1,0 +1,153 @@
+"""
+弱转强雷达 API：候选列表/详情（含Checklist）、独立快速刷新（自己的锁文件，
+不碰 daily_update 那把锁）、状态变化事件日志、配置读写。
+
+候选发现（两路 Prompt → weak_to_strong_candidates）不在这里触发，由
+scripts/daily_update.py 的既有每日流程调用 w2s_candidate_service.discover_candidates，
+本 router 的 /refresh 只做"已发现候选"的快速状态刷新——职责边界见方案
+"调度与锁"一节。
+"""
+import fcntl
+import os
+import threading
+from datetime import date, datetime
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from ..auth import require_auth
+from ..database import SessionLocal, get_db
+from ..models.weak_to_strong_radar import WeakToStrongCandidate, WeakToStrongEvent
+from ..schemas.weak_to_strong_radar import (
+    CandidateResponse, CandidateDetailResponse, ChecklistGroup,
+    RefreshResultResponse, RefreshStatusResponse, EventResponse,
+    W2SConfigResponse, W2SConfigUpdateRequest,
+)
+from ..services import w2s_config_service as cfg
+from ..services.w2s_refresh_service import run_refresh
+from .admin import record_job_duration
+
+router = APIRouter(prefix="/weak-to-strong-radar", tags=["weak-to-strong-radar"])
+
+LOCK_FILE = "/tmp/tradeflux_w2s_radar.lock"
+
+_lock = threading.Lock()
+_job: dict = {"running": False, "last_result": None, "last_error": None}
+
+
+def _run_refresh_job() -> None:
+    lock_fd = None
+    db = SessionLocal()
+    try:
+        lock_fd = open(LOCK_FILE, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            with _lock:
+                _job["running"] = False
+                _job["last_error"] = "已有雷达刷新任务在运行中，请稍后再试"
+            return
+
+        started = datetime.now().isoformat(timespec="seconds")
+        stats = run_refresh(db)
+        finished = datetime.now().isoformat(timespec="seconds")
+        record_job_duration("w2s_refresh", started, finished)
+        with _lock:
+            _job["running"] = False
+            _job["last_error"] = None
+            _job["last_result"] = {**stats, "triggered_at": datetime.now()}
+    except Exception as exc:  # noqa: BLE001
+        with _lock:
+            _job["running"] = False
+            _job["last_error"] = str(exc)
+    finally:
+        db.close()
+        if lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
+
+@router.post("/refresh")
+def trigger_refresh(_: str = Depends(require_auth)):
+    with _lock:
+        if _job["running"]:
+            return {"ok": False, "message": "已有雷达刷新任务在运行中，请稍后"}
+        _job["running"] = True
+    t = threading.Thread(target=_run_refresh_job, daemon=True)
+    t.start()
+    return {"ok": True, "message": "雷达刷新已启动"}
+
+
+@router.get("/refresh/status", response_model=RefreshStatusResponse)
+def get_refresh_status():
+    with _lock:
+        return dict(_job)
+
+
+@router.get("/candidates", response_model=list[CandidateResponse])
+def list_candidates(active_only: bool = True, db: Session = Depends(get_db)):
+    q = db.query(WeakToStrongCandidate)
+    if active_only:
+        q = q.filter(WeakToStrongCandidate.is_active == True)  # noqa: E712
+    return q.order_by(WeakToStrongCandidate.last_refreshed_at.desc().nullslast()).all()
+
+
+def _build_checklist(cand: WeakToStrongCandidate) -> list[ChecklistGroup]:
+    return [
+        ChecklistGroup(group="MARKET", status="phase2", detail="Market Gate 未实现，Phase 2 补充"),
+        ChecklistGroup(
+            group="SECTOR",
+            status="pass" if cand.sector_category in ("NEW_START", "EXPANDING", "MAIN_UPTREND", "HEALTHY_DIVERGENCE") else "fail",
+            detail=f"{cand.sector_name or '未知板块'} · {cand.sector_category or '无'}"
+                   f"（强度{cand.sector_strength_score if cand.sector_strength_score is not None else '-'}"
+                   f" / 动量{cand.sector_momentum_score if cand.sector_momentum_score is not None else '-'}）",
+        ),
+        ChecklistGroup(
+            group="LEADER",
+            status="pass" if cand.leader_type == "core" else ("fail" if cand.leader_type in ("non_leader", "undetermined") else "fail"),
+            detail=f"{cand.leader_type or '未知'}"
+                   + (f" · 第{cand.leader_rank}名" if cand.leader_rank else "")
+                   + (f" · Core Leader Score {cand.leader_score}" if cand.leader_score is not None else ""),
+        ),
+        ChecklistGroup(
+            group="DIVERGENCE",
+            status="pass" if cand.sector_category != "HIGH_LEVEL_WARNING" else "fail",
+            detail="板块分歧健康度已纳入 Sector Gate 分类判断" if cand.sector_category else "暂无数据",
+        ),
+        ChecklistGroup(
+            group="SETUP",
+            status="pass" if cand.current_state in ("REPAIRING", "CONFIRMING", "BUYABLE", "READY") else "fail",
+            detail=(cand.trigger_reasons or cand.block_reasons or f"当前状态 {cand.current_state}"),
+        ),
+        ChecklistGroup(group="SPACE", status="phase2", detail=f"涨停空间 limit_room={cand.limit_room if cand.limit_room is not None else '-'}%（数值已算，降级判断 Phase 2 补充）"),
+        ChecklistGroup(group="CHIPS", status="phase2", detail="日内获利盘估算需分钟级数据，本仓库目前无该数据源，Phase 3 视情况补充"),
+        ChecklistGroup(group="RISK", status="phase2", detail="Stress R/R、三层止损依赖 Space Gate 降级逻辑，Phase 2 补充"),
+    ]
+
+
+@router.get("/candidates/{code}", response_model=CandidateDetailResponse)
+def get_candidate_detail(code: str, db: Session = Depends(get_db)):
+    cand = db.query(WeakToStrongCandidate).filter(WeakToStrongCandidate.stock_code == code).first()
+    if cand is None:
+        raise HTTPException(status_code=404, detail="候选不存在")
+    base = CandidateResponse.model_validate(cand, from_attributes=True)
+    return CandidateDetailResponse(**base.model_dump(), checklist=_build_checklist(cand))
+
+
+@router.get("/events", response_model=list[EventResponse])
+def list_events(stock_code: str | None = None, limit: int = 200, db: Session = Depends(get_db)):
+    q = db.query(WeakToStrongEvent)
+    if stock_code:
+        q = q.filter(WeakToStrongEvent.stock_code == stock_code)
+    return q.order_by(WeakToStrongEvent.timestamp.desc()).limit(min(limit, 500)).all()
+
+
+@router.get("/config", response_model=W2SConfigResponse)
+def get_config(db: Session = Depends(get_db)):
+    return cfg.get_all_config(db)
+
+
+@router.put("/config", response_model=W2SConfigResponse)
+def update_config(payload: W2SConfigUpdateRequest, db: Session = Depends(get_db), _: str = Depends(require_auth)):
+    cfg.set_w2s_config(db, payload.key, payload.value)
+    return cfg.get_all_config(db)

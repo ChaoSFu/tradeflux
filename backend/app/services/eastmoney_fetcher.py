@@ -1153,6 +1153,90 @@ def _fetch_index_amount_eastmoney(secid: str, timeout: int = 15) -> Optional[flo
         return None
 
 
+ULIST_QUOTE_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+_QUOTE_FIELDS = "f2,f3,f5,f6,f8,f12,f14,f15,f16,f17,f18"
+_QUOTE_BATCH_SIZE = 60  # 单次请求 secids 数量上限（实测60只没问题），超出自动分批
+
+
+@dataclass
+class StockQuote:
+    """个股实时快照（弱转强雷达用）。全仓库此前没有任何地方暴露过当前绝对价格
+    ——之前所有页面都只用涨跌幅，这是第一个真正拉「现价」的地方。"""
+    code: str
+    name: str
+    price: Optional[float] = None
+    pct_change: Optional[float] = None
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    prev_close: Optional[float] = None
+    volume: Optional[float] = None
+    amount: Optional[float] = None
+    turnover_rate: Optional[float] = None
+
+
+def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int = 15) -> Dict[str, StockQuote]:
+    """
+    批量拉取个股实时快照：现价/涨跌幅/今开/最高/最低/昨收/成交量/成交额/换手率。
+    codes_markets: [(code, market), ...]，market 约定同 fetch_kline：1=SH，0=SZ。
+
+    东财 push2 的 ulist.np/get 接口支持一次请求多个 secid（逗号分隔），超过
+    _QUOTE_BATCH_SIZE 自动分批（多线程并发各批）再合并。这是"锦上添花"的实时
+    快照，不是像选股结果那样要求的权威全集——单只股票拉取失败就从返回 dict 里
+    缺席，不会因为个别失败拖垮整批（调用方按 code not in result 处理缺失）。
+    """
+    result: Dict[str, StockQuote] = {}
+    if not codes_markets:
+        return result
+
+    batches = [
+        codes_markets[i:i + _QUOTE_BATCH_SIZE]
+        for i in range(0, len(codes_markets), _QUOTE_BATCH_SIZE)
+    ]
+
+    def _fetch_one_batch(batch: list[tuple[str, int]]) -> None:
+        secids = ",".join(f"{market}.{code}" for code, market in batch)
+        # 东财 push2 偶发瞬时 502/连接问题（本 session 反复验证过的已知不稳定源），
+        # 重试 2 次基本能过；批量快照是雷达刷新的地基，不能让一次瞬时故障
+        # 让整批候选的行情全部缺席。
+        for attempt in range(3):
+            try:
+                client = _thread_warmed_client(timeout=timeout)
+                resp = client.get(ULIST_QUOTE_URL, params={"secids": secids, "fields": _QUOTE_FIELDS, "fltt": 2})
+                diff = ((resp.json().get("data") or {}).get("diff")) or []
+                for row in diff:
+                    code = row.get("f12")
+                    if not code:
+                        continue
+                    result[code] = StockQuote(
+                        code=code,
+                        name=row.get("f14") or "",
+                        price=row.get("f2"),
+                        pct_change=row.get("f3"),
+                        volume=row.get("f5"),
+                        amount=row.get("f6"),
+                        turnover_rate=row.get("f8"),
+                        high=row.get("f15"),
+                        low=row.get("f16"),
+                        open=row.get("f17"),
+                        prev_close=row.get("f18"),
+                    )
+                return
+            except Exception as e:  # noqa: BLE001
+                if attempt == 2:
+                    print(f"[fetcher] 批量行情快照拉取失败（{len(batch)}只，重试3次均失败）: {type(e).__name__}: {e}", flush=True)
+                else:
+                    time.sleep(0.5 * (attempt + 1))
+
+    if len(batches) == 1:
+        _fetch_one_batch(batches[0])
+    else:
+        with ThreadPoolExecutor(max_workers=min(5, len(batches))) as executor:
+            list(executor.map(_fetch_one_batch, batches))
+
+    return result
+
+
 def fetch_index_amount(secid: str, timeout: int = 15) -> Optional[float]:
     """
     指数当日成交额（元）——默认走新浪实时行情（跟东财完全独立的服务器，
