@@ -18,6 +18,8 @@ const TITLES: Record<string, string> = {
   '/review': '日复盘 Daily Review',
   '/trade-journal': '交易复盘 Trade Journal',
   '/limit-moves': '涨跌停概览 Limit Moves',
+  '/weak-to-strong-radar': '弱转强雷达 Weak-to-Strong Radar',
+  '/weak-to-strong-radar/guide': '实现说明 · 弱转强雷达',
 }
 
 export function Layout() {

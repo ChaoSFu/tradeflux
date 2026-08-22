@@ -18,6 +18,7 @@ import LimitMovesDashboard from '@/pages/LimitMovesDashboard'
 import TradeJournal from '@/pages/TradeJournal'
 import TurnoverOverview from '@/pages/TurnoverOverview'
 import WeakToStrongRadar from '@/pages/WeakToStrongRadar'
+import WeakToStrongRadarGuide from '@/pages/WeakToStrongRadarGuide'
 
 export default function App() {
   return (
@@ -37,6 +38,7 @@ export default function App() {
           <Route path="sector-emotion" element={<SectorEmotion />} />
           <Route path="signals" element={<Signals />} />
           <Route path="weak-to-strong-radar" element={<WeakToStrongRadar />} />
+          <Route path="weak-to-strong-radar/guide" element={<WeakToStrongRadarGuide />} />
           <Route path="review" element={<DailyReview />} />
           <Route path="trade-journal" element={<TradeJournal />} />
           {/* 涨跌停分析 */}

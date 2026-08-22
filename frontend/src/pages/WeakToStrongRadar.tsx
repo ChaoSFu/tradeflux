@@ -17,7 +17,8 @@ import { StateBadge } from '@/components/weakToStrong/StateBadge'
 import { ChecklistPanel } from '@/components/weakToStrong/ChecklistPanel'
 import { fmt, pct, pctColor } from '@/utils/format'
 import { cn } from '@/utils/cn'
-import { RefreshCw, Crosshair, AlertTriangle } from 'lucide-react'
+import { RefreshCw, Crosshair, AlertTriangle, BookOpen } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { useAuthStore } from '@/store/auth'
 import type { W2SCandidate, W2SState, W2SMarketState } from '@/types'
 
@@ -168,11 +169,17 @@ export default function WeakToStrongRadar() {
       {/* Disclaimer */}
       <div className="flex items-start gap-2 p-3 rounded bg-warn-dim border border-warn/20 text-xs text-warn">
         <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-        <span>
+        <span className="flex-1">
           「弱转强成立」不等于「值得买入」——本页只在大盘闸门、板块闸门、龙头闸门、回踩结构确认、
           涨停空间五项硬性条件同时通过后才给出 BUYABLE 信号；Stress R/R 是压力情景估算，Chips
           相关判断仍是 Phase 2 占位（详见展开的 Checklist）。⚠️ 不构成任何投资建议或买卖指令。
         </span>
+        <Link
+          to="/weak-to-strong-radar/guide"
+          className="flex items-center gap-1 shrink-0 text-warn/80 hover:text-warn underline decoration-warn/30 underline-offset-2 whitespace-nowrap"
+        >
+          <BookOpen className="w-3 h-3" /> 了解实现原理
+        </Link>
       </div>
 
       {/* Gate bar */}
