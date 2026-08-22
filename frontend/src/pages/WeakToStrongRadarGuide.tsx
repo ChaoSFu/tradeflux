@@ -117,7 +117,7 @@ function FormulaBlock({ children }: { children: React.ReactNode }) {
 
 export default function WeakToStrongRadarGuide() {
   return (
-    <div className="space-y-4 animate-fade-in max-w-4xl">
+    <div className="space-y-4 animate-fade-in">
       <Link
         to="/weak-to-strong-radar"
         className="inline-flex items-center gap-1.5 text-xs text-text-muted hover:text-accent transition-colors"
@@ -176,7 +176,7 @@ export default function WeakToStrongRadarGuide() {
           ))}
         </div>
 
-        <div className="space-y-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-4">
           {GATES.map((g) => (
             <div key={g.en} className="flex gap-3">
               <g.icon className="w-4 h-4 text-accent shrink-0 mt-0.5" />
@@ -194,7 +194,7 @@ export default function WeakToStrongRadarGuide() {
       {/* 2. 页面功能总览 */}
       <div className="card p-5">
         <SectionHead num="02" title="页面功能总览" sub="/weak-to-strong-radar，侧边栏「弱转强雷达」入口。" />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           {FEATURES.map((f) => (
             <div key={f.name} className="bg-bg-elevated border border-bg-border rounded-lg p-3.5">
               <div className="text-sm font-semibold text-text-primary mb-1">{f.name}</div>
@@ -251,40 +251,52 @@ BUYABLE     → [跌破修复关键位]                        → WAIT（信号
       <div className="card p-5">
         <SectionHead num="04" title="止损与风险回报比" sub="压力情景下的保守估算，不是完整期望收益模型，也不构成止损/止盈建议。" />
 
-        <div className="text-sm font-semibold text-text-primary mb-2">三层止损（由紧到松）</div>
-        <FormulaBlock>{`技术止损  = 回踩低点（缺失时退回 5 日均线）
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6">
+          <div>
+            <div className="text-sm font-semibold text-text-primary mb-2">三层止损（由紧到松）</div>
+            <FormulaBlock>{`技术止损  = 回踩低点（缺失时退回 5 日均线）
 标准止损  = 技术止损 × (1 − 2%)          # 留缓冲，避免正常噪音刚好触发
 压力止损  = 现价 × (1 − 跌停幅度%)        # 模拟买入后次日直接跌停开盘`}</FormulaBlock>
-        <p className="text-xs text-text-muted leading-relaxed mb-4">
-          压力止损存在的意义：A股 T+1，买入当天不能卖出，如果次日低开跌停，这是真实存在、没法靠盯盘规避的风险，必须提前算进去。
-        </p>
+            <p className="text-xs text-text-muted leading-relaxed">
+              压力止损存在的意义：A股 T+1，买入当天不能卖出，如果次日低开跌停，这是真实存在、没法靠盯盘规避的风险，必须提前算进去。
+            </p>
+          </div>
 
-        <div className="text-sm font-semibold text-text-primary mb-2">Stress R/R</div>
-        <FormulaBlock>{`Stress R/R = 今日剩余涨停空间% ÷ 跌停幅度%`}</FormulaBlock>
-        <p className="text-xs text-text-muted leading-relaxed">
-          分母是同板块类型（主板9.9%/科创创业19.9%/北交所29.9%/ST 4.95%）的常数，不是概率加权预期。
-          这个数字只回答一个问题——"如果明天真跌停，今天剩的上涨空间值不值得担这个风险"。
-        </p>
+          <div>
+            <div className="text-sm font-semibold text-text-primary mb-2">Stress R/R</div>
+            <FormulaBlock>{`Stress R/R = 今日剩余涨停空间% ÷ 跌停幅度%`}</FormulaBlock>
+            <p className="text-xs text-text-muted leading-relaxed">
+              分母是同板块类型（主板9.9%/科创创业19.9%/北交所29.9%/ST 4.95%）的常数，不是概率加权预期。
+              这个数字只回答一个问题——"如果明天真跌停，今天剩的上涨空间值不值得担这个风险"。
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* 5. 数据链路 */}
       <div className="card p-5">
         <SectionHead num="05" title="数据链路" sub="盘前发现候选，盘中快速刷新状态——两条互不阻塞的独立路径。" />
 
-        <div className="text-sm font-semibold text-text-primary mb-1.5">盘前 · 候选池发现</div>
-        <p className="text-xs text-text-secondary leading-relaxed mb-4">
-          每日更新流程（收盘15:30/盘前09:27）里新增一步：跑两路候选 Prompt（复用东方财富智能选股接口），
-          本地二次校验排名、均线这些容易被上游解析错的条件——不信任接口返回的股票代码就直接当作最终结果；
-          成交额条件不在本地复核范围，直接信任东财自身的数值过滤（见"已知局限"）。
-          命中的股票续期，连续多天没再命中的候选超过观察窗口后自动失活，不物理删除、保留历史。
-        </p>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 mb-4">
+          <div>
+            <div className="text-sm font-semibold text-text-primary mb-1.5">盘前 · 候选池发现</div>
+            <p className="text-xs text-text-secondary leading-relaxed">
+              每日更新流程（收盘15:30/盘前09:27）里新增一步：跑两路候选 Prompt（复用东方财富智能选股接口），
+              本地二次校验排名、均线这些容易被上游解析错的条件——不信任接口返回的股票代码就直接当作最终结果；
+              成交额条件不在本地复核范围，直接信任东财自身的数值过滤（见"已知局限"）。
+              命中的股票续期，连续多天没再命中的候选超过观察窗口后自动失活，不物理删除、保留历史。
+            </p>
+          </div>
 
-        <div className="text-sm font-semibold text-text-primary mb-1.5">盘中 · 快速刷新</div>
-        <p className="text-xs text-text-secondary leading-relaxed mb-4">
-          独立 API，09:26 定时任务 + 手动按钮触发，目标5-10秒完成：查活跃候选 → 按题材分组跑板块/龙头闸门 →
-          批量拉一次实时报价 → 状态机判定 → 状态真的发生变化才追加写一条事件日志。
-          自己的文件锁，跟每日全量更新的锁完全分开，两边互不阻塞。
-        </p>
+          <div>
+            <div className="text-sm font-semibold text-text-primary mb-1.5">盘中 · 快速刷新</div>
+            <p className="text-xs text-text-secondary leading-relaxed">
+              独立 API，09:26 定时任务 + 手动按钮触发，目标5-10秒完成：查活跃候选 → 按题材分组跑板块/龙头闸门 →
+              批量拉一次实时报价 → 状态机判定 → 状态真的发生变化才追加写一条事件日志。
+              自己的文件锁，跟每日全量更新的锁完全分开，两边互不阻塞。
+            </p>
+          </div>
+        </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
@@ -311,7 +323,7 @@ BUYABLE     → [跌破修复关键位]                        → WAIT（信号
       {/* 6. 已知局限 */}
       <div className="card p-5">
         <SectionHead num="06" title="已知局限" sub="如实记录，不在产品里假装不存在。" />
-        <div className="space-y-2.5">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-2.5">
           {LIMITATIONS.map((l) => (
             <div key={l.title} className="flex items-start gap-2.5 bg-bg-elevated border border-bg-border rounded-lg p-3.5">
               <ShieldAlert className="w-3.5 h-3.5 text-warn shrink-0 mt-0.5" />
@@ -328,6 +340,8 @@ BUYABLE     → [跌破修复关键位]                        → WAIT（信号
       <div className="card p-5">
         <SectionHead num="07" title="后续规划" sub="Phase 1、Phase 2 原计划项目已全部完成，只剩 Phase 3。" />
 
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-8">
+        <div>
         <div className="mb-5">
           <div className="text-sm font-semibold text-text-primary mb-2 flex items-center gap-2">
             已完成 <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-up-dim text-up">Phase 1+2</span>
@@ -341,7 +355,7 @@ BUYABLE     → [跌破修复关键位]                        → WAIT（信号
           </ul>
         </div>
 
-        <div className="mb-5">
+        <div>
           <div className="text-sm font-semibold text-text-primary mb-2">主动不做</div>
           {ROADMAP_SKIPPED.map((item) => (
             <div key={item.title} className="text-xs text-text-secondary leading-relaxed">
@@ -349,7 +363,9 @@ BUYABLE     → [跌破修复关键位]                        → WAIT（信号
             </div>
           ))}
         </div>
+        </div>
 
+        <div>
         <div className="mb-5">
           <div className="text-sm font-semibold text-text-primary mb-2 flex items-center gap-2">
             规划中 <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-bg-elevated border border-dashed border-bg-border text-text-muted">Phase 3 · 待定方向</span>
@@ -388,6 +404,8 @@ BUYABLE     → [跌破修复关键位]                        → WAIT（信号
               </li>
             ))}
           </ul>
+        </div>
+        </div>
         </div>
       </div>
 
