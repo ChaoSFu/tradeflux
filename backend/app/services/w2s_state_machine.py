@@ -14,6 +14,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+from .w2s_risk_service import evaluate_space_gate
+
 WATCH = "WATCH"
 READY = "READY"
 REPAIRING = "REPAIRING"
@@ -71,6 +73,8 @@ def compute_next_state(
     auction_gap: Optional[float],
     auction_gap_min: float,
     is_after_auction: bool,
+    limit_room: Optional[float],
+    space_min_room_pct: float,
 ) -> tuple[str, list[str], list[str]]:
     """
     纯函数：给定当前态 + 一批已算好的闸门输入，算出下一态。
@@ -78,6 +82,11 @@ def compute_next_state(
     → 龙头非核心/未决 → 监管风险达到 cap → 候选观察期已过。全部通过后才走结构判断。
     market_state 是全局的（同一次刷新里所有候选共用同一个值，不是逐股算），
     由 w2s_market_gate_service 每次刷新算一次传入。
+
+    Space Gate（涨停空间不足）跟以上几个不同——不是硬性 BLOCK，而是只在
+    CONFIRMING→BUYABLE 这一步"降级"（结构确认了，但当前价位空间不够，先按 WAIT
+    处理），因为空间会随价格逐分钟变化，候选本身没有失效，不该跟板块/龙头闸门
+    那种"直接判死"混在一起。
     """
     block_reasons: list[str] = []
     trigger_reasons: list[str] = []
@@ -120,15 +129,21 @@ def compute_next_state(
             return CONFIRMING, trigger_reasons, block_reasons
         return REPAIRING, trigger_reasons, block_reasons
 
+    space_ok, space_reason = evaluate_space_gate(limit_room, space_min_room_pct)
+
     if current_state == CONFIRMING:
         if pullback_low is not None and price <= pullback_low:
             return WAIT, ["跌破回踩低点，确认失败"], block_reasons
+        if not space_ok:
+            return WAIT, [f"结构确认完成，但{space_reason}，暂缓至 WAIT"], block_reasons
         trigger_reasons.append("结构确认完成：板块/龙头/回踩突破三项闸门全部通过")
         return BUYABLE, trigger_reasons, block_reasons
 
     if current_state == BUYABLE:
         if price <= repair_anchor:
             return WAIT, ["跌破关键位，BUYABLE 信号失效"], block_reasons
+        if not space_ok:
+            return WAIT, [f"{space_reason}，BUYABLE 信号降级"], block_reasons
         return BUYABLE, trigger_reasons, block_reasons
 
     return current_state, trigger_reasons, block_reasons

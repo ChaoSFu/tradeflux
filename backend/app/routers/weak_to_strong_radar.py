@@ -98,7 +98,9 @@ def list_candidates(active_only: bool = True, db: Session = Depends(get_db)):
     return q.order_by(WeakToStrongCandidate.last_refreshed_at.desc().nullslast()).all()
 
 
-def _build_checklist(cand: WeakToStrongCandidate, gate: dict, market_gate_blocked: set[str]) -> list[ChecklistGroup]:
+def _build_checklist(
+    cand: WeakToStrongCandidate, gate: dict, market_gate_blocked: set[str], space_min_room_pct: float,
+) -> list[ChecklistGroup]:
     market_state = gate["market_state"]
     return [
         ChecklistGroup(
@@ -131,9 +133,26 @@ def _build_checklist(cand: WeakToStrongCandidate, gate: dict, market_gate_blocke
             status="pass" if cand.current_state in ("REPAIRING", "CONFIRMING", "BUYABLE", "READY") else "fail",
             detail=(cand.trigger_reasons or cand.block_reasons or f"当前状态 {cand.current_state}"),
         ),
-        ChecklistGroup(group="SPACE", status="phase2", detail=f"涨停空间 limit_room={cand.limit_room if cand.limit_room is not None else '-'}%（数值已算，降级判断 Phase 2 补充）"),
+        ChecklistGroup(
+            group="SPACE",
+            status="pass" if (cand.limit_room is not None and cand.limit_room >= space_min_room_pct) else "fail",
+            detail=(
+                f"涨停空间 {cand.limit_room:.1f}%（阈值 {space_min_room_pct:.1f}%）"
+                if cand.limit_room is not None else "涨停空间数据缺失"
+            ),
+        ),
         ChecklistGroup(group="CHIPS", status="phase2", detail="日内获利盘估算需分钟级数据，本仓库目前无该数据源，Phase 3 视情况补充"),
-        ChecklistGroup(group="RISK", status="phase2", detail="Stress R/R、三层止损依赖 Space Gate 降级逻辑，Phase 2 补充"),
+        ChecklistGroup(
+            group="RISK",
+            status="pass" if (cand.stress_rr is not None and cand.stress_rr >= 1.0) else "fail",
+            detail=(
+                f"Stress R/R {cand.stress_rr:.2f}"
+                f"（技术止损{cand.technical_stop if cand.technical_stop is not None else '-'} / "
+                f"标准止损{cand.standard_stop if cand.standard_stop is not None else '-'} / "
+                f"压力止损{cand.stress_stop if cand.stress_stop is not None else '-'}）"
+                if cand.stress_rr is not None else "风险回报数据缺失"
+            ),
+        ),
     ]
 
 
@@ -145,7 +164,10 @@ def get_candidate_detail(code: str, db: Session = Depends(get_db)):
     base = CandidateResponse.model_validate(cand, from_attributes=True)
     gate = market_gate.get_market_gate(db)
     blocked = cfg.get_market_gate_blocked(db)
-    return CandidateDetailResponse(**base.model_dump(), checklist=_build_checklist(cand, gate, blocked))
+    space_min_room_pct = cfg.get_numeric(db, cfg.KEY_SPACE_MIN_ROOM_PCT)
+    return CandidateDetailResponse(
+        **base.model_dump(), checklist=_build_checklist(cand, gate, blocked, space_min_room_pct),
+    )
 
 
 @router.get("/events", response_model=list[EventResponse])

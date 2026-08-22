@@ -23,6 +23,7 @@ from . import w2s_sector_gate_service as sector_gate
 from . import w2s_leader_gate_service as leader_gate
 from . import w2s_state_machine as sm
 from . import w2s_market_gate_service as market_gate
+from . import w2s_risk_service as risk
 from .w2s_candidate_service import compute_ma, _recent_closes
 
 AUCTION_CUTOFF_HOUR_MINUTE = (9, 25)  # 9:25 集合竞价结束
@@ -92,6 +93,7 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
     sector_gate_allowed = cfg.get_sector_gate_allowed(db)
     regulatory_risk_cap = cfg.get_regulatory_risk_cap(db)
     auction_gap_min = cfg.get_numeric(db, cfg.KEY_AUCTION_GAP_MIN)
+    space_min_room_pct = cfg.get_numeric(db, cfg.KEY_SPACE_MIN_ROOM_PCT)
     is_after_auction = (now.hour, now.minute) >= AUCTION_CUTOFF_HOUR_MINUTE
     formula_version = cfg.get_string(db, cfg.KEY_FORMULA_VERSION)
 
@@ -127,6 +129,13 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
         )
         regulatory_risk = _resolve_regulatory_risk(db, stock.code, today)
 
+        stops = risk.compute_stops(
+            price=quote.price, ma5=ma5, pullback_low=cand.pullback_low, limit_down_pct=limit_pct,
+        )
+        stress_rr = risk.compute_stress_rr(
+            price=quote.price, stress_stop=stops["stress_stop"], limit_room=limit_room,
+        )
+
         new_state, triggers, blocks = sm.compute_next_state(
             current_state=cand.current_state,
             signal_enabled=True,
@@ -145,6 +154,8 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
             auction_gap=quote.pct_change,
             auction_gap_min=auction_gap_min,
             is_after_auction=is_after_auction,
+            limit_room=limit_room,
+            space_min_room_pct=space_min_room_pct,
         )
 
         if new_state == sm.REPAIRING and quote.price is not None:
@@ -176,6 +187,10 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
         cand.auction_gap = quote.pct_change
         cand.limit_price = limit_price
         cand.limit_room = limit_room
+        cand.technical_stop = stops["technical_stop"]
+        cand.standard_stop = stops["standard_stop"]
+        cand.stress_stop = stops["stress_stop"]
+        cand.stress_rr = stress_rr
         cand.regulatory_risk_level = regulatory_risk
         cand.signal_enabled = True
         cand.data_freshness_seconds = 0.0
@@ -184,6 +199,12 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
         cand.refresh_sample_count = (cand.refresh_sample_count or 0) + 1
         cand.last_refreshed_at = now
         cand.formula_version = formula_version
+
+        effective_risk = (
+            round((quote.price - stops["stress_stop"]) / quote.price * 100, 2)
+            if (quote.price and stops["stress_stop"] is not None and quote.price > 0)
+            else None
+        )
 
         stats["refreshed"] += 1
         if new_state != old_state:
@@ -198,6 +219,7 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
                 price=quote.price, prev_close=quote.prev_close, ma5=ma5,
                 limit_price=limit_price, limit_room=limit_room,
                 regulatory_risk=regulatory_risk,
+                technical_stop=stops["technical_stop"], effective_risk=effective_risk, stress_rr=stress_rr,
                 old_state=old_state, new_state=new_state,
                 trigger_reasons=cand.trigger_reasons, block_reasons=cand.block_reasons,
                 data_freshness=0.0, formula_version=formula_version,

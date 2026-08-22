@@ -63,9 +63,15 @@ class WeakToStrongCandidate(Base):
     auction_sector_gap = Column(Float, nullable=True)
     is_auction_exceeded = Column(Boolean, nullable=True)
 
-    # ── Space Gate（Phase 1 只算数值展示，不做降级判断）────────────────────
+    # ── Space Gate（Phase 2：数值 + 空间不足降级判断）───────────────────────
     limit_price = Column(Float, nullable=True)
     limit_room = Column(Float, nullable=True)
+
+    # ── Phase 2：三层止损 + 压力情景风险回报比 ─────────────────────────────
+    technical_stop = Column(Float, nullable=True)  # 技术止损：回踩低点/MA5
+    standard_stop = Column(Float, nullable=True)   # 标准止损：技术位基础上留缓冲
+    stress_stop = Column(Float, nullable=True)      # 压力止损：模拟次日跌停开盘的极端情形
+    stress_rr = Column(Float, nullable=True)        # 压力情景风险回报比 = 涨停空间% / 跌停幅度%
 
     # ── 风险 ────────────────────────────────────────────────────────────
     regulatory_risk_level = Column(String(10), nullable=True)  # LOW|MEDIUM|HIGH|EXTREME

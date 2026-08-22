@@ -106,6 +106,11 @@ def _apply_schema_patches():
         # （该表此前从未被写入，daily_update 现在开始每日 upsert 一条）
         "ALTER TABLE sector_daily_snapshots ADD COLUMN IF NOT EXISTS amount FLOAT DEFAULT 0.0 NOT NULL",
         "ALTER TABLE sector_daily_snapshots ADD CONSTRAINT uq_sector_snapshot_date UNIQUE (sector_id, date)",
+        # 弱转强雷达 Phase 2：三层止损 + 压力情景风险回报比
+        "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS technical_stop FLOAT",
+        "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS standard_stop FLOAT",
+        "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS stress_stop FLOAT",
+        "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS stress_rr FLOAT",
     ]
     # 每条补丁独立事务：Postgres 中任一语句报错会使整个事务进入 aborted 状态，
     # 若共用事务，末尾 ADD CONSTRAINT（无 IF NOT EXISTS）已存在时报错，

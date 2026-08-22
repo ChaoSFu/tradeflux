@@ -598,6 +598,11 @@ export interface W2SCandidate {
   limit_price: number | null
   limit_room: number | null
 
+  technical_stop: number | null
+  standard_stop: number | null
+  stress_stop: number | null
+  stress_rr: number | null
+
   regulatory_risk_level: W2SRegulatoryRisk | null
   signal_enabled: boolean
 
@@ -658,6 +663,7 @@ export interface W2SConfig {
   w2s_observation_window_days: number
   w2s_divergence_health_threshold: number
   w2s_auction_gap_min: number
+  w2s_space_min_room_pct: number
   w2s_sector_gate_allowed: string
   w2s_regulatory_risk_cap: string
   w2s_market_gate_blocked: string

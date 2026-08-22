@@ -1,6 +1,7 @@
 # 弱转强雷达（Weak-to-Strong Radar）
 
-> 文档状态：Phase 1 + Phase 2 Market Gate 已上线，Phase 2 其余项/Phase 3 待办跟踪中
+> 文档状态：Phase 1 + Phase 2（Market Gate / Space Gate 降级 / 三层止损+Stress R/R）已上线，
+> Phase 2 剩余项/Phase 3 待办跟踪中
 > 路由：`/weak-to-strong-radar`　·　API 前缀：`/api/weak-to-strong-radar`
 > 最后更新：2026-08-22
 
@@ -11,10 +12,11 @@
 **「弱转强成立」≠「值得买入」。**
 
 候选股票必须**同时**通过大盘闸门（Market Gate）、板块闸门（Sector Gate）、龙头闸门
-（Leader Gate）、回踩结构确认四道硬性关卡，才会被状态机推进到 `BUYABLE`——不是把各项
-指标线性加权后直接吐出买入信号。Space Gate（涨停空间降级判断）、Chips（筹码/获利盘）、
-Risk（Stress R/R、三层止损）这三组仍未实现，Checklist UI 上诚实显示灰色 **"Phase 2"**
-标签，绝不伪造 ✓ / ✗。
+（Leader Gate）、回踩结构确认、涨停空间（Space Gate）五道硬性关卡，才会被状态机推进到
+`BUYABLE`——不是把各项指标线性加权后直接吐出买入信号。Chips（日内获利盘/筹码）这一组
+需要分钟级数据，本仓库目前没有该数据源，Checklist UI 上诚实显示灰色 **"Phase 2"** 标签，
+绝不伪造 ✓ / ✗。Stress R/R（压力情景风险回报比）已实现，但明确是"模拟次日跌停开盘"的
+保守估算，不是完整期望收益模型，也不构成任何止损/止盈建议。
 
 与已有的 `/signals`（弱转强信号页）关系：`/signals` 是"发现弱转强股票"的轻量列表，本雷达
 是完整走一遍"盘前候选 → 板块闸门 → 龙头闸门 → 竞价判断 → 盘中确认 → 状态机"决策链路的
@@ -39,13 +41,14 @@ Risk（Stress R/R、三层止损）这三组仍未实现，Checklist UI 上诚�
     ├─ w2s_sector_gate_service.score_sector()   → Sector Strength/Momentum/7分类
     ├─ w2s_leader_gate_service.score_leaders_for_theme() → Core Leader Score/排名
     ├─ eastmoney_fetcher.fetch_stock_quotes_batch() → 批量实时报价
-    ├─ w2s_state_machine.compute_next_state()   → 7态状态机（含 Market Gate 拦截判断）
+    ├─ w2s_risk_service.compute_stops/compute_stress_rr() → 三层止损 + 压力情景R/R
+    ├─ w2s_state_machine.compute_next_state()   → 7态状态机（含 Market Gate 拦截 + Space Gate 降级）
     └─ 状态真变化 → 写一条 weak_to_strong_events（追加写，不覆盖）
 ```
 
 后端服务文件均以 `w2s_` 前缀命名（`backend/app/services/w2s_*.py`），核心打分/状态机函数
 是**纯函数**（不开 DB session，只吃标量输入），DB 相关的查询/写入逻辑单独放在薄封装里，
-方便单测（`backend/tests/test_w2s_*.py`，43条全绿）。Market Gate 不新起数据管道——两个
+方便单测（`backend/tests/test_w2s_*.py`，55条全绿）。Market Gate 不新起数据管道——两个
 分数都基于已有的、daily_update 每天同步的数据：指数趋势复用
 `index_trend_service.get_market_trend()`（读库），风险偏好复用 `MarketBreadthDaily`
 （两融/涨跌统计，大盘趋势页同一份数据源）。
@@ -66,6 +69,7 @@ Risk（Stress R/R、三层止损）这三组仍未实现，Checklist UI 上诚�
 | `price/prev_close/ma5/day_open/day_high/day_low/day_amount/turnover_rate` | 实时行情快照 |
 | `auction_gap/auction_sector_gap/is_auction_exceeded` | 竞价相关（`auction_sector_gap`/`is_auction_exceeded` Phase 1 未写入，预留字段） |
 | `limit_price/limit_room` | 涨停价/剩余空间 |
+| `technical_stop/standard_stop/stress_stop/stress_rr` | 三层止损位 + 压力情景风险回报比（2026-08-22新增） |
 | `regulatory_risk_level/signal_enabled/data_freshness_seconds` | 风险与数据新鲜度 |
 | `trigger_reasons/block_reasons` | 本次刷新的触发/拦截原因（中文，分号分隔） |
 | `last_refreshed_at/refresh_duration_ms/formula_version` | 刷新元信息 |
@@ -149,6 +153,26 @@ SectorLeadershipBonus(0-5)  StockSectorRelation.is_leader → +5
 同 Theme 排序后，第一二名分差 < 阈值(默认8分) → 两者都标 `undetermined`（"龙头未决"，
 不强行指定）；分差达标 → 第一名 `core`、第二名 `backup`；排名≥3 → `non_leader`（直接 BLOCK）。
 
+### Space Gate（涨停空间降级判断）
+```
+limit_room（已算） < 阈值(默认2%) → 空间不充分。limit_room 缺失同样判不充分（不能拿
+缺失数据当宽松放行的理由）。只在 CONFIRMING→BUYABLE、BUYABLE 持有这两处生效——空间
+会随价格逐分钟变化，候选本身没有失效，不跟板块/龙头闸门那种"直接判死"混在一起。
+```
+
+### 三层止损 + 压力情景风险回报比（Stress R/R）
+```
+技术止损 technical_stop = pullback_low（回踩低点），缺失时退回 MA5
+标准止损 standard_stop  = technical_stop * (1 - 2%)——留缓冲避免正常回踩噪音刚好触发
+压力止损 stress_stop    = price * (1 - 跌停幅度%)——模拟"买入后次日直接跌停开盘"的
+                          极端情形（T+1 不能当日止损，这是真实存在、不能靠盯盘规避的风险）
+
+Stress R/R = 今日剩余涨停空间% / 跌停幅度%
+```
+跌停幅度%按板块类型走既有 `get_limit_pct`（主板9.9%/科创创业19.9%/北交所29.9%/ST4.95%），
+是同板块类型的常数，不是概率加权预期——这个指标只回答"如果明天真跌停，今天剩的上涨
+空间值不值得担这个风险"，**不是完整期望收益模型，不构成止损/止盈建议**。
+
 ### 7 态状态机
 
 ```
@@ -157,15 +181,18 @@ WATCH/READY → [现价 > max(昨收,MA5)] → REPAIRING
 REPAIRING → [现价 ≤ 修复关键位] → WAIT
           → [现价 > 回踩低点pullback_low] → CONFIRMING
 CONFIRMING → [现价 ≤ 回踩低点] → WAIT
+           → [涨停空间不足] → WAIT
            → [否则] → BUYABLE
 BUYABLE → [现价 ≤ 修复关键位] → WAIT
+        → [涨停空间不足] → WAIT
 
 任意态 → BLOCK（优先级最高，逐项检查）：
   数据过期(signal_enabled=False) → 大盘闸门达到封顶(默认仅RED) → 板块分类不在允许列表
   → 龙头non_leader/undetermined → 监管风险达到封顶(默认HIGH,EXTREME) → 候选观察期已过
 ```
 Market Gate 是全局的——同一次刷新里所有候选共用同一个市场状态，不是逐股算，每次
-`/refresh` 只调用一次 `get_market_gate()`。
+`/refresh` 只调用一次 `get_market_gate()`。Space Gate 不在 BLOCK 优先级链条里（见上），
+是单独在 CONFIRMING→BUYABLE 转换点做的"降级"判断。
 
 `WARNING`/`EXIT`（持仓监控态）**Phase 1 不实现**——本仓库没有持仓/成交跟踪能力，硬做即编数据。
 `CONFIRMING` 的判断依赖同一交易日内多次 `/refresh` 采样，`refresh_sample_count` 如实暴露
@@ -179,7 +206,7 @@ Market Gate 是全局的——同一次刷新里所有候选共用同一个市�
 |---|---|---|
 | GET | `/market-gate` | 大盘闸门当前状态（趋势分/风险偏好分/四色/各指数分） |
 | GET | `/candidates` | 候选列表（`active_only` 默认true） |
-| GET | `/candidates/{code}` | 详情 + 8组Checklist（MARKET/SECTOR/LEADER/DIVERGENCE/SETUP/SPACE/CHIPS/RISK；MARKET组现为真实pass/fail） |
+| GET | `/candidates/{code}` | 详情 + 8组Checklist（MARKET/SECTOR/LEADER/DIVERGENCE/SETUP/SPACE/CHIPS/RISK；仅 CHIPS 仍是"Phase 2"占位，其余7组均为真实pass/fail） |
 | POST | `/refresh` | 需登录；启动后台刷新线程，独立锁 `/tmp/tradeflux_w2s_radar.lock` |
 | GET | `/refresh/status` | 轮询刷新任务状态 |
 | GET | `/events` | 状态变化事件日志（`stock_code` 可选过滤） |
@@ -202,6 +229,7 @@ Market Gate 是全局的——同一次刷新里所有候选共用同一个市�
 | `w2s_observation_window_days` | 7天 | 候选连续miss多少天后移出 |
 | `w2s_divergence_health_threshold` | 50 | phase=4 细分阈值 |
 | `w2s_auction_gap_min` | 3% | 竞价Gap超预期阈值 |
+| `w2s_space_min_room_pct` | 2% | 涨停空间不足阈值，低于此值 CONFIRMING/BUYABLE 降级 WAIT |
 | `w2s_sector_gate_allowed` | NEW_START,EXPANDING,MAIN_UPTREND,HEALTHY_DIVERGENCE | 允许进入状态机的板块分类 |
 | `w2s_regulatory_risk_cap` | HIGH,EXTREME | 达到此级别即BLOCK |
 | `w2s_market_gate_blocked` | RED | 大盘闸门达到此颜色即BLOCK |
@@ -238,10 +266,16 @@ Market Gate 是全局的——同一次刷新里所有候选共用同一个市�
       默认仅 RED 触发状态机 BLOCK（`w2s_market_gate_blocked` 可配置）。
       新文件 `w2s_market_gate_service.py`，新增 `GET /market-gate`，
       `formula_version` 升至 `w2s_radar_v0.2.0`。
-- [ ] **Space Gate 降级判断**：`limit_room` 数值已算并展示，缺"空间不足时降级 WAIT/BLOCK"
-      的判断逻辑。
-- [ ] **完整监管风险 0-100 分**：当前只有 LOW/MEDIUM/HIGH/EXTREME 四档粗分类。
-- [ ] **Stress R/R + 三层止损**：依赖 Space Gate 降级逻辑先落地。
+- [x] **Space Gate 降级判断 + 三层止损 + Stress R/R**（2026-08-22 上线）：`limit_room` <
+      阈值(默认2%) → CONFIRMING/BUYABLE 降级 WAIT；新增技术/标准/压力三层止损位 +
+      压力情景风险回报比。新文件 `w2s_risk_service.py`，`weak_to_strong_candidates`
+      新增4列（technical_stop/standard_stop/stress_stop/stress_rr），
+      `formula_version` 升至 `w2s_radar_v0.3.0`。Checklist SPACE/RISK 两组从
+      "Phase 2"占位改为真实 pass/fail，只剩 CHIPS 仍是占位。
+- [x] ~~完整监管风险 0-100 分~~ **不做，主动撤回**：复查用户原始规格发现明确写着
+      "Regulatory Risk 只用 LOW/MEDIUM/HIGH/EXTREME 四档，禁止编造距离停牌还有X%这类
+      无依据的精确说法"——做 0-100 连续分本身就是在编造假精度，跟规格直接冲突，本条
+      从待办里划掉，不是遗漏。
 - [ ] 候选池成交额条件本地二次校验（依赖 K线重建管线扩展，见第8节局限1）。
 
 ### Phase 3（依赖分钟级数据，本仓库当前无该数据源，需先起数据链路）

@@ -24,6 +24,8 @@ BASE_KWARGS = dict(
     auction_gap=None,
     auction_gap_min=3.0,
     is_after_auction=False,
+    limit_room=10.0,
+    space_min_room_pct=2.0,
 )
 
 
@@ -178,6 +180,45 @@ def test_auction_gap_below_threshold_stays_watch():
         auction_gap=1.0, is_after_auction=True,
     )
     assert state == WATCH
+
+
+def test_confirming_downgrades_to_wait_when_space_insufficient():
+    state, triggers, _ = _call(
+        current_state=CONFIRMING, signal_enabled=True, sector_category="MAIN_UPTREND",
+        leader_type="core", regulatory_risk=LOW, price=11.5, prev_close=9.8, ma5=9.5,
+        pullback_low=10.5, limit_room=1.0,
+    )
+    assert state == WAIT
+    assert any("涨停空间" in t for t in triggers)
+
+
+def test_confirming_promotes_to_buyable_when_space_sufficient():
+    state, _, _ = _call(
+        current_state=CONFIRMING, signal_enabled=True, sector_category="MAIN_UPTREND",
+        leader_type="core", regulatory_risk=LOW, price=11.5, prev_close=9.8, ma5=9.5,
+        pullback_low=10.5, limit_room=5.0,
+    )
+    assert state == BUYABLE
+
+
+def test_buyable_downgrades_to_wait_when_space_becomes_insufficient():
+    state, triggers, _ = _call(
+        current_state=BUYABLE, signal_enabled=True, sector_category="MAIN_UPTREND",
+        leader_type="core", regulatory_risk=LOW, price=11.0, prev_close=9.8, ma5=9.5,
+        limit_room=0.5,
+    )
+    assert state == WAIT
+    assert any("涨停空间" in t for t in triggers)
+
+
+def test_space_gate_missing_room_data_is_insufficient():
+    state, triggers, _ = _call(
+        current_state=CONFIRMING, signal_enabled=True, sector_category="MAIN_UPTREND",
+        leader_type="core", regulatory_risk=LOW, price=11.5, prev_close=9.8, ma5=9.5,
+        pullback_low=10.5, limit_room=None,
+    )
+    assert state == WAIT
+    assert any("空间数据缺失" in t for t in triggers)
 
 
 def test_check_data_freshness():

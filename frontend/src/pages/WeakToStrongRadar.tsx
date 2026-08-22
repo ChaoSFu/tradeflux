@@ -1,9 +1,10 @@
 /**
- * 弱转强雷达 — Phase 1 + Phase 2 Market Gate
- * 核心原则："弱转强成立 ≠ 值得买入"：必须同时通过大盘闸门、板块闸门、龙头闸门、结构确认
- * 四道硬性关卡才会给出 BUYABLE 信号，不是把指标线性加权后直接吐 BUY。
- * Space Gate 降级判断 / Stress R/R / 三层止损仍是 Phase 2 未完成部分，本页
- * 明确用灰色"Phase 2"标签占位，不伪造完整度。
+ * 弱转强雷达 — Phase 1 + Phase 2（Market Gate / Space Gate 降级 / 三层止损 + Stress R/R）
+ * 核心原则："弱转强成立 ≠ 值得买入"：必须同时通过大盘闸门、板块闸门、龙头闸门、结构确认、
+ * 涨停空间五道硬性关卡才会给出 BUYABLE 信号，不是把指标线性加权后直接吐 BUY。
+ * Stress R/R 是压力情景（模拟次日跌停开盘）下的风险回报比，不是完整期望收益模型；
+ * Chips（日内获利盘估算）仍需分钟级数据，本仓库目前没有该数据源，Phase 3 视情况补充，
+ * Checklist 里明确用灰色"Phase 2"标签占位，不伪造完整度。
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -87,6 +88,11 @@ function CandidateRow({
         <td className="px-2 py-2 font-mono text-right text-text-secondary">
           {cand.limit_room != null ? `${cand.limit_room.toFixed(1)}%` : '—'}
         </td>
+        <td className="px-2 py-2 font-mono text-right">
+          {cand.stress_rr != null ? (
+            <span className={cand.stress_rr >= 1.0 ? 'text-up' : 'text-text-secondary'}>{cand.stress_rr.toFixed(2)}</span>
+          ) : '—'}
+        </td>
         <td className="px-2 py-2 text-right">
           <span className={cn('font-mono', REG_RISK_COLOR[cand.regulatory_risk_level ?? ''] ?? 'text-text-secondary')}>
             {cand.regulatory_risk_level ?? '—'}
@@ -98,7 +104,7 @@ function CandidateRow({
       </tr>
       {expanded && (
         <tr className="border-b border-bg-border/15">
-          <td colSpan={9} className="px-4 py-3 bg-bg-elevated/40">
+          <td colSpan={10} className="px-4 py-3 bg-bg-elevated/40">
             {isLoading || !detail ? (
               <LoadingRows rows={2} />
             ) : (
@@ -163,9 +169,9 @@ export default function WeakToStrongRadar() {
       <div className="flex items-start gap-2 p-3 rounded bg-warn-dim border border-warn/20 text-xs text-warn">
         <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
         <span>
-          「弱转强成立」不等于「值得买入」——本页只在大盘闸门、板块闸门、龙头闸门、回踩结构确认
-          四项硬性条件同时通过后才给出 BUYABLE 信号，Space/Chips/Risk 相关判断仍是 Phase 2
-          占位（详见展开的 Checklist）。⚠️ 不构成任何投资建议或买卖指令。
+          「弱转强成立」不等于「值得买入」——本页只在大盘闸门、板块闸门、龙头闸门、回踩结构确认、
+          涨停空间五项硬性条件同时通过后才给出 BUYABLE 信号；Stress R/R 是压力情景估算，Chips
+          相关判断仍是 Phase 2 占位（详见展开的 Checklist）。⚠️ 不构成任何投资建议或买卖指令。
         </span>
       </div>
 
@@ -248,6 +254,7 @@ export default function WeakToStrongRadar() {
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">涨跌幅</th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">MA5</th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">涨停空间</th>
+                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">Stress R/R</th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">监管风险</th>
                   <th className="text-left px-3 py-1.5 text-text-secondary/70 font-medium">触发/拦截原因</th>
                 </tr>

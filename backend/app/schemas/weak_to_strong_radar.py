@@ -40,6 +40,11 @@ class CandidateResponse(BaseModel):
     limit_price: Optional[float] = None
     limit_room: Optional[float] = None
 
+    technical_stop: Optional[float] = None
+    standard_stop: Optional[float] = None
+    stress_stop: Optional[float] = None
+    stress_rr: Optional[float] = None
+
     regulatory_risk_level: Optional[str] = None
     signal_enabled: bool
 
@@ -117,8 +122,10 @@ class W2SConfigResponse(BaseModel):
     w2s_observation_window_days: float
     w2s_divergence_health_threshold: float
     w2s_auction_gap_min: float
+    w2s_space_min_room_pct: float
     w2s_sector_gate_allowed: str
     w2s_regulatory_risk_cap: str
+    w2s_market_gate_blocked: str
     w2s_formula_version: str
 
 
