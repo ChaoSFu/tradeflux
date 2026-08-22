@@ -56,6 +56,8 @@ def compute_next_state(
     *,
     current_state: str,
     signal_enabled: bool,
+    market_state: str,
+    market_gate_blocked: set[str],
     sector_category: str,
     sector_gate_allowed: set[str],
     leader_type: str,
@@ -72,14 +74,18 @@ def compute_next_state(
 ) -> tuple[str, list[str], list[str]]:
     """
     纯函数：给定当前态 + 一批已算好的闸门输入，算出下一态。
-    硬性 BLOCK 判断优先级从高到低：数据过期 → 板块分类不允许 → 龙头非核心/未决
-    → 监管风险达到 cap → 候选观察期已过。全部通过后才走结构判断。
+    硬性 BLOCK 判断优先级从高到低：数据过期 → 大盘闸门(市场状态) → 板块分类不允许
+    → 龙头非核心/未决 → 监管风险达到 cap → 候选观察期已过。全部通过后才走结构判断。
+    market_state 是全局的（同一次刷新里所有候选共用同一个值，不是逐股算），
+    由 w2s_market_gate_service 每次刷新算一次传入。
     """
     block_reasons: list[str] = []
     trigger_reasons: list[str] = []
 
     if not signal_enabled:
         block_reasons.append("数据过期，信号已禁用")
+    if market_state in market_gate_blocked:
+        block_reasons.append(f"大盘闸门状态 {market_state}，暂停新增买入类信号")
     if sector_category not in sector_gate_allowed:
         block_reasons.append(f"板块分类 {sector_category} 不在允许列表")
     if leader_type in ("non_leader", "undetermined"):

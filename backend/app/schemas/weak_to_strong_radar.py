@@ -52,6 +52,15 @@ class CandidateResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class MarketGateResponse(BaseModel):
+    trend_score: Optional[float] = None
+    risk_score: Optional[float] = None
+    market_state: str
+    index_scores: dict[str, float]
+    margin_balance_chg_pct: Optional[float] = None
+    as_of_date: Optional[str] = None
+
+
 class ChecklistGroup(BaseModel):
     """
     单组闸门检查结果。status: "pass" | "fail" | "phase2"（Phase 1 未实现的组，

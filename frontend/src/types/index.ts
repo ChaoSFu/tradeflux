@@ -660,5 +660,17 @@ export interface W2SConfig {
   w2s_auction_gap_min: number
   w2s_sector_gate_allowed: string
   w2s_regulatory_risk_cap: string
+  w2s_market_gate_blocked: string
   w2s_formula_version: string
+}
+
+export type W2SMarketState = 'GREEN' | 'YELLOW' | 'ORANGE' | 'RED'
+
+export interface W2SMarketGate {
+  trend_score: number | null
+  risk_score: number | null
+  market_state: W2SMarketState
+  index_scores: Record<string, number>
+  margin_balance_chg_pct: number | null
+  as_of_date: string | null
 }

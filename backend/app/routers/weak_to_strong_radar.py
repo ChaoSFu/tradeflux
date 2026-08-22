@@ -21,9 +21,10 @@ from ..models.weak_to_strong_radar import WeakToStrongCandidate, WeakToStrongEve
 from ..schemas.weak_to_strong_radar import (
     CandidateResponse, CandidateDetailResponse, ChecklistGroup,
     RefreshResultResponse, RefreshStatusResponse, EventResponse,
-    W2SConfigResponse, W2SConfigUpdateRequest,
+    W2SConfigResponse, W2SConfigUpdateRequest, MarketGateResponse,
 )
 from ..services import w2s_config_service as cfg
+from ..services import w2s_market_gate_service as market_gate
 from ..services.w2s_refresh_service import run_refresh
 from .admin import record_job_duration
 
@@ -84,6 +85,11 @@ def get_refresh_status():
         return dict(_job)
 
 
+@router.get("/market-gate", response_model=MarketGateResponse)
+def get_market_gate(db: Session = Depends(get_db)):
+    return market_gate.get_market_gate(db)
+
+
 @router.get("/candidates", response_model=list[CandidateResponse])
 def list_candidates(active_only: bool = True, db: Session = Depends(get_db)):
     q = db.query(WeakToStrongCandidate)
@@ -92,9 +98,15 @@ def list_candidates(active_only: bool = True, db: Session = Depends(get_db)):
     return q.order_by(WeakToStrongCandidate.last_refreshed_at.desc().nullslast()).all()
 
 
-def _build_checklist(cand: WeakToStrongCandidate) -> list[ChecklistGroup]:
+def _build_checklist(cand: WeakToStrongCandidate, gate: dict, market_gate_blocked: set[str]) -> list[ChecklistGroup]:
+    market_state = gate["market_state"]
     return [
-        ChecklistGroup(group="MARKET", status="phase2", detail="Market Gate 未实现，Phase 2 补充"),
+        ChecklistGroup(
+            group="MARKET",
+            status="fail" if market_state in market_gate_blocked else "pass",
+            detail=f"{market_state}（趋势分{gate['trend_score'] if gate['trend_score'] is not None else '-'}"
+                   f" / 风险偏好分{gate['risk_score'] if gate['risk_score'] is not None else '-'}）",
+        ),
         ChecklistGroup(
             group="SECTOR",
             status="pass" if cand.sector_category in ("NEW_START", "EXPANDING", "MAIN_UPTREND", "HEALTHY_DIVERGENCE") else "fail",
@@ -131,7 +143,9 @@ def get_candidate_detail(code: str, db: Session = Depends(get_db)):
     if cand is None:
         raise HTTPException(status_code=404, detail="候选不存在")
     base = CandidateResponse.model_validate(cand, from_attributes=True)
-    return CandidateDetailResponse(**base.model_dump(), checklist=_build_checklist(cand))
+    gate = market_gate.get_market_gate(db)
+    blocked = cfg.get_market_gate_blocked(db)
+    return CandidateDetailResponse(**base.model_dump(), checklist=_build_checklist(cand, gate, blocked))
 
 
 @router.get("/events", response_model=list[EventResponse])

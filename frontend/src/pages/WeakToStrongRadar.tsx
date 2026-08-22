@@ -1,14 +1,15 @@
 /**
- * 弱转强雷达 — Phase 1
- * 核心原则："弱转强成立 ≠ 值得买入"：必须同时通过板块闸门、龙头闸门、结构确认
- * 三道硬性关卡才会给出 BUYABLE 信号，不是把指标线性加权后直接吐 BUY。
- * Market Gate / Space Gate 降级判断 / Stress R/R / 三层止损为 Phase 2，本页
+ * 弱转强雷达 — Phase 1 + Phase 2 Market Gate
+ * 核心原则："弱转强成立 ≠ 值得买入"：必须同时通过大盘闸门、板块闸门、龙头闸门、结构确认
+ * 四道硬性关卡才会给出 BUYABLE 信号，不是把指标线性加权后直接吐 BUY。
+ * Space Gate 降级判断 / Stress R/R / 三层止损仍是 Phase 2 未完成部分，本页
  * 明确用灰色"Phase 2"标签占位，不伪造完整度。
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   fetchW2SCandidates, fetchW2SCandidateDetail, triggerW2SRefresh, fetchW2SRefreshStatus,
+  fetchW2SMarketGate,
 } from '@/api/weakToStrongRadar'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { StateBadge } from '@/components/weakToStrong/StateBadge'
@@ -17,10 +18,17 @@ import { fmt, pct, pctColor } from '@/utils/format'
 import { cn } from '@/utils/cn'
 import { RefreshCw, Crosshair, AlertTriangle } from 'lucide-react'
 import { useAuthStore } from '@/store/auth'
-import type { W2SCandidate, W2SState } from '@/types'
+import type { W2SCandidate, W2SState, W2SMarketState } from '@/types'
 
 const STATE_PRIORITY: Record<W2SState, number> = {
   BUYABLE: 0, CONFIRMING: 1, REPAIRING: 2, READY: 3, WATCH: 4, WAIT: 5, BLOCK: 6,
+}
+
+const MARKET_STATE_STYLE: Record<W2SMarketState, { dot: string; text: string; label: string }> = {
+  GREEN:  { dot: 'bg-up',    text: 'text-up',    label: '偏多，正常参与' },
+  YELLOW: { dot: 'bg-warn',  text: 'text-warn',  label: '中性，谨慎参与' },
+  ORANGE: { dot: 'bg-warn',  text: 'text-warn',  label: '偏弱，降低预期' },
+  RED:    { dot: 'bg-down',  text: 'text-down',  label: '弱势，暂停新增买入类信号' },
 }
 
 const LEADER_LABEL: Record<string, string> = {
@@ -113,6 +121,11 @@ export default function WeakToStrongRadar() {
     queryFn: () => fetchW2SCandidates(true),
   })
 
+  const { data: marketGate } = useQuery({
+    queryKey: ['w2s-market-gate'],
+    queryFn: fetchW2SMarketGate,
+  })
+
   const { data: refreshStatus } = useQuery({
     queryKey: ['w2s-refresh-status'],
     queryFn: fetchW2SRefreshStatus,
@@ -150,18 +163,35 @@ export default function WeakToStrongRadar() {
       <div className="flex items-start gap-2 p-3 rounded bg-warn-dim border border-warn/20 text-xs text-warn">
         <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
         <span>
-          「弱转强成立」不等于「值得买入」——本页只在板块闸门、龙头闸门、回踩结构确认
-          三项硬性条件同时通过后才给出 BUYABLE 信号，Space/Chips/Risk 相关判断仍是 Phase 2
+          「弱转强成立」不等于「值得买入」——本页只在大盘闸门、板块闸门、龙头闸门、回踩结构确认
+          四项硬性条件同时通过后才给出 BUYABLE 信号，Space/Chips/Risk 相关判断仍是 Phase 2
           占位（详见展开的 Checklist）。⚠️ 不构成任何投资建议或买卖指令。
         </span>
       </div>
 
       {/* Gate bar */}
-      <div className="flex items-center gap-2 px-3 py-2 rounded border border-bg-border bg-bg-card text-xs">
+      <div className="flex items-center gap-2 px-3 py-2 rounded border border-bg-border bg-bg-card text-xs flex-wrap">
         <Crosshair className="w-3.5 h-3.5 text-accent shrink-0" />
         <span className="text-text-secondary font-medium">大盘闸门（Market Gate）</span>
-        <span className="px-1.5 py-0.5 rounded bg-bg-elevated text-text-muted">Phase 2 建设中</span>
-        <span className="text-text-muted ml-2">当前仅生效板块闸门 + 龙头闸门 + 结构确认</span>
+        {marketGate ? (
+          <>
+            <span className="flex items-center gap-1.5">
+              <span className={cn('w-1.5 h-1.5 rounded-full', MARKET_STATE_STYLE[marketGate.market_state]?.dot)} />
+              <span className={cn('font-mono font-semibold', MARKET_STATE_STYLE[marketGate.market_state]?.text)}>
+                {marketGate.market_state}
+              </span>
+            </span>
+            <span className="text-text-muted">
+              趋势分 {fmt(marketGate.trend_score, 1)} · 风险偏好分 {fmt(marketGate.risk_score, 1)}
+            </span>
+            <span className="text-text-muted">{MARKET_STATE_STYLE[marketGate.market_state]?.label}</span>
+            {marketGate.as_of_date && (
+              <span className="text-text-muted/70 ml-auto">数据截至 {marketGate.as_of_date}</span>
+            )}
+          </>
+        ) : (
+          <span className="text-text-muted">加载中…</span>
+        )}
       </div>
 
       {/* Header / refresh control */}

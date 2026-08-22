@@ -33,6 +33,7 @@ KEY_DIVERGENCE_HEALTH_THRESHOLD = "w2s_divergence_health_threshold"  # phase=4 �
 KEY_AUCTION_GAP_MIN = "w2s_auction_gap_min"                # 竞价Gap超预期阈值（%）
 KEY_SECTOR_GATE_ALLOWED = "w2s_sector_gate_allowed"        # 逗号分隔的允许分类列表
 KEY_REGULATORY_RISK_CAP = "w2s_regulatory_risk_cap"        # 达到此级别即BLOCK，逗号分隔
+KEY_MARKET_GATE_BLOCKED = "w2s_market_gate_blocked"        # 大盘闸门达到此颜色即BLOCK，逗号分隔
 KEY_FORMULA_VERSION = "w2s_formula_version"
 
 NUMERIC_DEFAULTS: dict[str, float] = {
@@ -45,7 +46,8 @@ NUMERIC_DEFAULTS: dict[str, float] = {
 STRING_DEFAULTS: dict[str, str] = {
     KEY_SECTOR_GATE_ALLOWED: "NEW_START,EXPANDING,MAIN_UPTREND,HEALTHY_DIVERGENCE",
     KEY_REGULATORY_RISK_CAP: "HIGH,EXTREME",
-    KEY_FORMULA_VERSION: "w2s_radar_v0.1.0",
+    KEY_MARKET_GATE_BLOCKED: "RED",
+    KEY_FORMULA_VERSION: "w2s_radar_v0.2.0",
 }
 PROMPT_DEFAULTS = {KEY_PROMPT1: PROMPT1_DEFAULT, KEY_PROMPT2: PROMPT2_DEFAULT}
 
@@ -105,6 +107,10 @@ def get_sector_gate_allowed(db: Session) -> set[str]:
 
 def get_regulatory_risk_cap(db: Session) -> set[str]:
     return {s.strip() for s in get_string(db, KEY_REGULATORY_RISK_CAP).split(",") if s.strip()}
+
+
+def get_market_gate_blocked(db: Session) -> set[str]:
+    return {s.strip() for s in get_string(db, KEY_MARKET_GATE_BLOCKED).split(",") if s.strip()}
 
 
 def get_all_config(db: Session) -> dict:

@@ -1,7 +1,10 @@
 import client from './client'
 import type {
-  W2SCandidate, W2SCandidateDetail, W2SRefreshStatus, W2SEvent, W2SConfig,
+  W2SCandidate, W2SCandidateDetail, W2SRefreshStatus, W2SEvent, W2SConfig, W2SMarketGate,
 } from '@/types'
+
+export const fetchW2SMarketGate = () =>
+  client.get<W2SMarketGate>('/weak-to-strong-radar/market-gate').then((r) => r.data)
 
 export const fetchW2SCandidates = (activeOnly = true) =>
   client.get<W2SCandidate[]>('/weak-to-strong-radar/candidates', { params: { active_only: activeOnly } })

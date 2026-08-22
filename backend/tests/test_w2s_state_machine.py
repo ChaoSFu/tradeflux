@@ -12,8 +12,11 @@ from app.services.w2s_state_machine import (
 
 ALLOWED_SECTORS = {"NEW_START", "EXPANDING", "MAIN_UPTREND", "HEALTHY_DIVERGENCE"}
 RISK_CAP = {"HIGH", "EXTREME"}
+MARKET_GATE_BLOCKED = {"RED"}
 
 BASE_KWARGS = dict(
+    market_state="GREEN",
+    market_gate_blocked=MARKET_GATE_BLOCKED,
     sector_gate_allowed=ALLOWED_SECTORS,
     regulatory_risk_cap=RISK_CAP,
     is_observation_expired=False,
@@ -135,6 +138,25 @@ def test_missing_price_data_waits_not_blocks():
     )
     assert state == WAIT
     assert blocks == ["缺少现价数据，暂无法判断结构"]
+
+
+def test_market_gate_red_blocks_regardless_of_other_inputs():
+    state, _, blocks = _call(
+        current_state=WATCH, signal_enabled=True, market_state="RED",
+        sector_category="MAIN_UPTREND", leader_type="core", regulatory_risk=LOW,
+        price=10.5, prev_close=9.8, ma5=9.5,
+    )
+    assert state == BLOCK
+    assert any("大盘闸门" in b for b in blocks)
+
+
+def test_market_gate_yellow_does_not_block():
+    state, _, _ = _call(
+        current_state=WATCH, signal_enabled=True, market_state="YELLOW",
+        sector_category="MAIN_UPTREND", leader_type="core", regulatory_risk=LOW,
+        price=10.5, prev_close=9.8, ma5=9.5,
+    )
+    assert state == REPAIRING
 
 
 def test_auction_gap_exceeding_threshold_moves_watch_to_ready_then_repairing():

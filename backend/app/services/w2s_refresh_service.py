@@ -22,6 +22,7 @@ from . import w2s_config_service as cfg
 from . import w2s_sector_gate_service as sector_gate
 from . import w2s_leader_gate_service as leader_gate
 from . import w2s_state_machine as sm
+from . import w2s_market_gate_service as market_gate
 from .w2s_candidate_service import compute_ma, _recent_closes
 
 AUCTION_CUTOFF_HOUR_MINUTE = (9, 25)  # 9:25 集合竞价结束
@@ -94,6 +95,13 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
     is_after_auction = (now.hour, now.minute) >= AUCTION_CUTOFF_HOUR_MINUTE
     formula_version = cfg.get_string(db, cfg.KEY_FORMULA_VERSION)
 
+    # Market Gate 全局算一次（同一次刷新里所有候选共用同一个市场状态，不是逐股算），
+    # 复用 index_trend_service/MarketBreadthDaily 已有的每日同步数据，不额外发起外部请求。
+    gate = market_gate.get_market_gate(db)
+    market_state = gate["market_state"]
+    market_gate_blocked = cfg.get_market_gate_blocked(db)
+    stats["market_state"] = market_state
+
     for cand in candidates:
         stock = stock_by_id.get(cand.stock_id)
         if stock is None:
@@ -122,6 +130,8 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
         new_state, triggers, blocks = sm.compute_next_state(
             current_state=cand.current_state,
             signal_enabled=True,
+            market_state=market_state,
+            market_gate_blocked=market_gate_blocked,
             sector_category=sector_info.get("sector_category", "DEAD"),
             sector_gate_allowed=sector_gate_allowed,
             leader_type=leader_type,
@@ -180,6 +190,7 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
             stats["state_changed"] += 1
             db.add(WeakToStrongEvent(
                 timestamp=now, stock_code=stock.code, sector_id=stock.primary_sector_id,
+                market_trend_score=gate["trend_score"], risk_appetite_score=gate["risk_score"],
                 sector_phase=cand.sector_category, sector_strength=cand.sector_strength_score,
                 sector_momentum=cand.sector_momentum_score,
                 leader_type=leader_type, leader_rank=cand.leader_rank, leader_score=cand.leader_score,

@@ -1,8 +1,8 @@
 # 弱转强雷达（Weak-to-Strong Radar）
 
-> 文档状态：Phase 1 已上线，Phase 2/3 待办跟踪中
+> 文档状态：Phase 1 + Phase 2 Market Gate 已上线，Phase 2 其余项/Phase 3 待办跟踪中
 > 路由：`/weak-to-strong-radar`　·　API 前缀：`/api/weak-to-strong-radar`
-> 最后更新：2026-08-21
+> 最后更新：2026-08-22
 
 ---
 
@@ -10,10 +10,11 @@
 
 **「弱转强成立」≠「值得买入」。**
 
-候选股票必须**同时**通过板块闸门（Sector Gate）、龙头闸门（Leader Gate）、回踩结构确认
-三道硬性关卡，才会被状态机推进到 `BUYABLE`——不是把各项指标线性加权后直接吐出买入信号。
-Space Gate（涨停空间降级判断）、Chips（筹码/获利盘）、Risk（Stress R/R、三层止损）这三组
-在 Phase 1 尚未实现，Checklist UI 上诚实显示灰色 **"Phase 2"** 标签，绝不伪造 ✓ / ✗。
+候选股票必须**同时**通过大盘闸门（Market Gate）、板块闸门（Sector Gate）、龙头闸门
+（Leader Gate）、回踩结构确认四道硬性关卡，才会被状态机推进到 `BUYABLE`——不是把各项
+指标线性加权后直接吐出买入信号。Space Gate（涨停空间降级判断）、Chips（筹码/获利盘）、
+Risk（Stress R/R、三层止损）这三组仍未实现，Checklist UI 上诚实显示灰色 **"Phase 2"**
+标签，绝不伪造 ✓ / ✗。
 
 与已有的 `/signals`（弱转强信号页）关系：`/signals` 是"发现弱转强股票"的轻量列表，本雷达
 是完整走一遍"盘前候选 → 板块闸门 → 龙头闸门 → 竞价判断 → 盘中确认 → 状态机"决策链路的
@@ -33,17 +34,21 @@ Space Gate（涨停空间降级判断）、Chips（筹码/获利盘）、Risk（
 
 盘中快速刷新（独立 API，09:26 定时 + 手动按钮，目标 <5-10秒）
   w2s_refresh_service.run_refresh()
+    ├─ w2s_market_gate_service.get_market_gate()  → Market Trend/Risk Appetite/四色（全局算一次）
     ├─ 按 Theme(=Stock.primary_sector_id) 分组
     ├─ w2s_sector_gate_service.score_sector()   → Sector Strength/Momentum/7分类
     ├─ w2s_leader_gate_service.score_leaders_for_theme() → Core Leader Score/排名
     ├─ eastmoney_fetcher.fetch_stock_quotes_batch() → 批量实时报价
-    ├─ w2s_state_machine.compute_next_state()   → 7态状态机
+    ├─ w2s_state_machine.compute_next_state()   → 7态状态机（含 Market Gate 拦截判断）
     └─ 状态真变化 → 写一条 weak_to_strong_events（追加写，不覆盖）
 ```
 
 后端服务文件均以 `w2s_` 前缀命名（`backend/app/services/w2s_*.py`），核心打分/状态机函数
 是**纯函数**（不开 DB session，只吃标量输入），DB 相关的查询/写入逻辑单独放在薄封装里，
-方便单测（`backend/tests/test_w2s_*.py`，32条全绿）。
+方便单测（`backend/tests/test_w2s_*.py`，43条全绿）。Market Gate 不新起数据管道——两个
+分数都基于已有的、daily_update 每天同步的数据：指数趋势复用
+`index_trend_service.get_market_trend()`（读库），风险偏好复用 `MarketBreadthDaily`
+（两融/涨跌统计，大盘趋势页同一份数据源）。
 
 ---
 
@@ -82,6 +87,33 @@ block_reasons` + 当次刷新时的板块/龙头/价格快照。Phase 2/3 专属
 ---
 
 ## 4. 核心公式
+
+### Market Trend Score（0-100）
+```
+核心指数加权平均（排除科创50/北证50——盘子小、噪声大，跟 Sector Gate 排除动态噪声板块
+同一考量），各指数分值直接复用 index_trend_service 已有的趋势强度分（位置40+排列20+斜率20+动能20）：
+TrendScore = 0.40·上证指数score + 0.35·深证成指score + 0.25·创业板指score
+三个核心指数任一缺失 → None（不能悄悄拿两个当三个用）
+```
+
+### Risk Appetite Score（0-100）
+```
+UpDownScore(0-40)    = clamp(up_count/(up_count+down_count) * 40, 0, 40)
+LimitScore(0-30)     = clamp(limit_up_count/(limit_up_count+limit_down_count) * 30, 0, 30)，缺失给15
+MarginScore(0-30)    = clamp(15 + 两融余额5日变化率*3, 0, 30)，缺失给15
+RiskAppetite = UpDownScore + LimitScore + MarginScore
+涨跌家数缺失 → None（硬性输入，不能编造中性值掩盖数据缺失）
+```
+
+### Market Gate 四色分类
+```
+若 TrendScore>=55 且 RiskScore>=55 → GREEN
+否则取 worst=min(TrendScore, RiskScore)：
+  worst>=35 → YELLOW；worst>=20 → ORANGE；否则 → RED
+任一分数缺失 → ORANGE（保守，不敢判GREEN也不夸大到RED）
+```
+默认只有 `RED` 触发状态机 BLOCK（`w2s_market_gate_blocked` 可配置），YELLOW/ORANGE 仅展示
+警示不拦截——原始规格的"降低仓位/更严格执行"语义留给使用者自行判断，本雷达不做仓位建议。
 
 ### Sector Strength Score（0-100）
 ```
@@ -129,9 +161,11 @@ CONFIRMING → [现价 ≤ 回踩低点] → WAIT
 BUYABLE → [现价 ≤ 修复关键位] → WAIT
 
 任意态 → BLOCK（优先级最高，逐项检查）：
-  数据过期(signal_enabled=False) → 板块分类不在允许列表 → 龙头non_leader/undetermined
-  → 监管风险达到封顶(默认HIGH,EXTREME) → 候选观察期已过
+  数据过期(signal_enabled=False) → 大盘闸门达到封顶(默认仅RED) → 板块分类不在允许列表
+  → 龙头non_leader/undetermined → 监管风险达到封顶(默认HIGH,EXTREME) → 候选观察期已过
 ```
+Market Gate 是全局的——同一次刷新里所有候选共用同一个市场状态，不是逐股算，每次
+`/refresh` 只调用一次 `get_market_gate()`。
 
 `WARNING`/`EXIT`（持仓监控态）**Phase 1 不实现**——本仓库没有持仓/成交跟踪能力，硬做即编数据。
 `CONFIRMING` 的判断依赖同一交易日内多次 `/refresh` 采样，`refresh_sample_count` 如实暴露
@@ -143,8 +177,9 @@ BUYABLE → [现价 ≤ 修复关键位] → WAIT
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| GET | `/market-gate` | 大盘闸门当前状态（趋势分/风险偏好分/四色/各指数分） |
 | GET | `/candidates` | 候选列表（`active_only` 默认true） |
-| GET | `/candidates/{code}` | 详情 + 8组Checklist（MARKET/SECTOR/LEADER/DIVERGENCE/SETUP/SPACE/CHIPS/RISK） |
+| GET | `/candidates/{code}` | 详情 + 8组Checklist（MARKET/SECTOR/LEADER/DIVERGENCE/SETUP/SPACE/CHIPS/RISK；MARKET组现为真实pass/fail） |
 | POST | `/refresh` | 需登录；启动后台刷新线程，独立锁 `/tmp/tradeflux_w2s_radar.lock` |
 | GET | `/refresh/status` | 轮询刷新任务状态 |
 | GET | `/events` | 状态变化事件日志（`stock_code` 可选过滤） |
@@ -169,6 +204,7 @@ BUYABLE → [现价 ≤ 修复关键位] → WAIT
 | `w2s_auction_gap_min` | 3% | 竞价Gap超预期阈值 |
 | `w2s_sector_gate_allowed` | NEW_START,EXPANDING,MAIN_UPTREND,HEALTHY_DIVERGENCE | 允许进入状态机的板块分类 |
 | `w2s_regulatory_risk_cap` | HIGH,EXTREME | 达到此级别即BLOCK |
+| `w2s_market_gate_blocked` | RED | 大盘闸门达到此颜色即BLOCK |
 
 ## 8. 已知局限（如实记录，不在产品里假装不存在）
 
@@ -197,8 +233,11 @@ BUYABLE → [现价 ≤ 修复关键位] → WAIT
 > 供后续会话直接续接，每项标注了依赖前提。
 
 ### Phase 2
-- [ ] **Market Gate**：Market Trend Score + Risk Appetite Score → GREEN/YELLOW/ORANGE/RED，
-      作用于状态机最外层闸门。当前页面 Gate Bar 已预留 UI 占位。
+- [x] **Market Gate**（2026-08-22 上线）：Market Trend Score（核心指数趋势加权）+
+      Risk Appetite Score（涨跌家数/涨跌停比/两融余额变化）→ GREEN/YELLOW/ORANGE/RED，
+      默认仅 RED 触发状态机 BLOCK（`w2s_market_gate_blocked` 可配置）。
+      新文件 `w2s_market_gate_service.py`，新增 `GET /market-gate`，
+      `formula_version` 升至 `w2s_radar_v0.2.0`。
 - [ ] **Space Gate 降级判断**：`limit_room` 数值已算并展示，缺"空间不足时降级 WAIT/BLOCK"
       的判断逻辑。
 - [ ] **完整监管风险 0-100 分**：当前只有 LOW/MEDIUM/HIGH/EXTREME 四档粗分类。
