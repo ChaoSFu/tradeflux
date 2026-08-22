@@ -24,12 +24,15 @@ class CandidateResponse(BaseModel):
     leader_score: Optional[float] = None
 
     current_state: str
+    structural_state: str  # 底层结构态（不受闸门覆盖）；跟 current_state 不同代表"结构已推进但被临时闸门挡住"
     setup_substate: Optional[str] = None
+    setup_type: str  # GENERIC，弱转强分型占位字段，Phase 2 恒为此值
     refresh_sample_count: int
 
     price: Optional[float] = None
     prev_close: Optional[float] = None
     ma5: Optional[float] = None
+    vwap: Optional[float] = None
     day_open: Optional[float] = None
     day_high: Optional[float] = None
     day_low: Optional[float] = None
@@ -62,7 +65,8 @@ class MarketGateResponse(BaseModel):
     risk_score: Optional[float] = None
     market_state: str
     index_scores: dict[str, float]
-    margin_balance_chg_pct: Optional[float] = None
+    market_effect_date: Optional[str] = None       # 风险偏好分里"冻结群体反馈"取自哪个交易日
+    market_effect_confidence: str = "NORMAL"        # NORMAL|LOW，LOW=当日市场效应退化为跟踪池近似广度
     as_of_date: Optional[str] = None
 
 
@@ -123,6 +127,7 @@ class W2SConfigResponse(BaseModel):
     w2s_divergence_health_threshold: float
     w2s_auction_gap_min: float
     w2s_space_min_room_pct: float
+    w2s_pullback_min_pct: float
     w2s_sector_gate_allowed: str
     w2s_regulatory_risk_cap: str
     w2s_market_gate_blocked: str

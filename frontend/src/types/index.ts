@@ -582,11 +582,14 @@ export interface W2SCandidate {
   leader_score: number | null
 
   current_state: W2SState
+  structural_state: W2SState  // 底层结构态，不受闸门覆盖；跟 current_state 不同时代表"结构已推进但被临时闸门挡住"
   setup_substate: string | null
+  setup_type: string  // GENERIC，弱转强分型占位字段
   refresh_sample_count: number
 
   price: number | null
   prev_close: number | null
+  vwap: number | null
   ma5: number | null
   day_open: number | null
   day_high: number | null
@@ -664,6 +667,7 @@ export interface W2SConfig {
   w2s_divergence_health_threshold: number
   w2s_auction_gap_min: number
   w2s_space_min_room_pct: number
+  w2s_pullback_min_pct: number
   w2s_sector_gate_allowed: string
   w2s_regulatory_risk_cap: string
   w2s_market_gate_blocked: string
@@ -677,6 +681,7 @@ export interface W2SMarketGate {
   risk_score: number | null
   market_state: W2SMarketState
   index_scores: Record<string, number>
-  margin_balance_chg_pct: number | null
+  market_effect_date: string | null        // 风险偏好分里"冻结群体反馈"取自哪个交易日
+  market_effect_confidence: 'NORMAL' | 'LOW'  // LOW=当日市场效应退化为跟踪池近似广度
   as_of_date: string | null
 }

@@ -43,8 +43,8 @@ const GATES = [
     icon: Gauge,
     name: '结构确认',
     en: 'Setup Confirmation',
-    summary: '回踩后突破低点，非猜测',
-    body: '7 态状态机的核心一环：现价收复"昨收与5日线中更高者"进入修复阶段，之后回踩不破前低、再次突破回踩低点，才算真正的结构确认——不是看到上涨就直接给信号。',
+    summary: 'H1/L1 两段式回踩，非任意反弹',
+    body: '现价收复"昨收与VWAP/5日线中更高者"进入修复阶段，形成第一次修复高点(H1)；出现有效回踩（跌幅超过噪音阈值）后冻结H1、记录回踩低点(L1)；只有重新突破冻结的H1才算真正的结构确认——不是任意一次小反弹就给信号（2026-08-22 由弱定义修正为这个两段式判断）。',
   },
   {
     icon: Ruler,
@@ -63,16 +63,16 @@ const FEATURES = [
 ]
 
 const LIMITATIONS = [
-  { title: '候选成交额校验用的是实时报价，不是真正的历史逐日数据', body: '补历史成交额需要改动K线重建管线，那条管线里还有个未解决的历史bug，改动风险大于收益。改用批量实时报价代替；数据缺失时不排除候选，避免误伤。' },
-  { title: '竞价Gap无独立数据源', body: '用"当前报价相对昨收的涨跌幅"近似，09:26定时任务运行时基本准确，盘中较晚时段首次手动刷新会有偏差。' },
-  { title: '板块动量分上线首日无历史基准', body: '固定给50分（中性），需要运行数天才能开始反映真实的环比变化。' },
+  { title: '候选成交额条件不做本地二次校验', body: '完全信任东财Prompt自身的数值过滤。曾经短暂改用实时报价本地校验又主动撤回——那个值代表"当前累计成交额"，跟"昨日全天成交额"是两个不同变量，不是近似而是语义错误，尤其盘前运行时会系统性误伤候选。' },
+  { title: '回踩结构识别基于离散采样，不是连续监控', body: 'H1/L1 判断依赖每次刷新拿到的价格快照，采样越稀疏越可能错过真正的高点/低点。目前只有09:26一次自动刷新，其余时段依赖手动点刷新。' },
+  { title: '板块动量分无历史基准时不参与排序', body: '返回"数据积累中"而不是一个看起来真实的50分，需要运行数天才能开始反映真实的环比变化。' },
 ]
 
 const ROADMAP_DONE = [
-  '候选发现 / 板块闸门 / 龙头闸门 / 7态状态机 / Checklist / 事件日志',
-  '大盘闸门（Market Gate）',
+  '候选发现 / 板块闸门 / 龙头闸门 / 状态机 / Checklist / 事件日志',
+  '大盘闸门（Market Gate，风险偏好改用市场效应T-1反馈）',
   '空间闸门降级判断 + 三层止损 + Stress R/R',
-  '候选池成交额条件本地二次校验',
+  '2026-08-22 状态机纠错：H1/L1回踩结构、BLOCK不再死态、跨日重置、真实VWAP/竞价Gap、龙头未决与NEW_START软上限',
 ]
 
 const ROADMAP_SKIPPED = [
@@ -80,10 +80,17 @@ const ROADMAP_SKIPPED = [
 ]
 
 const ROADMAP_PLANNED = [
-  { title: '日内获利盘估算', body: '需要标注为"估算"，不能假装是真实筹码成本。' },
+  { title: '候选专属日内快照引擎', body: '外部评审建议提前到最优先——是回踩结构识别精度、真正意义上的分钟级监控、未来回测重放的共同基础设施。' },
+  { title: '回测框架 + Golden Case', body: '外部评审建议先于T+1/Leadership Impact——验证系统有没有统计优势之前，先堆更多风险指标意义有限。' },
   { title: 'T+1 供给风险', body: '次日抛压量化。' },
   { title: 'Leadership Impact', body: '龙头对板块内其他股票的带动性。' },
-  { title: '回测框架', body: '历史信号胜率/盈亏比复盘。' },
+  { title: '日内获利盘估算', body: '需要标注为"估算"，不能假装是真实筹码成本，放最后做。' },
+]
+
+const ROADMAP_SETUP_TYPE = [
+  '架构预留：weak_to_strong_candidates 新增 setup_type 字段（恒为 GENERIC）',
+  'TREND / EMOTION / ANTI_NUCLEAR 三套 Policy（Shadow Mode 并行计算记录，不参与正式 BUYABLE 判断）',
+  '积累 Golden Case（比如典型的深水反核案例）+ 回测验证后，再逐步切换生产决策',
 ]
 
 // ─── 小组件 ─────────────────────────────────────────────────────────────────
@@ -136,6 +143,15 @@ export default function WeakToStrongRadarGuide() {
           <Badge variant="up" className="gap-1"><CheckCircle2 className="w-3 h-3" /> Phase 1 · 候选发现/板块闸门/龙头闸门/状态机</Badge>
           <Badge variant="up" className="gap-1"><CheckCircle2 className="w-3 h-3" /> Phase 2 · 大盘闸门/空间闸门/止损与风险回报比</Badge>
           <Badge variant="muted" className="gap-1"><Circle className="w-3 h-3" /> Phase 3 · 日内数据相关功能（规划中）</Badge>
+        </div>
+        <div className="flex items-start gap-2 mt-4 pt-4 border-t border-bg-border text-xs text-text-muted leading-relaxed">
+          <AlertTriangle className="w-3.5 h-3.5 text-warn shrink-0 mt-0.5" />
+          <span>
+            本页和代码里出现的"单测全绿"只证明<b className="text-text-secondary">代码按设计的逻辑正确运行</b>
+            （Engineering Validation），<b className="text-text-secondary">不代表这套弱转强定义本身能在实盘赚钱</b>
+            （Strategy Validation）——后者需要历史回测（见"后续规划"），在那之前不应该把"代码没bug"
+            误读成"策略有效"。
+          </span>
         </div>
       </div>
 
@@ -206,21 +222,28 @@ export default function WeakToStrongRadarGuide() {
           <span className="px-2.5 py-1 rounded border border-down/30 bg-down-dim text-down">BLOCK</span>
         </div>
 
-        <FormulaBlock>{`# 主链路
-WATCH   → [竞价Gap ≥ 3%，仅09:25后判定一次]         → READY
-WATCH/READY → [现价 > max(昨收, MA5)]                → REPAIRING
-REPAIRING   → [跌破修复关键位]                        → WAIT
-            → [突破回踩低点]                          → CONFIRMING
-CONFIRMING  → [跌破回踩低点]                          → WAIT
-            → [涨停空间不足]                          → WAIT
-            → [否则]                                  → BUYABLE
+        <FormulaBlock>{`# 结构态（只看价格，不受闸门影响，持续推进）
+WATCH/READY/WAIT → [现价 > max(昨收, VWAP或MA5)]      → REPAIRING（开始建修复高点H1）
+REPAIRING   → [跌破修复关键位]                        → WAIT（结构失效，清空追踪）
+            → [现价创新高]                            → REPAIRING（H1上移）
+            → [回落超过噪音阈值，形成有效回踩]          → CONFIRMING（冻结H1，记录回踩低点L1）
+CONFIRMING  → [跌破修复关键位]                        → WAIT（回踩确认失败）
+            → [突破冻结的H1]                          → BUYABLE（二次突破，结构确认完成）
+BUYABLE     → [跌破修复关键位]                        → WAIT（信号失效）
 
-# BLOCK 优先级（从高到低，任意态触发）
-数据过期 → 大盘闸门=RED → 板块分类不允许 → 龙头未决/非核心 → 监管风险过高 → 候选观察期已过`}</FormulaBlock>
+# 展示态 = 结构态叠加闸门覆盖
+硬性闸门不通过（数据过期/大盘RED/板块不允许/龙头非核心/监管过高）→ 展示BLOCK，
+                                                        底层结构态照常推进，闸门恢复展示立刻反映真实进度
+软上限·板块刚起步(NEW_START) → 结构态再高也只展示到 READY
+软上限·龙头未决(undetermined) → 结构态再高也只展示到 CONFIRMING
+软上限·涨停空间不足 → 结构态是BUYABLE时展示降级WAIT，底层不清空`}</FormulaBlock>
 
         <p className="text-xs text-text-muted leading-relaxed mt-3">
           WARNING / EXIT（持仓监控态）不实现——本仓库没有持仓/成交跟踪能力，硬做就是编数据。
-          真实 VWAP 也缺失，用"昨收与5日线中更高者"近似，页面和文档都如实标注这是替代方案。
+          真实 VWAP 用实时报价的成交额/成交量算出，量为0（刚开盘还没成交）时才退回5日线。
+          2026-08-22 之前 BLOCK 曾经是"死态"（闸门一旦不过就永远卡住，即使后续恢复也跳不出来）、
+          回踩确认曾经是"任意小反弹即触发"的弱定义——都已修复，详见展开的 Checklist 里"结构已到X，
+          被闸门临时覆盖"这类透明说明。
         </p>
       </div>
 
@@ -251,7 +274,8 @@ CONFIRMING  → [跌破回踩低点]                          → WAIT
         <div className="text-sm font-semibold text-text-primary mb-1.5">盘前 · 候选池发现</div>
         <p className="text-xs text-text-secondary leading-relaxed mb-4">
           每日更新流程（收盘15:30/盘前09:27）里新增一步：跑两路候选 Prompt（复用东方财富智能选股接口），
-          本地二次校验排名、均线、成交额这些容易被上游解析错的条件——不信任接口返回的股票代码就直接当作最终结果。
+          本地二次校验排名、均线这些容易被上游解析错的条件——不信任接口返回的股票代码就直接当作最终结果；
+          成交额条件不在本地复核范围，直接信任东财自身的数值过滤（见"已知局限"）。
           命中的股票续期，连续多天没再命中的候选超过观察窗口后自动失活，不物理删除、保留历史。
         </p>
 
@@ -326,7 +350,7 @@ CONFIRMING  → [跌破回踩低点]                          → WAIT
           ))}
         </div>
 
-        <div>
+        <div className="mb-5">
           <div className="text-sm font-semibold text-text-primary mb-2 flex items-center gap-2">
             规划中 <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-bg-elevated border border-dashed border-bg-border text-text-muted">Phase 3 · 待定方向</span>
           </div>
@@ -339,9 +363,31 @@ CONFIRMING  → [跌破回踩低点]                          → WAIT
             ))}
           </ul>
           <p className="text-xs text-text-muted leading-relaxed">
-            四项都依赖分钟级行情数据，本仓库目前没有该数据源和同步机制——这是一个新的架构决策
+            多数依赖分钟级行情数据，本仓库目前没有该数据源和同步机制——这是一个新的架构决策
             （数据从哪来、同步频率、保留策略），需要先确定做哪一项、怎么建，而不是直接动手写代码。
           </p>
+        </div>
+
+        <div>
+          <div className="text-sm font-semibold text-text-primary mb-2 flex items-center gap-2">
+            弱转强分型（Setup Type） <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-bg-elevated border border-dashed border-bg-border text-text-muted">架构预留</span>
+          </div>
+          <p className="text-xs text-text-secondary leading-relaxed mb-2">
+            外部评审指出当前"一套状态机处理所有股票"其实混合了至少三种性质不同的弱转强（趋势龙头回踩修复/
+            情绪龙头断板反抽/深水反核），长期应该拆成独立 Policy。这次只做了最小架构预留，
+            <b className="text-text-primary">没有重写生产状态机</b>——当前状态机刚修完几个真实存在的语义 bug，
+            在语义还不完全可信的基础上扩展三套 Policy 只会把 bug 一起复制三份。
+          </p>
+          <ul className="space-y-1.5">
+            {ROADMAP_SETUP_TYPE.map((item, i) => (
+              <li key={item} className="flex items-start gap-2 text-xs text-text-secondary">
+                {i === 0
+                  ? <CheckCircle2 className="w-3.5 h-3.5 text-up shrink-0 mt-0.5" />
+                  : <ArrowRight className="w-3.5 h-3.5 text-text-muted/50 shrink-0 mt-0.5" />}
+                {item}
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
 

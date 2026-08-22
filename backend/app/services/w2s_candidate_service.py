@@ -1,9 +1,18 @@
 """
 弱转强雷达候选池发现：跑两路盘前 Prompt（复用 eastmoney_fetcher 的智能选股
-search-code 接口），本地用 StockDailySnapshot + 批量实时报价二次校验数学条件
-（不信任东财 Prompt 解析是否真的做对了排名/均线/成交额条件——该接口从不返回
-它是如何理解 Prompt 的，只能拿返回的股票代码再用本地数据验一遍），upsert 进
+search-code 接口），本地用 StockDailySnapshot 二次校验排名/均线这类东财从不
+返回中间解析结果、容易算错或跟本地口径不一致的条件，upsert 进
 weak_to_strong_candidates。
+
+昨日成交额条件不在本地复核范围（2026-08-22 定案，此前短暂加过又撤回）：
+`StockDailySnapshot` 没有持久化逐日成交额，本来想用批量实时报价的 amount
+顶替，但那个值在盘前/盘中调用时代表的是"当前累计成交额"，跟 Prompt 要校验的
+"昨日全天成交额"根本是两个不同的变量，不是近似而是语义错误——尤其 09:27
+那次运行，此时今天才刚竞价结束，用它当"昨日成交额"校验会产生系统性偏差，
+误伤本该入选的候选。宁可完全信任东财自己的数值过滤（成交额这种无歧义标量
+比较，东财自己算错的概率本来就低），也不用一个语义不对的替代变量冒充校验
+结果。真要本地核验，需要先把逐日成交额补进 StockDailySnapshot（意味着要
+扩展 K 线重建管线），是独立的、更大的改动，不是这里能顺手做的。
 
 命中续期：连续多天没有再次命中任一 Prompt 的候选，超过观察窗口天数后
 is_active 置 False（不物理删除，保留历史）。
@@ -17,12 +26,8 @@ from sqlalchemy.orm import Session
 
 from ..models.stock import Stock, StockDailySnapshot
 from ..models.weak_to_strong_radar import WeakToStrongCandidate
-from .eastmoney_fetcher import fetch_strong_pool_codes, fetch_stock_quotes_batch
+from .eastmoney_fetcher import fetch_strong_pool_codes
 from . import w2s_config_service as cfg
-
-
-def _market_code(market: str) -> int:
-    return 1 if (market or "").upper() == "SH" else 0
 
 
 def compute_ma(closes: list[float], window: int) -> Optional[float]:
@@ -45,18 +50,11 @@ def verify_prompt1(
     limit_up_days_20d: int,
     pct20_percentile: float,
     yesterday_pct_change: Optional[float],
-    latest_amount: Optional[float],
-    min_amount: float,
 ) -> bool:
     """
-    纯函数：本地复核 Prompt1（近20日有涨停 或 近20日涨幅前20%；昨日下跌；成交额达标）。
-    latest_amount 有数据且低于阈值 → 排除（本地核验拿到了真实数据，纠正东财可能
-    过时/不准的判断）；latest_amount 缺失（比如盘前刚触发候选发现，实时报价还没
-    反映完整一日成交）时不因为本地这一项缺数据就武断排除，保留东财自己的数值过滤
-    结果——宁可信任已验证过可用的上游过滤，也不因为本地时序问题制造假阴性。
+    纯函数：本地复核 Prompt1 里的排名/方向类条件（近20日有涨停 或 近20日涨幅
+    前20%；昨日下跌）。成交额条件不在本地复核范围，见模块头注释。
     """
-    if latest_amount is not None and latest_amount < min_amount:
-        return False
     if yesterday_pct_change is None or yesterday_pct_change >= 0:
         return False
     return limit_up_days_20d > 0 or pct20_percentile >= 0.8
@@ -68,15 +66,12 @@ def verify_prompt2(
     yesterday_close: Optional[float],
     ma5: Optional[float],
     ma20: Optional[float],
-    latest_amount: Optional[float],
-    min_amount: float,
 ) -> bool:
     """
-    纯函数：本地复核 Prompt2（近20日涨幅前20%；昨收跌破MA5但仍高于MA20；成交额达标）。
-    成交额判断同 verify_prompt1。MA5/MA20 数据不足（新股/次新）时保守判 False，不猜测。
+    纯函数：本地复核 Prompt2 里的排名/均线类条件（近20日涨幅前20%；昨收跌破
+    MA5但仍高于MA20）。成交额条件不在本地复核范围，见模块头注释。
+    MA5/MA20 数据不足（新股/次新）时保守判 False，不猜测。
     """
-    if latest_amount is not None and latest_amount < min_amount:
-        return False
     if pct20_percentile < 0.8:
         return False
     if yesterday_close is None or ma5 is None or ma20 is None:
@@ -109,7 +104,6 @@ def discover_candidates(db: Session, as_of: date_cls) -> dict:
     """
     prompts = cfg.get_prompts(db)
     window_days = int(cfg.get_numeric(db, cfg.KEY_OBSERVATION_WINDOW_DAYS))
-    min_amount = cfg.get_numeric(db, cfg.KEY_MIN_YDAY_AMOUNT)
 
     raw1 = fetch_strong_pool_codes(keyword=prompts["prompt1"], with_names=True)
     raw2 = fetch_strong_pool_codes(keyword=prompts["prompt2"], with_names=True)
@@ -120,11 +114,6 @@ def discover_candidates(db: Session, as_of: date_cls) -> dict:
     verified_by_code: dict[str, str] = {}  # code -> "prompt1" / "prompt2" / "both"
     if all_codes:
         stocks = db.query(Stock).filter(Stock.code.in_(all_codes)).all()
-        # 批量拉一次实时报价，取 amount 本地核验成交额条件（StockDailySnapshot 没有
-        # 持久化逐日成交额，拉活的比改 K 线重建管线补历史字段风险小得多）。
-        # 请求失败/部分缺失时 quotes 对应股票拿不到值，回退"不因缺数据而排除"。
-        codes_markets = [(s.code, _market_code(s.market)) for s in stocks]
-        quotes = fetch_stock_quotes_batch(codes_markets)
         for stock in stocks:
             closes = _recent_closes(db, stock.id, as_of, limit=20)
             ma5 = compute_ma(closes, 5)
@@ -136,22 +125,16 @@ def discover_candidates(db: Session, as_of: date_cls) -> dict:
                 .first()
             )
             pct20_pctl = compute_pct20_percentile(stock.pct_change_20d, universe_pct20)
-            quote = quotes.get(stock.code)
-            latest_amount = quote.amount if quote else None
 
             hit1 = stock.code in raw1 and verify_prompt1(
                 limit_up_days_20d=stock.limit_up_days_20d,
                 pct20_percentile=pct20_pctl,
                 yesterday_pct_change=(yday.pct_change if yday else None),
-                latest_amount=latest_amount,
-                min_amount=min_amount,
             )
             hit2 = stock.code in raw2 and verify_prompt2(
                 pct20_percentile=pct20_pctl,
                 yesterday_close=(yday.close_price if yday else None),
                 ma5=ma5, ma20=ma20,
-                latest_amount=latest_amount,
-                min_amount=min_amount,
             )
             if hit1 and hit2:
                 verified_by_code[stock.code] = "both"

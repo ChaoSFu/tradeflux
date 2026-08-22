@@ -64,7 +64,14 @@ function CandidateRow({
         onClick={onToggle}
         className="border-b border-bg-border/15 last:border-0 cursor-pointer hover:bg-bg-elevated transition-colors"
       >
-        <td className="px-3 py-2"><StateBadge state={cand.current_state} /></td>
+        <td className="px-3 py-2">
+          <StateBadge state={cand.current_state} />
+          {cand.structural_state !== cand.current_state && (
+            <div className="text-[10px] text-text-muted mt-0.5" title="底层结构进度，被闸门临时覆盖展示">
+              结构:{cand.structural_state}
+            </div>
+          )}
+        </td>
         <td className="px-2 py-2 whitespace-nowrap">
           <div className="font-mono text-accent">{cand.stock_code}</div>
           <div className="text-text-primary font-medium">{cand.stock_name}</div>

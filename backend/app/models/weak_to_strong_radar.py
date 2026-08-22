@@ -27,6 +27,11 @@ class WeakToStrongCandidate(Base):
     consecutive_miss_days = Column(Integer, default=0, nullable=False)
     candidate_source = Column(String(20), nullable=False, default="prompt1")  # prompt1|prompt2|both
     is_active = Column(Boolean, default=True, nullable=False, index=True)
+    # 弱转强分型占位字段（架构预留，Phase 2 恒为 GENERIC，不接分型专属逻辑）：
+    # 未来会拆 TREND/EMOTION/ANTI_NUCLEAR 三套 Policy（各自的强弱定义/龙头打分/
+    # 市场权限不同），届时先以 Shadow Mode 并行计算记录、不参与正式 BUYABLE 判断，
+    # 验证过后再逐步切换，不会现在直接重写生产状态机。
+    setup_type = Column(String(20), nullable=False, default="GENERIC")
 
     # ── Sector Gate（Theme = Stock.primary_sector_id）─────────────────────
     sector_id = Column(Integer, ForeignKey("sectors.id"), nullable=True)
@@ -41,17 +46,25 @@ class WeakToStrongCandidate(Base):
     leader_rank = Column(Integer, nullable=True)
     leader_score = Column(Float, nullable=True)  # Core Leader Score，跟 Stock.leader_score 是不同的分
 
-    # ── 状态机 ──────────────────────────────────────────────────────────
+    # ── 状态机（2026-08-22 重构：展示态与结构态分离）──────────────────────────
     current_state = Column(String(20), nullable=False, default="WATCH", index=True)
-    # WATCH|READY|REPAIRING|CONFIRMING|BUYABLE|WAIT|BLOCK
-    setup_substate = Column(String(20), nullable=True)  # none|repaired_once|pulled_back|reconfirmed
-    pullback_low = Column(Float, nullable=True)  # CONFIRMING 判定用：回踩阶段记录的最低价
+    # 展示态：structural_state 叠加闸门覆盖后的最终值。WATCH|READY|REPAIRING|CONFIRMING|BUYABLE|WAIT|BLOCK
+    structural_state = Column(String(20), nullable=False, default="WATCH")
+    # 结构态：只看价格行为，不受闸门影响，闸门临时不通过时底层仍持续推进——
+    # 大盘/龙头这类环境条件是会变化的，候选价格结构本身没有失效，不该被环境的
+    # 临时波动清零。current_state=BLOCK 时 structural_state 可能已经在往前走。
+    setup_substate = Column(String(20), nullable=True)  # 保留字段，Phase 2 暂未使用
+    recovery_high = Column(Float, nullable=True)   # H1：修复阶段的高点，检测到有效回踩后冻结
+    pullback_low = Column(Float, nullable=True)    # L1：回踩阶段的滚动最低价，pullback_started 后才开始记录
+    pullback_started = Column(Boolean, default=False, nullable=False)  # 是否已经出现过一次有效回踩（非噪音级别的小回落）
+    signal_trade_date = Column(Date, nullable=True)  # 当前这套结构态属于哪个交易日，跨日刷新时用于重置
     refresh_sample_count = Column(Integer, default=0, nullable=False)  # 当日已刷新次数，前端老实展示样本量
 
     # ── 行情快照（每次 refresh 覆盖，来自 fetch_stock_quotes_batch）─────────
     price = Column(Float, nullable=True)
     prev_close = Column(Float, nullable=True)
     ma5 = Column(Float, nullable=True)
+    vwap = Column(Float, nullable=True)  # 当日成交额/成交量算出的真实VWAP，缺失（如尚无成交）时为None
     day_open = Column(Float, nullable=True)
     day_high = Column(Float, nullable=True)
     day_low = Column(Float, nullable=True)

@@ -40,9 +40,10 @@ def test_strength_score_no_rank_no_activity_is_zero():
     assert compute_sector_strength_score(s) == 0.0
 
 
-def test_momentum_score_neutral_without_prev():
+def test_momentum_score_none_without_prev():
+    # 没有历史基准时返回 None（"数据积累中"），不能用假的50分冒充算出了持平
     s = _sector()
-    assert compute_sector_momentum_score(s, None) == 50.0
+    assert compute_sector_momentum_score(s, None) is None
 
 
 def test_momentum_score_rises_with_improving_metrics():

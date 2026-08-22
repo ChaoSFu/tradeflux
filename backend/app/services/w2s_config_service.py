@@ -32,7 +32,8 @@ KEY_OBSERVATION_WINDOW_DAYS = "w2s_observation_window_days"  # 候选连续miss�
 KEY_DIVERGENCE_HEALTH_THRESHOLD = "w2s_divergence_health_threshold"  # phase=4 细分阈值
 KEY_AUCTION_GAP_MIN = "w2s_auction_gap_min"                # 竞价Gap超预期阈值（%）
 KEY_SPACE_MIN_ROOM_PCT = "w2s_space_min_room_pct"          # 涨停空间不足阈值（%），低于此值降级
-KEY_SECTOR_GATE_ALLOWED = "w2s_sector_gate_allowed"        # 逗号分隔的允许分类列表
+KEY_PULLBACK_MIN_PCT = "w2s_pullback_min_pct"              # 有效回踩最小幅度（%），低于此值视为噪音不冻结H1
+KEY_SECTOR_GATE_ALLOWED = "w2s_sector_gate_allowed"        # 逗号分隔的允许分类列表（NEW_START虽在列表里但被软上限限制到READY，见状态机）
 KEY_REGULATORY_RISK_CAP = "w2s_regulatory_risk_cap"        # 达到此级别即BLOCK，逗号分隔
 KEY_MARKET_GATE_BLOCKED = "w2s_market_gate_blocked"        # 大盘闸门达到此颜色即BLOCK，逗号分隔
 KEY_FORMULA_VERSION = "w2s_formula_version"
@@ -44,12 +45,13 @@ NUMERIC_DEFAULTS: dict[str, float] = {
     KEY_DIVERGENCE_HEALTH_THRESHOLD: 50.0,
     KEY_AUCTION_GAP_MIN: 3.0,
     KEY_SPACE_MIN_ROOM_PCT: 2.0,
+    KEY_PULLBACK_MIN_PCT: 1.5,
 }
 STRING_DEFAULTS: dict[str, str] = {
     KEY_SECTOR_GATE_ALLOWED: "NEW_START,EXPANDING,MAIN_UPTREND,HEALTHY_DIVERGENCE",
     KEY_REGULATORY_RISK_CAP: "HIGH,EXTREME",
     KEY_MARKET_GATE_BLOCKED: "RED",
-    KEY_FORMULA_VERSION: "w2s_radar_v0.3.0",
+    KEY_FORMULA_VERSION: "w2s_radar_v0.4.0",
 }
 PROMPT_DEFAULTS = {KEY_PROMPT1: PROMPT1_DEFAULT, KEY_PROMPT2: PROMPT2_DEFAULT}
 

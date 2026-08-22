@@ -111,6 +111,13 @@ def _apply_schema_patches():
         "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS standard_stop FLOAT",
         "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS stress_stop FLOAT",
         "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS stress_rr FLOAT",
+        # 弱转强雷达：展示态/结构态解耦 + H1/L1回踩结构 + 真实VWAP + 跨日重置 + 分型占位
+        "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS structural_state VARCHAR(20) DEFAULT 'WATCH' NOT NULL",
+        "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS recovery_high FLOAT",
+        "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS pullback_started BOOLEAN DEFAULT FALSE NOT NULL",
+        "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS signal_trade_date DATE",
+        "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS vwap FLOAT",
+        "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS setup_type VARCHAR(20) DEFAULT 'GENERIC' NOT NULL",
     ]
     # 每条补丁独立事务：Postgres 中任一语句报错会使整个事务进入 aborted 状态，
     # 若共用事务，末尾 ADD CONSTRAINT（无 IF NOT EXISTS）已存在时报错，

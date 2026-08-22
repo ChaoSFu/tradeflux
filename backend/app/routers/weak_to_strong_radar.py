@@ -130,8 +130,13 @@ def _build_checklist(
         ),
         ChecklistGroup(
             group="SETUP",
-            status="pass" if cand.current_state in ("REPAIRING", "CONFIRMING", "BUYABLE", "READY") else "fail",
-            detail=(cand.trigger_reasons or cand.block_reasons or f"当前状态 {cand.current_state}"),
+            status="pass" if cand.structural_state in ("REPAIRING", "CONFIRMING", "BUYABLE", "READY") else "fail",
+            detail=(
+                f"展示态 {cand.current_state}"
+                + (f"（底层结构已到 {cand.structural_state}，被闸门临时覆盖）" if cand.structural_state != cand.current_state else "")
+                + "："
+                + (cand.trigger_reasons or cand.block_reasons or "暂无变化")
+            ),
         ),
         ChecklistGroup(
             group="SPACE",

@@ -53,13 +53,15 @@ def compute_sector_strength_score(sector: Sector) -> float:
     return round(_clamp(0.6 * rank_score + 0.4 * activity_score), 1)
 
 
-def compute_sector_momentum_score(sector: Sector, prev: Optional[SectorDailySnapshot]) -> float:
+def compute_sector_momentum_score(sector: Sector, prev: Optional[SectorDailySnapshot]) -> Optional[float]:
     """
     纯函数：板块动量分（0-100，50=持平）。prev=None（比如刚上线、还没有"昨天"
-    快照）时固定返回 50，调用方应在展示层标注"数据积累中"，不是真的算出了持平。
+    快照）时返回 None，不用一个看起来像真实分数的 50 冒充"算出了持平"——
+    调用方/展示层应该显示"数据积累中"，而不是把 None 悄悄当成 50 参与排序
+    或判断（2026-08-22 修订：此前固定返回50.0，容易被误读成真实分数）。
     """
     if prev is None:
-        return 50.0
+        return None
     amount_chg_pct = ((sector.amount or 0) - (prev.amount or 0)) / max(prev.amount or 0, 1) * 100
     momentum_raw = (
         (sector.pct_change_30d or 0) * 2.0  # 该字段实际是"今日涨幅"，命名是历史遗留
