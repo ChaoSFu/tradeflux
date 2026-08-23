@@ -143,8 +143,11 @@ def select_mainline_sector_ids(sector_scores: dict[int, dict], top_n: int = 3) -
     才行"——弱转强的 Edge 来自资金回流到最强的少数主线，候选数量本该主动收窄，
     而不是把"允许追踪的分类"和"允许 BUYABLE 的板块"混为一谈。
 
-    排序范围只在传入的 sector_scores 里比较（调用方通常只传当前活跃候选覆盖到
-    的板块，不是全市场888个板块），分数相同时按 sector_id 从小到大稳定排序。
+    排序范围只在传入的 sector_scores 里比较，分数相同时按 sector_id 从小到大
+    稳定排序。调用方（w2s_refresh_service.run_refresh）2026-08-23起改为传入
+    全市场 is_watched 板块（不再只是当次候选覆盖到的板块）——否则某个真正
+    全市场最强的板块只因为今天没有候选股票冒头，就不会进入Top3比较池，
+    跟"只选逻辑最硬的少数主线"这个产品原意矛盾，是曾经存在过的真实bug。
     """
     mainline_candidates = [
         (sid, info) for sid, info in sector_scores.items()

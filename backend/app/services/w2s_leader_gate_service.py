@@ -113,22 +113,34 @@ def score_leaders_for_theme(db: Session, sector_id: int, candidate_stock_ids: li
     """
     薄封装：给定一个 Theme 里的候选股票，查出所需字段、算 Core Leader Score、
     做同 Theme 内排名，返回 {stock_code: {"core_leader_score", "leader_type", "leader_rank"}}。
+
+    2026-08-23修复真实bug（round4 review 指出）：排名比较池子此前只有"候选
+    互相比"，如果这个板块真正最强的龙头股今天没有出现在W2S候选里（"弱转强"
+    候选按定义经常还没进强势池，候选和强势池是两套独立的筛选逻辑，这是常态
+    不是异常），这个真龙头会被完全漏掉比较，候选里矮子拔将军地被标成
+    core/backup。这里把排名池子扩成"候选 ∪ 该Theme强势池全体"——强势池
+    全体只用来垫场比较、让候选的相对位置真实，最终返回值仍然只挑候选自己
+    的结果（run_refresh 只查候选的 leader_score_cache，不关心非候选股票）。
+    候选本身即使不在强势池里也照常参与排名（不因为"不在强势池"就被排除），
+    跟修复前对候选的处理保持一致，只是多了强势池全体作比较基准。
     """
     if not candidate_stock_ids:
         return {}
 
-    stocks = db.query(Stock).filter(Stock.id.in_(candidate_stock_ids)).all()
-    if not stocks:
-        return {}
-
-    # 同 Theme 内按 Stock.leader_score 排名（不同于 Core Leader Score，这是基础分排名）
-    theme_stocks = (
+    # 同 Theme 内强势池全体——既用来算 sector_rank_position 子分（一直如此），
+    # 也用来给最终 core/backup 排名当比较基准（本次修复新增的用途）
+    theme_pool_stocks = (
         db.query(Stock)
         .filter(Stock.primary_sector_id == sector_id, Stock.in_strong_pool == True)  # noqa: E712
         .order_by(Stock.leader_score.desc())
         .all()
     )
-    sector_rank_by_id = {s.id: i + 1 for i, s in enumerate(theme_stocks)}
+    sector_rank_by_id = {s.id: i + 1 for i, s in enumerate(theme_pool_stocks)}
+
+    ranking_stock_ids = set(candidate_stock_ids) | {s.id for s in theme_pool_stocks}
+    stocks = db.query(Stock).filter(Stock.id.in_(ranking_stock_ids)).all()
+    if not stocks:
+        return {}
 
     universe_scores = [
         s.leader_score for s in db.query(Stock).filter(Stock.in_strong_pool == True).all()  # noqa: E712
@@ -138,7 +150,7 @@ def score_leaders_for_theme(db: Session, sector_id: int, candidate_stock_ids: li
         r.stock_id
         for r in db.query(StockSectorRelation).filter(
             StockSectorRelation.sector_id == sector_id,
-            StockSectorRelation.stock_id.in_(candidate_stock_ids),
+            StockSectorRelation.stock_id.in_(ranking_stock_ids),
             StockSectorRelation.is_leader == True,  # noqa: E712
         ).all()
     }
@@ -146,7 +158,7 @@ def score_leaders_for_theme(db: Session, sector_id: int, candidate_stock_ids: li
     # 昨日快照（用于分歧抗跌能力）——每只股票最近两条快照里较早的一条
     latest_dates = (
         db.query(StockDailySnapshot.stock_id, StockDailySnapshot.date)
-        .filter(StockDailySnapshot.stock_id.in_(candidate_stock_ids))
+        .filter(StockDailySnapshot.stock_id.in_(ranking_stock_ids))
         .order_by(StockDailySnapshot.stock_id, StockDailySnapshot.date.desc())
         .all()
     )
@@ -191,4 +203,8 @@ def score_leaders_for_theme(db: Session, sector_id: int, candidate_stock_ids: li
         per_stock[r.code]["leader_type"] = r.leader_type
         per_stock[r.code]["leader_rank"] = r.leader_rank
 
-    return per_stock
+    # 强势池里垫场比较用的非候选股票只是为了让排名真实，不需要出现在返回值里
+    # ——调用方（run_refresh）只会用候选自己的股票代码去查这个结果
+    candidate_id_set = set(candidate_stock_ids)
+    candidate_codes = {s.code for s in stocks if s.id in candidate_id_set}
+    return {code: info for code, info in per_stock.items() if code in candidate_codes}

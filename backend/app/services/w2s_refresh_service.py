@@ -5,14 +5,17 @@
 流程：查 is_active 候选 → 跨日重置（signal_trade_date 不是今天则清空日内结构
 字段）→ 按 Theme（Stock.primary_sector_id）分组跑 Sector Gate/Leader Gate →
 批量拉实时报价（算真实VWAP/真实竞价Gap）→ 状态机（结构态持续推进 + 闸门覆盖
-展示态）→ 展示态真变化才写一条事件日志。目标 <5-10 秒，所以只查候选相关的
-少量 sector，不碰全市场/888个板块。
+展示态）→ 展示态真变化才写一条事件日志。目标 <5-10 秒，行情/K线相关的外部请求
+只碰候选相关的少量股票，不碰全市场；但 Mainline Top N 板块打分（2026-08-23起）
+改为覆盖全市场 is_watched 板块——这一步是纯本地DB计算，不是外部请求，跟"只查
+候选相关"这条边界不冲突，见下面 run_refresh 里的注释。
 """
 from __future__ import annotations
 
 from datetime import date as date_cls, datetime
 from typing import Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..models.stock import Stock, StockDailySnapshot
@@ -126,7 +129,19 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
 
     # 按 Theme（primary_sector_id）分组，跑 Sector Gate / Leader Gate
     sector_ids = {s.primary_sector_id for s in stock_by_id.values() if s.primary_sector_id}
-    sectors_by_id = {s.id: s for s in db.query(Sector).filter(Sector.id.in_(sector_ids)).all()}
+    # Mainline Top N 必须在全市场"关注板块"范围内比较，不能只在今天恰好有候选
+    # 覆盖到的板块之间比——否则"最强前3主线"这个结论的样本池会随当次候选覆盖面
+    # 漂移，某个真正全市场最强的板块只因为它今天没有任何股票冒头成候选，就完全
+    # 不会被考虑进Top3的比较池，跟"只选逻辑最硬的少数主线"这个产品原意矛盾（round4
+    # review 指出的真实bug，2026-08-23修复）。这里改成 is_watched 全量 ∪ 候选涉及
+    # 的板块（后者理论上应该都在 is_watched 里，但不强依赖这个假设，双保险）。
+    # 全部是本地DB计算（Sector/AppConfig 表 + get_prev_snapshot 单表查询），不新增
+    # 任何外部行情请求，量级通常是几百个 is_watched 板块，可忽略不计。
+    sectors_by_id = {
+        s.id: s for s in db.query(Sector).filter(
+            or_(Sector.is_watched == True, Sector.id.in_(sector_ids))  # noqa: E712
+        ).all()
+    }
     sector_score_cache: dict[int, dict] = {}
     for sid, sector in sectors_by_id.items():
         sector_score_cache[sid] = sector_gate.score_sector(db, sector, today)
