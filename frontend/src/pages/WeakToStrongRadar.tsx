@@ -45,8 +45,6 @@ function formatDuration(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}秒` : `${ms}毫秒`
 }
 
-const REFRESH_COOLDOWN_SECONDS = 30
-
 function formatElapsed(seconds: number): string {
   if (seconds < 60) return `${seconds}秒前`
   const minutes = Math.floor(seconds / 60)
@@ -169,8 +167,11 @@ export default function WeakToStrongRadar() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['w2s-refresh-status'] }),
   })
 
-  // 每秒跳一次，用来实时算"距上次刷新多久"和刷新按钮的防连点冷却倒计时——
-  // 手动触发为主的刷新模式下，这个时间比自动轮询频率更值得让用户看见。
+  // 每秒跳一次，用来实时算"距上次刷新多久"——手动触发为主的刷新模式下，
+  // 这个时间比自动轮询频率更值得让用户看见。不做前端冷却限制：单用户场景
+  // 不需要系统帮忙控制点击频率，真正要防的是"同时有两个刷新任务在跑"，
+  // 这由后端 /refresh 的运行中检查（同一时刻只有一个线程在更新数据）保证，
+  // 不依赖前端按钮状态。
   const [nowTick, setNowTick] = useState(() => Date.now())
   useEffect(() => {
     const id = setInterval(() => setNowTick(Date.now()), 1000)
@@ -180,8 +181,6 @@ export default function WeakToStrongRadar() {
     ? new Date(refreshStatus.last_result.triggered_at).getTime()
     : null
   const secondsSinceRefresh = lastTriggeredAt != null ? Math.max(0, Math.floor((nowTick - lastTriggeredAt) / 1000)) : null
-  const cooldownRemaining = secondsSinceRefresh != null ? Math.max(0, REFRESH_COOLDOWN_SECONDS - secondsSinceRefresh) : 0
-  const inCooldown = cooldownRemaining > 0
 
   // 刷新任务结束后（running: true → false）拉取最新候选列表
   const wasRunning = useMemo(() => refreshStatus?.running ?? false, [refreshStatus?.running])
@@ -268,21 +267,17 @@ export default function WeakToStrongRadar() {
         </div>
         <button
           onClick={() => refreshMutation.mutate()}
-          disabled={!!isRefreshing || !isLoggedIn || inCooldown}
-          title={
-            !isLoggedIn ? '需要登录后才能手动触发刷新'
-              : inCooldown ? `刚刷新过（${secondsSinceRefresh}秒前），${cooldownRemaining}秒后可再次刷新，避免无意义重复请求`
-              : undefined
-          }
+          disabled={!!isRefreshing || !isLoggedIn}
+          title={isLoggedIn ? undefined : '需要登录后才能手动触发刷新'}
           className={cn(
             'flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors',
-            isRefreshing || !isLoggedIn || inCooldown
+            isRefreshing || !isLoggedIn
               ? 'bg-bg-elevated text-text-muted cursor-not-allowed'
               : 'bg-accent-dim text-accent hover:bg-accent/20',
           )}
         >
           <RefreshCw className={cn('w-3.5 h-3.5', isRefreshing && 'animate-spin')} />
-          {isRefreshing ? '刷新中…' : inCooldown ? `${cooldownRemaining}秒后可再刷新` : '刷新数据并重新评估'}
+          {isRefreshing ? '刷新中…' : '刷新数据并重新评估'}
         </button>
       </div>
 
