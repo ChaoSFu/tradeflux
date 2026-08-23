@@ -3,9 +3,11 @@
 > 文档状态：Phase 1 + Phase 2 已全部完成；2026-08-22 完成一轮状态机纠错（外部
 > 代码评审发现并修复了多处真实bug：结构确认判定过弱、BLOCK 死态、跨日状态
 > 未重置等，见第 11 节）；2026-08-23 完成第二轮重构——把"结构事实"和"交易
-> 决策"彻底拆成两层（原来结构层错误地借用了 BUYABLE/WAIT 这些本该属于展示
-> 层的名字），并补上数据合理性校验/市场板块负反馈字段/H1-L1原始快照，见
-> 第 11.1 节。Phase 3 待办跟踪中。
+> 决策"彻底拆成两层，并补上数据合理性校验/市场板块负反馈字段/H1-L1原始快照
+> （见第 11.1 节）；同日完成第三轮修订——产品定位从"实时雷达"校准为"关键
+> 节点交易决策工作台"（不做自动高频轮询）、新增主升板块封顶（Soft Cap）、
+> 修复数据过期后展示态不刷新的真实bug、新增 Prompt Parser Monitor（见第
+> 11.2 节）。Phase 3 待办跟踪中。
 > 路由：`/weak-to-strong-radar`　·　API 前缀：`/api/weak-to-strong-radar`
 > 最后更新：2026-08-23
 
@@ -21,17 +23,24 @@
    RED、板块分类不在允许列表、非板块核心龙头（`non_leader`）、监管风险 HIGH/EXTREME、
    候选观察期已过。
 2. **Soft Cap（软上限，不拦截但压低展示态上限）**：板块仍处 `NEW_START` 早期 → 最高
-   只展示到 `READY`；龙头未决（`undetermined`）→ 最高只展示到 `CONFIRMING`；涨停空间
-   不足 `w2s_space_min_room_pct` → 降级为 `WAIT`。
+   只展示到 `READY`；龙头未决（`undetermined`）→ 最高只展示到 `CONFIRMING`；所属板块
+   不在当前 `MAIN_UPTREND` 强度前 N 名（"主升板块封顶"，2026-08-23新增，见第11.2节）
+   → 最高只展示到 `CONFIRMING`；涨停空间不足 `w2s_space_min_room_pct` → 降级为 `WAIT`。
 3. **Setup Progression（结构事实层，只看价格行为，不受 1/2 影响）**：`WATCH → READY
    → REPAIRING → PULLBACK → CONFIRMED`（H1/L1 两段式回踩确认，见第4节状态机）。
 
 只有结构事实层走到 `CONFIRMED`，且同时没有被 1/2 任何一层压低或拦截，展示态才会是
 `BUYABLE`——这三层各自独立重算，Hard Blocker 短暂命中不会清空结构事实层已经走到的
-进度，闸门一恢复展示立刻反映真实进度（详见第4节、第11.1节）。Chips（日内获利盘/
+进度，闸门一恢复展示立刻反映真实进度（详见第4节、第11.1/11.2节）。Chips（日内获利盘/
 筹码）这一组需要分钟级数据，本仓库目前没有该数据源，Checklist UI 上诚实显示灰色
 **"Phase 2"** 标签，绝不伪造 ✓ / ✗。Stress R/R（压力情景风险回报比）已实现，但明确
 是一种保守估算，不是完整期望收益模型，也不构成任何止损/止盈建议（精确定义见第4节）。
+
+**2026-08-23 产品定位校准**：本雷达不追求"第一时间发现每一次弱转强"，而是"在准备
+交易的关键时刻，用尽量少的外部请求把'现在能不能买'判断清楚"——用户原话："能做
+主升的板块不可能太多，顶多3个，每个板块的核心个股也最多3个，必须是逻辑最硬的
+板块和个股才行"。据此明确**不做**自动定时轮询外部行情（详见第11.2节），候选数量
+主动收窄依赖上面的"主升板块封顶"，而不是追求更高的采样频率。
 
 **关于验证记录的重要区分**：本文档和页面上出现的"N条单测全绿"只证明代码按照
 设计的逻辑正确运行（Engineering Validation），**完全不代表这套弱转强定义本身
@@ -73,7 +82,7 @@
 
 后端服务文件均以 `w2s_` 前缀命名（`backend/app/services/w2s_*.py`），核心打分/状态机函数
 是**纯函数**（不开 DB session，只吃标量输入），DB 相关的查询/写入逻辑单独放在薄封装里，
-方便单测（`backend/tests/test_w2s_*.py`，98条全绿，含独立的 Golden Case 语义级测试）。Market Gate 不新起数据管道——三部分
+方便单测（`backend/tests/test_w2s_*.py`，110条全绿，含独立的 Golden Case 语义级测试）。Market Gate 不新起数据管道——三部分
 数据都基于已有的、daily_update 每天同步的数据：指数趋势复用
 `index_trend_service.get_market_trend()`（读库），涨跌家数/涨跌停比复用 `MarketBreadthDaily`
 （大盘趋势页同一份数据源），T-1冻结群体次日反馈复用 `market_effect_service`（赚钱/亏钱
@@ -92,6 +101,7 @@
 | `setup_type` | 弱转强分型占位字段，恒为 `GENERIC`（架构预留，见第10节） |
 | `sector_id/sector_name/sector_category/sector_strength_score/sector_momentum_score/sector_divergence_health` | Sector Gate 结果（`sector_momentum_score` 无历史基准时为 `None`，不是假的50分；`sector_divergence_health` 2026-08-23新增，仅 phase=4 分歧阶段有值，是 `sector_category` 二分类判断背后的原始健康度分数，此前算完即丢弃，现在独立暴露） |
 | `leader_type/leader_rank/leader_score` | Leader Gate 结果 |
+| `is_mainline_sector` | 2026-08-23新增：所属板块是否在当前 `MAIN_UPTREND` 强度前N名（默认3，`w2s_mainline_sector_top_n` 可配），不在则结构确认后展示封顶 `CONFIRMING` |
 | `current_state` | **交易决策层**（展示值）：`WATCH\|READY\|REPAIRING\|CONFIRMING\|BUYABLE\|WAIT\|BLOCK`。由 `structural_state` 叠加 Hard Blocker/Soft Cap 推导，`BUYABLE`/`WAIT`/`BLOCK` 只会在这一层出现 |
 | `structural_state` | **结构事实层**：`WATCH\|READY\|REPAIRING\|PULLBACK\|CONFIRMED\|FAILED`，只看价格行为，不受任何闸门/软上限影响，闸门临时不通过时底层仍持续推进（2026-08-23 二次重构：此前误借用了 REPAIRING/CONFIRMING/BUYABLE/WAIT 这些属于展示层的名字，见第11.1节） |
 | `recovery_high/pullback_low/pullback_started` | H1/L1 回踩结构追踪字段（2026-08-22 由弱定义"任意反弹即确认"改为两段式，见第4节状态机） |
@@ -121,6 +131,24 @@ pullback_low`（2026-08-23新增，保留事件发生时刻的结构层原始快
 `upsert_sector_daily_snapshot()` 把它从死表变活表——这是 Sector Momentum Score 能算出"今天
 比昨天变化"的前提。上线首日没有"昨天"基准，动量分返回 `None`，前端/数据均如实体现
 "数据积累中"，不伪造历史对比。
+
+### `weak_to_strong_snapshots`（候选专属日内快照，2026-08-23新增）
+
+`trade_date/timestamp/stock_code/price/high/low/amount/volume/vwap` + 写入时刻的
+`structural_state/recovery_high/pullback_low`。每次 `/refresh` 对每个活跃候选追加一行，
+不像 `weak_to_strong_events` 只在展示态变化时才写——这里要的是稠密价格采样，供以后
+回看真实样本调 H1/L1 回踩噪音阈值、未来做回测重放用。**刻意不新增任何自动定时抓取**：
+只在现有触发点（手动点刷新，见第6节产品定位校准后已取消 09:26 自动定时）顺手多写
+一行，复用同一次已经拉到的报价数据，不产生任何新的外部请求。`GET /snapshots?stock_code=`
+只读接口。
+
+### `weak_to_strong_discovery_runs`（Prompt解析监控日志，2026-08-23新增）
+
+`run_date/timestamp/prompt1_text/prompt2_text/prompt1_raw_count/prompt2_raw_count/
+verified_count/is_anomaly/anomaly_reason`。每次 `discover_candidates` 跑完追加一条，
+跟最近10次历史总召回量均值比较，比例过低（疑似东财解析被改坏/接口降级）或过高
+（疑似条件被错误放宽）都标记异常。候选发现每天只跑1-2次，顺手记录不产生新请求，
+只检测记录不做自动纠正——异常时需要人工核实。`GET /discovery-runs` 只读接口。
 
 ---
 
@@ -195,6 +223,19 @@ Momentum = clamp(50 + momentum_raw, 0, 100)
 "允许"含义不同，前者是"可以出现在候选池、Sector Gate 不拦截"，后者是"可以被判定为可
 交易信号"，本文档统一用"Sector Gate 允许列表"指前者、"软上限"指后者，避免混用同一个
 "放行"字眼指代不同层级。
+
+### 主升板块封顶（Soft Cap，2026-08-23新增）
+```
+select_mainline_sector_ids(sector_scores, top_n=w2s_mainline_sector_top_n默认3):
+  只在 sector_category==MAIN_UPTREND 的板块里，按 sector_strength_score 从高到低取前N名
+```
+用户原话："能做主升的板块不可能太多，顶多3个，每个板块的核心个股也最多3个，必须是
+逻辑最硬的板块和个股才行"。个股这边不用新增约束——Leader Gate 天然已经≤2只（见上）。
+板块这边此前完全没有数量上限，只要分类在允许列表里就没有限制，这里补上：候选所属板块
+不在当前 `MAIN_UPTREND` 强度前N名 → 结构确认(`CONFIRMED`)后展示封顶到 `CONFIRMING`，
+不给 `BUYABLE`。候选照常追踪、结构照常推进，是跟龙头未决/NEW_START 完全一致的软上限
+语义——不是"这只股票不够格"，而是"这个板块现在不是当前最强的少数几条主线之一"。排名
+范围只在当次刷新覆盖到的候选所属板块之间比较，不是全市场888个板块。
 
 ### Core Leader Score（0-100）
 ```
@@ -312,6 +353,8 @@ derive_display_state() 一处函数把结构事实层 + Hard Blocker + Soft Cap 
 | POST | `/refresh` | 需登录；启动后台刷新线程，独立锁 `/tmp/tradeflux_w2s_radar.lock` |
 | GET | `/refresh/status` | 轮询刷新任务状态 |
 | GET | `/events` | 状态变化事件日志（`stock_code` 可选过滤） |
+| GET | `/snapshots` | 候选专属日内快照（`stock_code` 必填，`trade_date` 可选，默认今天） |
+| GET | `/discovery-runs` | Prompt解析监控日志，最近在前 |
 | GET/PUT | `/config` | 读写 Prompt 与阈值配置（复用 `AppConfig` 表，不新建配置表） |
 
 ## 6. 调度与锁
@@ -322,9 +365,16 @@ derive_display_state() 一处函数把结构事实层 + Hard Blocker + Soft Cap 
 竞价数据过时几分钟就没意义），跟 `daily_update_preopen`（09:27）错开1分钟。失败不重试——
 非关键路径，用户随时可在页面手动点刷新补一次。
 
-**已知运营缺口**：目前只有 09:26 这一次自动刷新，全天其余时段的状态推进依赖用户手动点
-"立即刷新"。这意味着如果没人在交易时段主动刷新，H1/L1 回踩结构的采样密度会很稀疏
-（不是连续监控）。是否需要增加盘中多次自动刷新（比如每5-15分钟一次）不在本次范围内，
+**已知运营缺口 + 2026-08-23 产品定位校准**：目前只有 09:26 这一次自动刷新（覆盖5分钟
+竞价窗口，用户不可能正好在那一刻点开页面），全天其余时段的状态推进依赖用户手动点
+"刷新数据并重新评估"。这意味着如果没人在交易时段主动刷新，H1/L1 回踩结构的采样密度
+会很稀疏（不是连续监控，见第4节状态机"结构进度"说明）。**这不再被当作一个待解决的
+缺口，而是明确的产品定位**：用户原话——"你不是在做高频扫描5000只股票、抢最早1分钟
+信号的系统，而是核心主线板块+龙头+分歧后确认+较苛刻买入条件的决策工作台，判断正确性
+远重于发现速度"。据此明确**不会**为了提升采样密度新增盘中多次自动轮询（比如每5-15
+分钟一次）——这类改动会实质性提高对本就不稳定的东财接口的常态请求压力，用更高频率
+换取更快发现速度，跟"少交易、强约束、高确认度"这个产品定位是反的。09:26 这一次盘前
+自动刷新保留（服务于5分钟窗口用户物理上抓不住这个具体问题，不是"提高发现速度"）。
 留待后续评估触发频率与东财接口压力的取舍。
 
 ## 7. 默认参数（存于 `AppConfig`，`GET/PUT /config` 可改，改动即时生效无需重启）
@@ -338,6 +388,7 @@ derive_display_state() 一处函数把结构事实层 + Hard Blocker + Soft Cap 
 | `w2s_auction_gap_min` | 3% | 竞价Gap超预期阈值 |
 | `w2s_space_min_room_pct` | 2% | 涨停空间不足阈值，低于此值 BUYABLE 降级 WAIT |
 | `w2s_pullback_min_pct` | 1.5% | 有效回踩最小幅度，低于此值视为噪音，不冻结H1（2026-08-22新增） |
+| `w2s_mainline_sector_top_n` | 3 | 主升板块封顶：MAIN_UPTREND里强度前几名允许放行到BUYABLE（2026-08-23新增） |
 | `w2s_sector_gate_allowed` | NEW_START,EXPANDING,MAIN_UPTREND,HEALTHY_DIVERGENCE | 允许进入状态机的板块分类（NEW_START仍在软上限限制内） |
 | `w2s_regulatory_risk_cap` | HIGH,EXTREME | 达到此级别即BLOCK |
 | `w2s_market_gate_blocked` | RED | 大盘闸门达到此颜色即BLOCK |
@@ -460,6 +511,33 @@ Prompt解析降级监控——均已记录在第8节已知局限第6-8条 + 第1
 缺口"是同一个决策点）也刻意没有动，因为这会改变对东财接口的稳定态请求压力，需要
 单独跟用户确认，不能在一次批量修复里顺带静默加上。
 
+### 11.2 2026-08-23 第三轮修订（产品定位校准 + 主升板块封顶）
+
+外部评审在讨论"要不要新增自动候选轮询"时经历了一次自我修正：先建议按结构态分级
+（30/60秒）自动轮询候选专属快照，随后结合用户实际交易方式（只关注少量核心主线板块
+和龙头、买入条件严格）撤回该建议，改为明确"不做自动轮询，只保留手动触发"。用户
+认可这个修正，并额外给出两条更明确的收窄要求：
+
+| 决策点 | 结论 |
+|---|---|
+| 是否新增高频（30/60秒）自动候选快照轮询 | **不做**。产品定位从"实时雷达"校准为"关键节点交易决策工作台"，判断正确性优先于发现速度，见第1节"产品定位校准"、第6节。 |
+| 数据过期时怎么展示（是否新增独立 `REFRESH_REQUIRED` 状态维度） | **不新增独立状态维度**，复用现有 BLOCK 机制 + 显著展示过期原因/最近可信状态（见下方 bug 修复）。 |
+| 候选数量是否需要主动收窄，怎么收窄 | **需要**。用户原话："能做主升的板块不可能太多，顶多3个，每个板块的核心个股也最多3个，必须是逻辑最硬的板块和个股才行"——落地为"主升板块封顶"（见第4节），个股这边现有 Leader Gate 已经≤2只，不用新增约束。 |
+| 是否新增"人工结构确认"字段（人工勾选补偿离散采样的盲区） | **不做**，用户明确"这个不需要在系统中通过流程来确认，脱离系统之后，人工进行判断，与系统无关"——结构事实层"只看客观价格，不掺主观判断"这条不变式保持不变，人工判断完全在系统之外发生，不留任何接口。 |
+
+同时确认并修复一个真实 bug：quote 连续拉取失败超过新鲜度阈值（600秒）时，此前只更新
+`signal_enabled` 字段，`current_state` 原地不动——意味着界面可能一直显示几十分钟前的
+旧 `BUYABLE` 却没有任何过期提示。现在 `signal_enabled` 转为 `False` 时主动把展示态推进到
+`BLOCK` 并写入事件日志，`structural_state` 完全不碰（详见第4节状态机、`w2s_refresh_service.
+run_refresh` 的 `quote_missing` 分支）。
+
+另外采纳了 Prompt Parser Monitor 建议（见 `weak_to_strong_discovery_runs` 表，第3节），
+候选发现每天只跑1-2次，顺手记录召回数量并跟历史均值比较，不产生新的外部请求。
+
+`formula_version` 从 `w2s_radar_v0.5.0` 升至 `w2s_radar_v0.6.0`。刷新按钮文案改为
+"刷新数据并重新评估"（原"立即刷新"），呼应产品定位；新增30秒防连点冷却 + 候选统计栏
+显示"距上次刷新X秒/分钟前"。
+
 ---
 
 ## 12. Phase 2 / Phase 3 待办跟踪
@@ -474,12 +552,14 @@ Prompt解析降级监控——均已记录在第8节已知局限第6-8条 + 第1
 - [x] 2026-08-22 状态机纠错批次（见第11节）
 - [x] 2026-08-23 结构事实层/交易决策层二次分离 + 数据合理性校验 + 市场板块负反馈
       字段 + H1/L1原始快照（见第11.1节）
+- [x] 2026-08-23 产品定位校准 + 主升板块封顶 + 数据过期展示修复 + Prompt Parser
+      Monitor（见第11.2节）
 
 ### Phase 3（依赖分钟级数据，本仓库当前无该数据源，需先起数据链路）
 - [x] 候选专属日内快照引擎（2026-08-23完成——复用 `/refresh` 里已经拉到的报价数据
-      写 `weak_to_strong_snapshots` 表，未新增任何外部请求。**仍未做的**：自动定时
-      抓取的频率/cron 本身，这会改变对东财接口的稳定态请求压力，需单独跟用户确认
-      后再加，见第6节"已知运营缺口"）
+      写 `weak_to_strong_snapshots` 表，未新增任何外部请求。**自动定时抓取频率/cron
+      本身已在第11.2节明确不做**——产品定位校准为手动触发为主，不是留待后续确认的
+      待办项）
 - [x] Golden Case 测试场景（2026-08-23完成——`backend/tests/test_w2s_golden_cases.py`
       6个具名场景，按"一个交易日内连续多次刷新"逐帧断言 `compute_next_state` 的
       display_state/structural_state 序列，覆盖标准全周期/噪音回踩过滤/假突破后
@@ -496,7 +576,9 @@ Prompt解析降级监控——均已记录在第8节已知局限第6-8条 + 第1
 - [ ] Emotion Leader / Trend Anchor 角色分离展示（见第8节，跟 Setup Type 三类拆分
       工作有重叠，建议放在那之后一起做）
 - [ ] `Candidate × Theme` 多主题归属模型（见第8节第7条）
-- [ ] 东财 Prompt 解析降级监控（候选召回数量异常骤降时告警，见第8节第8条）
+- [x] 东财 Prompt 解析降级监控（2026-08-23完成——`weak_to_strong_discovery_runs` 表 +
+      `detect_recall_anomaly`，跟最近10次历史召回量均值比较，候选发现每天只跑1-2次
+      顺手记录，不产生新请求，见第3/11.2节）
 
 ### Setup Type 三类拆分（独立跟踪，见第10节，不计入 Phase 3 顺序）
 - [x] 架构预留：`setup_type` 字段 + 顺序规划
@@ -507,4 +589,4 @@ Prompt解析降级监控——均已记录在第8节已知局限第6-8条 + 第1
 - [ ] 前端候选表格补充列排序（参考 `TurnoverOverview.tsx` 的 `SortTh` 模式）
 - [ ] `/refresh` 耗时超过10秒目标时的告警/降级策略
 - [ ] Checklist 详情文案根据具体数值给出更细粒度的解释（目前偏摘要）
-- [ ] 评估是否需要增加盘中多次自动刷新（见第6节"已知运营缺口"）
+- [x] ~~评估是否需要增加盘中多次自动刷新~~ 已在第11.2节明确不做（产品定位校准）
