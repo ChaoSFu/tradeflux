@@ -19,7 +19,7 @@ from ..models.stock import Stock, StockDailySnapshot
 from ..models.sector import Sector
 from ..models.regulatory import RegulatoryUnusual
 from ..models.weak_to_strong_radar import WeakToStrongCandidate, WeakToStrongEvent, WeakToStrongSnapshot
-from .eastmoney_fetcher import fetch_stock_quotes_batch, get_limit_pct
+from .eastmoney_fetcher import fetch_stock_quotes_batch, get_actual_limit_pct
 from . import w2s_config_service as cfg
 from . import w2s_sector_gate_service as sector_gate
 from . import w2s_leader_gate_service as leader_gate
@@ -206,7 +206,12 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
         closes = _recent_closes(db, stock.id, today, limit=5)
         ma5 = compute_ma(closes, 5)
         vwap = _compute_vwap(quote.amount, quote.volume, low=quote.low, high=quote.high)
-        limit_pct = get_limit_pct(stock.code, stock.is_st)
+        # 涨停价/空间/压力止损/竞价Gap合理性校验都要用真实涨跌停规则（10/20/30/5），
+        # 不能用 get_limit_pct() 那个给K线涨跌停判定用的容差阈值（9.90/19.90/...）
+        # ——外部评审指出的真实bug：容差阈值系统性比真实规则小0.1个百分点，
+        # 直接拿去算价格会让 limit_price/limit_room/stress_stop 全部有一个小
+        # 但确定性的偏差。
+        limit_pct = get_actual_limit_pct(stock.code, stock.is_st)
         limit_price = round(quote.prev_close * (1 + limit_pct / 100), 2) if quote.prev_close else None
         limit_room = (
             round((limit_price - quote.price) / quote.price * 100, 2)

@@ -145,7 +145,17 @@ def _should_include_stock(code: str, market: int) -> bool:
 
 
 def get_limit_pct(code: str, is_st: bool) -> float:
-    """返回该股票的涨跌停幅度阈值（含 0.1% 误差空间）。"""
+    """
+    返回该股票的涨跌停**判定容差阈值**（9.90/19.90/29.90/4.95，比真实规则少
+    0.1个百分点）——专给"这根K线today是不是涨停/跌停/炸板"这类容差判断用
+    （浮点取整误差可能让真实10%涨停算出9.998%这种情况，用9.90做阈值才不会
+    漏判），不是真实的交易所涨跌幅规则本身。
+
+    2026-08-23起：如果要算的是涨停价/跌停价/压力止损这类**真实价格**，必须用
+    下面的 get_actual_limit_pct()，不能用这个——外部评审指出 w2s_refresh_service.py
+    此前直接拿这个容差阈值去算 limit_price/limit_room/stress_stop，导致这几个
+    值系统性比真实规则小0.1个百分点（比如主板算成9.9%涨停而不是10%），已修复。
+    """
     if is_st:
         return 4.95
     if _is_bj_code(code):
@@ -153,6 +163,22 @@ def get_limit_pct(code: str, is_st: bool) -> float:
     if code.startswith(_HIGH_LIMIT_PREFIXES):
         return 19.90  # 科创板 / 创业板 ±20%
     return 9.90       # 主板 ±10%
+
+
+def get_actual_limit_pct(code: str, is_st: bool) -> float:
+    """
+    返回该股票**真实**的涨跌停幅度规则（10/20/30/5），不含判定容差。
+    算涨停价/跌停价/剩余空间/压力止损这类需要真实价格的场景用这个，不要用
+    get_limit_pct()（那个是给K线涨跌停/炸板判定用的容差阈值，会系统性偏小
+    0.1个百分点）。
+    """
+    if is_st:
+        return 5.0
+    if _is_bj_code(code):
+        return 30.0  # 北交所 ±30%
+    if code.startswith(_HIGH_LIMIT_PREFIXES):
+        return 20.0  # 科创板 / 创业板 ±20%
+    return 10.0      # 主板 ±10%
 
 
 def _parse_kline_bar(line: str, is_st: bool = False, limit_pct: float = 9.90) -> KLineBar | None:

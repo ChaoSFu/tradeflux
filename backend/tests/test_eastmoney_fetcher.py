@@ -5,7 +5,9 @@ hq.sinajs.cn / 腾讯 qt.gtimg.cn 行情解析——push2.eastmoney.com 生产�
 模块头注释）。腾讯格式里的换手率字段下标（38）是用真实数据（600000/002081）
 跟东财权威值交叉核对过的，不是猜的，这里固定用真实响应片段回归测试。
 """
-from app.services.eastmoney_fetcher import _parse_sina_quote_line, _parse_tencent_quote_line
+from app.services.eastmoney_fetcher import (
+    _parse_sina_quote_line, _parse_tencent_quote_line, get_limit_pct, get_actual_limit_pct,
+)
 
 
 def test_parse_sina_quote_line_valid():
@@ -90,3 +92,33 @@ def test_parse_tencent_quote_line_ignores_non_quote_lines():
 
 def test_parse_tencent_quote_line_malformed_returns_none():
     assert _parse_tencent_quote_line('v_sh600000="太短了";') is None
+
+
+# ── get_limit_pct（K线判定容差）vs get_actual_limit_pct（真实规则），2026-08-23新增 ──
+# 外部评审指出的P0 bug：w2s_refresh_service此前直接拿判定容差阈值去算涨停价/
+# 压力止损，导致这几个值系统性比真实规则小0.1个百分点。这里锁定两个函数
+# 必须始终保持"容差=真实-0.1"这个关系，不会因为以后改动其中一个而悄悄脱节。
+
+def test_get_limit_pct_is_detection_tolerance_not_real_rule():
+    assert get_limit_pct("600000", False) == 9.90
+    assert get_limit_pct("300308", False) == 19.90
+    assert get_limit_pct("688525", False) == 19.90
+    assert get_limit_pct("830001", False) == 29.90
+    assert get_limit_pct("600123", True) == 4.95
+
+
+def test_get_actual_limit_pct_is_real_rule():
+    assert get_actual_limit_pct("600000", False) == 10.0
+    assert get_actual_limit_pct("300308", False) == 20.0
+    assert get_actual_limit_pct("688525", False) == 20.0
+    assert get_actual_limit_pct("830001", False) == 30.0
+    assert get_actual_limit_pct("600123", True) == 5.0
+
+
+def test_actual_limit_pct_is_always_detection_threshold_plus_tolerance():
+    for code, is_st, expected_gap in [
+        ("600000", False, 0.10), ("300308", False, 0.10),
+        ("688525", False, 0.10), ("830001", False, 0.10), ("600123", True, 0.05),
+    ]:
+        gap = round(get_actual_limit_pct(code, is_st) - get_limit_pct(code, is_st), 2)
+        assert gap == expected_gap
