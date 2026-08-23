@@ -1220,7 +1220,9 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
     ]
     _w2s_log("QUOTE", f"开始批量拉取行情：{len(codes_markets)}只，分{len(batches)}批")
 
-    def _fetch_one_batch(batch: list[tuple[str, int]], batch_idx: int) -> None:
+    failed_batches: list[list[tuple[str, int]]] = []
+
+    def _fetch_one_batch(batch: list[tuple[str, int]], batch_label: str) -> None:
         secids = ",".join(f"{market}.{code}" for code, market in batch)
         # 东财 push2 偶发瞬时 502/连接问题（本 session 反复验证过的已知不稳定源），
         # 重试 2 次基本能过；批量快照是雷达刷新的地基，不能让一次瞬时故障
@@ -1235,7 +1237,7 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
                 except Exception as parse_err:  # noqa: BLE001
                     _w2s_log(
                         "QUOTE",
-                        f"批次{batch_idx}第{attempt + 1}次尝试：HTTP {resp.status_code}响应无法解析为JSON"
+                        f"批次{batch_label}第{attempt + 1}次尝试：HTTP {resp.status_code}响应无法解析为JSON"
                         f"（{type(parse_err).__name__}），Content-Length={resp.headers.get('content-length', '?')}，"
                         f"实际body长度={len(resp.content)}，body前200字符={resp.text[:200]!r}",
                     )
@@ -1261,28 +1263,51 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
                 if len(diff) < len(batch):
                     _w2s_log(
                         "QUOTE",
-                        f"批次{batch_idx}第{attempt + 1}次尝试：HTTP {resp.status_code}，"
+                        f"批次{batch_label}第{attempt + 1}次尝试：HTTP {resp.status_code}，"
                         f"请求{len(batch)}只只返回{len(diff)}只（部分缺席，非报错，可能是停牌/退市/代码不存在）",
                     )
                 else:
-                    _w2s_log("QUOTE", f"批次{batch_idx}第{attempt + 1}次尝试：成功，{len(batch)}只全部返回")
+                    _w2s_log("QUOTE", f"批次{batch_label}第{attempt + 1}次尝试：成功，{len(batch)}只全部返回")
                 return
             except Exception as e:  # noqa: BLE001
                 if resp is None:  # 请求本身没拿到响应（连接/超时类异常）；拿到响应但解析失败的详情已经记过了
                     _w2s_log(
                         "QUOTE",
-                        f"批次{batch_idx}第{attempt + 1}次尝试失败（{len(batch)}只，未收到响应）: {type(e).__name__}: {e}",
+                        f"批次{batch_label}第{attempt + 1}次尝试失败（{len(batch)}只，未收到响应）: {type(e).__name__}: {e}",
                     )
                 if attempt == 2:
                     print(f"[fetcher] 批量行情快照拉取失败（{len(batch)}只，重试3次均失败）: {type(e).__name__}: {e}", flush=True)
+                    failed_batches.append(batch)  # 3次都没拿到过一次可解析的响应，整批标记为待补漏——
+                    # 跟"响应正常、只是部分代码没在diff里"（停牌/退市，不该重试）区分开
                 else:
                     time.sleep(0.5 * (attempt + 1))
 
     if len(batches) == 1:
-        _fetch_one_batch(batches[0], 1)
+        _fetch_one_batch(batches[0], "1")
     else:
         with ThreadPoolExecutor(max_workers=min(5, len(batches))) as executor:
-            list(executor.map(lambda pair: _fetch_one_batch(pair[1], pair[0] + 1), enumerate(batches)))
+            list(executor.map(lambda pair: _fetch_one_batch(pair[1], str(pair[0] + 1)), enumerate(batches)))
+
+    # 补漏重试：参考 daily_update.py K线拉取的成熟经验——"高并发批量拉取下个别
+    # 股票会静默失败，脱离批量并发环境、单独低并发重试一轮，成功率接近100%"。
+    # 上面每批内部已经并发重试过3次（间隔仅0.5-1秒），如果东财那次抖动窗口比这
+    # 更长（这次线上502持续了至少4秒），批内重试就追不上，需要再等一等、脱离
+    # "多批并发"这个环境单独重试一次。**只对 failed_batches（3次都没拿到过一次
+    # 可解析响应的批次）补漏**，不对"响应正常、只是这只代码没在diff里"的情况
+    # 补漏——那种通常是停牌/退市/代码不存在，重试没有意义，白白拖慢刷新还占请求。
+    if failed_batches:
+        retry_pairs = [pair for batch in failed_batches for pair in batch]
+        _w2s_log("QUOTE", f"{len(failed_batches)}批（共{len(retry_pairs)}只）3次尝试均未拿到可解析响应，等待2秒后单独低并发补漏重试")
+        time.sleep(2.0)
+        backfill_batches = [
+            retry_pairs[i:i + _QUOTE_BATCH_SIZE] for i in range(0, len(retry_pairs), _QUOTE_BATCH_SIZE)
+        ]
+        for i, bb in enumerate(backfill_batches):
+            _fetch_one_batch(bb, f"补漏{i + 1}")
+            if i < len(backfill_batches) - 1:
+                time.sleep(0.5)  # 补漏批次之间也错开发起，不再一次性并发甩出去
+        recovered = sum(1 for code, _ in retry_pairs if code in result)
+        _w2s_log("QUOTE", f"补漏重试完成：{recovered}/{len(retry_pairs)}只补齐")
 
     missing = [code for code, _ in codes_markets if code not in result]
     _w2s_log(
