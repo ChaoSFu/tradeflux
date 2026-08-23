@@ -1,10 +1,13 @@
 # 弱转强雷达（Weak-to-Strong Radar）
 
-> 文档状态：Phase 1 + Phase 2 已全部完成；2026-08-22 完成一轮状态机纠错
-> （外部代码评审发现并修复了多处真实bug：结构确认判定过弱、BLOCK 死态、
-> 跨日状态未重置等），细节见第 11 节。Phase 3 待办跟踪中。
+> 文档状态：Phase 1 + Phase 2 已全部完成；2026-08-22 完成一轮状态机纠错（外部
+> 代码评审发现并修复了多处真实bug：结构确认判定过弱、BLOCK 死态、跨日状态
+> 未重置等，见第 11 节）；2026-08-23 完成第二轮重构——把"结构事实"和"交易
+> 决策"彻底拆成两层（原来结构层错误地借用了 BUYABLE/WAIT 这些本该属于展示
+> 层的名字），并补上数据合理性校验/市场板块负反馈字段/H1-L1原始快照，见
+> 第 11.1 节。Phase 3 待办跟踪中。
 > 路由：`/weak-to-strong-radar`　·　API 前缀：`/api/weak-to-strong-radar`
-> 最后更新：2026-08-22
+> 最后更新：2026-08-23
 
 ---
 
@@ -12,13 +15,23 @@
 
 **「弱转强成立」≠「值得买入」。**
 
-候选股票必须**同时**通过大盘闸门（Market Gate）、板块闸门（Sector Gate）、龙头闸门
-（Leader Gate）、回踩结构确认（H1/L1 两段式）、涨停空间（Space Gate）五道硬性关卡，
-才会被状态机推进到 `BUYABLE`——不是把各项指标线性加权后直接吐出买入信号。Chips
-（日内获利盘/筹码）这一组需要分钟级数据，本仓库目前没有该数据源，Checklist UI 上
-诚实显示灰色 **"Phase 2"** 标签，绝不伪造 ✓ / ✗。Stress R/R（压力情景风险回报比）
-已实现，但明确是"模拟次日跌停开盘"的保守估算，不是完整期望收益模型，也不构成任何
-止损/止盈建议。
+`BUYABLE` 是**交易决策层**的产出，由三层判断链共同决定，不是任何单一分数加权出来的：
+
+1. **Hard Blocker（硬性拦截，命中即 BLOCK，与结构进度无关）**：数据过期、大盘闸门
+   RED、板块分类不在允许列表、非板块核心龙头（`non_leader`）、监管风险 HIGH/EXTREME、
+   候选观察期已过。
+2. **Soft Cap（软上限，不拦截但压低展示态上限）**：板块仍处 `NEW_START` 早期 → 最高
+   只展示到 `READY`；龙头未决（`undetermined`）→ 最高只展示到 `CONFIRMING`；涨停空间
+   不足 `w2s_space_min_room_pct` → 降级为 `WAIT`。
+3. **Setup Progression（结构事实层，只看价格行为，不受 1/2 影响）**：`WATCH → READY
+   → REPAIRING → PULLBACK → CONFIRMED`（H1/L1 两段式回踩确认，见第4节状态机）。
+
+只有结构事实层走到 `CONFIRMED`，且同时没有被 1/2 任何一层压低或拦截，展示态才会是
+`BUYABLE`——这三层各自独立重算，Hard Blocker 短暂命中不会清空结构事实层已经走到的
+进度，闸门一恢复展示立刻反映真实进度（详见第4节、第11.1节）。Chips（日内获利盘/
+筹码）这一组需要分钟级数据，本仓库目前没有该数据源，Checklist UI 上诚实显示灰色
+**"Phase 2"** 标签，绝不伪造 ✓ / ✗。Stress R/R（压力情景风险回报比）已实现，但明确
+是一种保守估算，不是完整期望收益模型，也不构成任何止损/止盈建议（精确定义见第4节）。
 
 **关于验证记录的重要区分**：本文档和页面上出现的"N条单测全绿"只证明代码按照
 设计的逻辑正确运行（Engineering Validation），**完全不代表这套弱转强定义本身
@@ -49,15 +62,18 @@
     ├─ 按 Theme(=Stock.primary_sector_id) 分组
     ├─ w2s_sector_gate_service.score_sector()   → Sector Strength/Momentum/7分类
     ├─ w2s_leader_gate_service.score_leaders_for_theme() → Core Leader Score/排名
-    ├─ eastmoney_fetcher.fetch_stock_quotes_batch() → 批量实时报价（算真实VWAP/真实开盘Gap）
+    ├─ eastmoney_fetcher.fetch_stock_quotes_batch() → 批量实时报价（算真实VWAP/真实开盘Gap，
+    │   均有合理性校验：VWAP须落在[当日最低价,最高价]区间、Gap不能超过当日涨跌停幅度，
+    │   校验不通过时置 None 退回近似值，不让异常数据参与结构判断，见第11.1节）
     ├─ w2s_risk_service.compute_stops/compute_stress_rr() → 三层止损 + 压力情景R/R
-    ├─ w2s_state_machine.compute_next_state()   → 结构态推进（不受闸门影响）+ 闸门覆盖展示态
-    └─ 展示态真变化 → 写一条 weak_to_strong_events（追加写，不覆盖）
+    ├─ w2s_state_machine.compute_next_state()   → 结构事实层推进（不受闸门/软上限影响）
+    │   + Hard Blocker/Soft Cap 两层覆盖推导出展示态
+    └─ 展示态真变化 → 写一条 weak_to_strong_events（追加写，不覆盖，含H1/L1原始快照）
 ```
 
 后端服务文件均以 `w2s_` 前缀命名（`backend/app/services/w2s_*.py`），核心打分/状态机函数
 是**纯函数**（不开 DB session，只吃标量输入），DB 相关的查询/写入逻辑单独放在薄封装里，
-方便单测（`backend/tests/test_w2s_*.py`，82条全绿）。Market Gate 不新起数据管道——三部分
+方便单测（`backend/tests/test_w2s_*.py`，92条全绿）。Market Gate 不新起数据管道——三部分
 数据都基于已有的、daily_update 每天同步的数据：指数趋势复用
 `index_trend_service.get_market_trend()`（读库），涨跌家数/涨跌停比复用 `MarketBreadthDaily`
 （大盘趋势页同一份数据源），T-1冻结群体次日反馈复用 `market_effect_service`（赚钱/亏钱
@@ -74,10 +90,10 @@
 | `stock_id/stock_code/stock_name` | 股票标识 |
 | `first_seen_date/last_seen_date/consecutive_miss_days/candidate_source/is_active` | 候选生命周期（跨日保留） |
 | `setup_type` | 弱转强分型占位字段，恒为 `GENERIC`（架构预留，见第10节） |
-| `sector_id/sector_name/sector_category/sector_strength_score/sector_momentum_score` | Sector Gate 结果（`sector_momentum_score` 无历史基准时为 `None`，不是假的50分） |
+| `sector_id/sector_name/sector_category/sector_strength_score/sector_momentum_score/sector_divergence_health` | Sector Gate 结果（`sector_momentum_score` 无历史基准时为 `None`，不是假的50分；`sector_divergence_health` 2026-08-23新增，仅 phase=4 分歧阶段有值，是 `sector_category` 二分类判断背后的原始健康度分数，此前算完即丢弃，现在独立暴露） |
 | `leader_type/leader_rank/leader_score` | Leader Gate 结果 |
-| `current_state` | **展示态**：`structural_state` 叠加闸门覆盖后的最终值，闸门不通过时展示 BLOCK |
-| `structural_state` | **结构态**：只看价格行为，不受闸门影响，闸门临时不通过时底层仍持续推进（2026-08-22新增，修复 BLOCK 死态） |
+| `current_state` | **交易决策层**（展示值）：`WATCH\|READY\|REPAIRING\|CONFIRMING\|BUYABLE\|WAIT\|BLOCK`。由 `structural_state` 叠加 Hard Blocker/Soft Cap 推导，`BUYABLE`/`WAIT`/`BLOCK` 只会在这一层出现 |
+| `structural_state` | **结构事实层**：`WATCH\|READY\|REPAIRING\|PULLBACK\|CONFIRMED\|FAILED`，只看价格行为，不受任何闸门/软上限影响，闸门临时不通过时底层仍持续推进（2026-08-23 二次重构：此前误借用了 REPAIRING/CONFIRMING/BUYABLE/WAIT 这些属于展示层的名字，见第11.1节） |
 | `recovery_high/pullback_low/pullback_started` | H1/L1 回踩结构追踪字段（2026-08-22 由弱定义"任意反弹即确认"改为两段式，见第4节状态机） |
 | `signal_trade_date` | 当前结构态属于哪个交易日，跨日刷新时用于判断是否要重置日内字段（2026-08-22新增） |
 | `setup_substate/refresh_sample_count` | 状态机辅助字段 |
@@ -92,8 +108,11 @@
 ### `weak_to_strong_events`（追加写事件日志）
 
 只在**展示态**真实改变时插入一条，字段含 `old_state/new_state/trigger_reasons/
-block_reasons` + 当次刷新时的板块/龙头/价格快照。Phase 3 专属字段（`leadership_impact`/
-`profit_volume_ratio`/`t1_supply_risk` 等）已建列，Phase 2 恒为 `NULL`。
+block_reasons` + 当次刷新时的板块/龙头/价格快照 + `structural_state/recovery_high/
+pullback_low`（2026-08-23新增，保留事件发生时刻的结构层原始快照——不用等专门的
+回测框架，这是调 `w2s_pullback_min_pct` 回踩噪音阈值需要的最小可用数据源，现在就
+能开始积累真实样本）。Phase 3 专属字段（`leadership_impact`/`profit_volume_ratio`/
+`t1_supply_risk` 等）已建列，Phase 2 恒为 `NULL`。
 
 ### 顺手修复：`sector_daily_snapshots`
 
@@ -124,6 +143,12 @@ MarketEffectScore(0-40) = clamp(20 + (profit_strength-loss_strength)/2 * weight,
 RiskAppetite = UpDownScore + LimitScore + MarketEffectScore
 涨跌家数缺失 → None（硬性输入，不能编造中性值掩盖数据缺失）
 ```
+`profit_strength`/`loss_strength` 从 2026-08-23 起额外**独立**暴露在 `get_market_gate()`
+返回值和 `/market-gate` 响应里（`market_effect_profit_strength`/`market_effect_loss_strength`/
+`market_negative_feedback`，后者是 `loss_strength` 的 LOW/MEDIUM/HIGH/UNKNOWN 显式分级），
+不再只是被揉进 `MarketEffectScore` 后就丢弃的中间值——risk_score 低到底是"普涨面不够"
+还是"T-1冻结群体今天集体大面"，这是两种完全不同的市场环境，需要能分开看。
+
 **改动原因**：原公式里两融余额5日变化率跟"今天9:35能不能做弱转强"这种日内决策相关性
 不够强（两融更接近中短期资金背景），换成 `market_effect_service` 的 T-1冻结群体（昨日
 涨停/首板/连板/炸板/跌停）次日真实反馈后，Risk Appetite 才是真正在回答"市场今天有没有
@@ -161,10 +186,15 @@ Momentum = clamp(50 + momentum_raw, 0, 100)
 
 ### Sector 7 分类
 `phase∈{0,1}→NEW_START`、`2→EXPANDING`、`3→MAIN_UPTREND`、`5→DECLINING`、`6→DEAD`；
-`phase=4`（分歧阶段）按板块高度/风险分/情绪分变化算健康度，≥阈值(默认50)→
-`HEALTHY_DIVERGENCE`，否则→`HIGH_LEVEL_WARNING`。默认允许 WATCH+ 的分类：
-`NEW_START/EXPANDING/MAIN_UPTREND/HEALTHY_DIVERGENCE`——但 `NEW_START` 会被单独的软上限
-限制到最多 `READY`（见状态机一节），不是完全放行。
+`phase=4`（分歧阶段）按板块高度/风险分/情绪分变化算健康度（`compute_divergence_health`，
+2026-08-23 起独立暴露为 `sector_divergence_health` 字段，不再是算完即丢弃的中间值），
+≥阈值(默认50)→`HEALTHY_DIVERGENCE`，否则→`HIGH_LEVEL_WARNING`。
+
+`NEW_START` 允许候选**进入观察/结构追踪**（不会被 Sector Gate 硬性 BLOCK），但**不允许
+放行到 BUYABLE**——展示态会被状态机的软上限限制到最多 `READY`（见第4节状态机）。这两个
+"允许"含义不同，前者是"可以出现在候选池、Sector Gate 不拦截"，后者是"可以被判定为可
+交易信号"，本文档统一用"Sector Gate 允许列表"指前者、"软上限"指后者，避免混用同一个
+"放行"字眼指代不同层级。
 
 ### Core Leader Score（0-100）
 ```
@@ -173,8 +203,16 @@ RS_vs_market(0-15)   leader_score 在全体强势池中的百分位 * 15
 BoardHistory(0-20)   clamp(board_count_60d*4 + limit_up_days_20d*1.5, 0, 20)
 CapitalCapacity(0-10) clamp(昨日换手率/3, 0, 10)
 DivergenceResilience(0-10)  昨日跌幅>-3%→10分，>-6%→5分，否则0分
-SectorLeadershipBonus(0-5)  StockSectorRelation.is_leader → +5
+SectorLeadershipBonus(0-5)  StockSectorRelation.is_leader → +5   【当前恒为0，见下方说明】
 ```
+> **已知限制**：`StockSectorRelation.is_leader` 在全部生产代码路径里**从未被置为 `True`**
+> （唯一写 `True` 的地方是 `scripts/seed_mock_data.py` 造假数据脚本）。这意味着
+> `SectorLeadershipBonus` 目前不是"理论上可能循环定义"的风险，而是**确定性地恒为0**，
+> Core Leader Score 实际打分区间是 0-95 而非文档写的 0-100。原因：本仓库目前没有生产
+> 流程会真正判定并回写"某只股票是某板块的历史/公认龙头"这个标签，做一个可信的龙头
+> 识别写入器是新增范围（可能与未来 Setup Type 分型工作重叠），本次不做，如实记录在此，
+> 详见第8节已知局限第5条。
+
 同 Theme 排序后，第一二名分差 < 阈值(默认8分) → 两者都标 `undetermined`（"龙头未决"）；
 分差达标 → 第一名 `core`、第二名 `backup`；排名≥3 → `non_leader`（硬性 BLOCK）。
 **`undetermined` 不再硬性 BLOCK**（2026-08-22 修订，见第11节）——早期龙头竞争阶段如果
@@ -190,53 +228,77 @@ WAIT，底层 structural_state 保留 BUYABLE 不清空——空间会随价格�
 ```
 
 ### 三层止损 + 压力情景风险回报比（Stress R/R）
+
+字段名沿用 `technical_stop`/`standard_stop`/`stress_stop`（DB 列名/API 不改），但"标准
+止损"这个名字容易被理解成行业公认的标准做法，实际只是"技术止损位基础上留个缓冲"，
+下面用更精确的概念名描述三者分别在回答什么问题：
+
 ```
-技术止损 technical_stop = pullback_low（L1，回踩阶段的滚动最低价），缺失时退回 MA5
-标准止损 standard_stop  = technical_stop * (1 - 2%)——留缓冲避免正常回踩噪音刚好触发
-压力止损 stress_stop    = price * (1 - 跌停幅度%)——模拟"买入后次日直接跌停开盘"的
-                          极端情形（T+1 不能当日止损，这是真实存在、不能靠盯盘规避的风险）
+technical_stop（结构失效位）= pullback_low（L1，回踩阶段的滚动最低价），缺失时退回 MA5
+  —— 回答"价格跌破哪里，说明这次回踩修复的结构判断本身就错了"
+
+standard_stop（缓冲失效位）= technical_stop * (1 - 2%)
+  —— 在结构失效位基础上留2%缓冲，避免正常回踩噪音（未到 w2s_pullback_min_pct 阈值的
+     小幅波动）刚好触及技术止损就被震出
+
+stress_stop（T+1压力情景止损）= price * (1 - 跌停幅度%)
+  —— 不是"预测明天会跌停"，而是"如果买入后遇到最坏情况——次日直接跌停开盘"，模拟
+     这种 T+1 机制下无法当日止损规避的极端情形会亏多少
 
 Stress R/R = 今日剩余涨停空间% / 跌停幅度%
 ```
-跌停幅度%按板块类型走既有 `get_limit_pct`（主板9.9%/科创创业19.9%/北交所29.9%/ST4.95%，
-按证券规则动态算出，不是写死的常量），是同板块类型的常数，不是概率加权预期——这个
-指标只回答"如果明天真跌停，今天剩的上涨空间值不值得担这个风险"，**不是完整期望收益
-模型，不构成止损/止盈建议**。
+跌停幅度%使用现有的 `get_limit_pct(code, is_st)`（按证券规则动态算出：主板/创业板
+科创板/北交所/ST 幅度各不相同，代码里从来不是写死的常量——这一点在早期文档版本里
+曾经用具体百分比数字举例，容易被误读成硬编码常量，本版本起统一只写函数名不写数字，
+避免这种误解反复出现），是同板块类型的固定值，不是概率加权预期——这个指标只回答
+"如果最坏情况发生，今天剩的上涨空间值不值得担这个风险"，**不是完整期望收益模型，
+不构成止损/止盈建议**。
 
-### 状态机（2026-08-22 重构：结构态/展示态解耦 + H1/L1 两段式回踩确认）
+### 状态机（2026-08-23 二次重构：结构事实层/交易决策层彻底分离）
 
-**为什么重构**：旧版本把"价格结构走到哪一步"和"闸门是否通过"糅进同一次判断，一旦
-任何闸门不过就整体判 BLOCK，且 BLOCK 没有任何路径能跳出来（所有转移分支都不匹配
-`current_state=="BLOCK"`，即使下次刷新闸门全部转好也永远停留在 BLOCK——这是真实存在
-的死态 bug）。同时旧版"CONFIRMING"的判定是 `price > pullback_low`（pullback_low 只是
-进入 REPAIRING 以来的滚动最低价），意味着任意一次微小回调后的一个小反弹就会触发
-CONFIRMING，是噪音级别的确认，不是真正的"突破第一次修复高点"结构。
+**为什么二次重构**：2026-08-22 那版虽然已经把"结构进度"和"闸门覆盖"分成了
+`structural_state`/`current_state` 两个字段，但 `structural_state` 内部仍然复用
+`REPAIRING`/`CONFIRMING`/`BUYABLE`/`WAIT` 这套本该只属于**展示层**的词汇——这些名字
+天然带着"是否可以交易"的含义，一旦复用就很容易在后续开发中把交易决策逻辑（比如空间
+判断）重新写回结构层内部，重犯"两层职责糅在一起"的老问题。二次重构给结构事实层换了
+一套独立词表，物理上杜绝这类回退。
 
 ```
-结构态（structural_state，只看价格，不受闸门影响，持续推进）：
-  WATCH/READY/WAIT → [现价 > repair_anchor=max(昨收,VWAP或MA5)]  → REPAIRING
-                                                                    （recovery_high=现价，开始建H1）
-  REPAIRING        → [现价 ≤ repair_anchor]                      → WAIT（结构失效，清空H1/L1追踪）
-                    → [现价创新高]                                → REPAIRING（recovery_high 上移）
-                    → [现价回落超过 pullback_min_pct(默认1.5%)]    → CONFIRMING（冻结recovery_high=H1，开始记pullback_low=L1）
-  CONFIRMING       → [现价 ≤ repair_anchor]                      → WAIT（跌穿起点，回踩确认失败）
-                    → [现价 > 冻结的 recovery_high]                → BUYABLE（二次突破H1，结构确认完成）
-                    → [否则]                                      → CONFIRMING（继续记录pullback_low）
-  BUYABLE          → [现价 ≤ repair_anchor]                      → WAIT（信号失效，清空追踪）
-                    → [否则]                                      → BUYABLE
+结构事实层（structural_state：WATCH/READY/REPAIRING/PULLBACK/CONFIRMED/FAILED，
+只看价格行为，不受任何闸门/软上限影响，持续推进）：
+  WATCH/READY/FAILED → [现价 > repair_anchor=max(昨收,VWAP或MA5)]  → REPAIRING
+                                                                     （recovery_high=现价，开始建H1）
+                        （FAILED 是合法的重新进入点，等价于 WATCH，不是死态）
+  REPAIRING          → [现价 ≤ repair_anchor]                     → FAILED（结构失效，清空H1/L1追踪）
+                      → [现价创新高]                               → REPAIRING（recovery_high 上移）
+                      → [现价回落超过 pullback_min_pct(默认1.5%)]   → PULLBACK（冻结recovery_high=H1，开始记pullback_low=L1）
+  PULLBACK           → [现价 ≤ repair_anchor]                     → FAILED（跌穿起点，回踩确认失败）
+                      → [现价 > 冻结的 recovery_high]               → CONFIRMED（二次突破H1，结构确认完成）
+                      → [否则]                                     → PULLBACK（继续记录pullback_low）
+  CONFIRMED          → [现价 ≤ repair_anchor]                     → FAILED（信号失效，清空追踪）
+                      → [否则]                                     → CONFIRMED
 
-展示态（current_state = structural_state 叠加闸门覆盖）：
-  硬性闸门不通过（数据过期/大盘RED/板块分类不允许/龙头non_leader/监管风险过高/观察期已过）
-    → 展示 BLOCK，但 structural_state 照常在底层推进，闸门一恢复展示立刻反映真实进度
-  软上限·NEW_START（板块刚起步）→ 结构态若已到 REPAIRING/CONFIRMING/BUYABLE，展示最高只到 READY
-  软上限·龙头未决（undetermined）→ 结构态若已到 BUYABLE，展示最高只到 CONFIRMING
-  软上限·空间不足 → 结构态是 BUYABLE 但涨停空间不够，展示降级为 WAIT（底层不清空）
+交易决策层（current_state：WATCH/READY/REPAIRING/CONFIRMING/BUYABLE/WAIT/BLOCK，由
+derive_display_state() 一处函数把结构事实层 + Hard Blocker + Soft Cap 映射成展示值——
+`BUYABLE`/`WAIT`/`BLOCK` 只会在这一层出现，结构事实层永远不会产出这三个值）：
+  structural_state==FAILED                → WAIT
+  structural_state∈{WATCH,READY}          → 原样展示（WATCH/READY）
+  Hard Blocker 命中（数据过期/大盘RED/板块分类不允许/龙头non_leader/监管风险过高/观察期已过）
+                                            → BLOCK，但 structural_state 照常在底层推进，
+                                              闸门一恢复展示立刻反映真实进度，不用重新走结构
+  Soft Cap·NEW_START（板块刚起步）         → READY（即使结构已到 REPAIRING/PULLBACK/CONFIRMED）
+  structural_state==REPAIRING              → REPAIRING
+  structural_state==PULLBACK               → CONFIRMING
+  structural_state==CONFIRMED 且龙头未决    → CONFIRMING（不隐藏"已确认"这个事实，只是不放行到BUYABLE）
+  structural_state==CONFIRMED 且空间不足    → WAIT（底层 structural_state 仍是 CONFIRMED，不清空）
+  structural_state==CONFIRMED 且以上都通过  → BUYABLE
 ```
 
 `WARNING`/`EXIT`（持仓监控态）**不实现**——本仓库没有持仓/成交跟踪能力，硬做即编数据。
 `CONFIRMING`/回踩识别依赖同一交易日内多次 `/refresh` 采样（不是连续的分钟级监控），
 `refresh_sample_count` 如实暴露"基于N次采样"。真实 VWAP 通过实时报价的成交额/成交量
-算出（`amount/(volume*100)`，量为0时退回 MA5），不再是纯粹的 MA5 近似。
+算出（`amount/(volume*100)`，量为0或落在[当日最低价,最高价]区间外时退回 MA5，见
+第11.1节合理性校验）。
 
 ---
 
@@ -244,9 +306,9 @@ CONFIRMING，是噪音级别的确认，不是真正的"突破第一次修复高
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/market-gate` | 大盘闸门当前状态（趋势分/风险偏好分/四色/各指数分/市场效应置信度） |
-| GET | `/candidates` | 候选列表（`active_only` 默认true），含展示态与结构态 |
-| GET | `/candidates/{code}` | 详情 + 8组Checklist（MARKET/SECTOR/LEADER/DIVERGENCE/SETUP/SPACE/CHIPS/RISK；仅 CHIPS 仍是"Phase 2"占位，其余7组均为真实pass/fail；SETUP 组会显示"结构已到X，被闸门临时覆盖"这类透明说明） |
+| GET | `/market-gate` | 大盘闸门当前状态（趋势分/风险偏好分/四色/各指数分/市场效应置信度/市场负反馈分级） |
+| GET | `/candidates` | 候选列表（`active_only` 默认true），含交易决策层（`current_state`）与结构事实层（`structural_state`） |
+| GET | `/candidates/{code}` | 详情 + 8组Checklist（MARKET/SECTOR/LEADER/DIVERGENCE/SETUP/SPACE/CHIPS/RISK；仅 CHIPS 仍是"Phase 2"占位，其余7组均为真实pass/fail；SETUP 组会显示"结构事实已到X，被闸门/软上限临时覆盖展示"这类透明说明） |
 | POST | `/refresh` | 需登录；启动后台刷新线程，独立锁 `/tmp/tradeflux_w2s_radar.lock` |
 | GET | `/refresh/status` | 轮询刷新任务状态 |
 | GET | `/events` | 状态变化事件日志（`stock_code` 可选过滤） |
@@ -302,6 +364,25 @@ CONFIRMING，是噪音级别的确认，不是真正的"突破第一次修复高
 4. **Market Effect 数据在广度退化为 tracked_pool 时置信度降级但不隔绝**：`Risk
    Appetite Score` 里的市场效应分量在 `breadth_source=tracked_pool` 时权重减半
    （见第4节公式），但仍然参与计算，不是完全剔除——半信半疑好过完全不用。
+5. **`SectorLeadershipBonus`（Core Leader Score 里的板块龙头加成）目前恒为0**：
+   `StockSectorRelation.is_leader` 在全部生产代码路径里从未被置为 `True`，只有
+   `scripts/seed_mock_data.py` 造假数据脚本会写它。做一个可信的"历史/公认龙头"识别
+   写入器需要新的判定逻辑（比如板块内长期涨幅/连板历史排名前N自动打标，或人工标注
+   接口），是独立的新增范围，本次不做，见第4节 Core Leader Score 公式旁的详细说明。
+6. **没有"有没有主线"（Mainline Clarity）判断**：当前每个候选独立走 Sector Gate，
+   不回答"今天全市场有没有清晰的主线板块，还是多个板块在抢筹"这种更宏观的问题。
+   这需要一个跨候选、跨板块的市场层面新分类器（比如 `CLEAR/COMPETING/ROTATION/NONE`），
+   是不同于现有 Market Gate（回答"今天市场敢不敢接"）的新分析维度，不是对现有公式的
+   小修补，暂不做，跟踪于第12节 Phase 3 待办。
+7. **多主题归属候选（一只股票同时属于多个热门题材）没有专门建模**：`sector_id`
+   直接取 `Stock.primary_sector_id`（单一归属），如果一只股票在 CPO/数据中心/AI算力
+   等多个题材里都能算"龙头候选"，目前只会按它的主板块打分，不会展示"在题材A排第1、
+   在题材B排第3"这种多维视角。评审建议了 `Candidate × Theme` 关系模型，但复杂度较高
+   且当前主板块归属已覆盖大多数场景，暂不做，跟踪于第12节。
+8. **东财 Prompt 解析结果没有专门的降级监控**：候选池发现依赖东财对 Prompt 关键词的
+   解析结果（`fetch_strong_pool_codes`），如果东财侧解析逻辑变化导致召回数量异常下降
+   （比如从平时的20-50只骤降到个位数），目前没有自动检测/告警，只能靠人工观察候选池
+   页面数量异常。跟踪于第12节。
 
 ## 9. 遗留问题（非本次引入，跟进记录）
 
@@ -352,6 +433,33 @@ Policy 只会把 bug 一起复制三份。计划顺序：
 弱转强拆分（架构预留但不接生产逻辑，见第10节）、完整监管风险0-100分（主动撤回，跟
 用户原始规格冲突）、Phase 3 全部四项（需要新的分钟级数据管道，属于独立的更大决策）。
 
+### 11.1 2026-08-23 第二轮修订（外部评审第三轮驱动）
+
+第三轮评审的核心质疑：`structural_state` 虽然已经跟 `current_state` 分开存了，但内部
+复用 `REPAIRING`/`CONFIRMING`/`BUYABLE`/`WAIT` 这套展示层词汇本身就是隐患——`BUYABLE`/
+`WAIT` 天然带着"是否可以交易"的含义，不应该是结构事实层会产出的值。这次全部核实后
+采纳，另有几项数据健壮性/可解释性改进一并落地：
+
+| 问题 | 处理 |
+|---|---|
+| 结构事实层复用展示层词汇，语义上仍是"半糅合" | `structural_state` 换成独立词表 `WATCH/READY/REPAIRING/PULLBACK/CONFIRMED/FAILED`；新增 `derive_display_state()` 一个函数收拢所有"结构事实→展示态"的映射，是全仓库唯一允许产出 `BUYABLE` 的地方（见第4节状态机） |
+| `FAILED`（原 `WAIT`）此前是否算死态未明确 | 明确 `FAILED` 是合法重新进入点，等价于 `WATCH`，价格重新收复 `repair_anchor` 即可再次进入 `REPAIRING` |
+| VWAP/开盘Gap 没有合理性校验，接口字段异常时可能产出物理上不可能的值 | VWAP 必须落在 `[当日最低价,当日最高价]` 区间；Gap 不能超过 `get_limit_pct` 算出的涨跌停幅度（留10%容差）；任一校验不通过则置 `None`，退化为不依赖该值的近似判断，不让异常数据参与结构判断 |
+| Market/Sector 负反馈信号被揉进复合分数后即丢弃，界面看不出"低分到底因为什么" | Market 层新增 `market_effect_profit_strength/loss_strength/market_negative_feedback`（LOW/MEDIUM/HIGH/UNKNOWN）三个独立字段；Sector 层新增 `sector_divergence_health`（phase=4分歧阶段的原始健康度分数），均在 `/market-gate`、候选详情 Checklist 里可见 |
+| H1/L1 回踩阈值调参没有历史样本可看 | `weak_to_strong_events` 新增 `structural_state/recovery_high/pullback_low` 三列，每次展示态变化都保留当时的结构层原始快照，不用等回测框架就能开始积累调参数据 |
+| "五道硬性闸门"的产品描述不准确 | 改用三层判断链描述：Hard Blocker（硬性拦截）/ Soft Cap（软上限）/ Setup Progression（结构事实推进），见第1节 |
+| `NEW_START` 板块"放行"含义模糊（Sector Gate允许列表 vs 可以BUYABLE） | 文档统一区分"Sector Gate 允许列表"（可以进入候选池追踪）和"软上限"（是否放行到BUYABLE），见第4节 Sector 7分类 |
+| Stress R/R 文档仍写"分母是主板9.9%常数" | 删除具体百分比数字，统一只写"使用现有 `get_limit_pct(code,is_st)`"，避免继续被误读成硬编码（这是同一处误解在第一轮评审里已经被指出过一次，说明上次修复不彻底，这次改成不写具体数字从根源上避免复发） |
+| "标准止损"命名容易被理解成行业标准做法 | 不改字段名（DB/API 兼容），文档改用"结构失效位/缓冲失效位/T+1压力情景止损"三个更精确的概念名分别描述，见第4节 |
+| Core Leader Score 的 `SectorLeadershipBonus` 可能循环定义 | 核实后确认**不是循环**（没有任何反馈路径），但比"理论上循环"更严重——`is_leader` 从未被生产代码置为 `True`，该分量**恒为0**，已如实记录在第8节已知局限第5条 |
+
+这一轮没有做的（评审同时提出但明确判断为独立范围，不在本次实施）：Mainline Clarity
+市场主线分类器、Emotion Leader/Trend Anchor 分离展示、`Candidate × Theme` 多主题模型、
+Prompt解析降级监控——均已记录在第8节已知局限第6-8条 + 第12节 Phase 3 待办，等待
+后续单独评估；候选专属日内快照引擎的**自动化定时抓取频率**本身（跟第6节"已知运营
+缺口"是同一个决策点）也刻意没有动，因为这会改变对东财接口的稳定态请求压力，需要
+单独跟用户确认，不能在一次批量修复里顺带静默加上。
+
 ---
 
 ## 12. Phase 2 / Phase 3 待办跟踪
@@ -364,15 +472,28 @@ Policy 只会把 bug 一起复制三份。计划顺序：
 - [x] 候选池成交额条件本地二次校验（后又主动撤回，改为信任东财Prompt，见第8节第1条）
 - [x] ~~完整监管风险 0-100 分~~ 不做，主动撤回（跟用户原始规格冲突）
 - [x] 2026-08-22 状态机纠错批次（见第11节）
+- [x] 2026-08-23 结构事实层/交易决策层二次分离 + 数据合理性校验 + 市场板块负反馈
+      字段 + H1/L1原始快照（见第11.1节）
 
 ### Phase 3（依赖分钟级数据，本仓库当前无该数据源，需先起数据链路）
 - [ ] 候选专属日内快照引擎（外部评审建议提前到 Phase 3 最优先——是回踩结构识别精度、
-      真正意义上的分钟级监控、未来回测重放的共同基础设施）
-- [ ] 回测框架 + Golden Case（外部评审建议先于 T+1/Leadership Impact——在验证系统
-      有没有统计优势之前，先堆更多风险指标意义有限）
+      真正意义上的分钟级监控、未来回测重放的共同基础设施；评审进一步指出可以现在就
+      低成本先做：复用 `/refresh` 里已经拉到的 `fetch_stock_quotes_batch` 报价数据写一张
+      快照表即可，不需要新的外部请求——**唯一需要额外确认的是自动定时抓取的频率/cron**，
+      这会改变对东财接口的稳定态请求压力，需单独跟用户确认后再加，不能静默引入）
+- [ ] Golden Case 测试场景（评审指出不需要等完整回测框架——可以先用合成的多步价格
+      序列 + 已知真实案例如"神奇制药"，针对 `compute_structural_transition`/
+      `derive_display_state` 写语义级测试，独立于底下的历史回测框架）
+- [ ] 回测框架（历史数据批量验证策略有效性，Engineering/Semantic-Golden-Case/Strategy
+      三层验证体系的最后一层，见第1节"关于验证记录的重要区分"）
 - [ ] T+1 供给风险
 - [ ] Leadership Impact V0.1（板块带动性）
 - [ ] 日内获利盘估算（明确标注"估算"而非真实筹码）
+- [ ] Mainline Clarity 市场主线分类器（今天全市场有没有清晰主线，见第8节第6条）
+- [ ] Emotion Leader / Trend Anchor 角色分离展示（见第8节，跟 Setup Type 三类拆分
+      工作有重叠，建议放在那之后一起做）
+- [ ] `Candidate × Theme` 多主题归属模型（见第8节第7条）
+- [ ] 东财 Prompt 解析降级监控（候选召回数量异常骤降时告警，见第8节第8条）
 
 ### Setup Type 三类拆分（独立跟踪，见第10节，不计入 Phase 3 顺序）
 - [x] 架构预留：`setup_type` 字段 + 顺序规划
