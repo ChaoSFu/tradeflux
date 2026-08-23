@@ -140,6 +140,19 @@ class SnapshotResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DiscoveryRunResponse(BaseModel):
+    id: int
+    run_date: date
+    timestamp: datetime
+    prompt1_raw_count: int
+    prompt2_raw_count: int
+    verified_count: int
+    is_anomaly: bool
+    anomaly_reason: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
 class W2SConfigResponse(BaseModel):
     prompt1: str
     prompt2: str

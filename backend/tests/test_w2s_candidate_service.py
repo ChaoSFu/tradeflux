@@ -5,6 +5,7 @@ verify_prompt1/verify_prompt2 因此不吃 amount 相关参数。
 """
 from app.services.w2s_candidate_service import (
     compute_ma, compute_pct20_percentile, verify_prompt1, verify_prompt2,
+    detect_recall_anomaly,
 )
 
 
@@ -57,3 +58,23 @@ def test_verify_prompt2_fails_when_not_between_ma5_and_ma20():
 
 def test_verify_prompt2_fails_below_top_percentile():
     assert verify_prompt2(pct20_percentile=0.5, yesterday_close=9.5, ma5=10.0, ma20=8.0) is False
+
+
+def test_recall_anomaly_none_with_insufficient_history():
+    assert detect_recall_anomaly(5, [30, 32]) is None  # 只有2次历史，不足min_history=3
+
+
+def test_recall_anomaly_none_when_within_normal_range():
+    assert detect_recall_anomaly(28, [30, 32, 29, 31]) is None
+
+
+def test_recall_anomaly_flags_sharp_drop():
+    # 历史均值30，本次只有5，比例远低于low_ratio=0.3
+    reason = detect_recall_anomaly(5, [30, 32, 29, 31])
+    assert reason is not None and "显著低于" in reason
+
+
+def test_recall_anomaly_flags_sharp_spike():
+    # 历史均值30，本次150，比例远高于high_ratio=3.0
+    reason = detect_recall_anomaly(150, [30, 32, 29, 31])
+    assert reason is not None and "显著高于" in reason

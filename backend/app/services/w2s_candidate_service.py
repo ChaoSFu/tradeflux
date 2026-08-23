@@ -25,7 +25,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from ..models.stock import Stock, StockDailySnapshot
-from ..models.weak_to_strong_radar import WeakToStrongCandidate
+from ..models.weak_to_strong_radar import WeakToStrongCandidate, WeakToStrongDiscoveryRun
 from .eastmoney_fetcher import fetch_strong_pool_codes
 from . import w2s_config_service as cfg
 
@@ -43,6 +43,31 @@ def compute_pct20_percentile(pct_change_20d: float, universe: list[float]) -> fl
         return 0.0
     below = sum(1 for v in universe if v < pct_change_20d)
     return below / len(universe)
+
+
+def detect_recall_anomaly(
+    current_total_raw: int, historical_totals: list[int],
+    min_history: int = 3, low_ratio: float = 0.3, high_ratio: float = 3.0,
+) -> Optional[str]:
+    """
+    纯函数（Prompt Parser Monitor，2026-08-23新增）：候选召回数量异常检测。
+    历史样本不足（<min_history次）时不判断——没有基准，强行判断只会制造假
+    警报。当前值相对历史均值过低（可能是东财把 Prompt 解析逻辑改坏、召回
+    大幅萎缩）或过高（可能是条件被错误放宽，混进了不该出现的股票）都标记，
+    只返回一行人类可读原因，不做任何自动纠正——发现异常应该是人工去核实
+    东财这次到底解析成了什么，而不是系统自己重试或悄悄换一套逻辑掩盖过去。
+    """
+    if len(historical_totals) < min_history:
+        return None
+    avg = sum(historical_totals) / len(historical_totals)
+    if avg <= 0:
+        return None
+    ratio = current_total_raw / avg
+    if ratio < low_ratio:
+        return f"候选召回数量({current_total_raw})显著低于近{len(historical_totals)}次均值({avg:.0f})，疑似Prompt解析异常或接口降级"
+    if ratio > high_ratio:
+        return f"候选召回数量({current_total_raw})显著高于近{len(historical_totals)}次均值({avg:.0f})，疑似Prompt条件被错误放宽"
+    return None
 
 
 def verify_prompt1(
@@ -147,7 +172,11 @@ def discover_candidates(db: Session, as_of: date_cls) -> dict:
         "prompt1_raw": len(raw1), "prompt2_raw": len(raw2),
         "verified": len(verified_by_code), "new": 0, "renewed": 0, "expired": 0,
     }
+    # 召回异常检测放在这个早退分支之前——0候选/召回骤降正是Prompt Parser Monitor
+    # 最需要抓到的情况，不能被"没有可处理的候选"这条早退路径悄悄跳过。
+    _log_discovery_run(db, as_of, prompts, raw1_count=len(raw1), raw2_count=len(raw2), verified_count=stats["verified"])
     if not verified_by_code:
+        db.commit()
         return stats
 
     stock_by_code = {
@@ -196,3 +225,26 @@ def discover_candidates(db: Session, as_of: date_cls) -> dict:
 
     db.commit()
     return stats
+
+
+def _log_discovery_run(
+    db: Session, as_of: date_cls, prompts: dict, *, raw1_count: int, raw2_count: int, verified_count: int,
+) -> None:
+    """
+    薄封装：写一条 WeakToStrongDiscoveryRun + 跟最近10次历史总召回量比较，
+    异常时标记 is_anomaly/anomaly_reason（只记录，不自动处理，见 detect_recall_anomaly）。
+    """
+    recent = (
+        db.query(WeakToStrongDiscoveryRun)
+        .order_by(WeakToStrongDiscoveryRun.timestamp.desc())
+        .limit(10)
+        .all()
+    )
+    historical_totals = [r.prompt1_raw_count + r.prompt2_raw_count for r in recent]
+    current_total = raw1_count + raw2_count
+    anomaly_reason = detect_recall_anomaly(current_total, historical_totals)
+    db.add(WeakToStrongDiscoveryRun(
+        run_date=as_of, prompt1_text=prompts["prompt1"], prompt2_text=prompts["prompt2"],
+        prompt1_raw_count=raw1_count, prompt2_raw_count=raw2_count, verified_count=verified_count,
+        is_anomaly=anomaly_reason is not None, anomaly_reason=anomaly_reason,
+    ))

@@ -17,10 +17,12 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_auth
 from ..database import SessionLocal, get_db
-from ..models.weak_to_strong_radar import WeakToStrongCandidate, WeakToStrongEvent, WeakToStrongSnapshot
+from ..models.weak_to_strong_radar import (
+    WeakToStrongCandidate, WeakToStrongEvent, WeakToStrongSnapshot, WeakToStrongDiscoveryRun,
+)
 from ..schemas.weak_to_strong_radar import (
     CandidateResponse, CandidateDetailResponse, ChecklistGroup,
-    RefreshResultResponse, RefreshStatusResponse, EventResponse, SnapshotResponse,
+    RefreshResultResponse, RefreshStatusResponse, EventResponse, SnapshotResponse, DiscoveryRunResponse,
     W2SConfigResponse, W2SConfigUpdateRequest, MarketGateResponse,
 )
 from ..services import w2s_config_service as cfg
@@ -203,6 +205,17 @@ def list_snapshots(stock_code: str, trade_date: date | None = None, limit: int =
     q = db.query(WeakToStrongSnapshot).filter(WeakToStrongSnapshot.stock_code == stock_code)
     q = q.filter(WeakToStrongSnapshot.trade_date == (trade_date or date.today()))
     return q.order_by(WeakToStrongSnapshot.timestamp.asc()).limit(min(limit, 2000)).all()
+
+
+@router.get("/discovery-runs", response_model=list[DiscoveryRunResponse])
+def list_discovery_runs(limit: int = 30, db: Session = Depends(get_db)):
+    """候选池发现的Prompt解析监控日志，最近在前——用于人工核查召回数量是否异常。"""
+    return (
+        db.query(WeakToStrongDiscoveryRun)
+        .order_by(WeakToStrongDiscoveryRun.timestamp.desc())
+        .limit(min(limit, 200))
+        .all()
+    )
 
 
 @router.get("/config", response_model=W2SConfigResponse)

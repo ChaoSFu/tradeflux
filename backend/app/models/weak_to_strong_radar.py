@@ -203,3 +203,29 @@ class WeakToStrongSnapshot(Base):
     structural_state = Column(String(20), nullable=True)  # 写入时刻的结构事实层状态，方便回看时对齐H1/L1
     recovery_high = Column(Float, nullable=True)
     pullback_low = Column(Float, nullable=True)
+
+
+class WeakToStrongDiscoveryRun(Base):
+    """
+    候选池发现的 Prompt 解析监控日志（2026-08-23新增，外部评审"Prompt Parser
+    Monitor"建议）：每次 discover_candidates 跑完追加一条，记录本次两路 Prompt
+    的原始召回数量、当时用的 Prompt 文本、以及跟近期历史均值比较后是否判定为
+    异常。候选发现每天只跑1-2次（跟 daily_update 同一节奏），这里只是顺手多
+    写一行，不产生任何新的外部请求。
+
+    只做检测和记录，不做自动纠正——一旦某天召回数量显著偏离历史均值（可能是
+    东财改了 Prompt 解析逻辑，也可能是接口本身降级），应该是人工去核实，而不
+    是系统自己重试或者悄悄换一套逻辑掩盖过去。
+    """
+    __tablename__ = "weak_to_strong_discovery_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_date = Column(Date, nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, server_default=func.now())
+    prompt1_text = Column(Text, nullable=True)
+    prompt2_text = Column(Text, nullable=True)
+    prompt1_raw_count = Column(Integer, nullable=False, default=0)
+    prompt2_raw_count = Column(Integer, nullable=False, default=0)
+    verified_count = Column(Integer, nullable=False, default=0)
+    is_anomaly = Column(Boolean, default=False, nullable=False)
+    anomaly_reason = Column(Text, nullable=True)
