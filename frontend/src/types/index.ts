@@ -577,6 +577,7 @@ export interface W2SCandidate {
   sector_strength_score: number | null
   sector_momentum_score: number | null
   sector_divergence_health: number | null  // 仅 phase=4（分歧阶段）有值，越低代表板块高位分歧越危险
+  is_mainline_sector: boolean  // 是否在当前MAIN_UPTREND强度前N名，不在则结构确认封顶CONFIRMING
 
   leader_type: W2SLeaderType | null
   leader_rank: number | null

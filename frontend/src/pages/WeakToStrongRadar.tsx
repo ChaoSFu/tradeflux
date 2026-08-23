@@ -45,6 +45,14 @@ function formatDuration(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}秒` : `${ms}毫秒`
 }
 
+const REFRESH_COOLDOWN_SECONDS = 30
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}秒前`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}分钟前`
+}
+
 function CandidateRow({
   cand, expanded, onToggle,
 }: {
@@ -79,7 +87,17 @@ function CandidateRow({
         <td className="px-2 py-2 max-w-[180px]">
           {cand.sector_name ? (
             <>
-              <div className="text-text-secondary truncate">{cand.sector_name}</div>
+              <div className="text-text-secondary truncate flex items-center gap-1">
+                {cand.sector_name}
+                {cand.is_mainline_sector && (
+                  <span
+                    className="shrink-0 px-1 py-0.5 rounded text-[10px] font-medium bg-accent-dim text-accent"
+                    title="当前MAIN_UPTREND强度前列，结构确认后才可能放行到BUYABLE"
+                  >
+                    主线
+                  </span>
+                )}
+              </div>
               <div className="text-text-muted text-[11px]">{cand.sector_category ?? '—'}</div>
             </>
           ) : <span className="text-text-muted/50">未分类</span>}
@@ -150,6 +168,20 @@ export default function WeakToStrongRadar() {
     mutationFn: triggerW2SRefresh,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['w2s-refresh-status'] }),
   })
+
+  // 每秒跳一次，用来实时算"距上次刷新多久"和刷新按钮的防连点冷却倒计时——
+  // 手动触发为主的刷新模式下，这个时间比自动轮询频率更值得让用户看见。
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const lastTriggeredAt = refreshStatus?.last_result?.triggered_at
+    ? new Date(refreshStatus.last_result.triggered_at).getTime()
+    : null
+  const secondsSinceRefresh = lastTriggeredAt != null ? Math.max(0, Math.floor((nowTick - lastTriggeredAt) / 1000)) : null
+  const cooldownRemaining = secondsSinceRefresh != null ? Math.max(0, REFRESH_COOLDOWN_SECONDS - secondsSinceRefresh) : 0
+  const inCooldown = cooldownRemaining > 0
 
   // 刷新任务结束后（running: true → false）拉取最新候选列表
   const wasRunning = useMemo(() => refreshStatus?.running ?? false, [refreshStatus?.running])
@@ -222,6 +254,9 @@ export default function WeakToStrongRadar() {
             <span className="ml-2">
               上次刷新：{refreshStatus.last_result.refreshed} 只 / 状态变化 {refreshStatus.last_result.state_changed} 只
               · 耗时 {formatDuration(refreshStatus.last_result.duration_ms)}
+              {secondsSinceRefresh != null && (
+                <span className="text-text-muted/70"> · {formatElapsed(secondsSinceRefresh)}</span>
+              )}
             </span>
           )}
           {refreshStatus?.last_error && (
@@ -233,17 +268,21 @@ export default function WeakToStrongRadar() {
         </div>
         <button
           onClick={() => refreshMutation.mutate()}
-          disabled={!!isRefreshing || !isLoggedIn}
-          title={isLoggedIn ? undefined : '需要登录后才能手动触发刷新'}
+          disabled={!!isRefreshing || !isLoggedIn || inCooldown}
+          title={
+            !isLoggedIn ? '需要登录后才能手动触发刷新'
+              : inCooldown ? `刚刷新过（${secondsSinceRefresh}秒前），${cooldownRemaining}秒后可再次刷新，避免无意义重复请求`
+              : undefined
+          }
           className={cn(
             'flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors',
-            isRefreshing || !isLoggedIn
+            isRefreshing || !isLoggedIn || inCooldown
               ? 'bg-bg-elevated text-text-muted cursor-not-allowed'
               : 'bg-accent-dim text-accent hover:bg-accent/20',
           )}
         >
           <RefreshCw className={cn('w-3.5 h-3.5', isRefreshing && 'animate-spin')} />
-          {isRefreshing ? '刷新中…' : '立即刷新'}
+          {isRefreshing ? '刷新中…' : inCooldown ? `${cooldownRemaining}秒后可再刷新` : '刷新数据并重新评估'}
         </button>
       </div>
 
@@ -253,7 +292,7 @@ export default function WeakToStrongRadar() {
           <div className="p-4"><LoadingRows rows={6} /></div>
         ) : sorted.length === 0 ? (
           <div className="p-8 text-center text-text-muted text-sm">
-            暂无候选。候选池由每日更新流程盘前发现，也可点击右上角「立即刷新」触发一次快速状态刷新。
+            暂无候选。候选池由每日更新流程盘前发现，也可点击右上角「刷新数据并重新评估」触发一次快速状态刷新。
           </div>
         ) : (
           <div className="overflow-x-auto">
