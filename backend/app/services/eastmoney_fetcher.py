@@ -600,6 +600,86 @@ def _fetch_kline_tencent(
         return _parse_tencent_klines(raw_bars, is_st, limit_pct)
 
 
+def _parse_sina_klines(rows: list[dict], is_st: bool = False, limit_pct: float = 9.90) -> List[KLineBar]:
+    """
+    解析新浪财经K线数据（quotes.sina.cn 的 CN_MarketDataService.getKLineData
+    接口，指数/个股通用格式）：[{day, open, close, high, low, volume}, ...]。
+    涨跌幅由相邻两根K线收盘价推算；换手率无法获取，设为0——涨跌停/炸板判断
+    逻辑跟 _parse_tencent_klines 完全一致，只是输入是dict不是list（这里额外
+    用一个运行变量记录上一根有效收盘价，比 Tencent 版直接下标回看
+    raw_bars[i-1] 更稳一点：中间某根数据畸形被跳过时不会拿一个解析失败的
+    值去算涨跌幅）。
+    """
+    bars: List[KLineBar] = []
+    prev_close = 0.0
+    for i, row in enumerate(rows):
+        try:
+            dt = date.fromisoformat(str(row["day"]))
+            open_p = float(row["open"])
+            close_p = float(row["close"])
+            high_p = float(row["high"])
+            low_p = float(row["low"])
+        except (KeyError, ValueError, TypeError):
+            continue
+
+        this_prev_close = 0.0 if i == 0 else prev_close
+        pct = round((close_p - this_prev_close) / this_prev_close * 100, 2) if this_prev_close > 0 else 0.0
+
+        if this_prev_close > 0:
+            actual_limit = limit_pct + 0.1
+            lu_price = round(this_prev_close * (1 + actual_limit / 100), 2)
+            ld_price = round(this_prev_close * (1 - actual_limit / 100), 2)
+            is_lu = close_p >= lu_price - 0.005
+            is_ld = close_p <= ld_price + 0.005
+        else:
+            is_lu = pct >= limit_pct
+            is_ld = pct <= -limit_pct
+
+        if not is_st and not is_lu and this_prev_close > 0:
+            limit_price = this_prev_close * (1 + limit_pct / 100)
+            is_broken = high_p >= limit_price * 0.999
+        else:
+            is_broken = False
+
+        bars.append(KLineBar(
+            date=dt,
+            open_price=open_p,
+            close_price=close_p,
+            high_price=high_p,
+            low_price=low_p,
+            pct_change=pct,
+            turnover_rate=0.0,  # 新浪接口无换手率
+            is_limit_up=is_lu,
+            is_limit_down=is_ld,
+            is_broken_board=is_broken,
+            is_one_word_limit_up=is_lu and low_p > 0 and low_p >= close_p - 0.005,
+            is_one_word_limit_down=is_ld and high_p > 0 and high_p <= close_p + 0.005,
+        ))
+        prev_close = close_p
+    return bars
+
+
+def _fetch_kline_sina(
+    code: str, market: int, days: int, is_st: bool, limit_pct: float, timeout: int
+) -> List[KLineBar]:
+    """新浪财经历史K线（无换手率），跟 _fetch_kline_tencent 同级的第三个数据源。"""
+    import json as _json
+    prefix = "bj" if _is_bj_code(code) else ("sh" if market == 1 else "sz")
+    url = (
+        "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_=/CN_MarketDataService.getKLineData"
+        f"?symbol={prefix}{code}&scale=240&ma=no&datalen={days}"
+    )
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
+        text = client.get(url).text
+    start, end = text.find("("), text.rfind(")")
+    if start < 0 or end <= start:
+        raise ValueError("新浪财经 K 线返回格式异常")
+    rows = _json.loads(text[start + 1: end])
+    if not rows:
+        raise ValueError("新浪财经 K 线返回空数据")
+    return _parse_sina_klines(rows, is_st, limit_pct)
+
+
 def fetch_kline(
     code: str,
     market: int,
@@ -608,21 +688,64 @@ def fetch_kline(
     timeout: int = 15,
 ) -> List[KLineBar]:
     """
-    拉取单股日线 K 线数据。优先东方财富（含换手率），失败切换腾讯财经。
+    拉取单股日线 K 线数据。2026-08-23起：腾讯/新浪并列主力（先试腾讯，失败试
+    新浪），东财push2his降级为两者都失败时的最后兜底——push2/push2his这一系
+    域名生产环境被持续限流（详见弱转强雷达行情拉取同一次诊断），不再默认
+    优先打它。单只股票场景下顺序尝试即可，不需要并发（批量场景的"两路并发
+    分摊"在 fetch_klines_batch 里做）。
     days=65 保证能算出近60日指标（留5日冗余）。
     涨跌停幅度根据股票代码自动判断（主板±10%，科创板/创业板±20%）。
     """
     lp = get_limit_pct(code, is_st)
     try:
-        return _fetch_kline_eastmoney(code, market, days, is_st, lp, timeout)
+        return _fetch_kline_tencent(code, market, days, is_st, lp, timeout)
     except Exception as e:  # noqa: BLE001
-        print(f"[fetcher] 个股 {market}.{code} 东财K线走兜底源（腾讯）: {type(e).__name__}", flush=True)
+        print(f"[fetcher] 个股 {market}.{code} 腾讯K线失败，改试新浪: {type(e).__name__}", flush=True)
 
     try:
-        return _fetch_kline_tencent(code, market, days, is_st, lp, timeout)
+        return _fetch_kline_sina(code, market, days, is_st, lp, timeout)
+    except Exception as e:  # noqa: BLE001
+        print(f"[fetcher] 个股 {market}.{code} 新浪K线也失败，改试东财兜底: {type(e).__name__}", flush=True)
+
+    try:
+        return _fetch_kline_eastmoney(code, market, days, is_st, lp, timeout)
     except Exception as e:
         print(f"[fetcher] K 线拉取最终失败 ({market}.{code}): {e}")
         return []
+
+
+def _fetch_kline_group(
+    stocks: List[StockBasicInfo], days: int, max_workers: int, delay_between: float,
+    source_fn: Callable, source_label: str,
+) -> Dict[str, List[KLineBar]]:
+    """薄封装：一组股票并发跑同一个数据源，单只失败就返回空列表（不拖垮整组），
+    调用方按 not results.get(code) 判定这只股票是否需要换源兜底。"""
+    group_results: Dict[str, List[KLineBar]] = {}
+    if not stocks:
+        return group_results
+
+    def _fetch_one(stock: StockBasicInfo) -> Tuple[str, List[KLineBar]]:
+        lp = get_limit_pct(stock.code, stock.is_st)
+        try:
+            bars = source_fn(stock.code, stock.market, days, stock.is_st, lp, 15)
+        except Exception as e:  # noqa: BLE001
+            print(f"[fetcher] 个股 {stock.market}.{stock.code} {source_label}K线失败: {type(e).__name__}", flush=True)
+            bars = []
+        if delay_between > 0:
+            time.sleep(delay_between)
+        return stock.code, bars
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(stocks)))) as executor:
+        futures = {executor.submit(_fetch_one, s): s for s in stocks}
+        for future in as_completed(futures):
+            try:
+                code, bars = future.result()
+                group_results[code] = bars
+            except Exception as e:  # noqa: BLE001
+                stock = futures[future]
+                print(f"[fetcher] 批量拉取失败 ({stock.code}): {e}")
+                group_results[stock.code] = []
+    return group_results
 
 
 def fetch_klines_batch(
@@ -632,28 +755,44 @@ def fetch_klines_batch(
     delay_between: float = 0.1,
 ) -> Dict[str, List[KLineBar]]:
     """
-    并发批量拉取多只股票的 K 线。
-    返回 {code: [KLineBar, ...]}
-    max_workers 默认 5（保守，避免触发服务器封锁）。
+    并发批量拉取多只股票的 K 线。返回 {code: [KLineBar, ...]}。
+
+    2026-08-23起：候选轮询拆两组，分别用腾讯/新浪并发拉取（组内仍按
+    max_workers 并发多只股票），两路都没拿到数据的股票统一交给东财push2his
+    兜底一次（单跳，不递归）——push2/push2his 这一系域名生产环境被持续限流
+    （详见弱转强雷达行情拉取的同一次诊断，K线专属指数早在更早前就已确认
+    "长期被针对性限流"，见 fetch_index_kline），不再让它做主力，只留兜底
+    角色。腾讯/新浪都没有换手率字段，东财兜底成功的那部分股票换手率能补回，
+    走腾讯/新浪主力的则跟弱转强雷达的行情场景一样，换手率诚实缺失，不编造。
     """
+    if not stocks:
+        return {}
+
+    groups = _split_round_robin(stocks, 2)
+    tencent_group, sina_group = groups[0], groups[1]
+
     results: Dict[str, List[KLineBar]] = {}
-
-    def _fetch_one(stock: StockBasicInfo) -> Tuple[str, List[KLineBar]]:
-        bars = fetch_kline(stock.code, stock.market, days=days, is_st=stock.is_st)
-        if delay_between > 0:
-            time.sleep(delay_between)
-        return stock.code, bars
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_fetch_one, s): s for s in stocks}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {}
+        if tencent_group:
+            futures[executor.submit(
+                _fetch_kline_group, tencent_group, days, max_workers, delay_between,
+                _fetch_kline_tencent, "腾讯",
+            )] = "tencent"
+        if sina_group:
+            futures[executor.submit(
+                _fetch_kline_group, sina_group, days, max_workers, delay_between,
+                _fetch_kline_sina, "新浪",
+            )] = "sina"
         for future in as_completed(futures):
-            try:
-                code, bars = future.result()
-                results[code] = bars
-            except Exception as e:
-                stock = futures[future]
-                print(f"[fetcher] 批量拉取失败 ({stock.code}): {e}")
-                results[stock.code] = []
+            results.update(future.result())
+
+    missing_stocks = [s for s in stocks if not results.get(s.code)]
+    if missing_stocks:
+        em_results = _fetch_kline_group(
+            missing_stocks, days, max_workers, delay_between, _fetch_kline_eastmoney, "东财",
+        )
+        results.update(em_results)
 
     return results
 
@@ -1530,15 +1669,26 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
     拉取指数日线（用于偏离值基准）。secid 形如 '1.000001'（上证）/'0.399006'（创业板指）。
     返回 [{'date': 'YYYY-MM-DD', 'close': float, 'pct_change': float}, ...]，按日期升序。
     失败返回空列表。
-    klines 字段：f51 日期, f53 收盘, f59 涨跌幅%。
+
+    2026-08-23起：腾讯为主力，新浪补北证指数历史缺口（腾讯对北证只有最新
+    一根），东财push2his降级为两者都不够时的最后兜底——这几个固定指数secid
+    此前就已经确认"长期被东财push2his接口针对性限流"（实测重试基本不会
+    成功），加上同一次诊断发现的 push2/push2his 域名持续故障，没有理由继续
+    把东财当主力，指数只有5个，顺序尝试即可，不需要并发分摊。
     """
+    out = _fetch_index_kline_tencent(secid, days=days, timeout=timeout)
+    if len(out) < 61:
+        # 腾讯对北证指数只有最新一根 → 用新浪补（有北证50完整历史）
+        sina = _fetch_index_kline_sina(secid, days=days, timeout=timeout)
+        if len(sina) > len(out):
+            out = sina
+    if len(out) >= 61:
+        return out
+
+    # 腾讯+新浪都不够，东财兜底（原始 klines 字段：f51 日期, f53 收盘, f59 涨跌幅%）
     end_date = date.today().strftime("%Y%m%d")
     raw: list = []
     try:
-        # 复用同线程的长连接（同 _fetch_kline_eastmoney 个股请求的做法）。
-        # 注：这几个固定指数secid长期被东财push2his接口针对性限流，实测重试
-        # 基本不会成功（多次观察attempt2成功率≈0），只会拖长耗时+刷屏日志，
-        # 已改成单次尝试、失败直接走腾讯/新浪兜底（同个股的处理方式一致）。
         client = _thread_warmed_client(timeout=timeout)
         resp = client.get(KLINE_URL, params={
             "secid": secid,
@@ -1552,15 +1702,16 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
         payload = resp.json()
         raw = (payload.get("data") or {}).get("klines") or []
     except Exception as e:  # noqa: BLE001
-        print(f"[fetcher] 指数 {secid} 东财K线走兜底源（东财: {type(e).__name__}）", flush=True)
+        print(f"[fetcher] 指数 {secid} 腾讯+新浪均不足，东财兜底也失败: {type(e).__name__}", flush=True)
+        return out  # 东财也失败，返回目前手头最好的结果（可能仍不足61条，但好过空）
 
-    out: list[dict] = []
+    em_out: list[dict] = []
     for line in raw:
         parts = line.split(",")
         if len(parts) < 9:
             continue
         try:
-            out.append({
+            em_out.append({
                 "date": parts[0],
                 "open": float(parts[1]),
                 "close": float(parts[2]),
@@ -1572,15 +1723,7 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
             })
         except (ValueError, IndexError):
             continue
-    if not out:
-        # 东财被限流/返回空 → 回退腾讯
-        out = _fetch_index_kline_tencent(secid, days=days, timeout=timeout)
-    if len(out) < 61:
-        # 腾讯对北证指数只有最新一根 → 再回退新浪（有北证50完整历史）
-        sina = _fetch_index_kline_sina(secid, days=days, timeout=timeout)
-        if len(sina) > len(out):
-            out = sina
-    return out
+    return em_out if len(em_out) > len(out) else out
 
 
 def _fetch_index_kline_sina(secid: str, days: int = 320, timeout: int = 15) -> list[dict]:
