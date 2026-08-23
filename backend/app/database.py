@@ -118,6 +118,10 @@ def _apply_schema_patches():
         "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS signal_trade_date DATE",
         "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS vwap FLOAT",
         "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS setup_type VARCHAR(20) DEFAULT 'GENERIC' NOT NULL",
+        # 弱转强雷达：事件日志补 H1/L1 原始快照（供以后回看真实样本调回踩阈值用）
+        "ALTER TABLE weak_to_strong_events ADD COLUMN IF NOT EXISTS structural_state VARCHAR(20)",
+        "ALTER TABLE weak_to_strong_events ADD COLUMN IF NOT EXISTS recovery_high FLOAT",
+        "ALTER TABLE weak_to_strong_events ADD COLUMN IF NOT EXISTS pullback_low FLOAT",
     ]
     # 每条补丁独立事务：Postgres 中任一语句报错会使整个事务进入 aborted 状态，
     # 若共用事务，末尾 ADD CONSTRAINT（无 IF NOT EXISTS）已存在时报错，

@@ -109,6 +109,9 @@ class EventResponse(BaseModel):
     sector_phase: Optional[str] = None
     leader_type: Optional[str] = None
     price: Optional[float] = None
+    structural_state: Optional[str] = None
+    recovery_high: Optional[float] = None
+    pullback_low: Optional[float] = None
     formula_version: str
 
     model_config = {"from_attributes": True}

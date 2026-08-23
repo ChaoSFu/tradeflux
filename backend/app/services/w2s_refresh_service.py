@@ -51,16 +51,27 @@ def _resolve_regulatory_risk(db: Session, code: str, today: date_cls) -> str:
     return sm.classify_regulatory_risk(is_under, days_lifted)
 
 
-def _compute_vwap(amount: Optional[float], volume: Optional[float]) -> Optional[float]:
+def _compute_vwap(
+    amount: Optional[float], volume: Optional[float],
+    low: Optional[float] = None, high: Optional[float] = None,
+) -> Optional[float]:
     """
     纯函数：当日成交额/成交量算出真实VWAP。东财 push2 quote 接口的成交量字段
     单位是"手"（跟本仓库 K 线解析同一数据源的既有约定一致，见 eastmoney_fetcher
     ._parse_kline_bar 的注释），换算成股数要 *100。量为0/缺失（比如刚开盘还
     没有成交）时返回 None，调用方退回 MA5，不假装算出了一个VWAP。
+
+    合理性校验（round3 review）：VWAP 物理上必须落在 [当日最低价, 当日最高价]
+    区间内，超出说明成交量单位换算错了或接口字段本身异常——这种情况下返回一个
+    错误的VWAP去参与结构判断比直接退回MA5更危险，所以校验不通过时也返回 None。
     """
-    if amount is None or volume is None or volume <= 0:
+    if amount is None or volume is None or volume <= 0 or amount <= 0:
         return None
-    return round(amount / (volume * 100), 4)
+    vwap = round(amount / (volume * 100), 4)
+    if low is not None and high is not None and low > 0 and high > 0:
+        if not (low * 0.999 <= vwap <= high * 1.001):
+            return None
+    return vwap
 
 
 def _reset_intraday_session(cand: WeakToStrongCandidate, today: date_cls) -> None:
@@ -161,7 +172,7 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
 
         closes = _recent_closes(db, stock.id, today, limit=5)
         ma5 = compute_ma(closes, 5)
-        vwap = _compute_vwap(quote.amount, quote.volume)
+        vwap = _compute_vwap(quote.amount, quote.volume, low=quote.low, high=quote.high)
         limit_pct = get_limit_pct(stock.code, stock.is_st)
         limit_price = round(quote.prev_close * (1 + limit_pct / 100), 2) if quote.prev_close else None
         limit_room = (
@@ -174,10 +185,16 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
         # 真实开盘Gap = (今开-昨收)/昨收——今开一旦开盘就固定，不会像"当前涨跌幅"
         # 那样全天漂移，09:26 定时刷新和用户任何时候手动刷新看到的都是同一个数。
         # 今开缺失时（接口偶发字段缺失）退回当前涨跌幅近似。
-        if quote.open is not None and quote.prev_close:
+        # 合理性校验（round3 review）：开盘Gap物理上不可能超过该股当日涨跌停幅度
+        # （留10%容差应对四舍五入），超出说明 open/prev_close 字段本身异常，
+        # 宁可置 None（结构判断退化为不依赖竞价Gap的价格判断）也不能带着一个
+        # 不可能的Gap值参与状态机。
+        if quote.open is not None and quote.open > 0 and quote.prev_close and quote.prev_close > 0:
             auction_gap = round((quote.open - quote.prev_close) / quote.prev_close * 100, 2)
         else:
             auction_gap = quote.pct_change
+        if auction_gap is not None and abs(auction_gap) > limit_pct * 1.1:
+            auction_gap = None
 
         stops = risk.compute_stops(
             price=quote.price, ma5=ma5, pullback_low=cand.pullback_low, limit_down_pct=limit_pct,
@@ -268,6 +285,8 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
                 sector_momentum=cand.sector_momentum_score,
                 leader_type=leader_type, leader_rank=cand.leader_rank, leader_score=cand.leader_score,
                 setup_state=new_state,
+                structural_state=result["structural_state"],
+                recovery_high=result["recovery_high"], pullback_low=result["pullback_low"],
                 price=quote.price, prev_close=quote.prev_close, vwap=vwap,
                 limit_price=limit_price, limit_room=limit_room,
                 regulatory_risk=regulatory_risk,

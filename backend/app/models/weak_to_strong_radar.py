@@ -137,6 +137,11 @@ class WeakToStrongEvent(Base):
     leadership_impact = Column(Float, nullable=True)
 
     setup_state = Column(String(20), nullable=True)
+    structural_state = Column(String(20), nullable=True)  # 结构事实层原始值，独立于 setup_state（展示态）
+    recovery_high = Column(Float, nullable=True)  # H1 原始值：事件发生时刻的修复高点
+    pullback_low = Column(Float, nullable=True)   # L1 原始值：事件发生时刻的回踩低点
+    # 保留每次状态变化时刻的 H1/L1 原始快照，供以后回看真实样本调 w2s_pullback_min_pct
+    # 这类阈值时用——不用等专门的回测框架，这两列本身就是最小可用的调参数据源。
 
     # 行情快照
     price = Column(Float, nullable=True)
