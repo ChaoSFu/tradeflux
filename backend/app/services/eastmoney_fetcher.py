@@ -1325,7 +1325,16 @@ def _w2s_log(tag: str, msg: str) -> None:
 @dataclass
 class StockQuote:
     """个股实时快照（弱转强雷达用）。全仓库此前没有任何地方暴露过当前绝对价格
-    ——之前所有页面都只用涨跌幅，这是第一个真正拉「现价」的地方。"""
+    ——之前所有页面都只用涨跌幅，这是第一个真正拉「现价」的地方。
+
+    2026-08-23起三路数据源并发/兜底后修的一个真实bug：东财原始字段单位是
+    "手"、腾讯也是"手"，但新浪是"股"，三者混进同一个 volume 字段却在下游
+    统一按"手"处理（*100换算股数），导致新浪来源的候选VWAP系统性缩小100倍
+    被合理性校验拦掉、悄悄退化成MA5——不是随机噪音，是"只要这只股票这次
+    刷新恰好分到新浪那一路，VWAP就必然丢"。现在统一规定：**volume 字段在
+    这个 dataclass 里永远是"股"**，各数据源自己的解析函数负责把各自的原始
+    单位换算成股，调用方（比如 _compute_vwap）不用再关心数据来自哪个源。
+    """
     code: str
     name: str
     price: Optional[float] = None
@@ -1334,7 +1343,7 @@ class StockQuote:
     high: Optional[float] = None
     low: Optional[float] = None
     prev_close: Optional[float] = None
-    volume: Optional[float] = None
+    volume: Optional[float] = None  # 股（不是手）——见上面class docstring
     amount: Optional[float] = None
     turnover_rate: Optional[float] = None
 
@@ -1349,7 +1358,12 @@ def _parse_tencent_quote_line(line: str) -> Optional[Tuple[str, "StockQuote"]]:
     交叉核对过的（600000/002081 两只股票，价格/成交量/成交额/换手率均对得上，
     不是拍脑袋猜的位置）：
       1=名称(GBK编码，不用) 2=代码 3=现价 4=昨收 5=今开 6=成交量(手，
-      单位跟东财原始f5字段一致，下游VWAP计算自己*100，这里不重复转换)
+      单位跟东财原始f5字段一致，这里在解析层直接*100换算成股——
+      StockQuote.volume 的统一约定是"股"，不能指望下游VWAP计算函数自己
+      知道"这条数据是腾讯来的所以要*100、新浪来的就不用"，那样跟本仓库
+      当前多源并发的架构不匹配，2026-08-23 就是因为这个不一致导致走新浪
+      那一路的候选VWAP系统性缩小100倍被合理性校验拦掉、悄悄退化成MA5
+      的真实bug，修复后统一在这里转换）
       33=最高 34=最低 37=成交额(万元，需*10000换算成元) 38=换手率(%，
       跟东财 turnover_rate 语义/数值完全一致，是本仓库唯一一个新浪没有
       而腾讯有的关键字段，兜底时用腾讯而不是新浪能保留这个数据不缺失)。
@@ -1367,7 +1381,7 @@ def _parse_tencent_quote_line(line: str) -> Optional[Tuple[str, "StockQuote"]]:
         price = float(fields[3])
         prev_close = float(fields[4])
         open_p = float(fields[5])
-        volume = float(fields[6])
+        volume = float(fields[6]) * 100  # 手→股
         high = float(fields[33])
         low = float(fields[34])
         amount = float(fields[37]) * 10000
@@ -1528,12 +1542,13 @@ def _fetch_quotes_eastmoney(codes_markets: list[tuple[str, int]], timeout: int =
                     code = row.get("f12")
                     if not code:
                         continue
+                    raw_volume = row.get("f5")  # 原始单位"手"
                     result[code] = StockQuote(
                         code=code,
                         name=row.get("f14") or "",
                         price=row.get("f2"),
                         pct_change=row.get("f3"),
-                        volume=row.get("f5"),
+                        volume=raw_volume * 100 if raw_volume is not None else None,  # 手→股
                         amount=row.get("f6"),
                         turnover_rate=row.get("f8"),
                         high=row.get("f15"),

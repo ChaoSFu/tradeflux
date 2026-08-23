@@ -56,10 +56,17 @@ def _compute_vwap(
     low: Optional[float] = None, high: Optional[float] = None,
 ) -> Optional[float]:
     """
-    纯函数：当日成交额/成交量算出真实VWAP。东财 push2 quote 接口的成交量字段
-    单位是"手"（跟本仓库 K 线解析同一数据源的既有约定一致，见 eastmoney_fetcher
-    ._parse_kline_bar 的注释），换算成股数要 *100。量为0/缺失（比如刚开盘还
-    没有成交）时返回 None，调用方退回 MA5，不假装算出了一个VWAP。
+    纯函数：当日成交额/成交量算出真实VWAP。`volume` 参数按 StockQuote 的统一
+    约定传入，单位已经是"股"（不是"手"）——东财/腾讯的原始字段单位是"手"，
+    换算成股这一步在各自的解析函数（_fetch_quotes_eastmoney/
+    _parse_tencent_quote_line）里已经做过了，这里不再重复*100。
+
+    2026-08-23修复：此前这里无条件*100，隐含假设"所有数据源的volume字段
+    单位都是手"——但新浪的公开行情接口本来就是"股"，三路并发/兜底上线后
+    只要候选这次刷新恰好分到新浪那一路，算出来的VWAP就会系统性缩小100倍，
+    被下面的合理性校验拦掉，悄悄退化成MA5，不是随机噪音、是必然发生。
+    量为0/缺失（比如刚开盘还没有成交）时返回 None，调用方退回 MA5，不假装
+    算出了一个VWAP。
 
     合理性校验（round3 review）：VWAP 物理上必须落在 [当日最低价, 当日最高价]
     区间内，超出说明成交量单位换算错了或接口字段本身异常——这种情况下返回一个
@@ -67,7 +74,7 @@ def _compute_vwap(
     """
     if amount is None or volume is None or volume <= 0 or amount <= 0:
         return None
-    vwap = round(amount / (volume * 100), 4)
+    vwap = round(amount / volume, 4)
     if low is not None and high is not None and low > 0 and high > 0:
         if not (low * 0.999 <= vwap <= high * 1.001):
             return None

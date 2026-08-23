@@ -78,7 +78,7 @@ def test_parse_tencent_quote_line_matches_eastmoney_authoritative_values():
     assert quote.open == 9.09
     assert quote.high == 9.15
     assert quote.low == 9.03
-    assert quote.volume == 512703.0
+    assert quote.volume == 512703.0 * 100  # 原始字段是"手"，解析层已换算成"股"（2026-08-23修复）
     assert quote.turnover_rate == 0.15  # 关键字段：新浪没有，腾讯有且跟东财一致
     assert quote.amount == 46516 * 10000
 
