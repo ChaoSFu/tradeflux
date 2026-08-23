@@ -133,10 +133,19 @@ def _build_checklist(
         ),
         ChecklistGroup(
             group="LEADER",
-            status="pass" if cand.leader_type == "core" else ("fail" if cand.leader_type in ("non_leader", "undetermined") else "fail"),
+            # 真实闸门逻辑（w2s_state_machine.compute_gate_blocks/derive_display_state）
+            # 只有 non_leader 是硬拦截；undetermined 是软上限（结构确认封顶CONFIRMING，
+            # 不放行BUYABLE，但不是"打回"）；backup 完全不受任何限制，跟 core 走同样
+            # 的放行路径。此前 core 以外一律显示"fail"，会出现"Checklist标LEADER
+            # 失败，候选却已经是BUYABLE"的自相矛盾（backup可以到BUYABLE）——round4
+            # review 指出的真实bug，这里改成跟真实闸门语义对齐（2026-08-23修复）。
+            status="pass" if cand.leader_type in ("core", "backup") else (
+                "advisory" if cand.leader_type == "undetermined" else "fail"
+            ),
             detail=f"{cand.leader_type or '未知'}"
                    + (f" · 第{cand.leader_rank}名" if cand.leader_rank else "")
-                   + (f" · Core Leader Score {cand.leader_score}" if cand.leader_score is not None else ""),
+                   + (f" · Core Leader Score {cand.leader_score}" if cand.leader_score is not None else "")
+                   + ("（结构确认后暂封顶CONFIRMING，不放行BUYABLE）" if cand.leader_type == "undetermined" else ""),
         ),
         ChecklistGroup(
             group="DIVERGENCE",
@@ -167,7 +176,13 @@ def _build_checklist(
         ChecklistGroup(group="CHIPS", status="phase2", detail="日内获利盘估算需分钟级数据，本仓库目前无该数据源，Phase 3 视情况补充"),
         ChecklistGroup(
             group="RISK",
-            status="pass" if (cand.stress_rr is not None and cand.stress_rr >= 1.0) else "fail",
+            # Stress R/R 在真实闸门逻辑里从来不是 Hard Blocker、也不是 Soft Cap 输入
+            # （w2s_state_machine.py 全文不引用 stress_rr，见 w2s_risk_service.py 模块
+            # 头注释"只回答值不值得担这个风险，不是完整期望收益模型"），只是展示给
+            # 用户参考。此前低于1.0标"fail"，会出现"Checklist标RISK失败，候选却已经
+            # 是BUYABLE"的自相矛盾——round4 review 指出的真实bug，这里统一改成
+            # advisory，永不参与pass/fail判断（2026-08-23修复）。
+            status="advisory",
             detail=(
                 f"Stress R/R {cand.stress_rr:.2f}"
                 f"（技术止损{cand.technical_stop if cand.technical_stop is not None else '-'} / "

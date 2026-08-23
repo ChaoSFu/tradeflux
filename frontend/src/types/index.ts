@@ -531,6 +531,10 @@ export interface TurnoverOverviewResponse {
 // ─── 弱转强雷达 ───────────────────────────────────────────────────────────────
 
 export type W2SState = 'WATCH' | 'READY' | 'REPAIRING' | 'CONFIRMING' | 'BUYABLE' | 'WAIT' | 'BLOCK'
+// 底层结构态（w2s_state_machine.py 的 STRUCTURE_STATES），跟上面展示态 W2SState
+// 是两套独立枚举——结构态没有 CONFIRMING/BUYABLE/WAIT/BLOCK，多了展示态没有的
+// PULLBACK/CONFIRMED/FAILED。此前误共用 W2SState 类型，这里拆开（round4 review 指出）。
+export type W2SStructuralState = 'WATCH' | 'READY' | 'REPAIRING' | 'PULLBACK' | 'CONFIRMED' | 'FAILED'
 export type W2SLeaderType = 'core' | 'backup' | 'undetermined' | 'non_leader'
 export type W2SSectorCategory =
   | 'NEW_START' | 'EXPANDING' | 'MAIN_UPTREND' | 'HEALTHY_DIVERGENCE'
@@ -559,7 +563,7 @@ export interface W2SCandidate {
   leader_score: number | null
 
   current_state: W2SState
-  structural_state: W2SState  // 底层结构态，不受闸门覆盖；跟 current_state 不同时代表"结构已推进但被临时闸门挡住"
+  structural_state: W2SStructuralState  // 底层结构态，不受闸门覆盖；跟 current_state 不同时代表"结构已推进但被临时闸门挡住"
   setup_substate: string | null
   setup_type: string  // GENERIC，弱转强分型占位字段
   refresh_sample_count: number
@@ -595,7 +599,9 @@ export interface W2SCandidate {
 
 export interface W2SChecklistGroup {
   group: 'MARKET' | 'SECTOR' | 'LEADER' | 'DIVERGENCE' | 'SETUP' | 'SPACE' | 'CHIPS' | 'RISK'
-  status: 'pass' | 'fail' | 'phase2'
+  // advisory：该组在真实闸门逻辑里从不硬拦截/软上限，仅供参考，不能显示成
+  // fail（会跟候选实际已放行的展示态自相矛盾）——round4 review 指出的真实bug。
+  status: 'pass' | 'fail' | 'phase2' | 'advisory'
   detail: string
 }
 

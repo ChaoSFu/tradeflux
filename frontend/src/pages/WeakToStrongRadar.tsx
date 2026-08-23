@@ -1,7 +1,10 @@
 /**
  * 弱转强雷达 — Phase 1 + Phase 2（Market Gate / Space Gate 降级 / 三层止损 + Stress R/R）
- * 核心原则："弱转强成立 ≠ 值得买入"：必须同时通过大盘闸门、板块闸门、龙头闸门、结构确认、
- * 涨停空间五道硬性关卡才会给出 BUYABLE 信号，不是把指标线性加权后直接吐 BUY。
+ * 核心原则："弱转强成立 ≠ 值得买入"：BUYABLE = 结构已确认 且 没有 Hard Blocker
+ * （数据过期/大盘RED/板块不允许/龙头non_leader/监管风险过高/观察期已过）
+ * 且 没有 Soft Cap（板块NEW_START/龙头未决/涨停空间不足）拦截，三层判断链，
+ * 不是把指标线性加权后直接吐 BUY（不再用"五道硬性关卡"这个不准确的旧表述，
+ * 见 w2s_state_machine.py 模块头注释 / docs/WEAK_TO_STRONG_RADAR.md 第1节）。
  * Stress R/R 是压力情景（模拟次日跌停开盘）下的风险回报比，不是完整期望收益模型；
  * Chips（日内获利盘估算）仍需分钟级数据，本仓库目前没有该数据源，Phase 3 视情况补充，
  * Checklist 里明确用灰色"Phase 2"标签占位，不伪造完整度。
@@ -128,7 +131,7 @@ function CandidateRow({
       </tr>
       {expanded && (
         <tr className="border-b border-bg-border/15">
-          <td colSpan={10} className="px-4 py-3 bg-bg-elevated/40">
+          <td colSpan={11} className="px-4 py-3 bg-bg-elevated/40">
             {isLoading || !detail ? (
               <LoadingRows rows={2} />
             ) : (
@@ -208,9 +211,11 @@ export default function WeakToStrongRadar() {
       <div className="flex items-start gap-2 p-3 rounded bg-warn-dim border border-warn/20 text-xs text-warn">
         <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
         <span className="flex-1">
-          「弱转强成立」不等于「值得买入」——本页只在大盘闸门、板块闸门、龙头闸门、回踩结构确认、
-          涨停空间五项硬性条件同时通过后才给出 BUYABLE 信号；Stress R/R 是压力情景估算，Chips
-          相关判断仍是 Phase 2 占位（详见展开的 Checklist）。⚠️ 不构成任何投资建议或买卖指令。
+          「弱转强成立」不等于「值得买入」——BUYABLE 需要回踩结构真正确认，且没有 Hard
+          Blocker（大盘/板块/龙头非核心/监管风险过高等，命中即 BLOCK）、没有 Soft Cap
+          （板块早期/龙头未决/涨停空间不足，命中封顶到较低展示态）拦截才会给出；
+          Stress R/R 只是压力情景下的风险回报参考，不参与放行判断，Chips 相关判断仍是
+          Phase 2 占位（详见展开的 Checklist）。⚠️ 不构成任何投资建议或买卖指令。
         </span>
         <Link
           to="/weak-to-strong-radar/guide"
@@ -299,7 +304,7 @@ export default function WeakToStrongRadar() {
                   <th className="text-left px-2 py-1.5 text-text-secondary/70 font-medium">板块</th>
                   <th className="text-left px-2 py-1.5 text-text-secondary/70 font-medium">龙头</th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">现价</th>
-                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">涨跌幅</th>
+                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium" title="竞价阶段(9:25)的(今开-昨收)/昨收，非实时涨跌幅，开盘后固定不变">竞价Gap</th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">MA5</th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">涨停空间</th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">Stress R/R</th>
