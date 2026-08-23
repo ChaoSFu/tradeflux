@@ -1675,14 +1675,23 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
     此前就已经确认"长期被东财push2his接口针对性限流"（实测重试基本不会
     成功），加上同一次诊断发现的 push2/push2his 域名持续故障，没有理由继续
     把东财当主力，指数只有5个，顺序尝试即可，不需要并发分摊。
+
+    "够不够"要跟这次实际请求的 days 比，不能跟固定的61硬比——daily_update
+    的日常同步走 index_trend_service._gap_days()，绝大多数时候只补几天的
+    缺口（days个位数到十位数很常见），腾讯只要把这几天补齐就已经完全满足
+    这次请求，不该因为"少于61根"就白白再去试新浪、甚至捎带打一次已知会
+    失败的东财——61只在"days本来就要得多"（比如首次建库拉320天）时才有
+    意义。这是2026-08-23这版重构上线当天从真实daily_update日志里发现的
+    真实问题，不是假设。
     """
+    threshold = min(days, 61)
     out = _fetch_index_kline_tencent(secid, days=days, timeout=timeout)
-    if len(out) < 61:
+    if len(out) < threshold:
         # 腾讯对北证指数只有最新一根 → 用新浪补（有北证50完整历史）
         sina = _fetch_index_kline_sina(secid, days=days, timeout=timeout)
         if len(sina) > len(out):
             out = sina
-    if len(out) >= 61:
+    if len(out) >= threshold:
         return out
 
     # 腾讯+新浪都不够，东财兜底（原始 klines 字段：f51 日期, f53 收盘, f59 涨跌幅%）
