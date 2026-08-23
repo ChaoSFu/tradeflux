@@ -576,6 +576,7 @@ export interface W2SCandidate {
   sector_category: W2SSectorCategory | null
   sector_strength_score: number | null
   sector_momentum_score: number | null
+  sector_divergence_health: number | null  // 仅 phase=4（分歧阶段）有值，越低代表板块高位分歧越危险
 
   leader_type: W2SLeaderType | null
   leader_rank: number | null
@@ -651,6 +652,9 @@ export interface W2SEvent {
   sector_phase: string | null
   leader_type: string | null
   price: number | null
+  structural_state: string | null
+  recovery_high: number | null
+  pullback_low: number | null
   formula_version: string
 }
 
@@ -683,5 +687,8 @@ export interface W2SMarketGate {
   index_scores: Record<string, number>
   market_effect_date: string | null        // 风险偏好分里"冻结群体反馈"取自哪个交易日
   market_effect_confidence: 'NORMAL' | 'LOW'  // LOW=当日市场效应退化为跟踪池近似广度
+  market_effect_profit_strength: number | null
+  market_effect_loss_strength: number | null
+  market_negative_feedback: 'LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN'  // loss_strength的显式分级，不再只藏在risk_score里
   as_of_date: string | null
 }

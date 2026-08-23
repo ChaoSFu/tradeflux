@@ -6,8 +6,19 @@ from app.services.w2s_market_gate_service import (
     compute_market_trend_score,
     compute_risk_appetite_score,
     classify_market_state,
+    classify_market_negative_feedback,
     GREEN, YELLOW, ORANGE, RED,
 )
+
+
+def test_negative_feedback_unknown_when_missing():
+    assert classify_market_negative_feedback(None) == "UNKNOWN"
+
+
+def test_negative_feedback_levels():
+    assert classify_market_negative_feedback(10.0) == "LOW"
+    assert classify_market_negative_feedback(40.0) == "MEDIUM"
+    assert classify_market_negative_feedback(75.0) == "HIGH"
 
 
 def test_trend_score_weighted_average():

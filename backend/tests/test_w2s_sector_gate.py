@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from app.services.w2s_sector_gate_service import (
     compute_sector_strength_score,
     compute_sector_momentum_score,
+    compute_divergence_health,
     classify_sector_category,
     NEW_START, EXPANDING, MAIN_UPTREND, HEALTHY_DIVERGENCE, HIGH_LEVEL_WARNING, DECLINING, DEAD,
 )
@@ -85,3 +86,21 @@ def test_classify_phase4_high_level_warning_when_deteriorating():
 
 def test_classify_phase4_no_prev_defaults_healthy():
     assert classify_sector_category(_sector(phase=4), None) == HEALTHY_DIVERGENCE
+
+
+def test_divergence_health_none_without_prev():
+    assert compute_divergence_health(_sector(phase=4), None) is None
+
+
+def test_divergence_health_high_when_metrics_stable():
+    prev = _snapshot(board_height=3, limit_up_count=3, risk_score=20.0, emotion_score=50.0)
+    s = _sector(phase=4, board_height=3, limit_up_count=3, risk_score=20.0, emotion_score=55.0)
+    health = compute_divergence_health(s, prev)
+    assert health is not None and health >= 50.0
+
+
+def test_divergence_health_low_when_deteriorating():
+    prev = _snapshot(board_height=6, limit_up_count=8, risk_score=10.0, emotion_score=70.0)
+    s = _sector(phase=4, board_height=1, limit_up_count=1, risk_score=80.0, emotion_score=20.0)
+    health = compute_divergence_health(s, prev)
+    assert health is not None and health < 50.0

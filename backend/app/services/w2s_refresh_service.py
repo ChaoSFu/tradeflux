@@ -236,6 +236,7 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
         cand.sector_category = sector_info.get("sector_category")
         cand.sector_strength_score = sector_info.get("sector_strength_score")
         cand.sector_momentum_score = sector_info.get("sector_momentum_score")
+        cand.sector_divergence_health = sector_info.get("sector_divergence_health")
         cand.leader_type = leader_type
         cand.leader_rank = leader_info.get("leader_rank")
         cand.leader_score = leader_info.get("core_leader_score")

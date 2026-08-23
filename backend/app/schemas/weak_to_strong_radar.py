@@ -18,6 +18,7 @@ class CandidateResponse(BaseModel):
     sector_category: Optional[str] = None
     sector_strength_score: Optional[float] = None
     sector_momentum_score: Optional[float] = None
+    sector_divergence_health: Optional[float] = None  # 仅 phase=4（分歧阶段）有值，越低代表板块高位分歧越危险
 
     leader_type: Optional[str] = None
     leader_rank: Optional[int] = None
@@ -67,6 +68,9 @@ class MarketGateResponse(BaseModel):
     index_scores: dict[str, float]
     market_effect_date: Optional[str] = None       # 风险偏好分里"冻结群体反馈"取自哪个交易日
     market_effect_confidence: str = "NORMAL"        # NORMAL|LOW，LOW=当日市场效应退化为跟踪池近似广度
+    market_effect_profit_strength: Optional[float] = None  # T-1冻结群体今日赚钱效应强度（独立字段，不再只藏在risk_score里）
+    market_effect_loss_strength: Optional[float] = None     # T-1冻结群体今日亏钱效应强度
+    market_negative_feedback: str = "UNKNOWN"        # LOW|MEDIUM|HIGH|UNKNOWN，loss_strength的显式分级
     as_of_date: Optional[str] = None
 
 

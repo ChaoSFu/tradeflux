@@ -74,12 +74,34 @@ def compute_sector_momentum_score(sector: Sector, prev: Optional[SectorDailySnap
     return round(_clamp(50 + momentum_raw), 1)
 
 
+def compute_divergence_health(sector: Sector, prev: Optional[SectorDailySnapshot]) -> Optional[float]:
+    """
+    纯函数：板块"分歧健康度"（0-100）——只在 phase=4（分歧阶段）有意义，是
+    HEALTHY_DIVERGENCE / HIGH_LEVEL_WARNING 判断依据的原始分数。round3 审阅
+    指出这类"板块负反馈"信号此前只被拿去出一个二分类结果就丢弃了，没有作为
+    一等字段暴露给候选/前端——健康度越低代表板块高位分歧越危险（对应此前
+    "神奇制药"案例：板块负反馈其实已经出现，但界面上只能看到分类标签本身，
+    看不到这个标签是勉强达标还是大幅超标)，现在把原始分数保留下来单独暴露。
+    无历史对比基准（prev=None）时返回 None，不用假中性值冒充"算出了健康"。
+    """
+    if prev is None:
+        return None
+    health = (
+        100
+        - ((prev.board_height or 0) - (sector.board_height or 0)) * 15
+        - ((sector.risk_score or 0) - (prev.risk_score or 0)) * 0.6
+        + ((sector.emotion_score or 0) - 50) * 0.4
+        + min(0, (sector.limit_up_count or 0) - (prev.limit_up_count or 0)) * 5
+    )
+    return round(_clamp(health), 1)
+
+
 def classify_sector_category(
     sector: Sector, prev: Optional[SectorDailySnapshot], divergence_health_threshold: float = 50.0,
 ) -> str:
     """
     纯函数：7 分类。phase 0/1/2/3/5/6 直接映射；phase=4（原有"分歧"阶段）按
-    健康度公式再细分 HEALTHY_DIVERGENCE / HIGH_LEVEL_WARNING。
+    健康度公式（compute_divergence_health）再细分 HEALTHY_DIVERGENCE / HIGH_LEVEL_WARNING。
     """
     phase = sector.phase or 0
     if phase in (0, 1):
@@ -93,16 +115,10 @@ def classify_sector_category(
     if phase == 6:
         return DEAD
     # phase == 4：分歧健康度
-    if prev is None:
+    health = compute_divergence_health(sector, prev)
+    if health is None:
         return HEALTHY_DIVERGENCE  # 无历史对比基准时不主动判负面，保守放行
-    health = (
-        100
-        - ((prev.board_height or 0) - (sector.board_height or 0)) * 15
-        - ((sector.risk_score or 0) - (prev.risk_score or 0)) * 0.6
-        + ((sector.emotion_score or 0) - 50) * 0.4
-        + min(0, (sector.limit_up_count or 0) - (prev.limit_up_count or 0)) * 5
-    )
-    return HEALTHY_DIVERGENCE if _clamp(health) >= divergence_health_threshold else HIGH_LEVEL_WARNING
+    return HEALTHY_DIVERGENCE if health >= divergence_health_threshold else HIGH_LEVEL_WARNING
 
 
 def get_prev_snapshot(db: Session, sector_id: int, before: date_cls) -> Optional[SectorDailySnapshot]:
@@ -123,6 +139,7 @@ def score_sector(db: Session, sector: Sector, today: date_cls) -> dict:
         "sector_strength_score": compute_sector_strength_score(sector),
         "sector_momentum_score": compute_sector_momentum_score(sector, prev),
         "sector_category": classify_sector_category(sector, prev, threshold),
+        "sector_divergence_health": compute_divergence_health(sector, prev),
     }
 
 

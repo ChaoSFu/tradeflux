@@ -87,6 +87,23 @@ def compute_risk_appetite_score(
     return round(_clamp(updown_score + limit_score + effect_score), 1)
 
 
+def classify_market_negative_feedback(loss_strength: Optional[float]) -> str:
+    """
+    纯函数：把 T-1 冻结群体的 loss_strength（0-100）单独分级成 LOW/MEDIUM/HIGH，
+    不再只让它作为 Risk Appetite Score 里被抵消掉的一个分量存在。round3 审阅
+    指出这类"市场负反馈"信号被埋没在一个复合分数里，用户在界面上看不出"今天
+    风险偏好分低，到底是因为普涨不够，还是因为昨天龙头今天集体大面"——两者
+    应对策略完全不同，所以单独暴露。缺数据时返回 UNKNOWN，不假装是 LOW。
+    """
+    if loss_strength is None:
+        return "UNKNOWN"
+    if loss_strength >= 60:
+        return "HIGH"
+    if loss_strength >= 35:
+        return "MEDIUM"
+    return "LOW"
+
+
 def classify_market_state(trend_score: Optional[float], risk_score: Optional[float]) -> str:
     """
     纯函数：双分数 → 四色。取"较弱的一侧"决定档位（跟 Sector/Leader Gate 一样，
@@ -161,5 +178,8 @@ def get_market_gate(db: Session) -> dict:
         "index_scores": index_scores,
         "market_effect_date": effect_date,
         "market_effect_confidence": effect_confidence,
+        "market_effect_profit_strength": effect_profit,
+        "market_effect_loss_strength": effect_loss,
+        "market_negative_feedback": classify_market_negative_feedback(effect_loss),
         "as_of_date": str(latest.date) if latest else None,
     }

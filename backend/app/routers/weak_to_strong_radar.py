@@ -108,14 +108,19 @@ def _build_checklist(
             group="MARKET",
             status="fail" if market_state in market_gate_blocked else "pass",
             detail=f"{market_state}（趋势分{gate['trend_score'] if gate['trend_score'] is not None else '-'}"
-                   f" / 风险偏好分{gate['risk_score'] if gate['risk_score'] is not None else '-'}）",
+                   f" / 风险偏好分{gate['risk_score'] if gate['risk_score'] is not None else '-'}"
+                   f" / 市场负反馈{gate.get('market_negative_feedback', 'UNKNOWN')}"
+                   + (f"[亏钱效应{gate['market_effect_loss_strength']:.0f}]" if gate.get('market_effect_loss_strength') is not None else "")
+                   + "）",
         ),
         ChecklistGroup(
             group="SECTOR",
             status="pass" if cand.sector_category in ("NEW_START", "EXPANDING", "MAIN_UPTREND", "HEALTHY_DIVERGENCE") else "fail",
             detail=f"{cand.sector_name or '未知板块'} · {cand.sector_category or '无'}"
                    f"（强度{cand.sector_strength_score if cand.sector_strength_score is not None else '-'}"
-                   f" / 动量{cand.sector_momentum_score if cand.sector_momentum_score is not None else '-'}）",
+                   f" / 动量{cand.sector_momentum_score if cand.sector_momentum_score is not None else '-'}"
+                   + (f" / 分歧健康度{cand.sector_divergence_health:.0f}" if cand.sector_divergence_health is not None else "")
+                   + "）",
         ),
         ChecklistGroup(
             group="LEADER",

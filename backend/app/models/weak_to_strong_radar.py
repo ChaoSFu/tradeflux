@@ -40,6 +40,7 @@ class WeakToStrongCandidate(Base):
     # NEW_START/EXPANDING/MAIN_UPTREND/HEALTHY_DIVERGENCE/HIGH_LEVEL_WARNING/DECLINING/DEAD
     sector_strength_score = Column(Float, nullable=True)
     sector_momentum_score = Column(Float, nullable=True)
+    sector_divergence_health = Column(Float, nullable=True)  # 仅 phase=4（分歧阶段）有值，独立暴露的板块负反馈原始分
 
     # ── Leader Gate ─────────────────────────────────────────────────────
     leader_type = Column(String(20), nullable=True)  # core|backup|undetermined|non_leader
