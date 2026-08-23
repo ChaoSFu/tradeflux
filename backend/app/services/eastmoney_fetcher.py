@@ -81,9 +81,13 @@ def _thread_warmed_client(headers: dict = HEADERS, timeout: int = 15) -> httpx.C
     tid = threading.get_ident()
     try:
         r = client.get(_WARMUP_URL)
-        print(f"[warmup:thread-{tid}] 预热请求完成 status={r.status_code} len={len(r.content)}", flush=True)
+        msg = f"[warmup:thread-{tid}] 预热请求完成 status={r.status_code} len={len(r.content)}"
+        print(msg, flush=True)
+        _w2s_log("QUOTE", msg)
     except Exception as e:  # noqa: BLE001
-        print(f"[warmup:thread-{tid}] 预热请求失败（不阻断，继续按原样尝试正式请求）: {type(e).__name__}: {e}", flush=True)
+        msg = f"[warmup:thread-{tid}] 预热请求失败（不阻断，继续按原样尝试正式请求）: {type(e).__name__}: {e}"
+        print(msg, flush=True)
+        _w2s_log("QUOTE", msg)
     _thread_local.client = client
     return client
 
@@ -1222,10 +1226,21 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
         # 重试 2 次基本能过；批量快照是雷达刷新的地基，不能让一次瞬时故障
         # 让整批候选的行情全部缺席。
         for attempt in range(3):
+            resp = None
             try:
                 client = _thread_warmed_client(timeout=timeout)
                 resp = client.get(ULIST_QUOTE_URL, params={"secids": secids, "fields": _QUOTE_FIELDS, "fltt": 2})
-                diff = ((resp.json().get("data") or {}).get("diff")) or []
+                try:
+                    payload = resp.json()
+                except Exception as parse_err:  # noqa: BLE001
+                    _w2s_log(
+                        "QUOTE",
+                        f"批次{batch_idx}第{attempt + 1}次尝试：HTTP {resp.status_code}响应无法解析为JSON"
+                        f"（{type(parse_err).__name__}），Content-Length={resp.headers.get('content-length', '?')}，"
+                        f"实际body长度={len(resp.content)}，body前200字符={resp.text[:200]!r}",
+                    )
+                    raise
+                diff = ((payload.get("data") or {}).get("diff")) or []
                 for row in diff:
                     code = row.get("f12")
                     if not code:
@@ -1253,10 +1268,11 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
                     _w2s_log("QUOTE", f"批次{batch_idx}第{attempt + 1}次尝试：成功，{len(batch)}只全部返回")
                 return
             except Exception as e:  # noqa: BLE001
-                _w2s_log(
-                    "QUOTE",
-                    f"批次{batch_idx}第{attempt + 1}次尝试失败（{len(batch)}只）: {type(e).__name__}: {e}",
-                )
+                if resp is None:  # 请求本身没拿到响应（连接/超时类异常）；拿到响应但解析失败的详情已经记过了
+                    _w2s_log(
+                        "QUOTE",
+                        f"批次{batch_idx}第{attempt + 1}次尝试失败（{len(batch)}只，未收到响应）: {type(e).__name__}: {e}",
+                    )
                 if attempt == 2:
                     print(f"[fetcher] 批量行情快照拉取失败（{len(batch)}只，重试3次均失败）: {type(e).__name__}: {e}", flush=True)
                 else:
