@@ -74,7 +74,7 @@ def _reset_intraday_session(cand: WeakToStrongCandidate, today: date_cls) -> Non
         return
     cand.signal_trade_date = today
     cand.current_state = sm.WATCH
-    cand.structural_state = sm.WATCH
+    cand.structural_state = sm.STRUCT_WATCH
     cand.setup_substate = None
     cand.recovery_high = None
     cand.pullback_low = None

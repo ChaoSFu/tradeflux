@@ -1,44 +1,39 @@
 """
-弱转强雷达状态机（2026-08-22 重构：结构判断与闸门判断解耦）。
+弱转强雷达状态机（2026-08-22 二次重构：结构事实与交易决策彻底分离）。
 
-**为什么拆开**：旧版本 compute_next_state 把"价格结构走到哪一步"和"当前是否被
-大盘/板块/龙头闸门拦截"糅进同一次判断——一旦任何闸门不通过就整体判 BLOCK，
-且 BLOCK 没有任何路径能跳出来（所有状态转移分支都不匹配 current_state=="BLOCK"，
-即使下一次刷新闸门全部转好也永远停留在 BLOCK）。这是真实存在的死态 bug，不是
-设计取舍。同时旧版"CONFIRMING"的判定是 `price > pullback_low`（pullback_low
-只是进入 REPAIRING 以来的滚动最低价），意味着任意一次微小回调后的一个小反弹
-就会触发 CONFIRMING——不是"突破第一次修复高点"，是"比刚才那一tick高"，噪音
-级别的确认，不是真正的回踩确认结构。
+**为什么再拆一层**：第一次重构（展示态/结构态解耦）修复了 BLOCK 死态，但
+`structural_state` 里仍然混了两种不同性质的东西——`REPAIRING`/`CONFIRMING`
+描述的是"市场客观发生了什么"，`BUYABLE` 描述的却是"我是否应该交易"，这是
+两层完全不同的语义。同理，结构失效时旧版直接把 structural_state 设成 WAIT，
+但"跌破关键位"是一个客观事实（这次修复尝试失败了），"WAIT"是一个交易决策
+（先别管它），两者也不该用同一个值表示——不然以后区分不了"结构很好只是空间
+不够"的WAIT和"结构已经失败"的WAIT，这个区别对未来回测非常重要。
 
-**现在的设计**：
-- structural_state：只看价格行为，完全不理会任何闸门，每次刷新都照常基于
-  真实价格推进（H1/L1 两段式，见下）。即使展示态是 BLOCK，底层结构追踪也
-  不会被打断——大盘/龙头这类环境条件会变化，候选价格结构本身没有失效，不该
-  被环境的临时波动清零。
-- current_state（展示态）= structural_state 叠加闸门覆盖后的最终值：
-  硬性闸门（数据过期/大盘/板块/龙头非核心/监管/观察期）不通过 → 展示 BLOCK，
-  但 structural_state 照常在底层推进，闸门一旦恢复，展示立刻反映真实进度，
-  不需要从 WATCH 重新走一遍。
-  板块"刚起步"（NEW_START）→ 软上限，展示态最高只到 READY，不跟已证明过自己
-  强、现在出现分歧的核心弱转强模式享受同等的 REPAIRING/CONFIRMING/BUYABLE 待遇。
-  龙头"未决"（不是 non_leader，是两个候选分不出谁是真龙头）→ 软上限，展示态
-  最高只到 CONFIRMING，不隐藏正在发生的结构，但不能显示还没真正确立龙头就
-  给的 BUYABLE。
-  涨停空间不足 → 软上限，只在 structural_state 已经是 BUYABLE 时把展示态降级
-  为 WAIT，底层 structural_state 保留 BUYABLE 不清空——空间会随价格逐分钟
-  变化，候选本身没有失效，空间一旦重新充足展示立刻恢复，不用重新走一遍结构。
+**现在彻底分成两层**：
 
-结构状态机（H1/L1 两段式，替代旧版"任意反弹即确认"的弱定义）：
-  WATCH/READY/WAIT → [现价 > repair_anchor=max(昨收,VWAP或MA5)]  → REPAIRING
-                                                                    （recovery_high=现价，开始建H1）
-  REPAIRING        → [现价 ≤ repair_anchor]                      → WAIT（结构失效，清空H1/L1追踪）
-                    → [现价创新高]                                → REPAIRING（recovery_high 上移，H1 未回踩前持续抬高）
-                    → [现价回落超过 pullback_min_pct]              → CONFIRMING（冻结 recovery_high=H1，开始记 pullback_low=L1）
-  CONFIRMING       → [现价 ≤ repair_anchor]                      → WAIT（跌穿回到起点，回踩确认失败）
-                    → [现价 > 冻结的 recovery_high]                → BUYABLE（二次突破H1，回踩结构确认完成）
-                    → [否则]                                      → CONFIRMING（继续记录 pullback_low）
-  BUYABLE          → [现价 ≤ repair_anchor]                      → WAIT（信号失效，清空追踪）
-                    → [否则]                                      → BUYABLE
+结构事实层 STRUCTURE（`structural_state` 字段，只看价格，完全不理会任何
+闸门，每次刷新持续推进，不受展示态影响）：
+  WATCH → READY → REPAIRING → PULLBACK → CONFIRMED
+  侧出口：FAILED（随时可能发生，随时可能从 FAILED 重新进入 REPAIRING）
+  CONFIRMED 只代表"H1/L1回踩结构已经确认"这一个客观事实，不代表"可以买"。
+
+交易决策层 DECISION（`display_state`/`current_state` 字段，= f(结构事实,
+大盘, 板块, 龙头, 空间, 监管, 数据质量)，每次都从结构事实重新推导，不是
+存储的独立状态机）：
+  WATCH / READY / REPAIRING / CONFIRMING / BUYABLE / WAIT / BLOCK
+  这一层的取值特意跟结构层的展示标签保持视觉上的一一对应（用户不需要关心
+  内部两层分离这件事），但背后的计算方式完全不同：
+    BUYABLE = 结构已 CONFIRMED  且  没有硬性闸门拦截  且  没有软上限拦截
+    展示上的 REPAIRING/CONFIRMING 只是结构 REPAIRING/PULLBACK 的直接映射
+    展示上的 WAIT 有多种可能的结构原因（结构FAILED / 结构CONFIRMED但空间
+    不足 / …），原因文本记在 trigger_reasons 里，不再是同一个空洞的 WAIT。
+
+三层约束分类（替代此前不准确的"五道硬性闸门"表述）：
+  Hard Blocker  ：当前绝对不能交易 —— 数据过期、大盘RED、板块明确不允许、
+                  龙头non_leader、监管风险过高、候选观察期已过。→ 展示BLOCK。
+  Soft Cap      ：可以继续观察，但限制展示能到的最高决策态 —— 板块刚起步
+                  (NEW_START)、龙头未决(undetermined)、涨停空间不足。
+  Setup Progression：结构事实层本身，见上。
 
 Phase 1/2 明确不做 WARNING/EXIT（持仓监控态，本仓库无持仓/成交跟踪能力，硬做
 就是编数据）。
@@ -50,6 +45,17 @@ from typing import Optional
 
 from .w2s_risk_service import evaluate_space_gate
 
+# ── 结构事实层（客观价格状态，只在这几个值之间流转）─────────────────────────
+STRUCT_WATCH = "WATCH"
+STRUCT_READY = "READY"
+STRUCT_REPAIRING = "REPAIRING"
+STRUCT_PULLBACK = "PULLBACK"
+STRUCT_CONFIRMED = "CONFIRMED"
+STRUCT_FAILED = "FAILED"
+
+STRUCTURE_STATES = (STRUCT_WATCH, STRUCT_READY, STRUCT_REPAIRING, STRUCT_PULLBACK, STRUCT_CONFIRMED, STRUCT_FAILED)
+
+# ── 交易决策层（展示值，兼容此前前端已经在用的 7 个标签，含义见模块说明）───────
 WATCH = "WATCH"
 READY = "READY"
 REPAIRING = "REPAIRING"
@@ -59,7 +65,6 @@ WAIT = "WAIT"
 BLOCK = "BLOCK"
 
 ALL_STATES = (WATCH, READY, REPAIRING, CONFIRMING, BUYABLE, WAIT, BLOCK)
-STRUCTURAL_STATES = (WATCH, READY, REPAIRING, CONFIRMING, BUYABLE, WAIT)
 
 LOW = "LOW"
 MEDIUM = "MEDIUM"
@@ -105,10 +110,11 @@ def compute_structural_transition(
     is_after_auction: bool,
 ) -> dict:
     """
-    纯函数：只看价格结构，完全不理会任何闸门。返回
+    纯函数：只看价格结构事实，完全不理会任何闸门、不产生任何交易决策。返回
     {new_structural_state, recovery_high, pullback_low, pullback_started, trigger_reasons}。
-    repair_anchor 优先用真实 VWAP（当日成交额/成交量算出，比5日线更能代表"今天
-    这批买盘的平均成本"），VWAP 缺失（比如刚开盘还没有成交）时退回 MA5。
+    new_structural_state 只会是 STRUCTURE_STATES 里的一个（不会是 BUYABLE/WAIT/BLOCK
+    这类决策词）。repair_anchor 优先用真实 VWAP（当日成交额/成交量算出，比5日线更
+    能代表"今天这批买盘的平均成本"），VWAP 缺失（比如刚开盘还没有成交）时退回 MA5。
     """
     if price is None or prev_close is None:
         return {
@@ -123,32 +129,33 @@ def compute_structural_transition(
 
     state = structural_state
     trigger_reasons: list[str] = []
-    if is_after_auction and auction_gap is not None and auction_gap >= auction_gap_min and state == WATCH:
+    if is_after_auction and auction_gap is not None and auction_gap >= auction_gap_min and state == STRUCT_WATCH:
         trigger_reasons.append(f"竞价Gap {auction_gap:.1f}% 超预期（阈值 {auction_gap_min:.1f}%）")
-        state = READY
+        state = STRUCT_READY
 
-    # 重新收复关键位：WATCH/READY/WAIT 都可能在价格重新站上 repair_anchor 时进入 REPAIRING
-    # （WAIT 不是死态，价格随时可能再次收复，跟 WATCH/READY 走同一条重新进入的路）。
-    if state in (WATCH, READY, WAIT) and price > repair_anchor:
+    # 重新收复关键位：WATCH/READY/FAILED 都可能在价格重新站上 repair_anchor 时进入
+    # REPAIRING（FAILED 不是死态，价格随时可能再次收复，跟 WATCH/READY 走同一条
+    # 重新进入的路——这是一个客观事实的重新发生，不是"决策"）。
+    if state in (STRUCT_WATCH, STRUCT_READY, STRUCT_FAILED) and price > repair_anchor:
         trigger_reasons.append(f"现价 {price:.2f} 收复 max(昨收,VWAP/MA5)={repair_anchor:.2f}")
         return {
-            "new_structural_state": REPAIRING,
+            "new_structural_state": STRUCT_REPAIRING,
             "recovery_high": price, "pullback_low": None, "pullback_started": False,
             "trigger_reasons": trigger_reasons,
         }
 
-    if state == REPAIRING:
+    if state == STRUCT_REPAIRING:
         if price <= repair_anchor:
             return {
-                "new_structural_state": WAIT,
+                "new_structural_state": STRUCT_FAILED,
                 "recovery_high": None, "pullback_low": None, "pullback_started": False,
-                "trigger_reasons": ["跌破修复关键位，结构失效，退回观察"],
+                "trigger_reasons": ["跌破修复关键位，结构失效"],
             }
         rh = recovery_high if recovery_high is not None else price
         if price >= rh:
             # H1 还没形成有效回踩前持续抬高，还在建第一段修复高点
             return {
-                "new_structural_state": REPAIRING,
+                "new_structural_state": STRUCT_REPAIRING,
                 "recovery_high": price, "pullback_low": None, "pullback_started": False,
                 "trigger_reasons": trigger_reasons,
             }
@@ -156,21 +163,21 @@ def compute_structural_transition(
             # 回落幅度超过噪音阈值，判定为真正开始回踩：冻结 H1，开始记录 L1
             trigger_reasons.append(f"现价 {price:.2f} 较修复高点 {rh:.2f} 回踩超过 {pullback_min_pct:.1f}%，形成有效回踩")
             return {
-                "new_structural_state": CONFIRMING,
+                "new_structural_state": STRUCT_PULLBACK,
                 "recovery_high": rh, "pullback_low": price, "pullback_started": True,
                 "trigger_reasons": trigger_reasons,
             }
         # 小幅回落但未达到有效回踩阈值：视为噪音，H1 暂不冻结，继续留在 REPAIRING
         return {
-            "new_structural_state": REPAIRING,
+            "new_structural_state": STRUCT_REPAIRING,
             "recovery_high": rh, "pullback_low": None, "pullback_started": False,
             "trigger_reasons": trigger_reasons,
         }
 
-    if state == CONFIRMING:
+    if state == STRUCT_PULLBACK:
         if price <= repair_anchor:
             return {
-                "new_structural_state": WAIT,
+                "new_structural_state": STRUCT_FAILED,
                 "recovery_high": None, "pullback_low": None, "pullback_started": False,
                 "trigger_reasons": ["跌破修复关键位，回踩确认失败"],
             }
@@ -179,30 +186,30 @@ def compute_structural_transition(
         if rh is not None and price > rh:
             trigger_reasons.append(f"现价 {price:.2f} 突破修复高点 {rh:.2f}，回踩结构确认完成")
             return {
-                "new_structural_state": BUYABLE,
+                "new_structural_state": STRUCT_CONFIRMED,
                 "recovery_high": rh, "pullback_low": new_pullback_low, "pullback_started": True,
                 "trigger_reasons": trigger_reasons,
             }
         return {
-            "new_structural_state": CONFIRMING,
+            "new_structural_state": STRUCT_PULLBACK,
             "recovery_high": rh, "pullback_low": new_pullback_low, "pullback_started": True,
             "trigger_reasons": trigger_reasons,
         }
 
-    if state == BUYABLE:
+    if state == STRUCT_CONFIRMED:
         if price <= repair_anchor:
             return {
-                "new_structural_state": WAIT,
+                "new_structural_state": STRUCT_FAILED,
                 "recovery_high": None, "pullback_low": None, "pullback_started": False,
-                "trigger_reasons": ["跌破关键位，BUYABLE 信号失效"],
+                "trigger_reasons": ["跌破关键位，结构确认失效"],
             }
         return {
-            "new_structural_state": BUYABLE,
+            "new_structural_state": STRUCT_CONFIRMED,
             "recovery_high": recovery_high, "pullback_low": pullback_low, "pullback_started": pullback_started,
             "trigger_reasons": trigger_reasons,
         }
 
-    # 理论上不会到达（state 只会是 ALL_STATES 里的一个），兜底原样返回
+    # 理论上不会到达（state 只会是 STRUCTURE_STATES 里的一个），兜底原样返回
     return {
         "new_structural_state": state,
         "recovery_high": recovery_high, "pullback_low": pullback_low, "pullback_started": pullback_started,
@@ -223,10 +230,10 @@ def compute_gate_blocks(
     is_observation_expired: bool,
 ) -> list[str]:
     """
-    纯函数：硬性拦截原因列表，为空则不拦截。每次都重新算，从不因为"之前是不是
-    BLOCK"而跳过判断——这是修复 BLOCK 死态 bug 的关键：状态应该是环境的输出，
-    不应该反过来绑架后续计算。leader_type=="undetermined"（龙头未决）不在这里
-    硬拦截，走 apply_leader_undetermined_cap 的软上限。
+    纯函数（Hard Blocker 层）：硬性拦截原因列表，为空则不拦截。每次都重新算，
+    从不因为"之前是不是BLOCK"而跳过判断——状态应该是环境的输出，不应该反过来
+    绑架后续计算。leader_type=="undetermined"（龙头未决）不在这里硬拦截，走
+    apply_leader_undetermined_cap 的软上限（Soft Cap 层）。
     """
     reasons: list[str] = []
     if not signal_enabled:
@@ -244,41 +251,40 @@ def compute_gate_blocks(
     return reasons
 
 
-def apply_new_start_cap(structural_state: str, sector_category: str) -> tuple[str, Optional[str]]:
+def derive_display_state(
+    *,
+    structural_state: str,
+    sector_category: str,
+    leader_type: str,
+    limit_room: Optional[float],
+    space_min_room_pct: float,
+) -> tuple[str, Optional[str]]:
     """
-    纯函数：板块刚起步（NEW_START）时展示态最高只到 READY——新题材第一天爆发
-    还没证明持续性/主线资金共识，不该跟"已经证明过自己强、现在出现分歧"的
-    核心弱转强模式享受同等的 REPAIRING/CONFIRMING/BUYABLE 待遇。不是硬拦截
-    （不放进 sector_gate_allowed 的排除列表），因为候选本身值得继续观察，
-    只是还没到能给结构性信号的阶段。
+    纯函数（Soft Cap 层 + 结构事实→交易决策映射）：给定结构事实和三个软上限
+    输入，推导出展示态。这是唯一一处允许"结构=CONFIRMED"变成"决策=BUYABLE"
+    的地方——BUYABLE 从来不是结构层自己会产生的值。
     """
-    if sector_category == "NEW_START" and structural_state in (REPAIRING, CONFIRMING, BUYABLE):
+    if structural_state == STRUCT_FAILED:
+        return WAIT, None
+    if structural_state in (STRUCT_WATCH, STRUCT_READY):
+        return structural_state, None
+
+    # REPAIRING / PULLBACK / CONFIRMED 三种结构事实，NEW_START 一律封顶到 READY
+    if sector_category == "NEW_START":
         return READY, "板块仍处早期(NEW_START)，暂不放行到修复/确认阶段"
-    return structural_state, None
 
+    if structural_state == STRUCT_REPAIRING:
+        return REPAIRING, None
+    if structural_state == STRUCT_PULLBACK:
+        return CONFIRMING, None
 
-def apply_leader_undetermined_cap(structural_state: str, leader_type: str) -> tuple[str, Optional[str]]:
-    """
-    纯函数：龙头未决时展示态最高只到 CONFIRMING——早期龙头竞争阶段如果直接
-    BLOCK 会错过"谁才是真龙头"这个市场自己筛选的过程；但没确立龙头之前也不能
-    显示 BUYABLE。返回 (展示态, 附加说明或 None)。
-    """
-    if leader_type == "undetermined" and structural_state == BUYABLE:
+    # structural_state == STRUCT_CONFIRMED：这是唯一可能产出 BUYABLE 的分支
+    if leader_type == "undetermined":
         return CONFIRMING, "龙头未决，二次突破已出现但暂不升级为 BUYABLE"
-    return structural_state, None
-
-
-def apply_space_gate_cap(structural_state: str, limit_room: Optional[float], space_min_room_pct: float) -> tuple[str, Optional[str]]:
-    """
-    纯函数：涨停空间不足时展示态从 BUYABLE 降级为 WAIT，但只覆盖展示，不清空
-    底层 structural_state——空间会随价格逐分钟变化，候选本身没有失效，空间一旦
-    重新充足应该立刻恢复展示，不需要重新走一遍回踩结构。
-    """
-    if structural_state == BUYABLE:
-        ok, reason = evaluate_space_gate(limit_room, space_min_room_pct)
-        if not ok:
-            return WAIT, f"结构已确认但{reason}，暂缓至 WAIT"
-    return structural_state, None
+    space_ok, space_reason = evaluate_space_gate(limit_room, space_min_room_pct)
+    if not space_ok:
+        return WAIT, f"结构已确认但{space_reason}，暂缓至 WAIT"
+    return BUYABLE, None
 
 
 def compute_next_state(
@@ -308,10 +314,10 @@ def compute_next_state(
     space_min_room_pct: float,
 ) -> dict:
     """
-    纯函数编排：结构判断（不受闸门影响，持续推进）→ 闸门判断（每次重新算，
-    硬性不通过则展示 BLOCK）→ 龙头未决软上限 → 空间不足软上限。返回：
-    {display_state, structural_state, recovery_high, pullback_low, pullback_started,
-     trigger_reasons, block_reasons}
+    纯函数编排：结构事实（Setup Progression，不受闸门影响，持续推进）→
+    Hard Blocker（每次重新算，硬性不通过则展示 BLOCK）→ Soft Cap + 结构→决策
+    映射。返回：{display_state, structural_state, recovery_high, pullback_low,
+    pullback_started, trigger_reasons, block_reasons}。
     """
     structural = compute_structural_transition(
         structural_state=structural_state, price=price, prev_close=prev_close,
@@ -330,13 +336,13 @@ def compute_next_state(
         display_state = BLOCK
         trigger_reasons: list[str] = []
     else:
-        capped, new_start_note = apply_new_start_cap(structural["new_structural_state"], sector_category)
-        capped, leader_note = apply_leader_undetermined_cap(capped, leader_type)
-        display_state, space_note = apply_space_gate_cap(capped, limit_room, space_min_room_pct)
+        display_state, cap_note = derive_display_state(
+            structural_state=structural["new_structural_state"], sector_category=sector_category,
+            leader_type=leader_type, limit_room=limit_room, space_min_room_pct=space_min_room_pct,
+        )
         trigger_reasons = list(structural["trigger_reasons"])
-        for note in (new_start_note, leader_note, space_note):
-            if note:
-                trigger_reasons.append(note)
+        if cap_note:
+            trigger_reasons.append(cap_note)
 
     return {
         "display_state": display_state,

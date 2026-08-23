@@ -25,6 +25,7 @@ from ..schemas.weak_to_strong_radar import (
 )
 from ..services import w2s_config_service as cfg
 from ..services import w2s_market_gate_service as market_gate
+from ..services import w2s_state_machine as sm
 from ..services.w2s_refresh_service import run_refresh
 from .admin import record_job_duration
 
@@ -130,10 +131,13 @@ def _build_checklist(
         ),
         ChecklistGroup(
             group="SETUP",
-            status="pass" if cand.structural_state in ("REPAIRING", "CONFIRMING", "BUYABLE", "READY") else "fail",
+            status="pass" if cand.structural_state in (
+                sm.STRUCT_READY, sm.STRUCT_REPAIRING, sm.STRUCT_PULLBACK, sm.STRUCT_CONFIRMED,
+            ) else "fail",
             detail=(
                 f"展示态 {cand.current_state}"
-                + (f"（底层结构已到 {cand.structural_state}，被闸门临时覆盖）" if cand.structural_state != cand.current_state else "")
+                + (f"（底层结构事实已到 {cand.structural_state}，当前被闸门/软上限临时覆盖展示）"
+                   if cand.structural_state != cand.current_state else "")
                 + "："
                 + (cand.trigger_reasons or cand.block_reasons or "暂无变化")
             ),

@@ -46,13 +46,17 @@ class WeakToStrongCandidate(Base):
     leader_rank = Column(Integer, nullable=True)
     leader_score = Column(Float, nullable=True)  # Core Leader Score，跟 Stock.leader_score 是不同的分
 
-    # ── 状态机（2026-08-22 重构：展示态与结构态分离）──────────────────────────
+    # ── 状态机（2026-08-22 二次重构：结构事实与交易决策彻底分离）───────────────
     current_state = Column(String(20), nullable=False, default="WATCH", index=True)
-    # 展示态：structural_state 叠加闸门覆盖后的最终值。WATCH|READY|REPAIRING|CONFIRMING|BUYABLE|WAIT|BLOCK
+    # 交易决策层：结构事实 + 闸门 + 软上限推导出的最终展示值。
+    # WATCH|READY|REPAIRING|CONFIRMING|BUYABLE|WAIT|BLOCK ——BUYABLE/WAIT/BLOCK
+    # 从来不是结构层自己会产生的值，只在这一层由 derive_display_state 推导。
     structural_state = Column(String(20), nullable=False, default="WATCH")
-    # 结构态：只看价格行为，不受闸门影响，闸门临时不通过时底层仍持续推进——
-    # 大盘/龙头这类环境条件是会变化的，候选价格结构本身没有失效，不该被环境的
-    # 临时波动清零。current_state=BLOCK 时 structural_state 可能已经在往前走。
+    # 结构事实层：只看价格行为，不受任何闸门影响，闸门临时不通过时底层仍持续
+    # 推进。WATCH|READY|REPAIRING|PULLBACK|CONFIRMED|FAILED——注意这里没有
+    # BUYABLE/WAIT/BLOCK，"是否可以交易"是决策层的事，不是结构事实。
+    # current_state=BLOCK 时 structural_state 可能已经在往前走（甚至已经是
+    # CONFIRMED），闸门恢复后展示立刻反映真实进度。
     setup_substate = Column(String(20), nullable=True)  # 保留字段，Phase 2 暂未使用
     recovery_high = Column(Float, nullable=True)   # H1：修复阶段的高点，检测到有效回踩后冻结
     pullback_low = Column(Float, nullable=True)    # L1：回踩阶段的滚动最低价，pullback_started 后才开始记录
