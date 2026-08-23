@@ -131,6 +131,32 @@ def get_prev_snapshot(db: Session, sector_id: int, before: date_cls) -> Optional
     )
 
 
+def select_mainline_sector_ids(sector_scores: dict[int, dict], top_n: int = 3) -> set[int]:
+    """
+    纯函数（Soft Cap 层，2026-08-23新增，"主升板块封顶"）：只在 sector_category==
+    MAIN_UPTREND 的板块里按 sector_strength_score 从高到低取前 top_n 个，返回它们
+    的 sector_id 集合——只有属于这个集合的候选，结构确认后才允许放行到 BUYABLE，
+    其余候选（包括排名跌出前N的 MAIN_UPTREND 板块）继续正常追踪展示进度，只是
+    结构确认封顶到 CONFIRMING，跟 NEW_START 是同一种软上限处理方式。
+
+    用户原话："能做主升的板块不可能太多，顶多3个……必须是逻辑最硬的板块和个股
+    才行"——弱转强的 Edge 来自资金回流到最强的少数主线，候选数量本该主动收窄，
+    而不是把"允许追踪的分类"和"允许 BUYABLE 的板块"混为一谈。
+
+    排序范围只在传入的 sector_scores 里比较（调用方通常只传当前活跃候选覆盖到
+    的板块，不是全市场888个板块），分数相同时按 sector_id 从小到大稳定排序。
+    """
+    mainline_candidates = [
+        (sid, info) for sid, info in sector_scores.items()
+        if info.get("sector_category") == MAIN_UPTREND
+    ]
+    ordered = sorted(
+        mainline_candidates,
+        key=lambda item: (-(item[1].get("sector_strength_score") or 0.0), item[0]),
+    )
+    return {sid for sid, _ in ordered[:top_n]}
+
+
 def score_sector(db: Session, sector: Sector, today: date_cls) -> dict:
     """薄封装：查 prev 快照 + 调纯函数，供 w2s_candidate_service/w2s_refresh_service 直接用。"""
     prev = get_prev_snapshot(db, sector.id, today)

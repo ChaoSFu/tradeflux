@@ -124,6 +124,8 @@ def _apply_schema_patches():
         "ALTER TABLE weak_to_strong_events ADD COLUMN IF NOT EXISTS pullback_low FLOAT",
         # 弱转强雷达：板块负反馈原始分独立暴露（此前只用于二分类判断后即丢弃）
         "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS sector_divergence_health FLOAT",
+        # 弱转强雷达：主升板块封顶（只有MAIN_UPTREND里强度前N名的板块允许放行到BUYABLE）
+        "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS is_mainline_sector BOOLEAN DEFAULT FALSE NOT NULL",
     ]
     # 每条补丁独立事务：Postgres 中任一语句报错会使整个事务进入 aborted 状态，
     # 若共用事务，末尾 ADD CONSTRAINT（无 IF NOT EXISTS）已存在时报错，

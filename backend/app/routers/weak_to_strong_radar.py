@@ -120,6 +120,7 @@ def _build_checklist(
                    f"（强度{cand.sector_strength_score if cand.sector_strength_score is not None else '-'}"
                    f" / 动量{cand.sector_momentum_score if cand.sector_momentum_score is not None else '-'}"
                    + (f" / 分歧健康度{cand.sector_divergence_health:.0f}" if cand.sector_divergence_health is not None else "")
+                   + (" / 属于当前主升前列" if cand.is_mainline_sector else " / 不在当前主升前列，结构确认封顶CONFIRMING")
                    + "）",
         ),
         ChecklistGroup(

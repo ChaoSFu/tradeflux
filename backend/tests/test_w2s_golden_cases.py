@@ -159,3 +159,25 @@ def test_golden_case_market_negative_feedback_pattern_synthetic():
     r4 = _tick(r3, price=10.65, market_state="GREEN")  # 大盘负反馈解除
     assert r4["structural_state"] == STRUCT_CONFIRMED
     assert r4["display_state"] == BUYABLE  # 立刻反映真实进度，不需要重新走H1/L1
+
+
+def test_golden_case_only_top_mainline_sectors_ever_reach_buyable():
+    """
+    2026-08-23新增（用户明确要求收窄候选："能做主升的板块不可能太多，顶多3个……
+    必须是逻辑最硬的板块和个股才行"）：结构走完全程、龙头明确、空间也够，但
+    所属板块当时没能挤进 MAIN_UPTREND 强度前3——展示只能停在CONFIRMING，不能
+    因为个股自己形态好看就放行，直到板块本身被重新评估为前3之一才解锁。
+    """
+    r1 = _tick(None, price=10.5, is_mainline_sector=False)
+    r2 = _tick(r1, price=10.3, is_mainline_sector=False)
+    r3 = _tick(r2, price=10.6, is_mainline_sector=False)
+    assert r3["structural_state"] == STRUCT_CONFIRMED
+    assert r3["display_state"] == CONFIRMING  # 结构、龙头、空间都齐了，卡在板块不够主线
+
+    r4 = _tick(r3, price=10.62, is_mainline_sector=False)  # 继续持有，board排名仍未挤进前3
+    assert r4["structural_state"] == STRUCT_CONFIRMED
+    assert r4["display_state"] == CONFIRMING
+
+    r5 = _tick(r4, price=10.65, is_mainline_sector=True)  # 板块强度重新评估后挤进前3
+    assert r5["structural_state"] == STRUCT_CONFIRMED
+    assert r5["display_state"] == BUYABLE  # 同一结构立刻放行，不需要重新走H1/L1

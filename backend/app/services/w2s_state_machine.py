@@ -258,11 +258,19 @@ def derive_display_state(
     leader_type: str,
     limit_room: Optional[float],
     space_min_room_pct: float,
+    is_mainline_sector: bool = True,
 ) -> tuple[str, Optional[str]]:
     """
-    纯函数（Soft Cap 层 + 结构事实→交易决策映射）：给定结构事实和三个软上限
+    纯函数（Soft Cap 层 + 结构事实→交易决策映射）：给定结构事实和四个软上限
     输入，推导出展示态。这是唯一一处允许"结构=CONFIRMED"变成"决策=BUYABLE"
     的地方——BUYABLE 从来不是结构层自己会产生的值。
+
+    `is_mainline_sector`（2026-08-23新增）：候选所属板块是否在当前 MAIN_UPTREND
+    分类里按强度分排进前 N 名（`select_mainline_sector_ids`，N 默认3，`w2s_mainline_
+    sector_top_n` 可配）。能同时做主升的板块不会很多，弱转强的 Edge 来自资金回流
+    到最强的少数主线——不在前N名不是硬性拦截（候选照常追踪、结构照常推进），只是
+    结构确认后不放行到 BUYABLE，跟 NEW_START/龙头未决是同一种软上限处理方式。
+    默认 True 是为了兼容只想测试其它软上限、不关心这一个维度的调用方（比如老测试）。
     """
     if structural_state == STRUCT_FAILED:
         return WAIT, None
@@ -281,6 +289,8 @@ def derive_display_state(
     # structural_state == STRUCT_CONFIRMED：这是唯一可能产出 BUYABLE 的分支
     if leader_type == "undetermined":
         return CONFIRMING, "龙头未决，二次突破已出现但暂不升级为 BUYABLE"
+    if not is_mainline_sector:
+        return CONFIRMING, "所属板块不在当前最强的主升前列，结构已确认但暂缓至 CONFIRMING"
     space_ok, space_reason = evaluate_space_gate(limit_room, space_min_room_pct)
     if not space_ok:
         return WAIT, f"结构已确认但{space_reason}，暂缓至 WAIT"
@@ -312,6 +322,7 @@ def compute_next_state(
     is_after_auction: bool,
     limit_room: Optional[float],
     space_min_room_pct: float,
+    is_mainline_sector: bool = True,
 ) -> dict:
     """
     纯函数编排：结构事实（Setup Progression，不受闸门影响，持续推进）→
@@ -339,6 +350,7 @@ def compute_next_state(
         display_state, cap_note = derive_display_state(
             structural_state=structural["new_structural_state"], sector_category=sector_category,
             leader_type=leader_type, limit_room=limit_room, space_min_room_pct=space_min_room_pct,
+            is_mainline_sector=is_mainline_sector,
         )
         trigger_reasons = list(structural["trigger_reasons"])
         if cap_note:

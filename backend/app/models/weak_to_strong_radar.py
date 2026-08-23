@@ -41,6 +41,7 @@ class WeakToStrongCandidate(Base):
     sector_strength_score = Column(Float, nullable=True)
     sector_momentum_score = Column(Float, nullable=True)
     sector_divergence_health = Column(Float, nullable=True)  # 仅 phase=4（分歧阶段）有值，独立暴露的板块负反馈原始分
+    is_mainline_sector = Column(Boolean, default=False, nullable=False)  # 2026-08-23新增：所属板块是否在当前MAIN_UPTREND强度前N名内，不在则结构确认封顶CONFIRMING
 
     # ── Leader Gate ─────────────────────────────────────────────────────
     leader_type = Column(String(20), nullable=True)  # core|backup|undetermined|non_leader

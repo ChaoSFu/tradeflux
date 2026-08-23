@@ -19,6 +19,7 @@ class CandidateResponse(BaseModel):
     sector_strength_score: Optional[float] = None
     sector_momentum_score: Optional[float] = None
     sector_divergence_health: Optional[float] = None  # 仅 phase=4（分歧阶段）有值，越低代表板块高位分歧越危险
+    is_mainline_sector: bool  # 是否在当前MAIN_UPTREND强度前N名，不在则结构确认封顶CONFIRMING
 
     leader_type: Optional[str] = None
     leader_rank: Optional[int] = None
@@ -153,6 +154,7 @@ class W2SConfigResponse(BaseModel):
     w2s_auction_gap_min: float
     w2s_space_min_room_pct: float
     w2s_pullback_min_pct: float
+    w2s_mainline_sector_top_n: float
     w2s_sector_gate_allowed: str
     w2s_regulatory_risk_cap: str
     w2s_market_gate_blocked: str

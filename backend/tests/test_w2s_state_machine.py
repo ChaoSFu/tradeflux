@@ -241,6 +241,25 @@ def test_derive_display_insufficient_space_downgrades_confirmed_to_wait():
     assert note is not None
 
 
+def test_derive_display_non_mainline_sector_caps_confirmed_to_confirming():
+    # 板块分类是MAIN_UPTREND、龙头明确、空间充足，但不在当前强度前N名——结构已确认仍不给BUYABLE
+    state, note = derive_display_state(
+        structural_state=STRUCT_CONFIRMED, sector_category="MAIN_UPTREND", leader_type="core",
+        limit_room=10.0, space_min_room_pct=2.0, is_mainline_sector=False,
+    )
+    assert state == CONFIRMING
+    assert note is not None
+
+
+def test_derive_display_mainline_sector_true_allows_buyable():
+    state, note = derive_display_state(
+        structural_state=STRUCT_CONFIRMED, sector_category="MAIN_UPTREND", leader_type="core",
+        limit_room=10.0, space_min_room_pct=2.0, is_mainline_sector=True,
+    )
+    assert state == BUYABLE
+    assert note is None
+
+
 # ── compute_next_state：编排行为，BLOCK 不再是死态 ──────────────────────────
 
 def test_next_state_market_red_displays_block_but_keeps_structural_progress():
@@ -275,6 +294,32 @@ def test_next_state_leader_undetermined_shows_confirming_not_buyable():
     )
     assert result["display_state"] == CONFIRMING
     assert result["structural_state"] == STRUCT_CONFIRMED
+
+
+def test_next_state_non_mainline_sector_caps_at_confirming_but_keeps_structural_confirmed():
+    result = _next(
+        structural_state=STRUCT_PULLBACK, is_mainline_sector=False,
+        price=10.6, recovery_high=10.5, pullback_low=10.3, pullback_started=True,
+    )
+    assert result["display_state"] == CONFIRMING
+    assert result["structural_state"] == STRUCT_CONFIRMED
+
+
+def test_next_state_mainline_sector_promotion_immediately_unlocks_buyable():
+    # 场景：结构已确认但当时板块排不进前3，只显示CONFIRMING；后续该板块强度上升
+    # 挤进前3后（不需要重新走一遍回踩），同一结构立刻放行到BUYABLE
+    capped = _next(
+        structural_state=STRUCT_PULLBACK, is_mainline_sector=False,
+        price=10.6, recovery_high=10.5, pullback_low=10.3, pullback_started=True,
+    )
+    assert capped["display_state"] == CONFIRMING
+    promoted = _next(
+        structural_state=capped["structural_state"], is_mainline_sector=True,
+        price=10.65, recovery_high=capped["recovery_high"], pullback_low=capped["pullback_low"],
+        pullback_started=capped["pullback_started"],
+    )
+    assert promoted["display_state"] == BUYABLE
+    assert promoted["structural_state"] == STRUCT_CONFIRMED
 
 
 def test_next_state_new_start_sector_caps_at_ready():

@@ -8,6 +8,7 @@ from app.services.w2s_sector_gate_service import (
     compute_sector_momentum_score,
     compute_divergence_health,
     classify_sector_category,
+    select_mainline_sector_ids,
     NEW_START, EXPANDING, MAIN_UPTREND, HEALTHY_DIVERGENCE, HIGH_LEVEL_WARNING, DECLINING, DEAD,
 )
 
@@ -104,3 +105,27 @@ def test_divergence_health_low_when_deteriorating():
     s = _sector(phase=4, board_height=1, limit_up_count=1, risk_score=80.0, emotion_score=20.0)
     health = compute_divergence_health(s, prev)
     assert health is not None and health < 50.0
+
+
+def test_select_mainline_sector_ids_takes_top_n_by_strength_within_main_uptrend_only():
+    scores = {
+        1: {"sector_category": MAIN_UPTREND, "sector_strength_score": 90.0},
+        2: {"sector_category": MAIN_UPTREND, "sector_strength_score": 80.0},
+        3: {"sector_category": MAIN_UPTREND, "sector_strength_score": 70.0},
+        4: {"sector_category": MAIN_UPTREND, "sector_strength_score": 60.0},  # 排第4，应该被挤出前3
+        5: {"sector_category": EXPANDING, "sector_strength_score": 99.0},    # 非MAIN_UPTREND，强度再高也不参与排名
+    }
+    assert select_mainline_sector_ids(scores, top_n=3) == {1, 2, 3}
+
+
+def test_select_mainline_sector_ids_fewer_than_top_n_returns_all_main_uptrend():
+    scores = {
+        1: {"sector_category": MAIN_UPTREND, "sector_strength_score": 55.0},
+        2: {"sector_category": NEW_START, "sector_strength_score": 95.0},
+    }
+    assert select_mainline_sector_ids(scores, top_n=3) == {1}
+
+
+def test_select_mainline_sector_ids_empty_when_no_main_uptrend_sector():
+    scores = {1: {"sector_category": DECLINING, "sector_strength_score": 80.0}}
+    assert select_mainline_sector_ids(scores, top_n=3) == set()

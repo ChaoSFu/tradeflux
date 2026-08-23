@@ -124,6 +124,9 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
     for sid, sector in sectors_by_id.items():
         sector_score_cache[sid] = sector_gate.score_sector(db, sector, today)
 
+    mainline_top_n = int(cfg.get_numeric(db, cfg.KEY_MAINLINE_SECTOR_TOP_N))
+    mainline_sector_ids = sector_gate.select_mainline_sector_ids(sector_score_cache, top_n=mainline_top_n)
+
     theme_groups: dict[int, list[int]] = {}
     for cand in candidates:
         stock = stock_by_id.get(cand.stock_id)
@@ -164,6 +167,29 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
         if quote is None:
             stats["quote_missing"] += 1
             cand.signal_enabled = sm.check_data_freshness(cand.last_refreshed_at, now)
+            # 行情连续拉取失败超过新鲜度阈值时，展示态必须主动降级为BLOCK——
+            # 之前这里只更新了signal_enabled、current_state原地不动，会出现界面
+            # 一直显示几十分钟前的旧BUYABLE、却没有任何"数据已过期"提示的真实bug。
+            # structural_state（结构事实层）依然完全不碰，跟"闸门临时不通过不清空
+            # 结构进度"是同一条不变式——数据过期时我们没有新证据推翻旧结构，只是
+            # 不能再信任它支撑一个交易决策。
+            if not cand.signal_enabled and cand.current_state != sm.BLOCK:
+                old_state = cand.current_state
+                cand.current_state = sm.BLOCK
+                cand.block_reasons = "数据过期，信号已禁用（距上次成功刷新超过新鲜度阈值）"
+                stats["state_changed"] += 1
+                db.add(WeakToStrongEvent(
+                    timestamp=now, stock_code=stock.code, sector_id=stock.primary_sector_id,
+                    sector_phase=cand.sector_category, sector_strength=cand.sector_strength_score,
+                    sector_momentum=cand.sector_momentum_score,
+                    leader_type=cand.leader_type, leader_rank=cand.leader_rank, leader_score=cand.leader_score,
+                    setup_state=sm.BLOCK, structural_state=cand.structural_state,
+                    recovery_high=cand.recovery_high, pullback_low=cand.pullback_low,
+                    price=cand.price, prev_close=cand.prev_close,
+                    old_state=old_state, new_state=sm.BLOCK,
+                    trigger_reasons=None, block_reasons=cand.block_reasons,
+                    data_freshness=None, formula_version=formula_version,
+                ))
             continue
 
         sector_info = sector_score_cache.get(stock.primary_sector_id, {})
@@ -227,6 +253,7 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
             is_after_auction=is_after_auction,
             limit_room=limit_room,
             space_min_room_pct=space_min_room_pct,
+            is_mainline_sector=stock.primary_sector_id in mainline_sector_ids,
         )
         new_state = result["display_state"]
 
@@ -237,6 +264,7 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
         cand.sector_strength_score = sector_info.get("sector_strength_score")
         cand.sector_momentum_score = sector_info.get("sector_momentum_score")
         cand.sector_divergence_health = sector_info.get("sector_divergence_health")
+        cand.is_mainline_sector = stock.primary_sector_id in mainline_sector_ids
         cand.leader_type = leader_type
         cand.leader_rank = leader_info.get("leader_rank")
         cand.leader_score = leader_info.get("core_leader_score")
