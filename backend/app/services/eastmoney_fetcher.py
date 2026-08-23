@@ -1430,10 +1430,13 @@ def _fetch_quotes_eastmoney(codes_markets: list[tuple[str, int]], timeout: int =
     return result
 
 
-# 主路失败后换哪个源做唯一一次兜底——固定轮转，不是挨个把三个源都试一遍。
-# 这样即使某一路持续有问题，兜底流量也分散到不同源，不会把兜底目标反复
-# 往同一个源身上堆，降低把"备用源"也一起打出限流的风险。
-_QUOTE_FALLBACK_ORDER = {"eastmoney": "tencent", "tencent": "sina", "sina": "eastmoney"}
+# 2026-08-23 二次调整：push2.eastmoney.com 在生产环境持续（跨越18:30-21:00
+# 多轮测试，超过2.5小时）针对本服务器出口IP返回502，不是瞬时抖动，用户
+# 明确要求把东财push2从"三路主力之一"降级为"纯兜底"——腾讯+新浪两路并发
+# 做主力，东财只在腾讯/新浪都拿不到数据时才顶上（单跳，不递归重试）。
+# 腾讯/新浪目前观察下来稳定，主力流量不再分给一个已知持续故障的源，避免
+# 白白浪费3次重试+502的时间。东财一旦自己恢复正常，这里不需要再改代码——
+# 它依然是兜底源，只是不再是主力，恢复后兜底命中率自然会体现出来。
 
 
 def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int = 15) -> Dict[str, StockQuote]:
@@ -1441,37 +1444,38 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
     批量拉取个股实时快照：现价/涨跌幅/今开/最高/最低/昨收/成交量/成交额/换手率。
     codes_markets: [(code, market), ...]，market 约定同 fetch_kline：1=SH，0=SZ。
 
-    2026-08-23 改为三路并发分摊 + 单跳兜底（原来是"全部先打东财，东财整批
-    失败才依次落到腾讯/新浪"，生产环境实测 push2.eastmoney.com 被针对性
-    限流后这种"全量集中打一个源"的模式会导致该源持续拿不到数据；改成从一
-    开始就把候选轮询拆成三份分别打东财/腾讯/新浪，既降低单个源的请求量
-    （不容易被判定为异常流量触发限流），也不会出现"东财一失效就把全部
-    候选流量突然砸给腾讯/新浪"这种流量突变。某一路的这部分代码彻底拿不到
-    数据时，只换一个源单独补一次（不是原地重试，也不是把三个源都轮流试一
-    遍）——用户明确要求的设计，目的是避免因为一次兜底就把另外两个源也
-    连带打出限流，殃及池鱼。
+    2026-08-23 两次调整：
+      1）改为多路并发分摊 + 单跳兜底（原来是"全部先打东财，东财整批失败才
+         依次落到腾讯/新浪"，生产环境实测 push2.eastmoney.com 被针对性限流
+         后这种"全量集中打一个源"的模式会导致该源持续拿不到数据；改成候选
+         轮询拆开分别打不同源并发，某一路彻底拿不到数据时只换一个源单独
+         补一次，不原地重试也不轮流试遍所有源，避免连带把兜底目标也打出
+         限流）。
+      2）push2.eastmoney.com 持续故障超过2.5小时（跨多轮测试确认不是瞬时
+         抖动）后，东财从"三路主力之一"降级为"纯兜底"——腾讯+新浪两路
+         并发做主力，东财只在两路都拿不到数据时才顶上（单跳兜底，同样不
+         递归重试）。腾讯字段完整度最接近东财（含换手率，经真实数据核对
+         跟东财权威值完全一致，见 _parse_tencent_quote_line），新浪没有
+         换手率、完整度最低，两路都缺席时东财兜底能补回完整数据。
 
-    腾讯字段完整度最接近东财（含换手率，经真实数据核对跟东财权威值完全
-    一致，见 _parse_tencent_quote_line），新浪没有换手率、完整度最低。
     调用方按 code not in result 处理缺失，不因为个别股票/个别源失败拖垮整批。
     """
     result: Dict[str, StockQuote] = {}
     if not codes_markets:
         return result
 
-    groups = _split_round_robin(codes_markets, 3)
+    groups = _split_round_robin(codes_markets, 2)
     sources: dict[str, tuple[list[tuple[str, int]], Callable]] = {
-        "eastmoney": (groups[0], lambda pairs: _fetch_quotes_eastmoney(pairs, timeout=timeout)),
-        "tencent": (groups[1], lambda pairs: _fetch_quotes_tencent(pairs, timeout=timeout)),
-        "sina": (groups[2], lambda pairs: _fetch_quotes_sina(pairs, timeout=timeout)),
+        "tencent": (groups[0], lambda pairs: _fetch_quotes_tencent(pairs, timeout=timeout)),
+        "sina": (groups[1], lambda pairs: _fetch_quotes_sina(pairs, timeout=timeout)),
     }
     _w2s_log(
         "QUOTE",
-        f"三路并发拉取行情：请求{len(codes_markets)}只，"
-        f"东财{len(groups[0])}只/腾讯{len(groups[1])}只/新浪{len(groups[2])}只",
+        f"两路并发拉取行情（东财push2降级为纯兜底）：请求{len(codes_markets)}只，"
+        f"腾讯{len(groups[0])}只/新浪{len(groups[1])}只",
     )
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(fn, pairs): name for name, (pairs, fn) in sources.items() if pairs}
         for future in as_completed(futures):
             name = futures[future]
@@ -1484,29 +1488,19 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
             assigned = len(sources[name][0])
             _w2s_log("QUOTE", f"{name}主路完成：分配{assigned}只，成功{len(partial)}只")
 
-    # 单跳兜底：每一路里没拿到数据的部分，按固定轮转换一个不同的源补一次。
-    fallback_jobs = []
-    for name, (pairs, _) in sources.items():
-        missing = [(code, market) for code, market in pairs if code not in result]
-        if missing:
-            fb_name = _QUOTE_FALLBACK_ORDER[name]
-            fallback_jobs.append((name, fb_name, missing))
-
-    if fallback_jobs:
-        with ThreadPoolExecutor(max_workers=len(fallback_jobs)) as executor:
-            futures = {
-                executor.submit(sources[fb_name][1], missing): (name, fb_name, missing)
-                for name, fb_name, missing in fallback_jobs
-            }
-            for future in as_completed(futures):
-                orig_name, fb_name, missing = futures[future]
-                try:
-                    fb_result = future.result()
-                except Exception as e:  # noqa: BLE001
-                    fb_result = {}
-                    _w2s_log("QUOTE", f"{orig_name}缺席部分改用{fb_name}兜底时异常: {type(e).__name__}: {e}")
-                result.update(fb_result)
-                _w2s_log("QUOTE", f"{orig_name}缺席{len(missing)}只改用{fb_name}兜底一次：补齐{len(fb_result)}只")
+    # 单跳兜底：腾讯/新浪两路里没拿到数据的部分，合并成一批统一交给东财push2
+    # 兜底一次——不是原地重试，也不是每一路各自单独发一次兜底请求（那样会
+    # 对同一个兜底源发两次并发请求，没有必要，合并成一批更省请求量）。
+    still_missing = [(code, market) for code, market in codes_markets if code not in result]
+    if still_missing:
+        _w2s_log("QUOTE", f"腾讯+新浪后仍缺席{len(still_missing)}只，东财push2兜底一次")
+        try:
+            fb_result = _fetch_quotes_eastmoney(still_missing, timeout=timeout)
+        except Exception as e:  # noqa: BLE001
+            fb_result = {}
+            _w2s_log("QUOTE", f"东财push2兜底时异常: {type(e).__name__}: {e}")
+        result.update(fb_result)
+        _w2s_log("QUOTE", f"东财push2兜底完成：{len(fb_result)}/{len(still_missing)}只补齐")
 
     missing = [code for code, _ in codes_markets if code not in result]
     _w2s_log(
