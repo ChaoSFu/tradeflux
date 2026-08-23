@@ -21,7 +21,7 @@ import threading
 from contextlib import contextmanager
 from datetime import date
 from dataclasses import dataclass, field
-from typing import List, Dict, Set, Tuple, Optional
+from typing import List, Dict, Set, Tuple, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 HEADERS = {
@@ -1200,6 +1200,81 @@ class StockQuote:
     turnover_rate: Optional[float] = None
 
 
+TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
+
+
+def _parse_tencent_quote_line(line: str) -> Optional[Tuple[str, "StockQuote"]]:
+    """
+    解析腾讯 qt.gtimg.cn 单行实时行情：v_sh600000="...~"分隔的约90个字段。
+    字段含义没有官方文档，下面几个下标是 2026-08-23 用真实数据跟东财权威值
+    交叉核对过的（600000/002081 两只股票，价格/成交量/成交额/换手率均对得上，
+    不是拍脑袋猜的位置）：
+      1=名称(GBK编码，不用) 2=代码 3=现价 4=昨收 5=今开 6=成交量(手，
+      单位跟东财原始f5字段一致，下游VWAP计算自己*100，这里不重复转换)
+      33=最高 34=最低 37=成交额(万元，需*10000换算成元) 38=换手率(%，
+      跟东财 turnover_rate 语义/数值完全一致，是本仓库唯一一个新浪没有
+      而腾讯有的关键字段，兜底时用腾讯而不是新浪能保留这个数据不缺失)。
+    """
+    if not line.startswith("v_"):
+        return None
+    try:
+        key_part = line.split("=")[0]
+        raw_code = key_part.split("_", 1)[-1]  # sh600000
+        pure_code = raw_code[2:]
+        content = line.split('"')[1]
+        fields = content.split("~")
+        if len(fields) < 39:
+            return None
+        price = float(fields[3])
+        prev_close = float(fields[4])
+        open_p = float(fields[5])
+        volume = float(fields[6])
+        high = float(fields[33])
+        low = float(fields[34])
+        amount = float(fields[37]) * 10000
+        turnover_rate = float(fields[38]) if fields[38] not in ("", "-") else None
+        if price <= 0 and prev_close <= 0:
+            return None  # 停牌/无数据，不构造一个全零的假报价
+        pct_change = round((price - prev_close) / prev_close * 100, 2) if prev_close > 0 else None
+        return pure_code, StockQuote(
+            code=pure_code, name="", price=price, pct_change=pct_change,
+            open=open_p, high=high, low=low, prev_close=prev_close,
+            volume=volume, amount=amount, turnover_rate=turnover_rate,
+        )
+    except (ValueError, IndexError):
+        return None
+
+
+def _fetch_quotes_tencent(codes_markets: list[tuple[str, int]], timeout: int = 10) -> Dict[str, StockQuote]:
+    """
+    腾讯 qt.gtimg.cn 批量实时行情——push2.eastmoney.com 兜底源，排在新浪之前，
+    因为腾讯格式里有换手率（新浪没有），字段完整度更接近东财原始数据，兜底时
+    数据损失更小。跟 _fetch_kline_tencent（K线兜底）是同一个"东财→腾讯"模式，
+    只是这里是实时快照不是历史K线。
+    """
+    result: Dict[str, StockQuote] = {}
+    if not codes_markets:
+        return result
+    batch_size = 60
+    batches = [codes_markets[i:i + batch_size] for i in range(0, len(codes_markets), batch_size)]
+    with httpx.Client(headers=TENCENT_HEADERS, timeout=timeout) as client:
+        for batch in batches:
+            keys = [
+                f"{'bj' if _is_bj_code(code) else ('sh' if market == 1 else 'sz')}{code}"
+                for code, market in batch
+            ]
+            try:
+                resp = client.get(TENCENT_QUOTE_URL + ",".join(keys))
+                for line in resp.text.splitlines():
+                    parsed = _parse_tencent_quote_line(line)
+                    if parsed:
+                        code, quote = parsed
+                        result[code] = quote
+            except Exception as e:  # noqa: BLE001
+                _w2s_log("QUOTE", f"腾讯兜底批量请求失败（{len(batch)}只）: {type(e).__name__}: {e}")
+    return result
+
+
 def _parse_sina_quote_line(line: str) -> Optional[Tuple[str, "StockQuote"]]:
     """
     解析新浪 hq.sinajs.cn 单行实时行情：var hq_str_sh600000="名称,今开,昨收,现价,
@@ -1239,14 +1314,16 @@ def _parse_sina_quote_line(line: str) -> Optional[Tuple[str, "StockQuote"]]:
 
 def _fetch_quotes_sina(codes_markets: list[tuple[str, int]], timeout: int = 10) -> Dict[str, StockQuote]:
     """
-    新浪 hq.sinajs.cn 批量实时行情——push2.eastmoney.com 兜底源。2026-08-23
-    生产环境实测：push2.eastmoney.com 三个后端IP针对本服务器出口IP全部返回
-    502（本地测试始终正常），但新浪/腾讯/东财智能选股接口（不同子域名）
-    均正常，判断是 push2 这一个域名被针对性限流/防护，不是东财整体故障也
-    不是网络链路问题。新浪接口在本仓库已经用于涨跌幅/指数成交额查询
-    （见 _batch_sina_pct_change/_fetch_index_amount_sina），是验证过的独立
-    数据源。返回格式跟东财版本完全一致（Dict[code, StockQuote]），调用方
-    不需要关心数据来自哪个源。
+    新浪 hq.sinajs.cn 批量实时行情——兜底链路的最后一道（东财push2、腾讯都
+    拿不到数据时才用）。2026-08-23 生产环境实测：push2.eastmoney.com 三个
+    后端IP针对本服务器出口IP全部返回502（本地测试始终正常），但新浪/腾讯/
+    东财智能选股接口（不同子域名）均正常，判断是 push2 这一个域名被针对性
+    限流/防护，不是东财整体故障也不是网络链路问题。排在腾讯之后是因为新浪
+    的公开行情格式没有换手率字段（腾讯有，且经真实数据核对跟东财完全一致），
+    数据完整度更低，只在腾讯也失败时才用。新浪接口本身在本仓库已经用于
+    涨跌幅/指数成交额查询（见 _batch_sina_pct_change/_fetch_index_amount_sina），
+    是验证过的独立数据源。返回格式跟东财版本完全一致（Dict[code, StockQuote]），
+    调用方不需要关心数据来自哪个源。
     """
     result: Dict[str, StockQuote] = {}
     if not codes_markets:
@@ -1269,33 +1346,29 @@ def _fetch_quotes_sina(codes_markets: list[tuple[str, int]], timeout: int = 10) 
     return result
 
 
-def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int = 15) -> Dict[str, StockQuote]:
-    """
-    批量拉取个股实时快照：现价/涨跌幅/今开/最高/最低/昨收/成交量/成交额/换手率。
-    codes_markets: [(code, market), ...]，market 约定同 fetch_kline：1=SH，0=SZ。
+def _split_round_robin(items: list, n: int) -> list[list]:
+    """轮询分组，尽量均匀——不用顺序切片，避免候选列表本身如果有板块/代码
+    聚集，切片后某一路正好全是同一个板块这种偏差。"""
+    groups: list[list] = [[] for _ in range(n)]
+    for i, item in enumerate(items):
+        groups[i % n].append(item)
+    return groups
 
-    东财 push2 的 ulist.np/get 接口支持一次请求多个 secid（逗号分隔），超过
-    _QUOTE_BATCH_SIZE 自动分批（多线程并发各批）再合并。这是"锦上添花"的实时
-    快照，不是像选股结果那样要求的权威全集——单只股票拉取失败就从返回 dict 里
-    缺席，不会因为个别失败拖垮整批（调用方按 code not in result 处理缺失）。
+
+def _fetch_quotes_eastmoney(codes_markets: list[tuple[str, int]], timeout: int = 15) -> Dict[str, StockQuote]:
+    """
+    东财 push2 批量拉取一组代码：分批（超过 _QUOTE_BATCH_SIZE）+ 批内并发 +
+    每批3次快速重试（间隔0.5-1秒，处理连接抖动这类几秒内能过去的瞬时故障）。
+    3次都没拿到可解析响应的批次直接放弃、留给调用方（fetch_stock_quotes_batch）
+    换别的数据源兜底——不在这里做"同源二次重试"，那属于更高层的兜底策略。
     """
     result: Dict[str, StockQuote] = {}
     if not codes_markets:
         return result
-
-    batches = [
-        codes_markets[i:i + _QUOTE_BATCH_SIZE]
-        for i in range(0, len(codes_markets), _QUOTE_BATCH_SIZE)
-    ]
-    _w2s_log("QUOTE", f"开始批量拉取行情：{len(codes_markets)}只，分{len(batches)}批")
-
-    failed_batches: list[list[tuple[str, int]]] = []
+    batches = [codes_markets[i:i + _QUOTE_BATCH_SIZE] for i in range(0, len(codes_markets), _QUOTE_BATCH_SIZE)]
 
     def _fetch_one_batch(batch: list[tuple[str, int]], batch_label: str) -> None:
         secids = ",".join(f"{market}.{code}" for code, market in batch)
-        # 东财 push2 偶发瞬时 502/连接问题（本 session 反复验证过的已知不稳定源），
-        # 重试 2 次基本能过；批量快照是雷达刷新的地基，不能让一次瞬时故障
-        # 让整批候选的行情全部缺席。
         for attempt in range(3):
             resp = None
             try:
@@ -1306,7 +1379,7 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
                 except Exception as parse_err:  # noqa: BLE001
                     _w2s_log(
                         "QUOTE",
-                        f"批次{batch_label}第{attempt + 1}次尝试：HTTP {resp.status_code}响应无法解析为JSON"
+                        f"东财批次{batch_label}第{attempt + 1}次尝试：HTTP {resp.status_code}响应无法解析为JSON"
                         f"（{type(parse_err).__name__}），Content-Length={resp.headers.get('content-length', '?')}，"
                         f"实际body长度={len(resp.content)}，body前200字符={resp.text[:200]!r}",
                     )
@@ -1332,22 +1405,20 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
                 if len(diff) < len(batch):
                     _w2s_log(
                         "QUOTE",
-                        f"批次{batch_label}第{attempt + 1}次尝试：HTTP {resp.status_code}，"
+                        f"东财批次{batch_label}第{attempt + 1}次尝试：HTTP {resp.status_code}，"
                         f"请求{len(batch)}只只返回{len(diff)}只（部分缺席，非报错，可能是停牌/退市/代码不存在）",
                     )
                 else:
-                    _w2s_log("QUOTE", f"批次{batch_label}第{attempt + 1}次尝试：成功，{len(batch)}只全部返回")
+                    _w2s_log("QUOTE", f"东财批次{batch_label}第{attempt + 1}次尝试：成功，{len(batch)}只全部返回")
                 return
             except Exception as e:  # noqa: BLE001
-                if resp is None:  # 请求本身没拿到响应（连接/超时类异常）；拿到响应但解析失败的详情已经记过了
+                if resp is None:
                     _w2s_log(
                         "QUOTE",
-                        f"批次{batch_label}第{attempt + 1}次尝试失败（{len(batch)}只，未收到响应）: {type(e).__name__}: {e}",
+                        f"东财批次{batch_label}第{attempt + 1}次尝试失败（{len(batch)}只，未收到响应）: {type(e).__name__}: {e}",
                     )
                 if attempt == 2:
-                    print(f"[fetcher] 批量行情快照拉取失败（{len(batch)}只，重试3次均失败）: {type(e).__name__}: {e}", flush=True)
-                    failed_batches.append(batch)  # 3次都没拿到过一次可解析的响应，整批标记为待补漏——
-                    # 跟"响应正常、只是部分代码没在diff里"（停牌/退市，不该重试）区分开
+                    print(f"[fetcher] 东财批量行情快照拉取失败（{len(batch)}只，重试3次均失败）: {type(e).__name__}: {e}", flush=True)
                 else:
                     time.sleep(0.5 * (attempt + 1))
 
@@ -1356,40 +1427,86 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
     else:
         with ThreadPoolExecutor(max_workers=min(5, len(batches))) as executor:
             list(executor.map(lambda pair: _fetch_one_batch(pair[1], str(pair[0] + 1)), enumerate(batches)))
+    return result
 
-    # 补漏重试：参考 daily_update.py K线拉取的成熟经验——"高并发批量拉取下个别
-    # 股票会静默失败，脱离批量并发环境、单独低并发重试一轮，成功率接近100%"。
-    # 上面每批内部已经并发重试过3次（间隔仅0.5-1秒），如果东财那次抖动窗口比这
-    # 更长（这次线上502持续了至少4秒），批内重试就追不上，需要再等一等、脱离
-    # "多批并发"这个环境单独重试一次。**只对 failed_batches（3次都没拿到过一次
-    # 可解析响应的批次）补漏**，不对"响应正常、只是这只代码没在diff里"的情况
-    # 补漏——那种通常是停牌/退市/代码不存在，重试没有意义，白白拖慢刷新还占请求。
-    if failed_batches:
-        retry_pairs = [pair for batch in failed_batches for pair in batch]
-        _w2s_log("QUOTE", f"{len(failed_batches)}批（共{len(retry_pairs)}只）3次尝试均未拿到可解析响应，等待2秒后单独低并发补漏重试")
-        time.sleep(2.0)
-        backfill_batches = [
-            retry_pairs[i:i + _QUOTE_BATCH_SIZE] for i in range(0, len(retry_pairs), _QUOTE_BATCH_SIZE)
-        ]
-        for i, bb in enumerate(backfill_batches):
-            _fetch_one_batch(bb, f"补漏{i + 1}")
-            if i < len(backfill_batches) - 1:
-                time.sleep(0.5)  # 补漏批次之间也错开发起，不再一次性并发甩出去
-        recovered = sum(1 for code, _ in retry_pairs if code in result)
-        _w2s_log("QUOTE", f"补漏重试完成：{recovered}/{len(retry_pairs)}只补齐")
 
-    # 新浪兜底：东财 push2 自己的补漏重试都还是拿不到可解析响应，说明这次不是
-    # 几秒钟能过去的瞬时抖动，而是 push2 这个域名本身在这次刷新期间对本机
-    # 持续不可用（2026-08-23 生产环境验证过这种情况，见函数头注释）。此时继续
-    # 在 push2 上重试没有意义，换一个完全独立的数据源（新浪）。turnover_rate
-    # 新浪不提供，留 None，不编造——下游 Core Leader Score 的资金容量分量会
-    # 因此贡献0分，比编一个假换手率更诚实。
-    still_missing = [(code, market) for code, market in codes_markets if code not in result]
-    if still_missing:
-        _w2s_log("QUOTE", f"东财push2补漏后仍缺席{len(still_missing)}只，尝试新浪兜底源（turnover_rate字段会缺失）")
-        sina_result = _fetch_quotes_sina(still_missing, timeout=timeout)
-        result.update(sina_result)
-        _w2s_log("QUOTE", f"新浪兜底完成：{len(sina_result)}/{len(still_missing)}只补齐")
+# 主路失败后换哪个源做唯一一次兜底——固定轮转，不是挨个把三个源都试一遍。
+# 这样即使某一路持续有问题，兜底流量也分散到不同源，不会把兜底目标反复
+# 往同一个源身上堆，降低把"备用源"也一起打出限流的风险。
+_QUOTE_FALLBACK_ORDER = {"eastmoney": "tencent", "tencent": "sina", "sina": "eastmoney"}
+
+
+def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int = 15) -> Dict[str, StockQuote]:
+    """
+    批量拉取个股实时快照：现价/涨跌幅/今开/最高/最低/昨收/成交量/成交额/换手率。
+    codes_markets: [(code, market), ...]，market 约定同 fetch_kline：1=SH，0=SZ。
+
+    2026-08-23 改为三路并发分摊 + 单跳兜底（原来是"全部先打东财，东财整批
+    失败才依次落到腾讯/新浪"，生产环境实测 push2.eastmoney.com 被针对性
+    限流后这种"全量集中打一个源"的模式会导致该源持续拿不到数据；改成从一
+    开始就把候选轮询拆成三份分别打东财/腾讯/新浪，既降低单个源的请求量
+    （不容易被判定为异常流量触发限流），也不会出现"东财一失效就把全部
+    候选流量突然砸给腾讯/新浪"这种流量突变。某一路的这部分代码彻底拿不到
+    数据时，只换一个源单独补一次（不是原地重试，也不是把三个源都轮流试一
+    遍）——用户明确要求的设计，目的是避免因为一次兜底就把另外两个源也
+    连带打出限流，殃及池鱼。
+
+    腾讯字段完整度最接近东财（含换手率，经真实数据核对跟东财权威值完全
+    一致，见 _parse_tencent_quote_line），新浪没有换手率、完整度最低。
+    调用方按 code not in result 处理缺失，不因为个别股票/个别源失败拖垮整批。
+    """
+    result: Dict[str, StockQuote] = {}
+    if not codes_markets:
+        return result
+
+    groups = _split_round_robin(codes_markets, 3)
+    sources: dict[str, tuple[list[tuple[str, int]], Callable]] = {
+        "eastmoney": (groups[0], lambda pairs: _fetch_quotes_eastmoney(pairs, timeout=timeout)),
+        "tencent": (groups[1], lambda pairs: _fetch_quotes_tencent(pairs, timeout=timeout)),
+        "sina": (groups[2], lambda pairs: _fetch_quotes_sina(pairs, timeout=timeout)),
+    }
+    _w2s_log(
+        "QUOTE",
+        f"三路并发拉取行情：请求{len(codes_markets)}只，"
+        f"东财{len(groups[0])}只/腾讯{len(groups[1])}只/新浪{len(groups[2])}只",
+    )
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(fn, pairs): name for name, (pairs, fn) in sources.items() if pairs}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                partial = future.result()
+            except Exception as e:  # noqa: BLE001
+                partial = {}
+                _w2s_log("QUOTE", f"{name}主路请求异常: {type(e).__name__}: {e}")
+            result.update(partial)
+            assigned = len(sources[name][0])
+            _w2s_log("QUOTE", f"{name}主路完成：分配{assigned}只，成功{len(partial)}只")
+
+    # 单跳兜底：每一路里没拿到数据的部分，按固定轮转换一个不同的源补一次。
+    fallback_jobs = []
+    for name, (pairs, _) in sources.items():
+        missing = [(code, market) for code, market in pairs if code not in result]
+        if missing:
+            fb_name = _QUOTE_FALLBACK_ORDER[name]
+            fallback_jobs.append((name, fb_name, missing))
+
+    if fallback_jobs:
+        with ThreadPoolExecutor(max_workers=len(fallback_jobs)) as executor:
+            futures = {
+                executor.submit(sources[fb_name][1], missing): (name, fb_name, missing)
+                for name, fb_name, missing in fallback_jobs
+            }
+            for future in as_completed(futures):
+                orig_name, fb_name, missing = futures[future]
+                try:
+                    fb_result = future.result()
+                except Exception as e:  # noqa: BLE001
+                    fb_result = {}
+                    _w2s_log("QUOTE", f"{orig_name}缺席部分改用{fb_name}兜底时异常: {type(e).__name__}: {e}")
+                result.update(fb_result)
+                _w2s_log("QUOTE", f"{orig_name}缺席{len(missing)}只改用{fb_name}兜底一次：补齐{len(fb_result)}只")
 
     missing = [code for code, _ in codes_markets if code not in result]
     _w2s_log(
