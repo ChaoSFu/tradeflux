@@ -1200,6 +1200,75 @@ class StockQuote:
     turnover_rate: Optional[float] = None
 
 
+def _parse_sina_quote_line(line: str) -> Optional[Tuple[str, "StockQuote"]]:
+    """
+    解析新浪 hq.sinajs.cn 单行实时行情：var hq_str_sh600000="名称,今开,昨收,现价,
+    最高,最低,竞买价,竞卖价,成交量,成交额,...(买卖五档)...,日期,时间,状态,扩展字段";
+    成交量字段单位是"股"（不像东财 f5 是"手"，这里不需要 *100 换算）。新浪不
+    直接提供换手率，quote.turnover_rate 留 None，不编造。名称字段是GBK编码，
+    这里不使用（跟 _batch_sina_pct_change 的既有处理方式一致，只取数值字段）。
+    """
+    if not line.startswith("var hq_str_"):
+        return None
+    try:
+        key_part = line.split("=")[0]
+        raw_code = key_part.split("_")[-1]  # sh600000
+        pure_code = raw_code[2:]
+        content = line.split('"')[1]
+        fields = content.split(",")
+        if len(fields) < 10:
+            return None
+        open_p = float(fields[1])
+        prev_close = float(fields[2])
+        price = float(fields[3])
+        high = float(fields[4])
+        low = float(fields[5])
+        volume = float(fields[8])
+        amount = float(fields[9])
+        if price <= 0 and prev_close <= 0:
+            return None  # 停牌/无数据，不构造一个全零的假报价
+        pct_change = round((price - prev_close) / prev_close * 100, 2) if prev_close > 0 else None
+        return pure_code, StockQuote(
+            code=pure_code, name="", price=price, pct_change=pct_change,
+            open=open_p, high=high, low=low, prev_close=prev_close,
+            volume=volume, amount=amount, turnover_rate=None,
+        )
+    except (ValueError, IndexError):
+        return None
+
+
+def _fetch_quotes_sina(codes_markets: list[tuple[str, int]], timeout: int = 10) -> Dict[str, StockQuote]:
+    """
+    新浪 hq.sinajs.cn 批量实时行情——push2.eastmoney.com 兜底源。2026-08-23
+    生产环境实测：push2.eastmoney.com 三个后端IP针对本服务器出口IP全部返回
+    502（本地测试始终正常），但新浪/腾讯/东财智能选股接口（不同子域名）
+    均正常，判断是 push2 这一个域名被针对性限流/防护，不是东财整体故障也
+    不是网络链路问题。新浪接口在本仓库已经用于涨跌幅/指数成交额查询
+    （见 _batch_sina_pct_change/_fetch_index_amount_sina），是验证过的独立
+    数据源。返回格式跟东财版本完全一致（Dict[code, StockQuote]），调用方
+    不需要关心数据来自哪个源。
+    """
+    result: Dict[str, StockQuote] = {}
+    if not codes_markets:
+        return result
+    prefix_map = {1: "sh", 0: "sz"}
+    batch_size = 150  # 沿用 _batch_sina_pct_change 的既有批量大小
+    batches = [codes_markets[i:i + batch_size] for i in range(0, len(codes_markets), batch_size)]
+    with httpx.Client(headers=SINA_HEADERS, timeout=timeout) as client:
+        for batch in batches:
+            keys = [f"{prefix_map.get(mkt, 'sz')}{code}" for code, mkt in batch]
+            try:
+                resp = client.get(SINA_HQ_URL + ",".join(keys))
+                for line in resp.text.splitlines():
+                    parsed = _parse_sina_quote_line(line)
+                    if parsed:
+                        code, quote = parsed
+                        result[code] = quote
+            except Exception as e:  # noqa: BLE001
+                _w2s_log("QUOTE", f"新浪兜底批量请求失败（{len(batch)}只）: {type(e).__name__}: {e}")
+    return result
+
+
 def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int = 15) -> Dict[str, StockQuote]:
     """
     批量拉取个股实时快照：现价/涨跌幅/今开/最高/最低/昨收/成交量/成交额/换手率。
@@ -1308,6 +1377,19 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
                 time.sleep(0.5)  # 补漏批次之间也错开发起，不再一次性并发甩出去
         recovered = sum(1 for code, _ in retry_pairs if code in result)
         _w2s_log("QUOTE", f"补漏重试完成：{recovered}/{len(retry_pairs)}只补齐")
+
+    # 新浪兜底：东财 push2 自己的补漏重试都还是拿不到可解析响应，说明这次不是
+    # 几秒钟能过去的瞬时抖动，而是 push2 这个域名本身在这次刷新期间对本机
+    # 持续不可用（2026-08-23 生产环境验证过这种情况，见函数头注释）。此时继续
+    # 在 push2 上重试没有意义，换一个完全独立的数据源（新浪）。turnover_rate
+    # 新浪不提供，留 None，不编造——下游 Core Leader Score 的资金容量分量会
+    # 因此贡献0分，比编一个假换手率更诚实。
+    still_missing = [(code, market) for code, market in codes_markets if code not in result]
+    if still_missing:
+        _w2s_log("QUOTE", f"东财push2补漏后仍缺席{len(still_missing)}只，尝试新浪兜底源（turnover_rate字段会缺失）")
+        sina_result = _fetch_quotes_sina(still_missing, timeout=timeout)
+        result.update(sina_result)
+        _w2s_log("QUOTE", f"新浪兜底完成：{len(sina_result)}/{len(still_missing)}只补齐")
 
     missing = [code for code, _ in codes_markets if code not in result]
     _w2s_log(
