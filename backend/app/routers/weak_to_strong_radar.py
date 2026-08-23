@@ -17,10 +17,10 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_auth
 from ..database import SessionLocal, get_db
-from ..models.weak_to_strong_radar import WeakToStrongCandidate, WeakToStrongEvent
+from ..models.weak_to_strong_radar import WeakToStrongCandidate, WeakToStrongEvent, WeakToStrongSnapshot
 from ..schemas.weak_to_strong_radar import (
     CandidateResponse, CandidateDetailResponse, ChecklistGroup,
-    RefreshResultResponse, RefreshStatusResponse, EventResponse,
+    RefreshResultResponse, RefreshStatusResponse, EventResponse, SnapshotResponse,
     W2SConfigResponse, W2SConfigUpdateRequest, MarketGateResponse,
 )
 from ..services import w2s_config_service as cfg
@@ -190,6 +190,18 @@ def list_events(stock_code: str | None = None, limit: int = 200, db: Session = D
     if stock_code:
         q = q.filter(WeakToStrongEvent.stock_code == stock_code)
     return q.order_by(WeakToStrongEvent.timestamp.desc()).limit(min(limit, 500)).all()
+
+
+@router.get("/snapshots", response_model=list[SnapshotResponse])
+def list_snapshots(stock_code: str, trade_date: date | None = None, limit: int = 500, db: Session = Depends(get_db)):
+    """
+    候选专属日内快照，按 stock_code 必填过滤（这张表是稠密采样，不像 events
+    那样天然稀疏，不加股票过滤条件容易一次查出全候选池的量）。默认只看今天，
+    传 trade_date 可以查历史某一天的采样序列。
+    """
+    q = db.query(WeakToStrongSnapshot).filter(WeakToStrongSnapshot.stock_code == stock_code)
+    q = q.filter(WeakToStrongSnapshot.trade_date == (trade_date or date.today()))
+    return q.order_by(WeakToStrongSnapshot.timestamp.asc()).limit(min(limit, 2000)).all()
 
 
 @router.get("/config", response_model=W2SConfigResponse)

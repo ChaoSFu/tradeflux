@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from ..models.stock import Stock, StockDailySnapshot
 from ..models.sector import Sector
 from ..models.regulatory import RegulatoryUnusual
-from ..models.weak_to_strong_radar import WeakToStrongCandidate, WeakToStrongEvent
+from ..models.weak_to_strong_radar import WeakToStrongCandidate, WeakToStrongEvent, WeakToStrongSnapshot
 from .eastmoney_fetcher import fetch_stock_quotes_batch, get_limit_pct
 from . import w2s_config_service as cfg
 from . import w2s_sector_gate_service as sector_gate
@@ -277,6 +277,13 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
         )
 
         stats["refreshed"] += 1
+        db.add(WeakToStrongSnapshot(
+            trade_date=today, timestamp=now, stock_code=stock.code,
+            price=quote.price, high=quote.high, low=quote.low,
+            amount=quote.amount, volume=quote.volume, vwap=vwap,
+            structural_state=cand.structural_state,
+            recovery_high=cand.recovery_high, pullback_low=cand.pullback_low,
+        ))
         if new_state != old_state:
             stats["state_changed"] += 1
             db.add(WeakToStrongEvent(

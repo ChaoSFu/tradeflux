@@ -658,6 +658,22 @@ export interface W2SEvent {
   formula_version: string
 }
 
+export interface W2SSnapshot {
+  id: number
+  trade_date: string
+  timestamp: string
+  stock_code: string
+  price: number | null
+  high: number | null
+  low: number | null
+  amount: number | null
+  volume: number | null
+  vwap: number | null
+  structural_state: string | null
+  recovery_high: number | null
+  pullback_low: number | null
+}
+
 export interface W2SConfig {
   prompt1: string
   prompt2: string

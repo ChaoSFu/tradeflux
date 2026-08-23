@@ -170,3 +170,35 @@ class WeakToStrongEvent(Base):
 
     data_freshness = Column(Float, nullable=True)
     formula_version = Column(String(20), nullable=False, default="w2s_radar_v0.1.0")
+
+
+class WeakToStrongSnapshot(Base):
+    """
+    候选专属日内快照（2026-08-23新增）：每次 /refresh 对每个活跃候选追加一行，
+    不像 WeakToStrongEvent 只在展示态变化时才写——这里要的是稠密的价格采样，
+    供以后回看真实样本调 H1/L1 回踩噪音阈值（w2s_pullback_min_pct）、未来做
+    回测重放用。
+
+    刻意不新增任何自动定时抓取：这张表只在现有 run_refresh 触发的时候（09:26
+    定时 + 用户手动点刷新）顺手多写一行，复用同一次已经拉到的报价数据，不产生
+    任何新的东财接口请求，也不改变现有的刷新频率——是否需要新增自动定时抓取
+    （比如每5-15分钟一次）是独立的运营决策，会改变对东财接口的稳定态请求压力，
+    需要单独跟用户确认，见 docs/WEAK_TO_STRONG_RADAR.md 第6节"已知运营缺口"。
+    """
+    __tablename__ = "weak_to_strong_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, server_default=func.now(), index=True)
+    stock_code = Column(String(10), nullable=False, index=True)
+
+    price = Column(Float, nullable=True)
+    high = Column(Float, nullable=True)
+    low = Column(Float, nullable=True)
+    amount = Column(Float, nullable=True)
+    volume = Column(Float, nullable=True)
+    vwap = Column(Float, nullable=True)  # 已经过合理性校验的真实VWAP，None代表当次校验未通过或量为0
+
+    structural_state = Column(String(20), nullable=True)  # 写入时刻的结构事实层状态，方便回看时对齐H1/L1
+    recovery_high = Column(Float, nullable=True)
+    pullback_low = Column(Float, nullable=True)

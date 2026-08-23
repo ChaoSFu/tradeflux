@@ -121,6 +121,24 @@ class EventResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SnapshotResponse(BaseModel):
+    id: int
+    trade_date: date
+    timestamp: datetime
+    stock_code: str
+    price: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    amount: Optional[float] = None
+    volume: Optional[float] = None
+    vwap: Optional[float] = None
+    structural_state: Optional[str] = None
+    recovery_high: Optional[float] = None
+    pullback_low: Optional[float] = None
+
+    model_config = {"from_attributes": True}
+
+
 class W2SConfigResponse(BaseModel):
     prompt1: str
     prompt2: str

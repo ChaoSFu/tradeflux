@@ -1,6 +1,6 @@
 import client from './client'
 import type {
-  W2SCandidate, W2SCandidateDetail, W2SRefreshStatus, W2SEvent, W2SConfig, W2SMarketGate,
+  W2SCandidate, W2SCandidateDetail, W2SRefreshStatus, W2SEvent, W2SSnapshot, W2SConfig, W2SMarketGate,
 } from '@/types'
 
 export const fetchW2SMarketGate = () =>
@@ -22,6 +22,11 @@ export const fetchW2SRefreshStatus = () =>
 export const fetchW2SEvents = (stockCode?: string, limit = 200) =>
   client.get<W2SEvent[]>('/weak-to-strong-radar/events', { params: { stock_code: stockCode, limit } })
     .then((r) => r.data)
+
+export const fetchW2SSnapshots = (stockCode: string, tradeDate?: string, limit = 500) =>
+  client.get<W2SSnapshot[]>('/weak-to-strong-radar/snapshots', {
+    params: { stock_code: stockCode, trade_date: tradeDate, limit },
+  }).then((r) => r.data)
 
 export const fetchW2SConfig = () =>
   client.get<W2SConfig>('/weak-to-strong-radar/config').then((r) => r.data)
