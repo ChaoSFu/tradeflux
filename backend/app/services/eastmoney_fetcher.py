@@ -1158,6 +1158,27 @@ _QUOTE_FIELDS = "f2,f3,f5,f6,f8,f12,f14,f15,f16,f17,f18"
 _QUOTE_BATCH_SIZE = 60  # 单次请求 secids 数量上限（实测60只没问题），超出自动分批
 
 
+def _w2s_log(tag: str, msg: str) -> None:
+    """
+    诊断日志：追加写到 backend/logs/w2s_radar_{今天}.log，跟 scheduler.py 里
+    定时刷新用的是同一个文件——不管这次刷新是定时任务触发还是用户点按钮触发，
+    都写进同一份当天的日志，用户点完刷新按钮后直接 `cat`/`tail` 这一个文件
+    就能拿到完整诊断信息，不用去翻 journalctl。故意不复用 scheduler.py 的
+    `_log`（避免 service 层反向依赖 scheduler 模块），就地实现同样的几行。
+    """
+    import os
+    from datetime import datetime as _dt
+    try:
+        log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, f"w2s_radar_{date.today().isoformat()}.log")
+        ts = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a") as f:
+            f.write(f"[{ts}] [{tag}] {msg}\n")
+    except Exception:  # noqa: BLE001
+        pass  # 诊断日志本身不能变成新的故障点
+
+
 @dataclass
 class StockQuote:
     """个股实时快照（弱转强雷达用）。全仓库此前没有任何地方暴露过当前绝对价格
@@ -1193,8 +1214,9 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
         codes_markets[i:i + _QUOTE_BATCH_SIZE]
         for i in range(0, len(codes_markets), _QUOTE_BATCH_SIZE)
     ]
+    _w2s_log("QUOTE", f"开始批量拉取行情：{len(codes_markets)}只，分{len(batches)}批")
 
-    def _fetch_one_batch(batch: list[tuple[str, int]]) -> None:
+    def _fetch_one_batch(batch: list[tuple[str, int]], batch_idx: int) -> None:
         secids = ",".join(f"{market}.{code}" for code, market in batch)
         # 东财 push2 偶发瞬时 502/连接问题（本 session 反复验证过的已知不稳定源），
         # 重试 2 次基本能过；批量快照是雷达刷新的地基，不能让一次瞬时故障
@@ -1221,19 +1243,37 @@ def fetch_stock_quotes_batch(codes_markets: list[tuple[str, int]], timeout: int 
                         open=row.get("f17"),
                         prev_close=row.get("f18"),
                     )
+                if len(diff) < len(batch):
+                    _w2s_log(
+                        "QUOTE",
+                        f"批次{batch_idx}第{attempt + 1}次尝试：HTTP {resp.status_code}，"
+                        f"请求{len(batch)}只只返回{len(diff)}只（部分缺席，非报错，可能是停牌/退市/代码不存在）",
+                    )
+                else:
+                    _w2s_log("QUOTE", f"批次{batch_idx}第{attempt + 1}次尝试：成功，{len(batch)}只全部返回")
                 return
             except Exception as e:  # noqa: BLE001
+                _w2s_log(
+                    "QUOTE",
+                    f"批次{batch_idx}第{attempt + 1}次尝试失败（{len(batch)}只）: {type(e).__name__}: {e}",
+                )
                 if attempt == 2:
                     print(f"[fetcher] 批量行情快照拉取失败（{len(batch)}只，重试3次均失败）: {type(e).__name__}: {e}", flush=True)
                 else:
                     time.sleep(0.5 * (attempt + 1))
 
     if len(batches) == 1:
-        _fetch_one_batch(batches[0])
+        _fetch_one_batch(batches[0], 1)
     else:
         with ThreadPoolExecutor(max_workers=min(5, len(batches))) as executor:
-            list(executor.map(_fetch_one_batch, batches))
+            list(executor.map(lambda pair: _fetch_one_batch(pair[1], pair[0] + 1), enumerate(batches)))
 
+    missing = [code for code, _ in codes_markets if code not in result]
+    _w2s_log(
+        "QUOTE",
+        f"批量拉取完成：请求{len(codes_markets)}只，成功{len(result)}只，缺席{len(missing)}只"
+        + (f"（前10个：{','.join(missing[:10])}）" if missing else ""),
+    )
     return result
 
 

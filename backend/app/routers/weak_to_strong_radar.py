@@ -29,6 +29,7 @@ from ..services import w2s_config_service as cfg
 from ..services import w2s_market_gate_service as market_gate
 from ..services import w2s_state_machine as sm
 from ..services.w2s_refresh_service import run_refresh
+from ..services.eastmoney_fetcher import _w2s_log
 from .admin import record_job_duration
 
 router = APIRouter(prefix="/weak-to-strong-radar", tags=["weak-to-strong-radar"])
@@ -42,11 +43,13 @@ _job: dict = {"running": False, "last_result": None, "last_error": None}
 def _run_refresh_job() -> None:
     lock_fd = None
     db = SessionLocal()
+    _w2s_log("MANUAL", "用户点击「刷新数据并重新评估」，开始执行")
     try:
         lock_fd = open(LOCK_FILE, "w")
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            _w2s_log("MANUAL", "❌ 锁已被占用（可能是09:26定时任务正在跑），本次跳过")
             with _lock:
                 _job["running"] = False
                 _job["last_error"] = "已有雷达刷新任务在运行中，请稍后再试"
@@ -56,11 +59,14 @@ def _run_refresh_job() -> None:
         stats = run_refresh(db)
         finished = datetime.now().isoformat(timespec="seconds")
         record_job_duration("w2s_refresh", started, finished)
+        _w2s_log("MANUAL", f"✅ 完成: {stats}")
         with _lock:
             _job["running"] = False
             _job["last_error"] = None
             _job["last_result"] = {**stats, "triggered_at": datetime.now()}
     except Exception as exc:  # noqa: BLE001
+        import traceback
+        _w2s_log("MANUAL", f"❌ 刷新异常: {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
         with _lock:
             _job["running"] = False
             _job["last_error"] = str(exc)
