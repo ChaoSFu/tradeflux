@@ -46,7 +46,6 @@ class Stock(Base):
     sector_relations = relationship(
         "StockSectorRelation", back_populates="stock", cascade="all, delete-orphan"
     )
-    signals = relationship("Signal", back_populates="stock")
 
 
 class StockDailySnapshot(Base):

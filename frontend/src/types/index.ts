@@ -165,31 +165,6 @@ export type SuggestedAction =
   | 'reduce'
   | 'avoid'
 
-export interface Signal {
-  id: number
-  stock_id: number | null
-  sector_id: number | null
-  stock_code: string | null
-  stock_name: string | null
-  sector_name: string | null
-  date: string
-  signal_type: string
-  confidence_score: number
-  risk_level: RiskLevel
-  explanation: string | null
-  suggested_action: SuggestedAction
-  is_active: boolean
-  is_triggered: boolean
-  created_at: string | null
-}
-
-export interface SignalListResponse {
-  items: Signal[]
-  total: number
-  page: number
-  page_size: number
-}
-
 // ─── Review ───────────────────────────────────────────────────────────────────
 
 export interface DailyReview {

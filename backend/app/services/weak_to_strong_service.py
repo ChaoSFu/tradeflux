@@ -13,13 +13,20 @@ Each signal carries:
   - suggested_action  (observe | watchlist | low_position_trial | hold | reduce | avoid)
 
 IMPORTANT: suggested_action intentionally never generates "must buy" language.
+
+2026-08-23: 独立的 /signals 页面 + Signal 表 + 每日写入步骤已下线（无板块/龙头/
+大盘闸门、状态机确认，被更严谨的 /weak-to-strong-radar 取代，两者长期同时存在
+容易让用户看到两套结论不一致的"弱转强"判断）。detect_weak_to_strong_candidates
+本身保留——首页 Dashboard 的"弱转强候选"预览卡片（market_state_service.py）仍
+在实时调用它，不经过任何数据库表。broken_board_recovery/rebound_acceleration
+这两种模式（炸板修复/反弹加速）目前雷达状态机没有对应概念，未来做 Setup Type
+EMOTION 分型（见 docs/WEAK_TO_STRONG_RADAR.md 第10节"情绪龙头断板反抽"）时，
+这里的判定逻辑值得参考。
 """
 from sqlalchemy.orm import Session
 from datetime import date
 from typing import List, Optional
 from ..models.stock import Stock, StockDailySnapshot
-from ..models.sector import Sector, StockSectorRelation  # StockSectorRelation used in get_signals
-from ..models.signal import Signal
 from ..schemas.market_state import WeakToStrongCandidate
 
 
@@ -175,41 +182,3 @@ def detect_weak_to_strong_candidates(
 
     candidates.sort(key=lambda c: c.confidence_score, reverse=True)
     return candidates[:10]
-
-
-def get_signals(
-    db: Session,
-    page: int = 1,
-    page_size: int = 20,
-    signal_type: str | None = None,
-    risk_level: str | None = None,
-    stock_id: int | None = None,
-    sector_id: int | None = None,
-):
-    from ..schemas.signal import SignalResponse, SignalListResponse
-
-    q = db.query(Signal).filter(Signal.is_active == True)  # noqa: E712
-    if signal_type:
-        q = q.filter(Signal.signal_type == signal_type)
-    if risk_level:
-        q = q.filter(Signal.risk_level == risk_level)
-    if stock_id:
-        q = q.filter(Signal.stock_id == stock_id)
-    if sector_id:
-        q = q.filter(Signal.sector_id == sector_id)
-
-    q = q.order_by(Signal.confidence_score.desc(), Signal.date.desc())
-    total = q.count()
-    signals = q.offset((page - 1) * page_size).limit(page_size).all()
-
-    items = []
-    for sig in signals:
-        stock = db.query(Stock).filter(Stock.id == sig.stock_id).first() if sig.stock_id else None
-        sector = db.query(Sector).filter(Sector.id == sig.sector_id).first() if sig.sector_id else None
-        resp = SignalResponse.model_validate(sig)
-        resp.stock_code = stock.code if stock else None
-        resp.stock_name = stock.name if stock else None
-        resp.sector_name = sector.name if sector else None
-        items.append(resp)
-
-    return SignalListResponse(items=items, total=total, page=page, page_size=page_size)

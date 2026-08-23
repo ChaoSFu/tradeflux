@@ -12,7 +12,6 @@ import PoolConfig from '@/pages/PoolConfig'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
 import SectorTrend from '@/pages/SectorTrend'
 import SectorEmotion from '@/pages/SectorEmotion'
-import Signals from '@/pages/Signals'
 import DailyReview from '@/pages/DailyReview'
 import LimitMovesDashboard from '@/pages/LimitMovesDashboard'
 import TradeJournal from '@/pages/TradeJournal'
@@ -36,7 +35,6 @@ export default function App() {
           <Route path="pool-config" element={<PoolConfig />} />
           <Route path="sector-trend" element={<SectorTrend />} />
           <Route path="sector-emotion" element={<SectorEmotion />} />
-          <Route path="signals" element={<Signals />} />
           <Route path="weak-to-strong-radar" element={<WeakToStrongRadar />} />
           <Route path="weak-to-strong-radar/guide" element={<WeakToStrongRadarGuide />} />
           <Route path="review" element={<DailyReview />} />

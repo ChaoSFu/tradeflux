@@ -58,7 +58,6 @@ class Sector(Base):
         "SectorDailySnapshot", back_populates="sector", cascade="all, delete-orphan",
         order_by="SectorDailySnapshot.date"
     )
-    signals = relationship("Signal", back_populates="sector")
     leader_stock = relationship("Stock", foreign_keys=[leader_stock_id])
 
 

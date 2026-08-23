@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .database import init_db
-from .routers import stocks, sectors, signals, reviews, market_state, screening, admin, auth, watchlist, market_index, trade_journal, market_effects, turnover, weak_to_strong_radar
+from .routers import stocks, sectors, reviews, market_state, screening, admin, auth, watchlist, market_index, trade_journal, market_effects, turnover, weak_to_strong_radar
 
 
 _scheduler = None  # 全局暴露，供 admin router 查询状态
@@ -49,7 +49,6 @@ app.add_middleware(
 
 app.include_router(stocks.router, prefix=settings.API_PREFIX)
 app.include_router(sectors.router, prefix=settings.API_PREFIX)
-app.include_router(signals.router, prefix=settings.API_PREFIX)
 app.include_router(reviews.router, prefix=settings.API_PREFIX)
 app.include_router(market_state.router, prefix=settings.API_PREFIX)
 app.include_router(screening.router, prefix=settings.API_PREFIX)

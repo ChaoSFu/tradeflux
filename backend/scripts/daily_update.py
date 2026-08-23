@@ -106,7 +106,6 @@ from app.database import SessionLocal, init_db
 from app.models.stock import Stock, StockDailySnapshot
 from app.models.sector import Sector, StockSectorRelation, SectorDailySnapshot
 from app.models.review import DailyReview
-from app.models.signal import Signal
 from app.services.eastmoney_fetcher import (
     StockBasicInfo, KLineBar,
     fetch_main_board_stocks, fetch_klines_batch, get_limit_pct,
@@ -608,56 +607,6 @@ def _update_primary_sectors(db) -> None:
 
     db.commit()
     print(f"  主板块已更新: {updated} 只股票")
-
-
-def _save_weak_to_strong_signals(db, today: date) -> None:
-    """将今日弱转强候选写入 Signal 表（幂等：先标记旧信号失效，再写新的）"""
-    from app.services.weak_to_strong_service import detect_weak_to_strong_candidates
-
-    # 把今天以前未失效的信号全部标记 is_active=False
-    db.query(Signal).filter(
-        Signal.date < today,
-        Signal.is_active == True,  # noqa: E712
-    ).update({"is_active": False}, synchronize_session=False)
-
-    # 删除今天已有的（重跑幂等）
-    db.query(Signal).filter(Signal.date == today).delete()
-
-    candidates = detect_weak_to_strong_candidates(db, as_of=today)
-    if not candidates:
-        db.commit()
-        print("  弱转强信号: 无候选")
-        return
-
-    # 预取 stock_id（候选里带 stock_code）
-    code_to_id: dict[str, int] = {
-        row[0]: row[1]
-        for row in db.query(Stock.code, Stock.id)
-        .filter(Stock.code.in_([c.stock_code for c in candidates]))
-        .all()
-    }
-
-    new_signals = []
-    for c in candidates:
-        stock_id = code_to_id.get(c.stock_code)
-        sig = Signal(
-            stock_id=stock_id,
-            date=today,
-            signal_type=c.signal_type,
-            confidence_score=c.confidence_score,
-            risk_level=c.risk_level,
-            explanation=c.explanation,
-            suggested_action=c.suggested_action,
-            is_active=True,
-            is_triggered=False,
-        )
-        new_signals.append(sig)
-
-    db.add_all(new_signals)
-    db.commit()
-    print(f"  弱转强信号: 写入 {len(new_signals)} 条 "
-          f"({', '.join(c.stock_name for c in candidates[:3])}"
-          f"{'…' if len(candidates) > 3 else ''})")
 
 
 def _save_daily_review(db, today: date) -> None:
@@ -1278,12 +1227,6 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             f"市场阶段={review.market_phase}，温度={review.emotional_temperature:.0f}，"
             f"仓位={review.suggested_position_level:.0f}%"
         ) if review else "写入成功")
-
-        # ── 第8步：弱转强信号 ────────────────────────────────────
-        log.begin("写入弱转强信号")
-        _save_weak_to_strong_signals(db, target_date)
-        sig_count = db.query(Signal).filter(Signal.date == target_date).count()
-        log.end(detail=f"信号 {sig_count} 条")
 
         # ── 重点监管名单同步（独立步骤，失败不影响主流程）──────────────────
         # 注：「即将进入监管」预警改用东财实时接口，无需本地指数偏离值管道。

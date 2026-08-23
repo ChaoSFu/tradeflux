@@ -6,7 +6,6 @@ import {
   LayoutDashboard,
   TrendingUp,
   BarChart2,
-  Zap,
   BookOpen,
   ChevronLeft,
   ChevronRight,
@@ -31,6 +30,7 @@ type NavEntry     = NavLinkItem | NavGroupItem
 const NAV: NavEntry[] = [
   { type: 'link', to: '/', label: '主页', icon: Home },
   { type: 'link', to: '/market-trend', label: '大盘趋势', icon: TrendingUp },
+  { type: 'link', to: '/weak-to-strong-radar', label: '弱转强雷达', icon: Crosshair },
   { type: 'link', to: '/market-effects', label: '市场效应', icon: Gauge },
   {
     type: 'group',
@@ -53,8 +53,6 @@ const NAV: NavEntry[] = [
       { type: 'link', to: '/sector-emotion', label: '情绪板块', icon: Activity  },
     ],
   },
-  { type: 'link', to: '/signals', label: '弱转强信号', icon: Zap },
-  { type: 'link', to: '/weak-to-strong-radar', label: '弱转强雷达', icon: Crosshair },
   { type: 'link', to: '/review',  label: '日复盘',     icon: BookOpen },
   // 交易复盘：入口常显;未登录时页面展示功能介绍,数据仍受登录保护
   { type: 'link', to: '/trade-journal', label: '交易复盘', icon: NotebookPen },
