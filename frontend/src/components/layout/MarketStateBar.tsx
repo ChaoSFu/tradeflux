@@ -8,6 +8,8 @@ import { useQuery } from '@tanstack/react-query'
 import { fetchMarketState, fetchProfitEffect, fetchMarketHistory } from '@/api/marketState'
 import { fetchTurnoverOverview } from '@/api/turnover'
 import { fetchLimitMoves, fetchLimitMovesTrend, fetchStrongPool } from '@/api/stocks'
+import { fetchW2SMarketGate } from '@/api/weakToStrongRadar'
+import type { W2SMarketState } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { MARKET_PHASE_LABELS, EMOTION_CYCLE_LABELS } from '@/utils/format'
@@ -19,6 +21,16 @@ import { cn } from '@/utils/cn'
 
 const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> = {
   bull_frenzy: 'dragon', warm: 'up', neutral: 'accent', caution: 'warn', bear_fear: 'down',
+}
+// 弱转强雷达自己的 Market Gate（指数趋势+涨跌家数广度+T-1冻结群体反馈），跟上面
+// "市场阶段"（板块生命周期/情绪分驱动）是完全不同的两套算法、不同的数据输入，
+// 会算出不一致的结论（是真实存在的情况，不是bug）——所以这里单独标"W2S 大盘闸门"
+// 而不是融进"市场阶段"里，避免两个不同结论被误当成同一件事的两种说法。
+const W2S_GATE_STYLE: Record<W2SMarketState, { dot: string; text: string; label: string }> = {
+  GREEN:  { dot: 'bg-safe',   text: 'text-safe',   label: '偏多，正常参与' },
+  YELLOW: { dot: 'bg-warn',   text: 'text-warn',   label: '中性，谨慎参与' },
+  ORANGE: { dot: 'bg-warn',   text: 'text-warn',   label: '偏弱，降低预期' },
+  RED:    { dot: 'bg-danger', text: 'text-danger', label: '弱势，暂停新增买入类信号' },
 }
 const pctColor = (v: number) => (v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-secondary')
 const pctSign = (v: number) => (v >= 0 ? `+${v.toFixed(2)}%` : `${v.toFixed(2)}%`)
@@ -46,6 +58,9 @@ function Cell({ label, children }: { label: string; children: React.ReactNode })
 export function MarketStateBar() {
   const { data: state } = useQuery({ queryKey: ['market-state'], queryFn: fetchMarketState })
   const { data: pe } = useQuery({ queryKey: ['profit-effect'], queryFn: fetchProfitEffect })
+  // 弱转强雷达页同源缓存 key（WeakToStrongRadar.tsx 里也是 ['w2s-market-gate']），
+  // 两处共享同一次请求；该接口本身全部读库不发外部请求，加这一路查询成本很低
+  const { data: w2sGate } = useQuery({ queryKey: ['w2s-market-gate'], queryFn: fetchW2SMarketGate })
   // 大成交额赚钱效应（成交额概览页同源缓存 key，两处共享同一次请求）
   const { data: turnover } = useQuery({ queryKey: ['turnover-overview'], queryFn: () => fetchTurnoverOverview() })
   const turnoverUpCount = turnover?.stocks.filter((s) => s.pct_change > 0).length ?? 0
@@ -195,6 +210,30 @@ export function MarketStateBar() {
               </span>
             )}
           </div>
+        )}
+        {/* 弱转强雷达 Market Gate（2026-08-24按用户要求提到公共卡片里显眼展示）：
+            RED 意味着弱转强雷达当天候选表100%会被硬性拦截、不会产生 BUYABLE 结果，
+            严重程度上等同于上面的"极端弱势"，同款醒目pill处理，可点击跳转雷达页；
+            GREEN/YELLOW/ORANGE 只是普通Cell，不需要同等视觉权重。 */}
+        {w2sGate && (
+          w2sGate.market_state === 'RED' ? (
+            <button
+              onClick={() => navigate('/weak-to-strong-radar')}
+              title="弱转强雷达 Market Gate：RED，今日候选全部硬性拦截，点击查看详情"
+              className="text-xs font-bold px-2 py-1 rounded-md border whitespace-nowrap bg-danger text-white border-danger animate-pulse-slow shadow-[0_0_18px_-2px_#FF4560]"
+            >
+              ⛔ 弱转强闸门 RED · 暂停买入
+            </button>
+          ) : (
+            <button onClick={() => navigate('/weak-to-strong-radar')} className="shrink-0 text-left">
+              <Cell label="弱转强 · Market Gate">
+                <span className={cn('w-1.5 h-1.5 rounded-full', W2S_GATE_STYLE[w2sGate.market_state]?.dot)} />
+                <span className={cn('font-mono text-sm font-semibold', W2S_GATE_STYLE[w2sGate.market_state]?.text)}>
+                  {w2sGate.market_state}
+                </span>
+              </Cell>
+            </button>
+          )
         )}
         <Cell label="市场阶段">
           <Badge variant={PHASE_BADGE[state.market_phase] ?? 'accent'}>
