@@ -267,6 +267,14 @@ def _fetch_updown(client: httpx.Client) -> UpDownData:
     if ok == 0:
         raise ValueError("三市涨跌分布均拉取失败")
     return UpDownData(
+        # 占位：UpDownData.date 是给"选历史日期"读库场景用的（_read_windvane_from_db
+        # 里真实赋值成 u_row.date），这里是抓取阶段的中间对象，真正落库用哪天由调用方
+        # sync_market_breadth() 另外拉交易日历算出 bind_date 决定（这个对象的.date从不
+        # 被读取）。此前这里漏传必填的date字段，导致 UpDownData 构造直接抛
+        # pydantic ValidationError，"涨跌统计"这一步天天静默失败，MarketBreadthDaily.
+        # up_count 等字段停在最后一次成功写入的日期不再前进（2026-08-24发现，回归自
+        # 30a8701新增date必填字段时漏改这处调用点）。
+        date="",
         up=sum(up_b) + lu, down=sum(down_b) + ld, flat=flat,
         limit_up=lu, limit_down=ld,
         natural_limit_up=max(lu - non_nat_lu, 0),
