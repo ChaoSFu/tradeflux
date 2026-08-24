@@ -126,6 +126,10 @@ def _apply_schema_patches():
         "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS sector_divergence_health FLOAT",
         # 弱转强雷达：主升板块封顶（只有MAIN_UPTREND里强度前N名的板块允许放行到BUYABLE）
         "ALTER TABLE weak_to_strong_candidates ADD COLUMN IF NOT EXISTS is_mainline_sector BOOLEAN DEFAULT FALSE NOT NULL",
+        # 大盘趋势页市盈率新增科创50/北证50（同一中证指数官网口径，深证成指/创业板指
+        # 是深交所自有指数，不在该接口的库里，未接入）
+        "ALTER TABLE market_breadth_daily ADD COLUMN IF NOT EXISTS kc50_pe FLOAT",
+        "ALTER TABLE market_breadth_daily ADD COLUMN IF NOT EXISTS bz50_pe FLOAT",
     ]
     # 每条补丁独立事务：Postgres 中任一语句报错会使整个事务进入 aborted 状态，
     # 若共用事务，末尾 ADD CONSTRAINT（无 IF NOT EXISTS）已存在时报错，

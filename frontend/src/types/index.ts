@@ -356,6 +356,8 @@ export interface MarginPoint {
   net_buy: number
   szzs_close: number
   szzs_pe: number | null
+  kc50_pe: number | null   // 科创50市盈率（2026-08-24新增）
+  bz50_pe: number | null   // 北证50市盈率（2026-08-24新增）
 }
 
 export type MarginRange = '6m' | '1y' | '3y' | '5y' | 'all'

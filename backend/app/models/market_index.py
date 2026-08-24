@@ -46,6 +46,10 @@ class MarketBreadthDaily(Base):
     margin_net_buy = Column(Float, nullable=True)    # 融资净买入（元）
     szzs_close = Column(Float, nullable=True)        # 上证收盘（两融对照）
     szzs_pe = Column(Float, nullable=True)           # 上证指数滚动市盈率（中证指数官方口径）
+    kc50_pe = Column(Float, nullable=True)           # 科创50滚动市盈率（同一中证指数官网口径，2026-08-24新增）
+    bz50_pe = Column(Float, nullable=True)           # 北证50滚动市盈率（同一中证指数官网口径，2026-08-24新增；
+                                                      # 深证成指/创业板指是深交所自己发布的原生指数，不在中证
+                                                      # 指数官网的perf库里，同一接口查不到，未接入）
 
     # 成交额（东财 RPT_DMSK_WINDVANE_SUMTVALLIST）
     deal_amount = Column(Float, nullable=True)       # 沪深两市成交额（元，收盘官方值）

@@ -39,7 +39,13 @@ UPDOWN_URL = "https://quotederivates.eastmoney.com/datacenter/updowndistribution
 TRENDS2_URL = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
 MARGIN_HISTORY_REPORT = "RPTA_RZRQ_LSHJ"
 CSINDEX_PERF_URL = "https://www.csindex.com.cn/csindex-home/perf/index-perf"
-SZZS_INDEX_CODE = "000001"  # 中证指数官网口径的上证指数代码
+SZZS_INDEX_CODE = "000001"  # 上证指数
+KC50_INDEX_CODE = "000688"  # 科创50
+BZ50_INDEX_CODE = "899050"  # 北证50
+# 深证成指(399001)/创业板指(399006)是深交所自己发布的原生指数，不在中证指数
+# 官网(csindex.com.cn)的perf库里——实测这两个代码该接口直接返回空data，跟
+# 上证/科创50/北证50不是同一套体系，要接入得先找到另一个数据源（2026-08-24
+# 排查确认，未接入，不要在没找到数据源前假装能加）。
 
 # 盘中分钟数据/外推结果缓存（避免每次请求都打外部接口）
 _TRENDS_TTL = 60
@@ -67,6 +73,8 @@ class MarginPoint(BaseModel):
     net_buy: float        # 融资净买入（元）
     szzs_close: float     # 上证指数收盘
     szzs_pe: Optional[float] = None  # 上证指数滚动市盈率
+    kc50_pe: Optional[float] = None  # 科创50滚动市盈率（2026-08-24新增）
+    bz50_pe: Optional[float] = None  # 北证50滚动市盈率（2026-08-24新增）
 
 
 class MarginData(BaseModel):
@@ -182,20 +190,25 @@ def fetch_margin_history_full(page_size: int = 800) -> list[dict]:
     return all_rows
 
 
-def fetch_szzs_pe_history(start_date: str, end_date: str) -> dict[str, dict]:
+def fetch_index_pe_history(index_code: str, start_date: str, end_date: str) -> dict[str, dict]:
     """
-    上证指数收盘价 + 滚动市盈率（中证指数官网 csindex.com.cn，跟东财完全独立的
+    指定指数收盘价 + 滚动市盈率（中证指数官网 csindex.com.cn，跟东财完全独立的
     数据源）。start_date/end_date 形如 'YYYYMMDD'。一次请求返回整个区间。
     返回 {'YYYY-MM-DD': {'close': float|None, 'pe': float|None}}；失败返回空字典。
+
+    2026-08-24通用化（原名 fetch_szzs_pe_history，只认死上证指数）：实测该接口
+    对上证指数(000001)/科创50(000688)/北证50(899050)都能查到数据，深证成指
+    (399001)/创业板指(399006)查不到（这两个是深交所自己的原生指数，不在中证
+    指数官网的perf库里），调用方目前只应该传前三个代码。
     """
     try:
         with httpx.Client(timeout=15, follow_redirects=True) as client:
             r = client.get(CSINDEX_PERF_URL, params={
-                "indexCode": SZZS_INDEX_CODE, "startDate": start_date, "endDate": end_date,
+                "indexCode": index_code, "startDate": start_date, "endDate": end_date,
             })
             data = r.json()
     except Exception as e:  # noqa: BLE001
-        print(f"[windvane] 上证指数市盈率拉取失败: {e}", flush=True)
+        print(f"[windvane] 指数市盈率拉取失败({index_code}): {e}", flush=True)
         return {}
 
     out: dict[str, dict] = {}
@@ -216,22 +229,26 @@ def _fetch_margin(client: httpx.Client, days: int = 5) -> MarginData:
     """
     融资融券最新数据（日常同步用）。历史数据由 backfill_margin_history.py 一次性
     回填，daily_update 之后不再变化，所以这里只取最新几天，不用每次现查半年数据。
-    两融余额/净买入来自 RPTA_RZRQ_LSHJ，上证收盘+市盈率来自中证指数官网，两个
-    独立数据源都只查最新这几天。
+    两融余额/净买入来自 RPTA_RZRQ_LSHJ，上证/科创50/北证50收盘+市盈率来自中证
+    指数官网，独立数据源都只查最新这几天。
     """
     rows, _ = _fetch_margin_history_page(client, 1, page_size=days)
     if not rows:
         raise ValueError("两融数据为空")
     rows = list(reversed(rows))  # 转成升序（最早在前）
 
-    pe_map = fetch_szzs_pe_history(
-        rows[0]["date"].replace("-", ""), date_cls.today().strftime("%Y%m%d"),
-    )
+    start = rows[0]["date"].replace("-", "")
+    end = date_cls.today().strftime("%Y%m%d")
+    szzs_pe_map = fetch_index_pe_history(SZZS_INDEX_CODE, start, end)
+    kc50_pe_map = fetch_index_pe_history(KC50_INDEX_CODE, start, end)
+    bz50_pe_map = fetch_index_pe_history(BZ50_INDEX_CODE, start, end)
     series = [
         MarginPoint(
             date=r["date"], balance=r["balance"], net_buy=r["net_buy"],
-            szzs_close=(pe_map.get(r["date"], {}).get("close") or 0),
-            szzs_pe=pe_map.get(r["date"], {}).get("pe"),
+            szzs_close=(szzs_pe_map.get(r["date"], {}).get("close") or 0),
+            szzs_pe=szzs_pe_map.get(r["date"], {}).get("pe"),
+            kc50_pe=kc50_pe_map.get(r["date"], {}).get("pe"),
+            bz50_pe=bz50_pe_map.get(r["date"], {}).get("pe"),
         )
         for r in rows
     ]
@@ -426,6 +443,10 @@ def sync_market_breadth(db: Session) -> dict:
                 r.szzs_close = p.szzs_close
                 if p.szzs_pe is not None:
                     r.szzs_pe = p.szzs_pe
+                if p.kc50_pe is not None:
+                    r.kc50_pe = p.kc50_pe
+                if p.bz50_pe is not None:
+                    r.bz50_pe = p.bz50_pe
         if turnover:
             for p in turnover.series:
                 r = row_for(p.date)
@@ -495,7 +516,7 @@ def _read_windvane_from_db(db: Session, margin_range: str = "6m", updown_date: O
         series = [
             MarginPoint(date=str(r.date), balance=r.margin_balance or 0,
                         net_buy=r.margin_net_buy or 0, szzs_close=r.szzs_close or 0,
-                        szzs_pe=r.szzs_pe)
+                        szzs_pe=r.szzs_pe, kc50_pe=r.kc50_pe, bz50_pe=r.bz50_pe)
             for r in m_rows
         ]
         margin = MarginData(latest_date=series[-1].date, balance=series[-1].balance,

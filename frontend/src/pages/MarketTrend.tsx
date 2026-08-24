@@ -615,18 +615,29 @@ function WindvaneCards({ wv, marginRange, onMarginRangeChange, updownDate, onUpd
   const m = wv.margin
   const u = wv.updown
   const t = wv.turnover
-  const [rightMetric, setRightMetric] = useState<'index' | 'pe'>('index')
+  // 市盈率只接了上证/科创50/北证50——深证成指/创业板指是深交所自己发布的原生
+  // 指数，不在中证指数官网(csindex.com.cn)的perf库里，同一接口查不到，要接入
+  // 得先找到另一个数据源，本次未接入（2026-08-24按用户要求排查后确认）。
+  const [rightMetric, setRightMetric] = useState<'index' | 'pe_szzs' | 'pe_kc50' | 'pe_bz50'>('index')
+  const RIGHT_METRIC_OPTIONS = [
+    ['index', '上证指数'], ['pe_szzs', '上证PE'], ['pe_kc50', '科创50 PE'], ['pe_bz50', '北证50 PE'],
+  ] as const
+  const RIGHT_METRIC_DATAKEY: Record<typeof rightMetric, string> = {
+    index: '上证指数', pe_szzs: '上证市盈率', pe_kc50: '科创50市盈率', pe_bz50: '北证50市盈率',
+  }
 
   // 短周期逐日显示 MM/dd；长周期（含降采样）显示年份避免同一天在多年间混淆
   const dateFmt = marginRange === '6m' || marginRange === '1y' ? 'MM/dd' : 'yy/MM'
 
-  // 两融图数据（余额万亿 + 上证/市盈率 + 净买入亿）
+  // 两融图数据（余额万亿 + 上证指数/三路市盈率 + 净买入亿）
   const marginChart = useMemo(() => (
     (m?.series ?? []).map(p => ({
       date: format(new Date(p.date), dateFmt),
       '两融余额': +(p.balance / 1e12).toFixed(3),
       '上证指数': p.szzs_close,
-      '市盈率': p.szzs_pe,
+      '上证市盈率': p.szzs_pe,
+      '科创50市盈率': p.kc50_pe,
+      '北证50市盈率': p.bz50_pe,
       '融资净买入': +(p.net_buy / 1e8).toFixed(1),
     }))
   ), [m, dateFmt])
@@ -720,7 +731,7 @@ function WindvaneCards({ wv, marginRange, onMarginRangeChange, updownDate, onUpd
                 ))}
               </div>
               <div className="flex items-center gap-0.5">
-                {([['index', '上证A股'], ['pe', '市盈率']] as const).map(([key, label]) => (
+                {RIGHT_METRIC_OPTIONS.map(([key, label]) => (
                   <button
                     key={key}
                     onClick={() => setRightMetric(key)}
@@ -758,7 +769,7 @@ function WindvaneCards({ wv, marginRange, onMarginRangeChange, updownDate, onUpd
                   )}
                   <Tooltip content={<ChartTooltip />} />
                   <Line yAxisId="l" type="monotone" dataKey="两融余额" stroke="#5EA6FF" strokeWidth={1.8} dot={false} />
-                  <Line yAxisId="r" type="monotone" dataKey={rightMetric === 'index' ? '上证指数' : '市盈率'}
+                  <Line yAxisId="r" type="monotone" dataKey={RIGHT_METRIC_DATAKEY[rightMetric]}
                     stroke="#FFB020" strokeWidth={1.4} dot={false} connectNulls />
                 </LineChart>
               </ResponsiveContainer>

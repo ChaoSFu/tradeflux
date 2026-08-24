@@ -1,10 +1,11 @@
 """
 backfill_margin_history.py
 ===========================
-一次性回填 market_breadth_daily 的两融余额/净买入/上证指数收盘/市盈率全部历史
-（回溯至2010-03-31两融业务开办首日）。只写 margin_balance/margin_net_buy/
-szzs_close/szzs_pe 这四个字段，不触碰同一行里涨跌统计/成交额等其他来源各自
-独立写入的字段。
+一次性回填 market_breadth_daily 的两融余额/净买入/上证指数收盘/市盈率
++ 科创50/北证50市盈率全部历史（回溯至2010-03-31两融业务开办首日；科创50/
+北证50实际数据只会从各自开市日期起才有值，更早的日期留 None，不是bug）。
+只写 margin_balance/margin_net_buy/szzs_close/szzs_pe/kc50_pe/bz50_pe
+这几个字段，不触碰同一行里涨跌统计/成交额等其他来源各自独立写入的字段。
 
 历史数据一旦落库不再变化，日常同步（daily_update -> sync_market_breadth）
 只取最新几天，不需要每次都重新拉全部历史——这个脚本只需要跑一次（本地 + 部署
@@ -24,7 +25,10 @@ from datetime import date as date_cls
 
 from app.database import SessionLocal
 from app.models.market_index import MarketBreadthDaily
-from app.services.windvane_service import fetch_margin_history_full, fetch_szzs_pe_history
+from app.services.windvane_service import (
+    fetch_margin_history_full, fetch_index_pe_history,
+    SZZS_INDEX_CODE, KC50_INDEX_CODE, BZ50_INDEX_CODE,
+)
 
 
 def run():
@@ -38,11 +42,19 @@ def run():
     start = margin_rows[0]["date"].replace("-", "")
     end = margin_rows[-1]["date"].replace("-", "")
     print(f"拉取上证指数收盘+市盈率（中证指数官网，{start} ~ {end}）...")
-    pe_map = fetch_szzs_pe_history(start, end)
+    pe_map = fetch_index_pe_history(SZZS_INDEX_CODE, start, end)
     if not pe_map:
         print("上证指数市盈率拉取失败，中止（避免只写一半数据）。")
         return
     print(f"共 {len(pe_map)} 条")
+
+    print("拉取科创50市盈率（同一接口，2020-07-23开市前无数据是正常的）...")
+    kc50_pe_map = fetch_index_pe_history(KC50_INDEX_CODE, start, end)
+    print(f"共 {len(kc50_pe_map)} 条")
+
+    print("拉取北证50市盈率（同一接口，2022-04-29发布前无数据是正常的）...")
+    bz50_pe_map = fetch_index_pe_history(BZ50_INDEX_CODE, start, end)
+    print(f"共 {len(bz50_pe_map)} 条")
 
     db = SessionLocal()
     try:
@@ -70,12 +82,18 @@ def run():
                     row.szzs_close = pe_row["close"]
                 if pe_row.get("pe") is not None:
                     row.szzs_pe = pe_row["pe"]
+            kc50_row = kc50_pe_map.get(r["date"])
+            if kc50_row and kc50_row.get("pe") is not None:
+                row.kc50_pe = kc50_row["pe"]
+            bz50_row = bz50_pe_map.get(r["date"])
+            if bz50_row and bz50_row.get("pe") is not None:
+                row.bz50_pe = bz50_row["pe"]
             upserts += 1
             if upserts % 500 == 0:
                 db.commit()
                 print(f"  已写入 {upserts}/{len(margin_rows)} ...")
         db.commit()
-        print(f"\n完成：{upserts} 条两融历史已落库（含上证收盘+市盈率）。")
+        print(f"\n完成：{upserts} 条两融历史已落库（含上证收盘+市盈率/科创50市盈率/北证50市盈率）。")
     finally:
         db.close()
 
