@@ -63,12 +63,24 @@ function round2(n: number): number {
 // 本地日期字符串（不用toISOString，UTC+8下午夜前后会跟本地日期差一天），
 // 只用来跟 mainlines.data_as_of 比较是不是"今天"，判断板块数据要不要显眼提示过期。
 // 表头复杂指标的说明图标：光标悬停显示——指标含义/数据来源/计算方式/结果怎么
-// 解读，不用靠用户自己去猜或者翻文档（2026-08-24按用户要求新增）。
+// 解读，不用靠用户自己去猜或者翻文档（2026-08-24按用户要求新增）。最初用原生
+// title 属性实现，用户反馈悬停延迟很大——那是浏览器/系统级的固定延迟（通常
+// 1秒左右），前端代码根本没有办法调它，唯一的办法是换掉title、自己用CSS
+// hover做一个瞬时响应的提示框（2026-08-24改）。
 function HeaderHint({ label, hint, align = 'right' }: { label: string; hint: string; align?: 'left' | 'right' }) {
   return (
-    <span className={cn('inline-flex items-center gap-1', align === 'right' && 'justify-end w-full')} title={hint}>
+    <span className={cn('relative group inline-flex items-center gap-1', align === 'right' && 'justify-end w-full')}>
       {label}
-      <Info className="w-3 h-3 text-text-muted/60 shrink-0" />
+      <Info className="w-3 h-3 text-text-muted/60 shrink-0 cursor-help" />
+      <span
+        className={cn(
+          'pointer-events-none absolute top-full mt-1 z-50 hidden group-hover:block',
+          'w-56 rounded border border-bg-border bg-bg-elevated px-2 py-1.5 text-[11px] font-normal normal-case leading-relaxed text-text-secondary shadow-lg',
+          align === 'right' ? 'right-0' : 'left-0',
+        )}
+      >
+        {hint}
+      </span>
     </span>
   )
 }
