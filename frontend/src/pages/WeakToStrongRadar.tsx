@@ -271,42 +271,60 @@ export default function WeakToStrongRadar() {
       </div>
 
       {/* Gate bar */}
-      <div className="flex items-center gap-2 px-3 py-2 rounded border border-bg-border bg-bg-card text-xs flex-wrap">
-        <Crosshair className="w-3.5 h-3.5 text-accent shrink-0" />
-        <span className="text-text-secondary font-medium">大盘闸门（Market Gate）</span>
+      {/* RED 时整条候选表100%会被硬性拦截（Hard Blocker）——之前这条信息跟GREEN/
+          YELLOW/ORANGE用同一套朴素样式展示，用户得自己往下翻一整张表、看到每行
+          都写着"大盘闸门状态RED"才能拼出这个结论。RED是"今天没有任何可执行结果"
+          这么重的结论，理应比其余三个状态更抢眼（2026-08-24按用户反馈修复，
+          只对RED单独加重样式+补一句明确后果说明，GREEN/YELLOW/ORANGE不变）。 */}
+      <div className={cn(
+        'flex items-center gap-2 px-3 py-2 rounded border text-xs flex-wrap',
+        marketGate?.market_state === 'RED'
+          ? 'bg-danger-dim border-danger/40'
+          : 'border-bg-border bg-bg-card',
+      )}>
+        <Crosshair className={cn('w-3.5 h-3.5 shrink-0', marketGate?.market_state === 'RED' ? 'text-danger' : 'text-accent')} />
+        <span className={cn('font-medium', marketGate?.market_state === 'RED' ? 'text-danger' : 'text-text-secondary')}>大盘闸门（Market Gate）</span>
         {marketGate ? (
           <>
             <span className="flex items-center gap-1.5">
-              <span className={cn('w-1.5 h-1.5 rounded-full', MARKET_STATE_STYLE[marketGate.market_state]?.dot)} />
-              <span className={cn('font-mono font-semibold', MARKET_STATE_STYLE[marketGate.market_state]?.text)}>
+              <span className={cn('rounded-full', marketGate.market_state === 'RED' ? 'w-2 h-2' : 'w-1.5 h-1.5', MARKET_STATE_STYLE[marketGate.market_state]?.dot)} />
+              <span className={cn(
+                'font-mono font-semibold',
+                marketGate.market_state === 'RED' ? 'text-sm' : '',
+                MARKET_STATE_STYLE[marketGate.market_state]?.text,
+              )}>
                 {marketGate.market_state}
               </span>
             </span>
             <span className="text-text-muted">
               趋势分 {fmt(marketGate.trend_score, 1)} · 风险偏好分 {fmt(marketGate.risk_score, 1)}
             </span>
-            <span className="text-text-muted">{MARKET_STATE_STYLE[marketGate.market_state]?.label}</span>
+            <span className={cn(marketGate.market_state === 'RED' ? 'text-danger font-semibold' : 'text-text-muted')}>
+              {MARKET_STATE_STYLE[marketGate.market_state]?.label}
+              {marketGate.market_state === 'RED' && '，今日候选全部硬性拦截，不会产生 BUYABLE 结果'}
+            </span>
             {/* Market Gate实际由趋势(指数)+广度(涨跌家数)两段独立刷新节奏的数据拼成，
                 此前只显示一个笼统的"数据截至"（=广度的日期），趋势那段掉线不会体现在这
                 一个日期上（windvane涨跌统计连续7天静默失败、Market Gate用旧数据算了
                 一周才被发现，这是这次事故暴露出来的真实盲区，2026-08-24修复）。两者
                 相同时仍只显示一个日期，不制造没必要的视觉噪音；不同或任一非当日时才
-                拆开显示、并用警示色标出哪一段过期。 */}
+                拆开显示、并用警示色标出哪一段过期。danger不是down——过期警示是"有
+                问题"语义，不是价格涨跌方向，同一批修复一起改掉（2026-08-24）。 */}
             {marketGate.trend_as_of === marketGate.breadth_as_of ? (
               marketGate.as_of_date && (
                 <span className={cn(
                   'ml-auto',
-                  marketGate.as_of_date === localTodayStr() ? 'text-text-muted/70' : 'text-down font-medium',
+                  marketGate.as_of_date === localTodayStr() ? 'text-text-muted/70' : 'text-danger font-medium',
                 )}>
                   {marketGate.as_of_date === localTodayStr() ? '' : '⚠ '}数据截至 {marketGate.as_of_date}
                 </span>
               )
             ) : (
               <span className="ml-auto flex items-center gap-2">
-                <span className={cn(marketGate.trend_as_of === localTodayStr() ? 'text-text-muted/70' : 'text-down font-medium')}>
+                <span className={cn(marketGate.trend_as_of === localTodayStr() ? 'text-text-muted/70' : 'text-danger font-medium')}>
                   趋势 {marketGate.trend_as_of ?? '—'}
                 </span>
-                <span className={cn(marketGate.breadth_as_of === localTodayStr() ? 'text-text-muted/70' : 'text-down font-medium')}>
+                <span className={cn(marketGate.breadth_as_of === localTodayStr() ? 'text-text-muted/70' : 'text-danger font-medium')}>
                   广度 {marketGate.breadth_as_of ?? '—'}
                 </span>
               </span>
