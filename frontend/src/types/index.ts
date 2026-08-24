@@ -690,3 +690,21 @@ export interface W2SMarketGate {
   market_negative_feedback: 'LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN'  // loss_strength的显式分级，不再只藏在risk_score里
   as_of_date: string | null
 }
+
+// "今日主线"摘要（2026-08-24新增）：板块视角，不依赖任何W2S候选是否命中，
+// 0~3个是上限不是配额——没有就是空数组，前端不该为了凑数硬显示。
+export interface W2SMainlineSector {
+  sector_id: number
+  sector_code: string
+  sector_name: string
+  rank: number
+  sector_category: W2SSectorCategory
+  sector_strength_score: number
+  sector_momentum_score: number | null
+  sector_divergence_health: number | null
+}
+
+export interface W2SMainlines {
+  mainlines: W2SMainlineSector[]
+  data_as_of: string | null  // 板块数据实际计算自哪天，过期要显眼提示，不能包装成实时
+}

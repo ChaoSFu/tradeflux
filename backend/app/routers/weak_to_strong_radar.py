@@ -23,10 +23,11 @@ from ..models.weak_to_strong_radar import (
 from ..schemas.weak_to_strong_radar import (
     CandidateResponse, CandidateDetailResponse, ChecklistGroup,
     RefreshResultResponse, RefreshStatusResponse, EventResponse, SnapshotResponse, DiscoveryRunResponse,
-    W2SConfigResponse, W2SConfigUpdateRequest, MarketGateResponse,
+    W2SConfigResponse, W2SConfigUpdateRequest, MarketGateResponse, MainlineSector, MainlinesResponse,
 )
 from ..services import w2s_config_service as cfg
 from ..services import w2s_market_gate_service as market_gate
+from ..services import w2s_sector_gate_service as sector_gate
 from ..services import w2s_state_machine as sm
 from ..services.w2s_refresh_service import run_refresh
 from ..services.eastmoney_fetcher import _w2s_log
@@ -97,6 +98,42 @@ def get_refresh_status():
 @router.get("/market-gate", response_model=MarketGateResponse)
 def get_market_gate(db: Session = Depends(get_db)):
     return market_gate.get_market_gate(db)
+
+
+@router.get("/mainlines", response_model=MainlinesResponse)
+def get_mainlines(db: Session = Depends(get_db)):
+    """
+    "今日主线"摘要（2026-08-24新增）：全市场 is_watched 板块里，Mainline Top N
+    是哪几个，板块视角、不依赖任何W2S候选是否命中。纯本地DB计算（跟 run_refresh()
+    共用同一份 get_current_mainlines()，不会两边算出不一样的结果），不触发任何
+    外部行情请求，随时可调用。0~3个是上限不是配额，没有就返回空列表，前端不
+    应该为了凑数硬显示。
+    """
+    today = date.today()
+    result = sector_gate.get_current_mainlines(db, today)
+    ordered = sorted(
+        result["mainline_sector_ids"],
+        key=lambda sid: (
+            -(result["sector_score_cache"][sid].get("sector_strength_score") or 0.0), sid,
+        ),
+    )
+    mainlines = [
+        MainlineSector(
+            sector_id=sid,
+            sector_code=result["sectors_by_id"][sid].code,
+            sector_name=result["sectors_by_id"][sid].name,
+            rank=i + 1,
+            sector_category=result["sector_score_cache"][sid]["sector_category"],
+            sector_strength_score=result["sector_score_cache"][sid]["sector_strength_score"],
+            sector_momentum_score=result["sector_score_cache"][sid]["sector_momentum_score"],
+            sector_divergence_health=result["sector_score_cache"][sid]["sector_divergence_health"],
+        )
+        for i, sid in enumerate(ordered)
+    ]
+    return MainlinesResponse(
+        mainlines=mainlines,
+        data_as_of=str(result["data_as_of"]) if result["data_as_of"] else None,
+    )
 
 
 @router.get("/candidates", response_model=list[CandidateResponse])

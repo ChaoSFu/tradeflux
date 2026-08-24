@@ -75,6 +75,28 @@ class MarketGateResponse(BaseModel):
     as_of_date: Optional[str] = None
 
 
+class MainlineSector(BaseModel):
+    """
+    "今日主线"摘要的单个板块（2026-08-24新增）。跟 CandidateResponse 里
+    sector_* 字段同源（都来自 w2s_sector_gate_service.get_current_mainlines()），
+    但这里是板块视角：不依赖任何W2S候选，哪怕这个板块今天一只候选都没有，
+    只要它是全市场关注板块里的Mainline，也会出现在这里。
+    """
+    sector_id: int
+    sector_code: str
+    sector_name: str
+    rank: int
+    sector_category: str
+    sector_strength_score: float
+    sector_momentum_score: Optional[float] = None
+    sector_divergence_health: Optional[float] = None
+
+
+class MainlinesResponse(BaseModel):
+    mainlines: list[MainlineSector]  # 0~3个，Mainline Top N 上限；空列表=当前无明确主线，不硬凑
+    data_as_of: Optional[str] = None  # 板块数据实际计算自哪天，过期时前端必须原样展示、不能包装成实时
+
+
 class ChecklistGroup(BaseModel):
     """
     单组闸门检查结果。status: "pass" | "fail" | "phase2"（Phase 1 未实现的组，

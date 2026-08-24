@@ -172,6 +172,40 @@ def score_sector(db: Session, sector: Sector, today: date_cls) -> dict:
     }
 
 
+def get_current_mainlines(db: Session, today: date_cls) -> dict:
+    """
+    薄封装（2026-08-24新增）：全市场 is_watched 板块打分 + Mainline Top N 判定，
+    单一数据源同时供 w2s_refresh_service.run_refresh()（算候选的 is_mainline_
+    sector 标记）和只读 GET /mainlines 接口（"今日主线"摘要）共用——两处如果
+    各自算一遍，容易在某次改动里悄悄算出不一样的结果、自己都不知道。
+
+    这里刻意只读 is_watched 板块 + 本地已有的 Sector/SectorDailySnapshot/
+    AppConfig 数据，不碰候选表、不发起任何外部行情请求，供 /mainlines 这种
+    只读接口随时调用都不产生额外的东财请求。
+
+    返回 {"sectors_by_id", "sector_score_cache", "mainline_sector_ids", "data_as_of"}。
+    `data_as_of` 取所有 is_watched 板块 `updated_at` 的最大值（daily_update 每次
+    刷新板块统计都会碰这个字段）——不是"今天"，是"这批板块数据实际是哪天算出来
+    的"，过期时调用方必须原样透出、不能包装成"今日主线"当真实时数据展示
+    （2026-08-24 windvane 涨跌统计连续7天静默失败、Market Gate 用旧数据算了一周
+    才被发现，这个教训直接决定了这个字段必须有、且不能是可选的事后补充）。
+    """
+    sectors_by_id = {s.id: s for s in db.query(Sector).filter(Sector.is_watched == True).all()}  # noqa: E712
+    sector_score_cache: dict[int, dict] = {
+        sid: score_sector(db, sector, today) for sid, sector in sectors_by_id.items()
+    }
+    mainline_top_n = int(cfg.get_numeric(db, cfg.KEY_MAINLINE_SECTOR_TOP_N))
+    mainline_sector_ids = select_mainline_sector_ids(sector_score_cache, top_n=mainline_top_n)
+    updated_ats = [s.updated_at for s in sectors_by_id.values() if s.updated_at]
+    data_as_of = max(updated_ats).date() if updated_ats else None
+    return {
+        "sectors_by_id": sectors_by_id,
+        "sector_score_cache": sector_score_cache,
+        "mainline_sector_ids": mainline_sector_ids,
+        "data_as_of": data_as_of,
+    }
+
+
 def upsert_sector_daily_snapshot(db: Session, today: date_cls) -> int:
     """
     把当日 Sector 的关键字段落一条 SectorDailySnapshot（这张表此前从未被生产

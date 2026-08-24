@@ -13,14 +13,14 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   fetchW2SCandidates, fetchW2SCandidateDetail, triggerW2SRefresh, fetchW2SRefreshStatus,
-  fetchW2SMarketGate,
+  fetchW2SMarketGate, fetchW2SMainlines,
 } from '@/api/weakToStrongRadar'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { StateBadge } from '@/components/weakToStrong/StateBadge'
 import { ChecklistPanel } from '@/components/weakToStrong/ChecklistPanel'
 import { fmt, pct, pctColor } from '@/utils/format'
 import { cn } from '@/utils/cn'
-import { RefreshCw, Crosshair, AlertTriangle, BookOpen } from 'lucide-react'
+import { RefreshCw, Crosshair, AlertTriangle, BookOpen, TrendingUp } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useAuthStore } from '@/store/auth'
 import type { W2SCandidate, W2SState, W2SMarketState } from '@/types'
@@ -53,6 +53,13 @@ function todayPctChange(cand: W2SCandidate): number | null {
 }
 function round2(n: number): number {
   return Math.round(n * 100) / 100
+}
+
+// 本地日期字符串（不用toISOString，UTC+8下午夜前后会跟本地日期差一天），
+// 只用来跟 mainlines.data_as_of 比较是不是"今天"，判断板块数据要不要显眼提示过期。
+function localTodayStr(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 function formatDuration(ms: number): string {
@@ -173,6 +180,14 @@ export default function WeakToStrongRadar() {
     queryFn: fetchW2SMarketGate,
   })
 
+  // 板块Sector统计只由daily_update刷新，手动/refresh从不触碰Sector表，主线结果
+  // 全天不随W2S刷新变化，不需要跟着刷新按钮invalidate——独立query，页面加载/
+  // 切回时按React Query默认策略取一次即可。
+  const { data: mainlines } = useQuery({
+    queryKey: ['w2s-mainlines'],
+    queryFn: fetchW2SMainlines,
+  })
+
   const { data: refreshStatus } = useQuery({
     queryKey: ['w2s-refresh-status'],
     queryFn: fetchW2SRefreshStatus,
@@ -262,6 +277,46 @@ export default function WeakToStrongRadar() {
         ) : (
           <span className="text-text-muted">加载中…</span>
         )}
+      </div>
+
+      {/* 今日主线摘要（2026-08-24新增）：板块视角，Top3上限不是配额，纯本地DB计算，
+          跟 run_refresh() 共用同一份 get_current_mainlines()，不会跟候选表的
+          is_mainline_sector标记算出不一样的结果。板块数据只由daily_update刷新，
+          过期时必须显眼提示，不能包装成"今日"实时数据（2026-08-24 windvane
+          涨跌统计连续7天静默失败、Market Gate用旧数据算了一周才被发现，这个
+          教训直接决定了这里的过期提示不能省）。 */}
+      <div className="flex items-start gap-2 px-3 py-2 rounded border border-bg-border bg-bg-card text-xs">
+        <TrendingUp className="w-3.5 h-3.5 text-accent shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="text-text-secondary font-medium">今日主线</span>
+            {mainlines?.data_as_of && (
+              mainlines.data_as_of === localTodayStr() ? (
+                <span className="text-text-muted/70">数据截至 {mainlines.data_as_of}</span>
+              ) : (
+                <span className="text-down font-medium">
+                  ⚠ 板块数据截至 {mainlines.data_as_of}，非当日实时，主线结论可能已过期
+                </span>
+              )
+            )}
+          </div>
+          {!mainlines ? (
+            <span className="text-text-muted">加载中…</span>
+          ) : mainlines.mainlines.length === 0 ? (
+            <span className="text-text-muted">当前无明确主线（全市场关注板块里没有板块达到 MAIN_UPTREND 强度，不为凑数硬选）</span>
+          ) : (
+            <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+              {mainlines.mainlines.map((m) => (
+                <div key={m.sector_id} className="flex items-center gap-1.5">
+                  <span className="font-mono text-text-muted">#{m.rank}</span>
+                  <span className="text-text-primary font-medium">{m.sector_name}</span>
+                  <span className="text-text-muted text-[11px]">{m.sector_category}</span>
+                  <span className="font-mono text-accent">强度 {m.sector_strength_score.toFixed(0)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Header / refresh control */}

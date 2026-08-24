@@ -15,7 +15,6 @@ from __future__ import annotations
 from datetime import date as date_cls, datetime
 from typing import Optional
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..models.stock import Stock, StockDailySnapshot
@@ -133,21 +132,20 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
     # 覆盖到的板块之间比——否则"最强前3主线"这个结论的样本池会随当次候选覆盖面
     # 漂移，某个真正全市场最强的板块只因为它今天没有任何股票冒头成候选，就完全
     # 不会被考虑进Top3的比较池，跟"只选逻辑最硬的少数主线"这个产品原意矛盾（round4
-    # review 指出的真实bug，2026-08-23修复）。这里改成 is_watched 全量 ∪ 候选涉及
-    # 的板块（后者理论上应该都在 is_watched 里，但不强依赖这个假设，双保险）。
-    # 全部是本地DB计算（Sector/AppConfig 表 + get_prev_snapshot 单表查询），不新增
-    # 任何外部行情请求，量级通常是几百个 is_watched 板块，可忽略不计。
-    sectors_by_id = {
-        s.id: s for s in db.query(Sector).filter(
-            or_(Sector.is_watched == True, Sector.id.in_(sector_ids))  # noqa: E712
-        ).all()
-    }
-    sector_score_cache: dict[int, dict] = {}
-    for sid, sector in sectors_by_id.items():
-        sector_score_cache[sid] = sector_gate.score_sector(db, sector, today)
+    # review 指出的真实bug，2026-08-23修复）。这里改用 get_current_mainlines() 共享
+    # 函数（2026-08-24新增，同时供"今日主线"摘要接口用同一份计算，避免两处各算一遍
+    # 悄悄算出不一样的结果），全部是本地DB计算，不新增任何外部行情请求。
+    mainlines = sector_gate.get_current_mainlines(db, today)
+    sectors_by_id = dict(mainlines["sectors_by_id"])
+    sector_score_cache: dict[int, dict] = dict(mainlines["sector_score_cache"])
+    mainline_sector_ids = mainlines["mainline_sector_ids"]
 
-    mainline_top_n = int(cfg.get_numeric(db, cfg.KEY_MAINLINE_SECTOR_TOP_N))
-    mainline_sector_ids = sector_gate.select_mainline_sector_ids(sector_score_cache, top_n=mainline_top_n)
+    # 候选涉及但不在is_watched里的板块（理论上不该出现，但不强依赖这个假设，双保险）
+    missing_sector_ids = sector_ids - set(sectors_by_id.keys())
+    if missing_sector_ids:
+        for s in db.query(Sector).filter(Sector.id.in_(missing_sector_ids)).all():
+            sectors_by_id[s.id] = s
+            sector_score_cache[s.id] = sector_gate.score_sector(db, s, today)
 
     theme_groups: dict[int, list[int]] = {}
     for cand in candidates:
