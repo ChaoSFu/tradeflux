@@ -44,6 +44,17 @@ const REG_RISK_COLOR: Record<string, string> = {
   LOW: 'text-text-secondary', MEDIUM: 'text-warn', HIGH: 'text-down', EXTREME: 'text-down font-bold',
 }
 
+// 实时涨跌幅 = (现价-昨收)/昨收，随价格全天漂移，跟"竞价Gap"（9:25后固定的
+// 开盘Gap）是两个不同含义的指标，各自单独一列，不能互相替代（round4 review
+// 曾指出"涨跌幅"列此前误渲染成竞价Gap，这里是修复后新增的真正涨跌幅列）。
+function todayPctChange(cand: W2SCandidate): number | null {
+  if (cand.price == null || cand.prev_close == null || cand.prev_close <= 0) return null
+  return round2((cand.price - cand.prev_close) / cand.prev_close * 100)
+}
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
+}
+
 function formatDuration(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}秒` : `${ms}毫秒`
 }
@@ -109,6 +120,9 @@ function CandidateRow({
         </td>
         <td className="px-2 py-2 font-mono text-right">{fmt(cand.price, 2)}</td>
         <td className="px-2 py-2 font-mono text-right">
+          <span className={pctColor(todayPctChange(cand))}>{pct(todayPctChange(cand))}</span>
+        </td>
+        <td className="px-2 py-2 font-mono text-right">
           <span className={pctColor(cand.auction_gap)}>{pct(cand.auction_gap)}</span>
         </td>
         <td className="px-2 py-2 font-mono text-right text-text-secondary">{fmt(cand.ma5, 2)}</td>
@@ -131,7 +145,7 @@ function CandidateRow({
       </tr>
       {expanded && (
         <tr className="border-b border-bg-border/15">
-          <td colSpan={11} className="px-4 py-3 bg-bg-elevated/40">
+          <td colSpan={12} className="px-4 py-3 bg-bg-elevated/40">
             {isLoading || !detail ? (
               <LoadingRows rows={2} />
             ) : (
@@ -304,6 +318,7 @@ export default function WeakToStrongRadar() {
                   <th className="text-left px-2 py-1.5 text-text-secondary/70 font-medium">板块</th>
                   <th className="text-left px-2 py-1.5 text-text-secondary/70 font-medium">龙头</th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">现价</th>
+                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium" title="(现价-昨收)/昨收，随现价全天实时变化">涨跌幅</th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium" title="竞价阶段(9:25)的(今开-昨收)/昨收，非实时涨跌幅，开盘后固定不变">竞价Gap</th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">MA5</th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">涨停空间</th>
