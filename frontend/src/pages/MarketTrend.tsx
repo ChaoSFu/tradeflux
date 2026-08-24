@@ -740,15 +740,20 @@ function WindvaneCards({ wv, marginRange, onMarginRangeChange, updownDate, onUpd
                 <LineChart data={marginChart} syncId="margin-sync" margin={{ top: 2, right: 0, left: -6, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#262D40" vertical={false} />
                   <XAxis dataKey="date" {...axis} interval="preserveStartEnd" />
-                  {/* 左轴：两融余额数据 min/max（凸显波动）；右轴按当前选中指标给合理默认区间，超出则按数据 min/max 扩展 */}
+                  {/* 左轴：两融余额数据 min/max（凸显波动）；右轴用数据min/max按百分比留边距，
+                      不再用固定区间钳制——市盈率实际常年就在12~20窄幅波动，之前的
+                      [8,32]硬编码区间几乎从不会被真实数据突破，导致轴始终顶格显示成
+                      固定的8~32，把本来存在的真实波动压得看起来像一条直线（用户指出
+                      的真实问题，2026-08-24修复）。改用跟下方K线价格轴同款的"数据
+                      min/max×百分比留边"写法，区间会跟着真实数据收紧，波动重新可见。 */}
                   <YAxis yAxisId="l" {...axis} width={38} domain={['dataMin', 'dataMax']} tickFormatter={(v: number) => v.toFixed(2)} />
                   {rightMetric === 'index' ? (
                     <YAxis yAxisId="r" {...axis} width={36} orientation="right"
-                      domain={[(min: number) => Math.min(3600, Math.floor(min)), (max: number) => Math.max(4400, Math.ceil(max))]}
+                      domain={[(min: number) => Math.floor(min * 0.995), (max: number) => Math.ceil(max * 1.005)]}
                       tickFormatter={(v: number) => v.toFixed(0)} />
                   ) : (
                     <YAxis yAxisId="r" {...axis} width={36} orientation="right"
-                      domain={[(min: number) => Math.min(8, Math.floor(min)), (max: number) => Math.max(32, Math.ceil(max))]}
+                      domain={[(min: number) => Math.floor(min * 0.97), (max: number) => Math.ceil(max * 1.03)]}
                       tickFormatter={(v: number) => v.toFixed(1)} />
                   )}
                   <Tooltip content={<ChartTooltip />} />
