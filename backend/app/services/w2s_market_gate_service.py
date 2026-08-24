@@ -125,7 +125,8 @@ def get_market_gate(db: Session) -> dict:
     """
     薄封装：查现成数据、算两个分数、分类。返回
     {trend_score, risk_score, market_state, index_scores,
-     market_effect_date, market_effect_confidence, as_of_date}。
+     market_effect_date, market_effect_confidence, as_of_date,
+     trend_as_of, breadth_as_of}。
     全部读库，不额外发起外部请求。
 
     market_effect 部分用"最近一个已收盘、有完整数据的交易日"而不是"今天"——
@@ -133,6 +134,16 @@ def get_market_gate(db: Session) -> dict:
     算出"T-1群体在T日的真实表现"，盘中今天的快照还没写入，直接传"今天"进去
     要么算不出来要么算出空结果。用最近收盘日的结果，代表"最近一次已知的市场
     承接环境"，是盘中能拿到的最新真实信号。
+
+    2026-08-24新增 trend_as_of/breadth_as_of（外部评审指出的真实问题）：
+    Market Gate 实际由三段不同刷新节奏的数据拼成（指数趋势/涨跌家数广度/T-1
+    市场效应），此前只把 as_of_date（=breadth的日期）当成整个 Market Gate的
+    新鲜度代表——三段各自都有独立的刷新链路，任何一段掉线时都不会体现在唯一
+    的 as_of_date 上（正是 windvane 涨跌统计连续7天静默失败这次事故暴露出来
+    的）。trend_as_of 直接来自 get_market_trend() 早就在算的 updated_at，之前
+    只是没有透出来，不是新查询。三段状态是否新鲜、如何在展示态上处理（要不要
+    降级/拦截），留给调用方（router/前端）按各自阈值判断，这里只如实透出三个
+    原始时间戳，不在这一层就下"新鲜/过期"的结论。
     """
     trend_resp = get_market_trend(db)
     index_scores = {ix.code: float(ix.score) for ix in trend_resp.indices}
@@ -171,6 +182,7 @@ def get_market_gate(db: Session) -> dict:
     )
     market_state = classify_market_state(trend_score, risk_score)
 
+    breadth_as_of = str(latest.date) if latest else None
     return {
         "trend_score": trend_score,
         "risk_score": risk_score,
@@ -181,5 +193,7 @@ def get_market_gate(db: Session) -> dict:
         "market_effect_profit_strength": effect_profit,
         "market_effect_loss_strength": effect_loss,
         "market_negative_feedback": classify_market_negative_feedback(effect_loss),
-        "as_of_date": str(latest.date) if latest else None,
+        "as_of_date": breadth_as_of,  # 沿用旧字段名，语义不变（=breadth_as_of），避免破坏现有调用方
+        "trend_as_of": (trend_resp.updated_at or "")[:10] or None,
+        "breadth_as_of": breadth_as_of,
     }

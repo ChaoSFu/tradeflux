@@ -72,7 +72,9 @@ class MarketGateResponse(BaseModel):
     market_effect_profit_strength: Optional[float] = None  # T-1冻结群体今日赚钱效应强度（独立字段，不再只藏在risk_score里）
     market_effect_loss_strength: Optional[float] = None     # T-1冻结群体今日亏钱效应强度
     market_negative_feedback: str = "UNKNOWN"        # LOW|MEDIUM|HIGH|UNKNOWN，loss_strength的显式分级
-    as_of_date: Optional[str] = None
+    as_of_date: Optional[str] = None       # 沿用旧字段名，语义=breadth_as_of，保留供旧调用方兼容
+    trend_as_of: Optional[str] = None      # 指数趋势数据算出来是哪天（2026-08-24新增，此前未透出）
+    breadth_as_of: Optional[str] = None    # 涨跌家数广度数据算出来是哪天，跟as_of_date同一个值
 
 
 class MainlineSector(BaseModel):

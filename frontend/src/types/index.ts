@@ -688,7 +688,9 @@ export interface W2SMarketGate {
   market_effect_profit_strength: number | null
   market_effect_loss_strength: number | null
   market_negative_feedback: 'LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN'  // loss_strength的显式分级，不再只藏在risk_score里
-  as_of_date: string | null
+  as_of_date: string | null       // 沿用旧字段名，语义=breadth_as_of
+  trend_as_of: string | null      // 指数趋势数据算出来是哪天（2026-08-24新增）
+  breadth_as_of: string | null    // 涨跌家数广度数据算出来是哪天，跟as_of_date同一个值
 }
 
 // "今日主线"摘要（2026-08-24新增）：板块视角，不依赖任何W2S候选是否命中，

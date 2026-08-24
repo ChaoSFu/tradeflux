@@ -184,8 +184,12 @@ def get_current_mainlines(db: Session, today: date_cls) -> dict:
     只读接口随时调用都不产生额外的东财请求。
 
     返回 {"sectors_by_id", "sector_score_cache", "mainline_sector_ids", "data_as_of"}。
-    `data_as_of` 取所有 is_watched 板块 `updated_at` 的最大值（daily_update 每次
-    刷新板块统计都会碰这个字段）——不是"今天"，是"这批板块数据实际是哪天算出来
+    `data_as_of` 取所有 is_watched 板块 `updated_at` 的**最小值**（2026-08-24
+    从 max 改成 min，外部评审指出的真实bug：用 max 只能证明"至少一个板块最近
+    更新过"，只要几百个板块里有一个当天被碰过（哪怕是无关的手工改动），就会
+    显示"数据新鲜"掩盖掉其余绝大多数板块其实还是旧数据的事实——min 是"这一
+    整批参与排名的板块，最差也不会比这个日期更旧"，是真正的下界保证，不是
+    "至少有一个"这种弱得多的证明。不是"今天"，是"这批板块数据实际是哪天算出来
     的"，过期时调用方必须原样透出、不能包装成"今日主线"当真实时数据展示
     （2026-08-24 windvane 涨跌统计连续7天静默失败、Market Gate 用旧数据算了一周
     才被发现，这个教训直接决定了这个字段必须有、且不能是可选的事后补充）。
@@ -197,7 +201,7 @@ def get_current_mainlines(db: Session, today: date_cls) -> dict:
     mainline_top_n = int(cfg.get_numeric(db, cfg.KEY_MAINLINE_SECTOR_TOP_N))
     mainline_sector_ids = select_mainline_sector_ids(sector_score_cache, top_n=mainline_top_n)
     updated_ats = [s.updated_at for s in sectors_by_id.values() if s.updated_at]
-    data_as_of = max(updated_ats).date() if updated_ats else None
+    data_as_of = min(updated_ats).date() if updated_ats else None
     return {
         "sectors_by_id": sectors_by_id,
         "sector_score_cache": sector_score_cache,

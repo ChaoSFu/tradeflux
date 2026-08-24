@@ -270,8 +270,30 @@ export default function WeakToStrongRadar() {
               趋势分 {fmt(marketGate.trend_score, 1)} · 风险偏好分 {fmt(marketGate.risk_score, 1)}
             </span>
             <span className="text-text-muted">{MARKET_STATE_STYLE[marketGate.market_state]?.label}</span>
-            {marketGate.as_of_date && (
-              <span className="text-text-muted/70 ml-auto">数据截至 {marketGate.as_of_date}</span>
+            {/* Market Gate实际由趋势(指数)+广度(涨跌家数)两段独立刷新节奏的数据拼成，
+                此前只显示一个笼统的"数据截至"（=广度的日期），趋势那段掉线不会体现在这
+                一个日期上（windvane涨跌统计连续7天静默失败、Market Gate用旧数据算了
+                一周才被发现，这是这次事故暴露出来的真实盲区，2026-08-24修复）。两者
+                相同时仍只显示一个日期，不制造没必要的视觉噪音；不同或任一非当日时才
+                拆开显示、并用警示色标出哪一段过期。 */}
+            {marketGate.trend_as_of === marketGate.breadth_as_of ? (
+              marketGate.as_of_date && (
+                <span className={cn(
+                  'ml-auto',
+                  marketGate.as_of_date === localTodayStr() ? 'text-text-muted/70' : 'text-down font-medium',
+                )}>
+                  {marketGate.as_of_date === localTodayStr() ? '' : '⚠ '}数据截至 {marketGate.as_of_date}
+                </span>
+              )
+            ) : (
+              <span className="ml-auto flex items-center gap-2">
+                <span className={cn(marketGate.trend_as_of === localTodayStr() ? 'text-text-muted/70' : 'text-down font-medium')}>
+                  趋势 {marketGate.trend_as_of ?? '—'}
+                </span>
+                <span className={cn(marketGate.breadth_as_of === localTodayStr() ? 'text-text-muted/70' : 'text-down font-medium')}>
+                  广度 {marketGate.breadth_as_of ?? '—'}
+                </span>
+              </span>
             )}
           </>
         ) : (
