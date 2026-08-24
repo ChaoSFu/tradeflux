@@ -7,6 +7,7 @@
  * 讲的是当前代码实际在做什么"——跟 backend/docs/WEAK_TO_STRONG_RADAR.md 是同一份
  * 事实的两种呈现（面向开发者 vs 面向使用者），修改其一时另一份也要检查是否需要跟进。
  */
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowLeft, ArrowRight, Radar, Gauge, Layers, Crosshair, TrendingUp, Ruler,
@@ -132,6 +133,9 @@ function FormulaBlock({ children }: { children: React.ReactNode }) {
 }
 
 export default function WeakToStrongRadarGuide() {
+  const [activeGate, setActiveGate] = useState<(typeof GATES)[number]['en']>(GATES[0].en)
+  const activeGateInfo = GATES.find((g) => g.en === activeGate) ?? GATES[0]
+
   return (
     <div className="space-y-4 animate-fade-in">
       <Link
@@ -176,35 +180,39 @@ export default function WeakToStrongRadarGuide() {
       <div className="card p-5">
         <SectionHead num="01" title="六道关卡" sub="候选进入雷达后依次经过六道关卡，但它们不是同一种性质——大盘/板块/龙头(非核心)命中即硬性拦截（展示BLOCK）；龙头(未决)/空间不足/主升板块封顶是软上限（压低能展示到的最高状态，不直接判死）；结构确认本身是价格驱动的进度条，不是一道会拦截谁的关卡，只是没走到那一步就自然还没到 BUYABLE。" />
 
-        <div className="flex items-stretch gap-1 overflow-x-auto pb-2 mb-5">
-          {GATES.map((g, i) => (
-            <div key={g.en} className="flex items-stretch">
-              <div className="min-w-[124px] max-w-[124px] bg-bg-elevated border border-bg-border rounded-lg p-3">
-                <g.icon className="w-4 h-4 text-accent mb-1.5" />
-                <div className="text-xs font-semibold text-text-primary">{g.name}</div>
-                <div className="text-[11px] text-text-muted mt-1 leading-snug">{g.summary}</div>
-              </div>
-              {i < GATES.length - 1 && (
-                <div className="flex items-center justify-center w-5 shrink-0 text-text-muted/50">
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </div>
+        {/* 6张卡片改成整行铺满的grid + 点击切换（2026-08-24按用户反馈调整）：之前固定
+            124px宽度的横向滚动条，宽屏下右边留一大截空白；下面的说明固定2列全展开，
+            6段文字挤在一起字号只能给到text-xs，读着吃力。点击选中后只展开当前这一条，
+            腾出的空间用来把说明文字放大，不用6条同时抢一屏。 */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
+          {GATES.map((g) => (
+            <button
+              key={g.en}
+              onClick={() => setActiveGate(g.en)}
+              className={cn(
+                'text-left rounded-lg p-3 border transition-colors',
+                activeGate === g.en
+                  ? 'bg-accent-dim border-accent'
+                  : 'bg-bg-elevated border-bg-border hover:border-text-muted/40',
               )}
-            </div>
+            >
+              <g.icon className={cn('w-4 h-4 mb-1.5', activeGate === g.en ? 'text-accent' : 'text-text-muted')} />
+              <div className={cn('text-xs font-semibold', activeGate === g.en ? 'text-accent' : 'text-text-primary')}>
+                {g.name}
+              </div>
+              <div className="text-[11px] text-text-muted mt-1 leading-snug">{g.summary}</div>
+            </button>
           ))}
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-4">
-          {GATES.map((g) => (
-            <div key={g.en} className="flex gap-3">
-              <g.icon className="w-4 h-4 text-accent shrink-0 mt-0.5" />
-              <div>
-                <div className="text-sm font-semibold text-text-primary">
-                  {g.name} <span className="text-text-muted font-normal font-mono text-xs">{g.en}</span>
-                </div>
-                <p className="text-xs text-text-secondary leading-relaxed mt-1">{g.body}</p>
-              </div>
+        <div className="bg-bg-elevated border border-bg-border rounded-lg p-5">
+          <div className="flex items-center gap-2.5 mb-3">
+            <activeGateInfo.icon className="w-5 h-5 text-accent shrink-0" />
+            <div className="text-base font-semibold text-text-primary">
+              {activeGateInfo.name} <span className="text-text-muted font-normal font-mono text-sm">{activeGateInfo.en}</span>
             </div>
-          ))}
+          </div>
+          <p className="text-sm text-text-secondary leading-relaxed">{activeGateInfo.body}</p>
         </div>
       </div>
 
