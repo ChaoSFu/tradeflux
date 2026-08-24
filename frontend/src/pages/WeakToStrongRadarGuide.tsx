@@ -157,8 +157,8 @@ export default function WeakToStrongRadarGuide() {
           线性加权后直接吐出一个 BUY。
         </p>
         <div className="flex flex-wrap gap-2">
-          <Badge variant="up" className="gap-1"><CheckCircle2 className="w-3 h-3" /> Phase 1 · 候选发现/板块闸门/龙头闸门/状态机</Badge>
-          <Badge variant="up" className="gap-1"><CheckCircle2 className="w-3 h-3" /> Phase 2 · 大盘闸门/空间闸门/止损与风险回报比</Badge>
+          <Badge variant="safe" className="gap-1"><CheckCircle2 className="w-3 h-3" /> Phase 1 · 候选发现/板块闸门/龙头闸门/状态机</Badge>
+          <Badge variant="safe" className="gap-1"><CheckCircle2 className="w-3 h-3" /> Phase 2 · 大盘闸门/空间闸门/止损与风险回报比</Badge>
           <Badge variant="muted" className="gap-1"><Circle className="w-3 h-3" /> Phase 3 · 日内数据相关功能（规划中）</Badge>
         </div>
         <div className="flex items-start gap-2 mt-4 pt-4 border-t border-bg-border text-xs text-text-muted leading-relaxed">

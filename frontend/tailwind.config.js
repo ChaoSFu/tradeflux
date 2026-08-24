@@ -19,6 +19,12 @@ export default {
           accent:    '#5EA6FF',  // was #4F9CF9  — 稍亮
         },
         // Semantic — A-share convention: red = up (涨), green = down (跌)
+        // 只用于价格涨跌方向（涨跌幅/K线/成交量等）——不要用来表示"通过/拦截"
+        // "安全/危险"这类红绿灯语义，那是下面 safe/danger 的职责。两套语义共用
+        // 同一对红绿色值会互相矛盾：A股"涨=红"，但红绿灯"红=停/危险"，字面意思
+        // 刚好相反（2026-08-24修复：Market Gate 的 GREEN/RED 文字标签、Checklist
+        // 的✓/✗、StateBadge 的 BUYABLE/BLOCK 都曾经错用 up/down，导致"RED"字样
+        // 却渲染成绿色、危险状态却渲染成绿色这种自相矛盾的真实bug）。
         up: {
           DEFAULT: '#FF4560',
           dim: '#4D1A24',
@@ -28,6 +34,19 @@ export default {
           DEFAULT: '#26C281',
           dim: '#1A4D35',
           bright: '#00E5A0',
+        },
+        // 红绿灯/通过-拦截语义专用：安全=绿，危险=红，跟价格涨跌方向无关，
+        // 不能用 up/down 代替。Market Gate GREEN/RED、Checklist 通过/拦截、
+        // BUYABLE/BLOCK 等"这是不是安全能不能做"的判断都应该用这一对。
+        safe: {
+          DEFAULT: '#26C281',
+          dim: '#1A4D35',
+          bright: '#00E5A0',
+        },
+        danger: {
+          DEFAULT: '#FF4560',
+          dim: '#4D1A24',
+          bright: '#FF6B7A',
         },
         warn: {
           DEFAULT: '#F59E0B',

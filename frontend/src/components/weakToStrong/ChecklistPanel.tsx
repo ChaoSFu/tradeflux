@@ -17,7 +17,10 @@ const GROUP_LABEL: Record<W2SChecklistGroup['group'], string> = {
  *  绝不伪造 ✓ ——贯彻"弱转强成立≠值得买入"，宁可看起来不完整，不能造假。
  *  advisory（2026-08-23新增）：该组在真实闸门逻辑里从不硬拦截/软上限（比如
  *  RISK/Stress R/R、LEADER=undetermined），只是供参考，用琥珀色跟红色fail
- *  区分开，避免"候选已经BUYABLE，Checklist却显示某组fail"这种自相矛盾。 */
+ *  区分开，避免"候选已经BUYABLE，Checklist却显示某组fail"这种自相矛盾。
+ *  pass/fail 用 safe/danger（红绿灯语义）不是 up/down（A股价格涨跌方向）——
+ *  这两套红绿含义刚好相反，此前误用 up/down 导致 ✓ 通过项渲染成红色、✗ 拦截项
+ *  渲染成绿色，跟checkmark/X这种全球通用符号的含义直接矛盾（2026-08-24修复）。 */
 export function ChecklistPanel({ checklist }: { checklist: W2SChecklistGroup[] }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -26,15 +29,15 @@ export function ChecklistPanel({ checklist }: { checklist: W2SChecklistGroup[] }
           key={item.group}
           className={cn(
             'flex items-start gap-2 rounded px-3 py-2 border text-xs',
-            item.status === 'pass' && 'bg-up-dim border-up/20',
-            item.status === 'fail' && 'bg-down-dim border-down/20',
+            item.status === 'pass' && 'bg-safe-dim border-safe/20',
+            item.status === 'fail' && 'bg-danger-dim border-danger/20',
             item.status === 'advisory' && 'bg-warn-dim border-warn/20',
             item.status === 'phase2' && 'bg-bg-elevated border-bg-border text-text-muted',
           )}
         >
           <div className="mt-0.5 shrink-0">
-            {item.status === 'pass' && <Check className="w-3.5 h-3.5 text-up" />}
-            {item.status === 'fail' && <X className="w-3.5 h-3.5 text-down" />}
+            {item.status === 'pass' && <Check className="w-3.5 h-3.5 text-safe" />}
+            {item.status === 'fail' && <X className="w-3.5 h-3.5 text-danger" />}
             {item.status === 'advisory' && <Info className="w-3.5 h-3.5 text-warn" />}
             {item.status === 'phase2' && <Clock className="w-3.5 h-3.5 text-text-muted" />}
           </div>
@@ -42,8 +45,8 @@ export function ChecklistPanel({ checklist }: { checklist: W2SChecklistGroup[] }
             <div className="flex items-center gap-1.5">
               <span className={cn(
                 'font-semibold',
-                item.status === 'pass' && 'text-up',
-                item.status === 'fail' && 'text-down',
+                item.status === 'pass' && 'text-safe',
+                item.status === 'fail' && 'text-danger',
                 item.status === 'advisory' && 'text-warn',
                 item.status === 'phase2' && 'text-text-muted',
               )}>

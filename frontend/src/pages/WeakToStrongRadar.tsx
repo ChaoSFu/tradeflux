@@ -20,7 +20,7 @@ import { StateBadge } from '@/components/weakToStrong/StateBadge'
 import { ChecklistPanel } from '@/components/weakToStrong/ChecklistPanel'
 import { fmt, pct, pctColor } from '@/utils/format'
 import { cn } from '@/utils/cn'
-import { RefreshCw, Crosshair, AlertTriangle, BookOpen, TrendingUp } from 'lucide-react'
+import { RefreshCw, Crosshair, AlertTriangle, BookOpen, TrendingUp, Info } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useAuthStore } from '@/store/auth'
 import type { W2SCandidate, W2SState, W2SMarketState } from '@/types'
@@ -29,19 +29,24 @@ const STATE_PRIORITY: Record<W2SState, number> = {
   BUYABLE: 0, CONFIRMING: 1, REPAIRING: 2, READY: 3, WATCH: 4, WAIT: 5, BLOCK: 6,
 }
 
+// GREEN/RED 是红绿灯语义（安全=绿/危险=红），不是价格涨跌方向，用safe/danger
+// 而不是up/down——此前误用up/down（A股涨=红/跌=绿），导致文字写着"RED"却渲染
+// 成绿色，"GREEN"却渲染成红色，字面意思完全反了（2026-08-24修复的真实bug）。
 const MARKET_STATE_STYLE: Record<W2SMarketState, { dot: string; text: string; label: string }> = {
-  GREEN:  { dot: 'bg-up',    text: 'text-up',    label: '偏多，正常参与' },
-  YELLOW: { dot: 'bg-warn',  text: 'text-warn',  label: '中性，谨慎参与' },
-  ORANGE: { dot: 'bg-warn',  text: 'text-warn',  label: '偏弱，降低预期' },
-  RED:    { dot: 'bg-down',  text: 'text-down',  label: '弱势，暂停新增买入类信号' },
+  GREEN:  { dot: 'bg-safe',   text: 'text-safe',   label: '偏多，正常参与' },
+  YELLOW: { dot: 'bg-warn',   text: 'text-warn',   label: '中性，谨慎参与' },
+  ORANGE: { dot: 'bg-warn',   text: 'text-warn',   label: '偏弱，降低预期' },
+  RED:    { dot: 'bg-danger', text: 'text-danger', label: '弱势，暂停新增买入类信号' },
 }
 
 const LEADER_LABEL: Record<string, string> = {
   core: '核心龙头', backup: '备选龙头', undetermined: '龙头未决', non_leader: '非龙头',
 }
 
+// 监管风险等级越高越危险，用text-danger（红）不是text-down（此前误用down，
+// A股跌=绿，导致EXTREME这种最高风险等级反而渲染成绿色，2026-08-24修复）。
 const REG_RISK_COLOR: Record<string, string> = {
-  LOW: 'text-text-secondary', MEDIUM: 'text-warn', HIGH: 'text-down', EXTREME: 'text-down font-bold',
+  LOW: 'text-text-secondary', MEDIUM: 'text-warn', HIGH: 'text-danger', EXTREME: 'text-danger font-bold',
 }
 
 // 实时涨跌幅 = (现价-昨收)/昨收，随价格全天漂移，跟"竞价Gap"（9:25后固定的
@@ -57,6 +62,17 @@ function round2(n: number): number {
 
 // 本地日期字符串（不用toISOString，UTC+8下午夜前后会跟本地日期差一天），
 // 只用来跟 mainlines.data_as_of 比较是不是"今天"，判断板块数据要不要显眼提示过期。
+// 表头复杂指标的说明图标：光标悬停显示——指标含义/数据来源/计算方式/结果怎么
+// 解读，不用靠用户自己去猜或者翻文档（2026-08-24按用户要求新增）。
+function HeaderHint({ label, hint, align = 'right' }: { label: string; hint: string; align?: 'left' | 'right' }) {
+  return (
+    <span className={cn('inline-flex items-center gap-1', align === 'right' && 'justify-end w-full')} title={hint}>
+      {label}
+      <Info className="w-3 h-3 text-text-muted/60 shrink-0" />
+    </span>
+  )
+}
+
 function localTodayStr(): string {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -390,17 +406,35 @@ export default function WeakToStrongRadar() {
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-bg-border/20 bg-bg-elevated sticky top-0 z-10">
-                  <th className="text-left px-3 py-1.5 text-text-secondary/70 font-medium">状态</th>
+                  <th className="text-left px-3 py-1.5 text-text-secondary/70 font-medium">
+                    <HeaderHint align="left" label="状态" hint="展示态：WATCH观察/READY竞价达标/REPAIRING修复中/CONFIRMING确认中/BUYABLE结构确认/WAIT等待/BLOCK拦截。由底层结构事实叠加Hard Blocker(硬性拦截)和Soft Cap(软上限)两层规则推导，不是几个指标加权打分。" />
+                  </th>
                   <th className="text-left px-2 py-1.5 text-text-secondary/70 font-medium">股票</th>
-                  <th className="text-left px-2 py-1.5 text-text-secondary/70 font-medium">板块</th>
-                  <th className="text-left px-2 py-1.5 text-text-secondary/70 font-medium">龙头</th>
+                  <th className="text-left px-2 py-1.5 text-text-secondary/70 font-medium">
+                    <HeaderHint align="left" label="板块" hint="该股票当前的主板块归属，每日按板块当日强势股数量/连板高度/情绪分自动算出。下方小字是板块生命周期分类：NEW_START早期/EXPANDING扩张/MAIN_UPTREND主升/HEALTHY_DIVERGENCE健康分歧/HIGH_LEVEL_WARNING高位预警/DECLINING退潮/DEAD死亡。" />
+                  </th>
+                  <th className="text-left px-2 py-1.5 text-text-secondary/70 font-medium">
+                    <HeaderHint align="left" label="龙头" hint="同板块内按Core Leader Score排名后的身份：核心龙头/备选龙头/龙头未决/非龙头。综合板块内排名、全市场强势池百分位、连板历史、换手率、板块分歧日抗跌能力等因素算出，非龙头会被硬性拦截，龙头未决会软上限封顶在CONFIRMING。" />
+                  </th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">现价</th>
-                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium" title="(现价-昨收)/昨收，随现价全天实时变化">涨跌幅</th>
-                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium" title="竞价阶段(9:25)的(今开-昨收)/昨收，非实时涨跌幅，开盘后固定不变">竞价Gap</th>
-                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">MA5</th>
-                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">涨停空间</th>
-                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">Stress R/R</th>
-                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">监管风险</th>
+                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">
+                    <HeaderHint label="涨跌幅" hint="(现价-昨收)/昨收，随现价全天实时变化。" />
+                  </th>
+                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">
+                    <HeaderHint label="竞价Gap" hint="竞价阶段(9:25)的(今开-昨收)/昨收，非实时涨跌幅，开盘后固定不变，是READY状态的判断依据之一。" />
+                  </th>
+                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">
+                    <HeaderHint label="MA5" hint="最近5个交易日收盘价的算术平均线，用于判断股价是否收复短期均线支撑（结构修复/确认的判断依据之一）。" />
+                  </th>
+                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">
+                    <HeaderHint label="涨停空间" hint="(涨停价-现价)/现价。涨停价按该股票真实涨跌停规则算出（主板10%/创业板科创板20%/北交所30%/ST 5%），反映距离涨停还剩多少上涨空间，低于阈值会软上限封顶在WAIT。" />
+                  </th>
+                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">
+                    <HeaderHint label="Stress R/R" hint="压力情景风险回报比 = 今日剩余涨停空间% / 模拟明日跌停开盘的亏损%，只回答『如果明天真跌停，今天剩的空间值不值得担这个风险』。仅供参考，不参与BUYABLE的硬性拦截判断。" />
+                  </th>
+                  <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">
+                    <HeaderHint label="监管风险" hint="该股票当前/近期是否处于监管重点关注名单，数据来自监管公开信息同步。LOW/MEDIUM/HIGH/EXTREME四档粗分类，达到配置的风险等级会硬性拦截买入类信号。" />
+                  </th>
                   <th className="text-left px-3 py-1.5 text-text-secondary/70 font-medium">触发/拦截原因</th>
                 </tr>
               </thead>

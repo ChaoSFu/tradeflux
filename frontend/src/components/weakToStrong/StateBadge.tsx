@@ -1,14 +1,17 @@
 import { Badge } from '@/components/ui/badge'
 import type { W2SState } from '@/types'
 
-const STATE_BADGE: Record<W2SState, 'up' | 'down' | 'warn' | 'accent' | 'muted'> = {
-  BUYABLE: 'up',
+// BUYABLE/BLOCK 是"能不能买"的红绿灯语义（安全=绿/危险=红），不是价格涨跌
+// 方向，用 safe/danger 而不是 up/down——此前误用 up/down（A股涨=红/跌=绿），
+// 导致 BUYABLE 渲染成红色、BLOCK 渲染成绿色，字面意思完全反了（2026-08-24修复）。
+const STATE_BADGE: Record<W2SState, 'safe' | 'danger' | 'warn' | 'accent' | 'muted'> = {
+  BUYABLE: 'safe',
   CONFIRMING: 'warn',
   REPAIRING: 'warn',
   READY: 'accent',
   WATCH: 'muted',
   WAIT: 'muted',
-  BLOCK: 'down',
+  BLOCK: 'danger',
 }
 
 const STATE_LABEL: Record<W2SState, string> = {
