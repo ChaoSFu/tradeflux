@@ -22,7 +22,7 @@ from ..services import limit_up_radar_service as radar
 from ..services.limit_up_detail_fetcher import SOURCE_NAME
 from ..services.limit_up_detail_service import (
     get_last_refreshed, get_latest_detail_date, sync_limit_up_details,
-    sync_core_recall,
+    sync_core_recall, refresh_radar_scores,
 )
 
 router = APIRouter(prefix="/limit-up-radar", tags=["limit-up-radar"])
@@ -94,14 +94,19 @@ def refresh_limit_up_details(
 
     # 顺带刷新东财核心召回名单（第4个轻量请求）。它决定"哪些历史强势股不该从核心区
     # 消失"，失败只是退回上一份名单，不影响涨停明细这个主要目的，所以单独 try。
+    scores_n = 0
     try:
         sync_core_recall(db, target)
+        # 只给这个页面上的股票重算龙头分/风险分（东财给不了这两个）。范围严格限定，
+        # 3/3门槛下实测41只，几秒钟。结果存页面作用域，不写 Stock——见
+        # refresh_radar_scores 的注释。
+        scores_n = refresh_radar_scores(db, target)
     except Exception:  # noqa: BLE001
         db.rollback()
 
     refreshed = get_last_refreshed(db, target)
     return LimitUpRadarRefreshResponse(
         ok=True, trade_date=target.isoformat(),
-        limit_up_written=lu, broken_written=bb,
+        limit_up_written=lu, broken_written=bb, scores_recomputed=scores_n,
         refreshed_at=(refreshed or datetime.now()).isoformat(),
     )

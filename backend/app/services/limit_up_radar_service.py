@@ -31,7 +31,7 @@ from ..models.limit_up_detail import BrokenBoardDailyDetail, LimitUpDailyDetail
 from ..models.sector import Sector, StockSectorRelation
 from ..models.stock import Stock, StockDailySnapshot
 from .eastmoney_fetcher import CoreRecallDetail
-from .limit_up_detail_service import get_core_recall_details
+from .limit_up_detail_service import get_core_recall_details, get_radar_scores
 
 # ── Core Recall 阈值（集中在这里，不散落在逻辑里）────────────────────────────
 # 全部是"召回"阈值：满足任意一条就进入视野。刻意放宽，见模块 docstring 红线1。
@@ -464,6 +464,9 @@ def build_radar(
     # 顺便评估它有多新——日历本身过期时算出来的窗口是错的，必须显式告知而不是
     # 照样给一个精确但答非所问的数字。
     em_recall = get_core_recall_details(db, trade_date)
+    # 页面作用域的龙头分/风险分（刷新按钮现算的，见 refresh_radar_scores）。
+    # 优先级高于 Stock 上的值——后者只对候选池内股票是最新的。
+    radar_scores = get_radar_scores(db, trade_date)
     trading_days = _trading_days(db, trade_date, limit=60)
     history_as_of, history_lag, freshness_warnings = assess_history_freshness(trading_days, trade_date)
     lu_hist = (compute_limit_up_history(db, need_sids, trade_date, days=trading_days)
@@ -487,7 +490,7 @@ def build_radar(
             continue
         card = _build_sector_card(
             sector, sids, detail_by_sid, broken_sids, stocks, snaps, rel_lookup, lu_hist,
-            em_recall,
+            em_recall, radar_scores,
             include_core=include_core,
             core_10d_min=core_10d_min, core_20d_min=core_20d_min,
             core_60d_min=core_60d_min, core_max_board_min=core_max_board_min,
@@ -530,6 +533,7 @@ def _build_sector_card(
     rel_lookup: Dict[Tuple[int, int], StockSectorRelation],
     lu_hist: Dict[int, LimitUpHistory],
     em_recall: Dict[str, CoreRecallDetail],
+    radar_scores: Dict[str, dict],
     *, include_core: bool,
     core_10d_min: int, core_20d_min: int, core_60d_min: int, core_max_board_min: int,
     max_core_per_sector: int = DEFAULT_MAX_CORE_PER_SECTOR,
@@ -551,6 +555,7 @@ def _build_sector_card(
         detail = detail_by_sid.get(sid)
 
         _em = em_recall.get(st.code)
+        _sc = radar_scores.get(st.code)
         if detail is not None:
             # 今日涨停股：同时带上它的核心角色标签，这样"历史核心今天也涨停了"
             # （最强的共振信号）能被一眼看出来，而不是被拆到两个区域里看不出关系
@@ -577,8 +582,8 @@ def _build_sector_card(
                 "interval_chg_20d": _em.interval_chg_20d if _em else None,
                 "interval_chg_60d": _em.interval_chg_60d if _em else None,
                 "scores_as_of_today": True,   # 今日涨停股必然进候选池，本轮一定算过
-                "leader_score": st.leader_score,
-                "risk_score": st.risk_score,
+                "leader_score": (_sc["ls"] if _sc else st.leader_score),
+                "risk_score": (_sc["rs"] if _sc else st.risk_score),
                 "core_roles": recall.roles,
                 "core_reasons": recall.reasons,
             })
@@ -589,7 +594,7 @@ def _build_sector_card(
 
         if include_core and recall.roles:
             snap = snaps.get(sid)
-            em_d = em_recall.get(st.code)
+            em_d = _em
             core_rows.append({
                 "code": st.code, "name": st.name,
                 "core_roles": recall.roles,
@@ -616,9 +621,11 @@ def _build_sector_card(
                 # 更新。核心锚大多在池外，那里的分数是冻结旧值——用"今天有没有当日
                 # 快照"判断它是不是本轮真的算过，没算过就给 None，页面显示 —。
                 # 这跟九安医疗那个冻结字段bug是同一类，不能因为字段有值就当它是当期的。
-                "scores_as_of_today": bool(snap),
-                "leader_score": st.leader_score if snap else None,
-                "risk_score": st.risk_score if snap else None,
+                # 刷新按钮现算的分数优先；没有就退回 Stock，且只在该股今天真的进过
+                # 候选池（有当日快照）时才敢用，否则是冻结旧值 → None，页面显示 —
+                "scores_as_of_today": bool(_sc or snap),
+                "leader_score": (_sc["ls"] if _sc else (st.leader_score if snap else None)),
+                "risk_score": (_sc["rs"] if _sc else (st.risk_score if snap else None)),
                 "is_broken_today": sid in broken_sids,
             })
 

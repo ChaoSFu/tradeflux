@@ -130,6 +130,7 @@ class LimitUpRadarRefreshResponse(BaseModel):
     trade_date: Optional[str] = None
     limit_up_written: int = 0
     broken_written: int = 0
+    scores_recomputed: int = 0    # 本次重算了几只股票的龙头分/风险分
     refreshed_at: Optional[str] = None
     # 刷新失败时不删已有数据：ok=False + 上次成功时间，页面继续显示旧数据并明确
     # 标注 REFRESH FAILED，绝不伪装成最新

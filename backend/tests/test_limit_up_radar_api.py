@@ -102,8 +102,12 @@ def test_empty_day_returns_empty_not_500(db, client):
 
 def test_refresh_only_syncs_limit_up_details(db, client):
     """
-    需求明确要求的护栏：手动刷新只能同步涨停明细。
-    这里给所有"绝不能被触发"的重活打桩，任一被调用即测试失败。
+    需求要求的护栏：手动刷新的范围必须严格受限。
+
+    2026-08-25 语义调整：刷新现在**允许**为本页面上的股票拉K线（重算龙头分/风险分，
+    见 refresh_radar_scores），但范围严格限定在页面股票、且结果不写进 Stock。
+    仍然绝不允许触发的：daily_update、全市场选股、Market State 重算、弱转强雷达、
+    板块全量同步、AI点评。下面给这些重活打桩，任一被调用即失败。
     """
     st = Stock(code="002412", name="汉森制药", market="SZ")
     db.add(st); db.commit()
@@ -117,7 +121,8 @@ def test_refresh_only_syncs_limit_up_details(db, client):
                return_value=([LimitUpDetail(code="002412", name="汉森制药", board_count=1)], [], [])), \
          patch("app.services.limit_up_detail_service.fetch_core_recall_details",
                return_value={}), \
-         patch("app.services.eastmoney_fetcher.fetch_klines_batch", _boom("全量K线")), \
+         patch("app.services.limit_up_detail_service.fetch_klines_batch",
+               return_value={}) as kl, \
          patch("app.services.eastmoney_fetcher.fetch_strong_pool_codes", _boom("强势股选股API")), \
          patch("app.services.eastmoney_fetcher.fetch_stock_quotes_batch", _boom("实时行情批量拉取")), \
          patch("app.services.market_state_service.get_current_market_state", _boom("Market State重算")), \
@@ -128,6 +133,10 @@ def test_refresh_only_syncs_limit_up_details(db, client):
     body = r.json()
     assert body["ok"] is True and body["limit_up_written"] == 1
     assert body["refreshed_at"] is not None
+    # K线拉取允许，但只能针对本页面的股票——不能变成全市场
+    if kl.called:
+        requested = kl.call_args[0][0]
+        assert len(requested) <= 200, "刷新时的K线拉取必须限定在页面股票范围内"
 
 
 def test_refresh_failure_keeps_existing_data_and_reports_last_success(db, client):
@@ -163,3 +172,42 @@ def test_group_mode_primary_is_accepted(db, client):
 
 def test_invalid_group_mode_is_rejected(db, client):
     assert client.get("/limit-up-radar", params={"group_mode": "随便写"}).status_code == 422
+
+
+def test_refresh_recomputes_scores_only_for_stocks_on_this_page(db, client):
+    """
+    龙头分/风险分是本仓库用65日K线窗口自己算的，东财给不了；而 daily_update 只对
+    候选池内的股票重算，核心锚大多在池外、那里的分数是冻结旧值。刷新按钮要把这个
+    页面的数据全部刷新，所以现算——但**范围严格限定在页面上的股票**，且结果不写
+    进 Stock（刷新接口有"不改动主流程数据"的硬保证）。
+    """
+    from unittest.mock import ANY
+    from app.models.stock import Stock
+    from app.services.limit_up_detail_service import get_radar_scores
+    from app.services.eastmoney_fetcher import KLineBar
+
+    sec = _seed_sector_with_limit_up(db)
+    st = db.query(Stock).filter(Stock.code == "002412").one()
+    st.leader_score = 11.0
+    st.risk_score = 22.0
+    db.commit()
+
+    bars = [KLineBar(date=date(2026, 8, d), open_price=0.0, close_price=10.0 + d,
+                     high_price=0.0, low_price=0.0, pct_change=1.0, turnover_rate=None)
+            for d in range(1, 26)]
+
+    with patch("app.services.limit_up_detail_service.fetch_limit_up_details",
+               return_value=([LimitUpDetail(code="002412", name="汉森制药", board_count=1)], [], [])), \
+         patch("app.services.limit_up_detail_service.fetch_core_recall_details", return_value={}), \
+         patch("app.services.limit_up_detail_service.fetch_klines_batch",
+               return_value={"002412": bars, "600664": bars}):
+        r = client.post("/limit-up-radar/refresh", params={"date": "2026-08-25"})
+
+    assert r.json()["ok"] is True
+    assert r.json()["scores_recomputed"] >= 1
+
+    # 现算结果存在页面作用域，**没有**写进 Stock
+    scores = get_radar_scores(db, TODAY)
+    assert "002412" in scores and "ls" in scores["002412"]
+    db.refresh(st)
+    assert st.leader_score == 11.0 and st.risk_score == 22.0, "刷新不能改动 Stock 上的分数"

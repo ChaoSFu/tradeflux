@@ -14,7 +14,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { RefreshCw, ChevronDown, ChevronRight, AlertTriangle, Flame } from 'lucide-react'
+import { RefreshCw, ChevronDown, ChevronUp, ChevronsUpDown, ChevronRight, AlertTriangle, Flame } from 'lucide-react'
 import { fetchLimitUpRadar, refreshLimitUpDetails } from '@/api/limitUpRadar'
 import { Badge } from '@/components/ui/badge'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
@@ -54,24 +54,25 @@ const fmtPct = (v: number | null) => (v == null ? '—' : `${v > 0 ? '+' : ''}${
 const coreVerdictTrustworthy = (s: LimitUpRadarSector) =>
   s.core_pct_known_count >= 3 && s.core_pct_known_count / Math.max(s.core_count, 1) >= 0.3
 
-/** 涨停次数三连：10/20/60日。0 显示为暗色，避免一排 0 抢视线 */
-function LuCounts({ a, b, c }: { a: number | null; b: number | null; c: number | null }) {
-  const cell = (v: number | null) => (
-    <span className={cn('inline-block w-6 text-right tabular-nums', v ? 'text-warn' : 'text-text-muted/50')}>
+/** 涨停次数 10/20/60 三个独立单元格（拆开才能各自排序）。0 用暗色，避免一排0抢视线 */
+function LuCells({ a, b, c }: { a: number | null; b: number | null; c: number | null }) {
+  const cell = (v: number | null, i: number) => (
+    <td key={i} className={cn('py-1.5 pr-3 text-right font-mono tabular-nums',
+                              v ? 'text-warn' : 'text-text-muted/50')}>
       {v ?? '—'}
-    </span>
+    </td>
   )
-  return <span className="font-mono">{cell(a)}<span className="text-text-muted/30 mx-0.5">/</span>{cell(b)}<span className="text-text-muted/30 mx-0.5">/</span>{cell(c)}</span>
+  return <>{[a, b, c].map(cell)}</>
 }
 
-/** 区间涨幅三连。数据源是东财真实复合区间收益，跟活跃股池的近似算法不同 */
-function ChgCounts({ a, b, c }: { a: number | null; b: number | null; c: number | null }) {
-  const cell = (v: number | null) => (
-    <span className={cn('inline-block w-14 text-right tabular-nums', pctClass(v))}>
+/** 区间涨幅 10/20/60 三个独立单元格。东财真实复合区间收益，跟活跃股池的近似算法不同 */
+function ChgCells({ a, b, c }: { a: number | null; b: number | null; c: number | null }) {
+  const cell = (v: number | null, i: number) => (
+    <td key={i} className={cn('py-1.5 pr-3 text-right font-mono tabular-nums text-xs', pctClass(v))}>
       {v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`}
-    </span>
+    </td>
   )
-  return <span className="font-mono text-xs">{cell(a)}{cell(b)}{cell(c)}</span>
+  return <>{[a, b, c].map(cell)}</>
 }
 
 /** 龙头分/风险分：只在本轮真的算过时才显示，否则 — （见 scores_as_of_today） */
@@ -91,6 +92,67 @@ const fmtRefreshed = (iso: string | null) => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
 }
 
+// ─── 列头排序（沿用活跃股池 StockPool 的交互：首次点一律 desc，同列再点 desc↔asc，
+//     排序状态在所有板块卡之间共享，点一次全部板块同步换序）────────────────────
+type SortDir = 'desc' | 'asc'
+interface SortState<K> { key: K | null; dir: SortDir }
+
+function SortTh<K extends string>({ col, label, sort, onSort, align = 'right', title }: {
+  col: K
+  label: string
+  sort: SortState<K>
+  onSort: (k: K) => void
+  align?: 'left' | 'right' | 'center'
+  title?: string
+}) {
+  const active = sort.key === col
+  return (
+    <th
+      onClick={() => onSort(col)}
+      title={title}
+      className={cn(
+        'py-1.5 pr-3 font-normal cursor-pointer select-none group whitespace-nowrap',
+        align === 'left' ? 'text-left' : align === 'center' ? 'text-center' : 'text-right',
+        active ? 'text-accent' : 'text-text-muted hover:text-text-secondary',
+      )}
+    >
+      <span className="inline-flex items-center gap-0.5">
+        {label}
+        {active
+          ? (sort.dir === 'desc' ? <ChevronDown className="w-3 h-3 shrink-0" /> : <ChevronUp className="w-3 h-3 shrink-0" />)
+          : <ChevronsUpDown className="w-3 h-3 shrink-0 opacity-0 group-hover:opacity-40 transition-opacity" />}
+      </span>
+    </th>
+  )
+}
+
+/**
+ * 按列排序。**缺失值永远排最后**，跟排序方向无关——升序时让一堆 — 冒到最前面
+ * 毫无意义，而且会把"东财没给这个字段"看成"这只股票这项最低"。
+ * 未选列时返回原顺序（后端已经按业务规则排好：连板→首封→终封→封单）。
+ */
+function applySort<T, K extends string>(rows: T[], sort: SortState<K>, pick: (r: T, k: K) => unknown): T[] {
+  if (!sort.key) return rows
+  const k = sort.key
+  const sign = sort.dir === 'desc' ? -1 : 1
+  return [...rows].sort((a, b) => {
+    const va = pick(a, k), vb = pick(b, k)
+    const na = va == null || va === '', nb = vb == null || vb === ''
+    if (na && nb) return 0
+    if (na) return 1
+    if (nb) return -1
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * sign
+    return String(va).localeCompare(String(vb)) * sign
+  })
+}
+
+function useSort<K extends string>() {
+  const [sort, setSort] = useState<SortState<K>>({ key: null, dir: 'desc' })
+  const onSort = (k: K) =>
+    setSort((p) => (p.key === k ? { key: k, dir: p.dir === 'desc' ? 'asc' : 'desc' } : { key: k, dir: 'desc' }))
+  return { sort, onSort }
+}
+
 function BoardTag({ n }: { n: number | null }) {
   if (!n) return <span className="text-text-muted">—</span>
   return (
@@ -106,6 +168,8 @@ export default function LimitUpSectorRadar() {
   const [primaryOnly, setPrimaryOnly] = useState(false)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [refreshErr, setRefreshErr] = useState<string | null>(null)
+  const coreSort = useSort<CoreSortKey>()
+  const todaySort = useSort<TodaySortKey>()
 
   const params = {
     include_core: includeCore,
@@ -253,6 +317,8 @@ export default function LimitUpSectorRadar() {
               sector={sec}
               open={expanded.has(sec.sector_id)}
               onToggle={() => toggle(sec.sector_id)}
+              coreSort={coreSort}
+              todaySort={todaySort}
             />
           ))}
         </div>
@@ -274,8 +340,15 @@ function Stat({ label, value, tone }: {
   )
 }
 
-function SectorCard({ sector, open, onToggle }: {
+type CoreSortKey = 'pct_change' | 'lu10' | 'lu20' | 'lu60' | 'board' | 'ic10' | 'ic20' | 'ic60' | 'leader' | 'risk'
+type TodaySortKey = 'board' | 'first' | 'last' | 'seal' | 'broken' | 'lu10' | 'lu20' | 'lu60'
+  | 'ic10' | 'ic20' | 'ic60' | 'leader' | 'risk'
+
+type SortCtl<K extends string> = { sort: SortState<K>; onSort: (k: K) => void }
+
+function SectorCard({ sector, open, onToggle, coreSort, todaySort }: {
   sector: LimitUpRadarSector; open: boolean; onToggle: () => void
+  coreSort: SortCtl<CoreSortKey>; todaySort: SortCtl<TodaySortKey>
 }) {
   const ladder = sector.board_ladder
     .map((e) => `${e.board === 1 ? '首板' : `${e.board}板`}×${e.count}`)
@@ -358,7 +431,7 @@ function SectorCard({ sector, open, onToggle }: {
                   </span>
                 )}
               </h3>
-              <CoreTable rows={sector.core_stocks} />
+              <CoreTable rows={sector.core_stocks} ctl={coreSort} />
             </section>
           )}
 
@@ -366,7 +439,7 @@ function SectorCard({ sector, open, onToggle }: {
             <h3 className="text-xs font-semibold text-text-secondary mb-2">
               今日攻击 <span className="font-normal text-text-muted">（{sector.today_limit_up_count} 只涨停）</span>
             </h3>
-            <TodayTable rows={sector.today_limit_up_stocks} />
+            <TodayTable rows={sector.today_limit_up_stocks} ctl={todaySort} />
           </section>
         </div>
       )}
@@ -386,7 +459,15 @@ function RoleTags({ roles, reasons }: { roles: W2SCoreRole[]; reasons: string[] 
   )
 }
 
-function CoreTable({ rows }: { rows: LimitUpRadarCoreStock[] }) {
+const CORE_PICK = (r: LimitUpRadarCoreStock, k: CoreSortKey) => ({
+  pct_change: r.pct_change, lu10: r.limit_up_days_10d, lu20: r.limit_up_days_20d,
+  lu60: r.limit_up_days_60d, board: r.board_count_60d,
+  ic10: r.interval_chg_10d, ic20: r.interval_chg_20d, ic60: r.interval_chg_60d,
+  leader: r.leader_score, risk: r.risk_score,
+}[k])
+
+function CoreTable({ rows, ctl }: { rows: LimitUpRadarCoreStock[]; ctl: SortCtl<CoreSortKey> }) {
+  const sorted = applySort(rows, ctl.sort, CORE_PICK)
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
@@ -394,17 +475,21 @@ function CoreTable({ rows }: { rows: LimitUpRadarCoreStock[] }) {
           <tr className="text-text-muted border-b border-bg-border">
             <th className="text-left font-normal py-1.5 pr-3">股票</th>
             <th className="text-left font-normal py-1.5 pr-3">角色</th>
-            <th className="text-right font-normal py-1.5 pr-3">今日</th>
-            <th className="text-center font-normal py-1.5 pr-3" title="近10日/20日/60日曾涨停次数（东财口径，含炸板）">涨停 10/20/60</th>
-            <th className="text-center font-normal py-1.5 pr-3" title="60日最高连板">高板</th>
-            <th className="text-right font-normal py-1.5 pr-3" title="近10日/20日/60日区间涨幅（真实复合收益，与活跃股池的近似算法不同）">涨幅 10/20/60</th>
-            <th className="text-right font-normal py-1.5 pr-3" title="龙头分。仅当该股今日在候选池、本轮真的算过时才显示">龙头</th>
-            <th className="text-right font-normal py-1.5 pr-3" title="风险分。仅当该股今日在候选池、本轮真的算过时才显示">风险</th>
+            <SortTh col="pct_change" label="今日" {...ctl} />
+            <SortTh col="lu10" label="10日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
+            <SortTh col="lu20" label="20日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
+            <SortTh col="lu60" label="60日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
+            <SortTh col="board" label="60日高板" {...ctl} />
+            <SortTh col="ic10" label="10日涨幅" {...ctl} title="真实复合区间收益，与活跃股池的近似算法不同" />
+            <SortTh col="ic20" label="20日涨幅" {...ctl} title="真实复合区间收益，与活跃股池的近似算法不同" />
+            <SortTh col="ic60" label="60日涨幅" {...ctl} title="真实复合区间收益，与活跃股池的近似算法不同" />
+            <SortTh col="leader" label="龙头分" {...ctl} title="刷新按钮会为本页股票现算；—表示本轮没算过，不拿旧值冒充" />
+            <SortTh col="risk" label="风险分" {...ctl} title="刷新按钮会为本页股票现算；—表示本轮没算过，不拿旧值冒充" />
             <th className="text-left font-normal py-1.5 pr-3">召回理由</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
+          {sorted.map((r) => (
             <tr key={r.code} className="border-b border-bg-border/40 last:border-0">
               <td className="py-1.5 pr-3 whitespace-nowrap">
                 <Link to={`/stocks/${r.code}`} className="text-text-primary hover:text-accent">
@@ -417,13 +502,9 @@ function CoreTable({ rows }: { rows: LimitUpRadarCoreStock[] }) {
               <td className={cn('py-1.5 pr-3 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
                 {fmtPct(r.pct_change)}
               </td>
-              <td className="py-1.5 pr-3 text-center whitespace-nowrap">
-                <LuCounts a={r.limit_up_days_10d} b={r.limit_up_days_20d} c={r.limit_up_days_60d} />
-              </td>
-              <td className="py-1.5 pr-3 text-center font-mono text-dragon tabular-nums">{r.board_count_60d || '—'}</td>
-              <td className="py-1.5 pr-3 text-right whitespace-nowrap">
-                <ChgCounts a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
-              </td>
+              <LuCells a={r.limit_up_days_10d} b={r.limit_up_days_20d} c={r.limit_up_days_60d} />
+              <td className="py-1.5 pr-3 text-right font-mono text-dragon tabular-nums">{r.board_count_60d || '—'}</td>
+              <ChgCells a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
               <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.leader_score} fresh={r.scores_as_of_today} tone="dragon" /></td>
               <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.risk_score} fresh={r.scores_as_of_today} tone="danger" /></td>
               <td className="py-1.5 pr-3 text-text-muted">{r.core_reasons.join(' · ') || '—'}</td>
@@ -435,28 +516,41 @@ function CoreTable({ rows }: { rows: LimitUpRadarCoreStock[] }) {
   )
 }
 
-function TodayTable({ rows }: { rows: LimitUpRadarTodayStock[] }) {
+const TODAY_PICK = (r: LimitUpRadarTodayStock, k: TodaySortKey) => ({
+  board: r.board_count, first: r.first_limit_time, last: r.last_limit_time,
+  seal: r.seal_amount, broken: r.broken_times,
+  lu10: r.limit_up_days_10d, lu20: r.limit_up_days_20d, lu60: r.limit_up_days_60d,
+  ic10: r.interval_chg_10d, ic20: r.interval_chg_20d, ic60: r.interval_chg_60d,
+  leader: r.leader_score, risk: r.risk_score,
+}[k])
+
+function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCtl<TodaySortKey> }) {
+  const sorted = applySort(rows, ctl.sort, TODAY_PICK)
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
           <tr className="text-text-muted border-b border-bg-border">
             <th className="text-left font-normal py-1.5 pr-3">股票</th>
-            <th className="text-left font-normal py-1.5 pr-3">板位</th>
-            <th className="text-right font-normal py-1.5 pr-3" title="首次封板时间">首封</th>
-            <th className="text-right font-normal py-1.5 pr-3" title="最终封板时间；与首封不同说明中途开过板">终封</th>
-            <th className="text-right font-normal py-1.5 pr-3" title="封单额；— 表示东方财富未提供该字段，不是0">封单</th>
-            <th className="text-right font-normal py-1.5 pr-3">炸板</th>
-            <th className="text-center font-normal py-1.5 pr-3" title="近10日/20日/60日曾涨停次数（东财口径，含炸板）">涨停 10/20/60</th>
-            <th className="text-right font-normal py-1.5 pr-3" title="近10日/20日/60日区间涨幅（真实复合收益，与活跃股池的近似算法不同）">涨幅 10/20/60</th>
-            <th className="text-right font-normal py-1.5 pr-3" title="龙头分">龙头</th>
-            <th className="text-right font-normal py-1.5 pr-3" title="风险分">风险</th>
+            <SortTh col="board" label="板位" {...ctl} align="left" />
+            <SortTh col="first" label="首封" {...ctl} title="首次封板时间" />
+            <SortTh col="last" label="终封" {...ctl} title="最终封板时间；与首封不同说明中途开过板" />
+            <SortTh col="seal" label="封单" {...ctl} title="封单额；— 表示东方财富未提供该字段，不是0" />
+            <SortTh col="broken" label="炸板" {...ctl} />
+            <SortTh col="lu10" label="10日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
+            <SortTh col="lu20" label="20日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
+            <SortTh col="lu60" label="60日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
+            <SortTh col="ic10" label="10日涨幅" {...ctl} title="真实复合区间收益" />
+            <SortTh col="ic20" label="20日涨幅" {...ctl} title="真实复合区间收益" />
+            <SortTh col="ic60" label="60日涨幅" {...ctl} title="真实复合区间收益" />
+            <SortTh col="leader" label="龙头分" {...ctl} />
+            <SortTh col="risk" label="风险分" {...ctl} />
             <th className="text-left font-normal py-1.5 pr-3">核心角色</th>
             <th className="text-left font-normal py-1.5">涨停原因（催化剂，非板块归属）</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => {
+          {sorted.map((r) => {
             const reopened = r.first_limit_time && r.last_limit_time && r.first_limit_time !== r.last_limit_time
             return (
               <tr key={r.code} className="border-b border-bg-border/40 last:border-0 align-top">
@@ -484,12 +578,8 @@ function TodayTable({ rows }: { rows: LimitUpRadarTodayStock[] }) {
                                   r.broken_times ? 'text-warn' : 'text-text-muted')}>
                   {r.broken_times == null ? '—' : r.broken_times === 0 ? '0' : `${r.broken_times}次`}
                 </td>
-                <td className="py-1.5 pr-3 text-center whitespace-nowrap">
-                  <LuCounts a={r.limit_up_days_10d} b={r.limit_up_days_20d} c={r.limit_up_days_60d} />
-                </td>
-                <td className="py-1.5 pr-3 text-right whitespace-nowrap">
-                  <ChgCounts a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
-                </td>
+                <LuCells a={r.limit_up_days_10d} b={r.limit_up_days_20d} c={r.limit_up_days_60d} />
+                <ChgCells a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
                 <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.leader_score} fresh={r.scores_as_of_today} tone="dragon" /></td>
                 <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.risk_score} fresh={r.scores_as_of_today} tone="danger" /></td>
                 <td className="py-1.5 pr-3"><RoleTags roles={r.core_roles} reasons={r.core_reasons} /></td>

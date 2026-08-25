@@ -14,7 +14,9 @@ from sqlalchemy.orm import Session
 from ..models.app_config import AppConfig
 from ..models.stock import Stock
 from ..models.limit_up_detail import LimitUpDailyDetail, BrokenBoardDailyDetail
-from .eastmoney_fetcher import CoreRecallDetail, fetch_core_recall_details
+from .eastmoney_fetcher import (
+    CoreRecallDetail, StockBasicInfo, fetch_core_recall_details, fetch_klines_batch,
+)
 from .limit_up_detail_fetcher import (
     SOURCE_NAME, BrokenBoardDetail, LimitUpDetail, fetch_limit_up_details,
 )
@@ -250,3 +252,122 @@ def get_latest_detail_date(db: Session) -> Optional[date]:
         .first()
     )
     return row[0] if row else None
+
+
+SCORES_KEY_PREFIX = "limit_up_radar:scores:"
+
+
+def scores_key(trade_date: date) -> str:
+    return f"{SCORES_KEY_PREFIX}{trade_date.isoformat()}"
+
+
+def refresh_radar_scores(db: Session, trade_date: date, max_stocks: int = 200) -> int:
+    """
+    只给**这个页面上出现的股票**重算龙头分/风险分/情绪分，2026-08-25新增。
+
+    背景：这两个分数是本仓库用65日K线窗口自己算的（compute_window_stats），东财给
+    不了。而 daily_update 只对候选池内的股票重算，核心锚大多在池外——那里的分数是
+    冻结旧值（跟九安医疗那个涨停次数的bug同一类）。用户希望点刷新按钮就能把这个
+    页面的数据全部刷新，所以在这里补上。
+
+    范围严格限定在页面上的股票：今日涨停股 ∪（东财召回名单 ∩ 关注板块成员）。
+    3/3门槛下实测只有41只，41次K线拉取几秒钟就够，仍然属于"轻量手动刷新"。
+
+    **结果不写进 Stock**，而是单独存一份页面作用域的 AppConfig。这是刻意的：
+    刷新接口有一条硬保证"不改动主流程数据"（见 test_sync_never_touches_stock_
+    scores_or_snapshots），盘中用半日K线算出来的分数写进 Stock 会污染强势池/板块
+    情绪/龙头识别等一系列下游消费者。页面要的是"现在什么样"，主流程要的是"收盘
+    定论"，两者不能共用一个字段。
+    """
+    from .screening_service import compute_window_stats
+    from ..models.sector import Sector, StockSectorRelation
+
+    lu_rows = (
+        db.query(LimitUpDailyDetail.stock_id, LimitUpDailyDetail.board_count)
+        .filter(LimitUpDailyDetail.trade_date == trade_date).all()
+    )
+    lu_ids = {r[0] for r in lu_rows}
+    board_by_sid = {r[0]: (r[1] or 0) for r in lu_rows}
+
+    watched_ids = [s.id for s in db.query(Sector.id).filter(Sector.is_watched == True).all()]  # noqa: E712
+    rels = (
+        db.query(StockSectorRelation.sector_id, StockSectorRelation.stock_id)
+        .filter(StockSectorRelation.sector_id.in_(watched_ids)).all()
+    ) if watched_ids else []
+
+    # 只算**真正会显示在页面上**的股票：先按跟 build_radar 同一套门槛筛出达标板块，
+    # 再取这些板块的成员。不筛的话召回集会覆盖全部关注板块——实测 200 只/11秒，
+    # 筛完只剩几十只/几秒，才对得起"快速刷新"这个定位。
+    from .limit_up_radar_service import DEFAULT_MIN_LIMIT_UP, DEFAULT_MIN_BOARD_HEIGHT
+    by_sector: Dict[int, list] = {}
+    for sec_id, sid in rels:
+        by_sector.setdefault(sec_id, []).append(sid)
+    member_ids = set()
+    for sec_id, sids in by_sector.items():
+        hits = [s for s in sids if s in lu_ids]
+        if (len(hits) >= DEFAULT_MIN_LIMIT_UP
+                and max((board_by_sid.get(s, 0) for s in hits), default=0) >= DEFAULT_MIN_BOARD_HEIGHT):
+            member_ids.update(sids)
+
+    recall_codes = set(get_core_recall_details(db, trade_date))
+
+    stocks = db.query(Stock).filter(Stock.id.in_(lu_ids | member_ids)).all() if (lu_ids | member_ids) else []
+    targets = [s for s in stocks if s.id in lu_ids or s.code in recall_codes]
+    if not targets:
+        return 0
+    targets = targets[:max_stocks]
+
+    leader_ids = {
+        r.stock_id for r in
+        db.query(StockSectorRelation.stock_id)
+        .filter(StockSectorRelation.is_leader == True).all()  # noqa: E712
+    }
+
+    infos = [
+        StockBasicInfo(
+            code=s.code, name=s.name, market=1 if s.market == "SH" else 0,
+            is_st=bool(s.is_st), pct_change=0.0, turnover_rate=0.0,
+        )
+        for s in targets
+    ]
+    klines = fetch_klines_batch(infos, days=65, max_workers=15, delay_between=0.0)
+
+    payload = {}
+    for s in targets:
+        bars = klines.get(s.code) or []
+        stats = compute_window_stats(
+            code=s.code, name=s.name, is_st=bool(s.is_st), bars=bars,
+            is_sector_leader=s.id in leader_ids,
+        )
+        if not stats:
+            continue
+        payload[s.code] = {
+            "ls": round(stats.leader_score, 1),
+            "rs": round(stats.risk_score, 1),
+            "es": round(stats.emotion_score, 1),
+            "bd": stats.today_bar_date.isoformat(),   # 这份分数算到哪一天，供页面判断新鲜度
+        }
+    if not payload:
+        return 0
+
+    key = scores_key(trade_date)
+    row = db.query(AppConfig).filter(AppConfig.key == key).first()
+    val = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if row:
+        row.value = val
+    else:
+        db.add(AppConfig(key=key, value=val))
+    db.commit()
+    return len(payload)
+
+
+def get_radar_scores(db: Session, trade_date: date) -> Dict[str, dict]:
+    """读页面作用域的分数。只认当天那一份——分数是"现在什么样"，隔天的没有意义。"""
+    row = db.query(AppConfig).filter(AppConfig.key == scores_key(trade_date)).first()
+    if not row or not row.value:
+        return {}
+    try:
+        raw = json.loads(row.value)
+    except (ValueError, TypeError):
+        return {}
+    return {c: v for c, v in raw.items() if isinstance(v, dict)}
