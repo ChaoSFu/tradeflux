@@ -214,14 +214,36 @@ def _parse_kline_bar(line: str, is_st: bool = False, limit_pct: float = 9.90) ->
         turnover = float(parts[10])
     except (ValueError, IndexError):
         return None
+    return build_kline_bar(
+        dt=dt, open_p=open_p, close_p=close_p, high_p=high_p, low_p=low_p,
+        pct=pct, turnover=turnover, is_st=is_st, limit_pct=limit_pct,
+    )
 
+
+def build_kline_bar(
+    *, dt: date, open_p: float, close_p: float, high_p: float, low_p: float,
+    pct: float, turnover: float, is_st: bool = False, limit_pct: float = 9.90,
+    prev_close: float | None = None,
+) -> KLineBar:
+    """
+    由一组 OHLC + 涨跌幅 + 换手率构造一根 KLineBar，含涨跌停/炸板/一字板判定。
+
+    2026-08-25 从 _parse_kline_bar 里抽出来共用：kline_bar_from_quote() 需要用
+    实时行情补一根"今日"K线（K线接口当日拉取失败时的兜底），这两条路径必须用
+    完全同一套涨跌停判定，否则同一只股票会因为"这根bar是从哪个源来的"得出不同
+    的涨停结论——正是这种脱节造成了凯莱英那次生产事故。
+
+    prev_close 传入时直接用（实时行情有权威昨收字段）；传 None 时按老办法从
+    close/pct 反推（K线接口不给昨收，只能这么算）。
+    """
     # ── 使用实际价格判断涨跌停（比单纯 pct 阈值更准确）────────────────────────
     # 交易所规则：涨跌停价 = round(前收盘 × (1 ± board_limit/100), 2)
     # pct 由东方财富 API 返回，精确到 2 位小数，据此反推前收盘近似值。
     # actual_limit = limit_pct + 0.1：9.90→10.0, 19.90→20.0, 29.90→30.0（ST走同板块
     # 阈值，2026-07-06新规后不再单独更小，这里不需要再为ST单独举例）
-    if close_p > 0 and abs(pct) < 99.9:
-        prev_close = close_p / (1 + pct / 100)
+    if prev_close is None and close_p > 0 and abs(pct) < 99.9:
+        prev_close = close_p / (1 + pct / 100)   # K线接口不给昨收，只能反推
+    if prev_close and prev_close > 0 and close_p > 0:
         actual_limit = limit_pct + 0.1
         lu_price = round(prev_close * (1 + actual_limit / 100), 2)
         ld_price = round(prev_close * (1 - actual_limit / 100), 2)
@@ -259,6 +281,55 @@ def _parse_kline_bar(line: str, is_st: bool = False, limit_pct: float = 9.90) ->
         is_one_word_limit_up=is_one_word_up,
         is_one_word_limit_down=is_one_word_down,
     )
+
+
+def kline_bar_from_quote(
+    quote: "StockQuote", code: str, is_st: bool, expect_date: date,
+) -> "tuple[KLineBar, bool] | None":
+    """
+    用实时行情快照构造 expect_date 这一天的 KLineBar，给"K线接口当日那一根拉不到"
+    做定向兜底。返回 (bar, turnover_known)，无法可信构造时返回 None。
+
+    2026-08-25新增。此前 daily_update 遇到今日K线拉取失败是"降级用历史"——直接拿
+    上一根旧bar当今天用，于是收盘价/涨幅/换手率/连板数/各种评分全都是旧的却盖着
+    今天的日期（凯莱英那次生产事故的根因）。补一根真的当日bar比事后再去修某几个
+    字段干净得多：窗口统计、龙头分、连板数这些全部自动算对，不需要在下游一个个
+    字段打补丁。
+
+    严格拒绝的三种情况（宁可没有，不要假的）：
+      1. quote.trade_date != expect_date —— 包括 None（数据源没给日期）。不校验
+         日期就等于用一个可能同样过期的源去修另一个过期的源。
+      2. 没有可信现价或昨收 —— 涨跌停判定完全依赖昨收，缺了只能瞎猜。
+      3. 停牌（价格<=0）。
+
+    turnover_known=False 表示这一路数据源没有换手率（新浪就没有，腾讯有）。
+    换手率参与龙头评分的资金容量项，编一个0比留空错得更远，调用方要据此决定
+    是否落库换手率，不能默默写0。
+    """
+    if quote.trade_date != expect_date:
+        return None
+    price, prev_close = quote.price, quote.prev_close
+    if not price or price <= 0 or not prev_close or prev_close <= 0:
+        return None
+    pct = quote.pct_change
+    if pct is None:
+        pct = round((price - prev_close) / prev_close * 100, 2)
+    turnover_known = quote.turnover_rate is not None
+    bar = build_kline_bar(
+        dt=expect_date,
+        open_p=quote.open if quote.open and quote.open > 0 else price,
+        close_p=price,
+        # 高开低价缺失时退回现价：会让炸板/一字板判定偏保守（不会误报），
+        # 比用0导致 is_one_word 恒假、is_broken 乱判要安全。
+        high_p=quote.high if quote.high and quote.high > 0 else price,
+        low_p=quote.low if quote.low and quote.low > 0 else price,
+        pct=pct,
+        turnover=quote.turnover_rate if turnover_known else 0.0,
+        is_st=is_st,
+        limit_pct=get_limit_pct(code, is_st),
+        prev_close=prev_close,
+    )
+    return bar, turnover_known
 
 
 # ---------------------------------------------------------------------------
@@ -1387,9 +1458,33 @@ class StockQuote:
     volume: Optional[float] = None  # 股（不是手）——见上面class docstring
     amount: Optional[float] = None
     turnover_rate: Optional[float] = None
+    # 这条报价属于哪个交易日（2026-08-25新增）。新增它是因为 kline_bar_from_quote()
+    # 要拿实时行情去补K线拉取失败的那一根"今日"——如果不校验行情本身的日期，
+    # 就会用一个可能同样过期的数据源去"修"另一个过期数据源，等于换个门再犯一次
+    # 同样的错（本仓库反复踩过的"自证式新鲜度"坑）。None = 该数据源没提供日期，
+    # 一律当作不可信、不用于补K线（东财push2这一路就是None：它的字段集里没有
+    # 可靠日期字段，而且生产上这一路本来就已经降级为纯兜底）。
+    trade_date: Optional[date] = None
 
 
 TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
+
+
+def _parse_tencent_trade_date(fields: list[str]) -> Optional[date]:
+    """
+    腾讯字段30是 'YYYYMMDDHHMMSS' 形式的行情时间戳（2026-08-25用实盘响应核对：
+    sh600000 返回 '20260825161259'，跟当天日期一致）。取不到/格式不对返回 None，
+    调用方按"日期未知=不可信"处理，不猜。
+    """
+    if len(fields) <= 30:
+        return None
+    raw = fields[30].strip()
+    if len(raw) < 8 or not raw[:8].isdigit():
+        return None
+    try:
+        return date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
+    except ValueError:
+        return None
 
 
 def _parse_tencent_quote_line(line: str) -> Optional[Tuple[str, "StockQuote"]]:
@@ -1434,6 +1529,7 @@ def _parse_tencent_quote_line(line: str) -> Optional[Tuple[str, "StockQuote"]]:
             code=pure_code, name="", price=price, pct_change=pct_change,
             open=open_p, high=high, low=low, prev_close=prev_close,
             volume=volume, amount=amount, turnover_rate=turnover_rate,
+            trade_date=_parse_tencent_trade_date(fields),
         )
     except (ValueError, IndexError):
         return None
@@ -1497,10 +1593,20 @@ def _parse_sina_quote_line(line: str) -> Optional[Tuple[str, "StockQuote"]]:
         if price <= 0 and prev_close <= 0:
             return None  # 停牌/无数据，不构造一个全零的假报价
         pct_change = round((price - prev_close) / prev_close * 100, 2) if prev_close > 0 else None
+        # 字段30是行情日期（2026-08-25用实盘响应核对：sh600000 返回 '2026-08-25'）。
+        # 新浪对部分标的会返回更短的行情串（没有买卖五档也就没有后面的日期），
+        # 这时留 None，调用方按"日期未知=不可信"处理。
+        trade_date = None
+        if len(fields) > 30:
+            try:
+                trade_date = date.fromisoformat(fields[30].strip())
+            except ValueError:
+                trade_date = None
         return pure_code, StockQuote(
             code=pure_code, name="", price=price, pct_change=pct_change,
             open=open_p, high=high, low=low, prev_close=prev_close,
             volume=volume, amount=amount, turnover_rate=None,
+            trade_date=trade_date,
         )
     except (ValueError, IndexError):
         return None
