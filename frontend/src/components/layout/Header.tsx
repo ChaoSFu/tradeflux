@@ -493,7 +493,7 @@ function DataUpdateMenu({ onRequestLogin }: { onRequestLogin: () => void }) {
             isDone={updateStatus?.status === 'done'}
             isError={updateStatus?.status === 'error'}
             onTrigger={handleUpdate}
-            description="选股 API 获取候选股 → K线计算 → 更新强势池 → 刷新板块统计 → 写入复盘 → 大盘趋势数据同步。每日收盘后运行。"
+            description="选股 API 获取候选股 → K线计算 → 更新强势池 → 刷新板块统计 → 写入复盘 → 大盘趋势数据同步 → 弱转强雷达板块快照/候选池发现/候选状态刷新。每日收盘后运行。"
             estimatedTime={estimateFor('daily_update')}
             locked={!isLoggedIn}
             onLockedClick={requestLogin}

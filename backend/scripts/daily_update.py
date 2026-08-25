@@ -1290,6 +1290,37 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"[weak-to-strong-radar] 板块快照/候选池发现失败（不影响主流程）: {e}")
             db.rollback()
 
+        # ── 弱转强雷达：候选状态刷新（独立步骤，失败不影响主流程）──────────────
+        # 候选发现只维护"名单"（新增/续期/失活），不会重算已有候选的 price/结构态/
+        # BUYABLE 判断——那部分只有用户手动点「刷新数据并重新评估」才会算。这意味着
+        # 如果用户当天没打开页面点刷新，候选列表会一直停在上次手动刷新时的旧状态，
+        # 哪怕候选名单本身每天都在正常更新（2026-08-25 用户指出的真实缺口）。这里在
+        # 收盘后批量更新的同一个时间点顺手跑一次，保证至少每天有一次收盘后的准确
+        # 状态落库，不依赖用户当天有没有点开页面——这跟之前移除的09:26盘中自动刷新
+        # 不是一回事：09:26那次是"盘中高频轮询"的第一步，已经确认对判断没有增量
+        # 价值而移除；这里是跟其余所有步骤同频（每天一次、收盘后）的批量收尾，性质
+        # 上更接近"写入复盘"这类日终归档，不是新增自动轮询。用跟手动/refresh接口
+        # 同一把锁文件，避免撞上用户手动点刷新的并发写入。
+        try:
+            import fcntl as _fcntl
+            from app.services.w2s_refresh_service import run_refresh
+            W2S_LOCK_FILE = "/tmp/tradeflux_w2s_radar.lock"
+            lock_fd = open(W2S_LOCK_FILE, "w")
+            try:
+                _fcntl.flock(lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            except BlockingIOError:
+                log.info("[weak-to-strong-radar] 候选状态刷新跳过：锁已被占用（用户可能正在手动刷新）")
+            else:
+                try:
+                    refresh_stats = run_refresh(db)
+                    log.info(f"弱转强雷达：候选状态刷新 {refresh_stats}")
+                finally:
+                    _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
+                    lock_fd.close()
+        except Exception as e:
+            log.info(f"[weak-to-strong-radar] 候选状态刷新失败（不影响主流程）: {e}")
+            db.rollback()
+
         log.summary()
 
     except Exception as e:

@@ -50,7 +50,7 @@ def _run_refresh_job() -> None:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            _w2s_log("MANUAL", "❌ 锁已被占用（可能是09:26定时任务正在跑），本次跳过")
+            _w2s_log("MANUAL", "❌ 锁已被占用（可能是每日收盘后批量刷新正在跑），本次跳过")
             with _lock:
                 _job["running"] = False
                 _job["last_error"] = "已有雷达刷新任务在运行中，请稍后再试"
