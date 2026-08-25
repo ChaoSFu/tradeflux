@@ -22,7 +22,7 @@
 的注释。本轮刻意不引入任何新的黑盒评分。
 """
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.orm import Session
@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from ..models.limit_up_detail import BrokenBoardDailyDetail, LimitUpDailyDetail
 from ..models.sector import Sector, StockSectorRelation
 from ..models.stock import Stock, StockDailySnapshot
+from .limit_up_detail_service import get_core_recall_codes
 
 # ── Core Recall 阈值（集中在这里，不散落在逻辑里）────────────────────────────
 # 全部是"召回"阈值：满足任意一条就进入视野。刻意放宽，见模块 docstring 红线1。
@@ -54,6 +55,163 @@ _ROLE_PRIORITY = {
 
 
 @dataclass
+class LimitUpHistory:
+    """
+    某只股票截至某个交易日的涨停历史（现算，不读 Stock 上的冻结字段）。
+    counts: {窗口天数: 该窗口内涨停次数}
+    """
+    counts: Dict[int, int] = field(default_factory=dict)
+    max_consecutive_60d: int = 0
+
+
+def _trading_days(db: Session, trade_date: date, limit: int = 60) -> List[date]:
+    """
+    截至 trade_date 的最近 N 个交易日，倒序。
+
+    交易日历从 stock_daily_snapshots 里出现过的 distinct 日期反推——daily_update
+    每个交易日会写几百行快照，任何出现在这张表里的日期都是真实交易日。本仓库还
+    没有独立交易日历，这跟 daily_update 里 target_date/prev_trading_date 的推导
+    方式是同一套（见那边的注释）。
+    """
+    rows = (
+        db.query(StockDailySnapshot.date)
+        .filter(StockDailySnapshot.date <= trade_date)
+        .distinct()
+        .order_by(StockDailySnapshot.date.desc())
+        .limit(limit)
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
+def _business_days_between(a: date, b: date) -> int:
+    """a→b 之间的工作日数（粗略，不含节假日）。只用来判断"快照落后了几天"。"""
+    if b <= a:
+        return 0
+    n, d = 0, a
+    while d < b:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            n += 1
+    return n
+
+
+def assess_history_freshness(days: List[date], trade_date: date) -> Tuple[Optional[date], int, List[str]]:
+    """
+    评估滚动窗口所依据的快照历史有多新，返回 (history_as_of, 落后工作日数, 警告)。
+
+    为什么必须显式检查（2026-08-25 用户提出）：整个"近10/20/60日涨停次数"是按
+    stock_daily_snapshots 里出现过的交易日切窗口的。如果 daily_update 已经好几天
+    没跑，这个日历本身就是旧的——"近10日"实际变成"截至N天前的10日"，页面照样给出
+    一个精确的数字，但那个数字回答的不是用户以为的那个问题。这跟九安医疗那个
+    冻结字段的bug是同一类错误：**算得出来 ≠ 算的是对的问题**，而且都不报错。
+
+    盘中的正常情况（今天的 daily_update 还没跑）会落后1个工作日，这是符合预期的：
+    窗口自然落在"截至上一个完整交易日"，今天的涨停在 limit_up_daily_details 里
+    单独展示，不混进历史窗口。所以只有落后≥2个工作日才告警。
+    """
+    if not days:
+        return None, 0, [
+            "本地没有任何历史快照，近10/20/60日涨停次数无法计算，"
+            "板块核心锚会大面积漏召回——请先运行一次「每日数据更新」"
+        ]
+    as_of = days[0]
+    lag = _business_days_between(as_of, trade_date)
+    warnings: List[str] = []
+    if lag >= 2:
+        warnings.append(
+            f"历史快照最新只到 {as_of}，比 {trade_date} 落后约 {lag} 个交易日："
+            f"近10/20/60日涨停次数是按截至 {as_of} 的窗口算的，不是截至 {trade_date}。"
+            f"请运行「每日数据更新」后再看核心锚部分。"
+        )
+    return as_of, lag, warnings
+
+
+def compute_limit_up_history(
+    db: Session, stock_ids: Set[int], trade_date: date, windows: Tuple[int, ...] = (10, 20, 60),
+    days: Optional[List[date]] = None,
+) -> Dict[int, LimitUpHistory]:
+    """
+    现算每只股票近 10/20/60 交易日的涨停次数与最高连板数。
+
+    ── 为什么不能直接用 Stock.limit_up_days_10d/20d/60d ──────────────────────
+    那几个字段只在 daily_update 处理**候选池内**股票时才重算（强势池∪涨跌停∪
+    成交额前列）。一只股票冷却后掉出候选池，这些值就冻结在它最后一次入池那天，
+    而且每过一天就更失真一点。
+
+    生产实测（002432 九安医疗，2026-08-25）：页面显示"近10日涨停2次·近20日涨停
+    5次·近60日涨停9次"，实际拉K线数出来是 0/1/7。它的快照停在 2026-07-31——正是
+    它最后一次涨停那天，那三个数字是7月31日算出来的，冻结了17个交易日。
+
+    这对涨停板块雷达是致命的：冻结值是"股票最热的时候"算的，必然偏高；而 Core
+    Recall 恰恰是设计来捞"已经冷却的老核心"，最需要准的那批股票正好是最不准的
+    那批。结果是过度召回，而且展示给用户的召回理由是一句关于市场的假陈述。
+
+    ── 为什么从快照重算是可靠的 ──────────────────────────────────────────
+    非ST股只要当天涨停，就一定会被涨跌停选股 API 捞进候选池、一定会写当日快照。
+    所以"某天没有快照"⇒"那天没涨停"，缺失本身就是有效信息，不需要它当天在池内。
+    再并上 limit_up_daily_details（东财涨停池，全市场完整名单，覆盖ST股这个
+    选股API的盲区），覆盖面比任何单一来源都全。
+    """
+    out: Dict[int, LimitUpHistory] = {sid: LimitUpHistory() for sid in stock_ids}
+    if not stock_ids:
+        return out
+
+    if days is None:
+        days = _trading_days(db, trade_date, limit=max(windows))
+    if not days:
+        return out
+    window_start = days[-1]
+    # {窗口天数: 该窗口覆盖的交易日集合}
+    day_sets = {n: set(days[:n]) for n in windows}
+
+    lu_dates: Dict[int, Set[date]] = {sid: set() for sid in stock_ids}
+
+    # 只按日期窗口 + is_limit_up 过滤，**不带 stock_id IN (...)**：关注板块的成员
+    # 加起来是几千只，几千个 id 的 IN 子句比全市场涨停行本身还大。全市场一天涨停
+    # 也就几十只，60个交易日总共几千行，全量拉回来在内存里筛更快。
+    for sid, d in (
+        db.query(StockDailySnapshot.stock_id, StockDailySnapshot.date)
+        .filter(StockDailySnapshot.date >= window_start,
+                StockDailySnapshot.date <= trade_date,
+                StockDailySnapshot.is_limit_up == True)  # noqa: E712
+        .all()
+    ):
+        if sid in lu_dates:
+            lu_dates[sid].add(d)
+
+    # 东财涨停池：全市场完整名单，能补上选股API漏掉的ST股
+    for sid, d in (
+        db.query(LimitUpDailyDetail.stock_id, LimitUpDailyDetail.trade_date)
+        .filter(LimitUpDailyDetail.trade_date >= window_start,
+                LimitUpDailyDetail.trade_date <= trade_date)
+        .all()
+    ):
+        if sid in lu_dates:
+            lu_dates[sid].add(d)
+
+    for sid, dates in lu_dates.items():
+        hist = out[sid]
+        for n in windows:
+            hist.counts[n] = len(dates & day_sets[n])
+        # 最高连板：按交易日顺序走一遍，连续命中才算连板（跨越非交易日不算断）
+        run = best = 0
+        for d in reversed(days):          # days 是倒序，reversed 后是时间正序
+            if d in dates:
+                run += 1
+                best = max(best, run)
+            else:
+                run = 0
+        hist.max_consecutive_60d = best
+    return out
+
+
+def _hist_count(hist: Optional[LimitUpHistory], window: int, fallback) -> Optional[int]:
+    """现算值优先，拿不到才退回 Stock 上可能已经冻结的旧值。"""
+    return hist.counts.get(window, 0) if hist is not None else fallback
+
+
+@dataclass
 class CoreRecall:
     """一只股票被召回成"核心候选"的结果。roles/reasons 全部可解释，没有分数。"""
     roles: List[str] = field(default_factory=list)
@@ -69,6 +227,8 @@ class CoreRecall:
 def recall_core_roles(
     stock: Stock,
     rel: Optional[StockSectorRelation],
+    hist: Optional[LimitUpHistory] = None,
+    em_selected: bool = False,
     *,
     core_10d_min: int = DEFAULT_CORE_10D_MIN,
     core_20d_min: int = DEFAULT_CORE_20D_MIN,
@@ -84,6 +244,11 @@ def recall_core_roles(
       只看近10日涨停 → 它还是消失。但它可能仍然是这个板块市场辨识度最高的情绪锚。
       它一旦从页面上消失，用户看到"低位2只首板"就可能误判成"板块正在增强"，而真实
       结构可能是"老核心负反馈 + 低位补涨"——这是完全相反的两件事。
+
+    hist 传入时用现算的涨停历史（compute_limit_up_history），拿不到才退回 Stock 上
+    的字段。**必须优先用现算的**：Stock 上那几个字段只对候选池内的股票是最新的，
+    冷却掉出池的股票会冻结在最后一次入池那天，而那正是本函数要捞的目标群体。
+    详见 compute_limit_up_history 的注释和那里记录的生产实测案例。
     """
     out = CoreRecall()
 
@@ -92,10 +257,16 @@ def recall_core_roles(
             out.roles.append(role)
         out.reasons.append(reason)
 
-    lu10 = stock.limit_up_days_10d or 0
-    lu20 = stock.limit_up_days_20d or 0
-    lu60 = stock.limit_up_days_60d or 0
-    max_board = stock.board_count_60d or 0
+    if hist is not None:
+        lu10 = hist.counts.get(10, 0)
+        lu20 = hist.counts.get(20, 0)
+        lu60 = hist.counts.get(60, 0)
+        max_board = hist.max_consecutive_60d
+    else:
+        lu10 = stock.limit_up_days_10d or 0
+        lu20 = stock.limit_up_days_20d or 0
+        lu60 = stock.limit_up_days_60d or 0
+        max_board = stock.board_count_60d or 0
 
     if lu10 >= core_10d_min:
         hit("CURRENT_CORE", f"近10日涨停{lu10}次")
@@ -109,6 +280,15 @@ def recall_core_roles(
         hit("SECTOR_LEADER", "板块龙头")
     if rel is not None and rel.is_core:
         hit("SECTOR_CORE", "板块核心")
+
+    # 东财条件选股兜底：本地重算是从快照数涨停日，而快照只在股票进候选池那天才写，
+    # 历史缺口会让重算偏低（生产实测覆盖率94.3%，600664哈药股份近60日真实9次、
+    # 快照里只有6次）。偏低就是漏召回，而"不能漏掉板块核心"是这个功能的第一原则。
+    # 东财那边是服务端实时算的，不依赖我们的历史完整性。
+    # 只在本地一条都没命中时才用它兜底——本地有命中时用本地的具体次数当理由，
+    # 那是可验证的事实；这条兜底给不出次数，只能说"东财判定近期活跃"。
+    if em_selected and not out.roles:
+        hit("RECENT_CORE", "东财选股：近期涨停活跃（本地快照不全，无法给出具体次数）")
     return out
 
 
@@ -236,6 +416,16 @@ def build_radar(
                 StockDailySnapshot.stock_id.in_(need_sids)).all()
     } if need_sids else {}
 
+    # 现算涨停历史（不读 Stock 上的冻结字段，理由见 compute_limit_up_history）。
+    # 一次性批量算完所有需要的股票，不在板块循环里逐只查。交易日历只查一次，
+    # 顺便评估它有多新——日历本身过期时算出来的窗口是错的，必须显式告知而不是
+    # 照样给一个精确但答非所问的数字。
+    em_recall = get_core_recall_codes(db, trade_date)
+    trading_days = _trading_days(db, trade_date, limit=60)
+    history_as_of, history_lag, freshness_warnings = assess_history_freshness(trading_days, trade_date)
+    lu_hist = (compute_limit_up_history(db, need_sids, trade_date, days=trading_days)
+               if need_sids else {})
+
     # ── 决定每只股票进哪些板块 ────────────────────────────────────────────────
     if group_mode == "primary":
         sids_by_sector: Dict[int, Set[int]] = {}
@@ -253,7 +443,8 @@ def build_radar(
         if not sector:
             continue
         card = _build_sector_card(
-            sector, sids, detail_by_sid, broken_sids, stocks, snaps, rel_lookup,
+            sector, sids, detail_by_sid, broken_sids, stocks, snaps, rel_lookup, lu_hist,
+            em_recall,
             include_core=include_core,
             core_10d_min=core_10d_min, core_20d_min=core_20d_min,
             core_60d_min=core_60d_min, core_max_board_min=core_max_board_min,
@@ -267,9 +458,13 @@ def build_radar(
 
     return {
         "trade_date": trade_date.isoformat(),
+        # 滚动窗口实际算到哪一天。盘中今天的 daily_update 还没跑时它会是上一个
+        # 交易日，这是符合预期的——今天的涨停在"今日攻击"里单独展示，不混进历史窗口。
+        "history_as_of": history_as_of.isoformat() if history_as_of else None,
+        "history_lag_days": history_lag,
         "summary": _build_summary(details, broken, out_sectors),
         "sectors": out_sectors,
-        "warnings": [],
+        "warnings": freshness_warnings,
     }
 
 
@@ -278,6 +473,8 @@ def _build_sector_card(
     detail_by_sid: Dict[int, LimitUpDailyDetail], broken_sids: Set[int],
     stocks: Dict[int, Stock], snaps: Dict[int, StockDailySnapshot],
     rel_lookup: Dict[Tuple[int, int], StockSectorRelation],
+    lu_hist: Dict[int, LimitUpHistory],
+    em_recall: Set[str],
     *, include_core: bool,
     core_10d_min: int, core_20d_min: int, core_60d_min: int, core_max_board_min: int,
     max_core_per_sector: int = DEFAULT_MAX_CORE_PER_SECTOR,
@@ -292,7 +489,7 @@ def _build_sector_card(
             continue
         rel = rel_lookup.get((sid, sector.id))
         recall = recall_core_roles(
-            st, rel,
+            st, rel, lu_hist.get(sid), st.code in em_recall,
             core_10d_min=core_10d_min, core_20d_min=core_20d_min,
             core_60d_min=core_60d_min, core_max_board_min=core_max_board_min,
         )
@@ -315,7 +512,7 @@ def _build_sector_card(
                 "turnover_rate": detail.turnover_rate,
                 "limit_reason": detail.limit_reason,
                 "limit_content": detail.limit_content,
-                "limit_up_days_10d": st.limit_up_days_10d,
+                "limit_up_days_10d": _hist_count(lu_hist.get(sid), 10, st.limit_up_days_10d),
                 "core_roles": recall.roles,
                 "core_reasons": recall.reasons,
             })
@@ -332,10 +529,11 @@ def _build_sector_card(
                 "core_reasons": recall.reasons,
                 "primary_role": recall.primary_role,
                 "pct_change": snap.pct_change if snap else None,
-                "limit_up_days_10d": st.limit_up_days_10d,
-                "limit_up_days_20d": st.limit_up_days_20d,
-                "limit_up_days_60d": st.limit_up_days_60d,
-                "board_count_60d": st.board_count_60d,
+                "limit_up_days_10d": _hist_count(lu_hist.get(sid), 10, st.limit_up_days_10d),
+                "limit_up_days_20d": _hist_count(lu_hist.get(sid), 20, st.limit_up_days_20d),
+                "limit_up_days_60d": _hist_count(lu_hist.get(sid), 60, st.limit_up_days_60d),
+                "board_count_60d": (lu_hist[sid].max_consecutive_60d
+                                    if sid in lu_hist else st.board_count_60d),
                 "leader_score": st.leader_score,
                 "is_broken_today": sid in broken_sids,
             })
@@ -411,6 +609,8 @@ def _build_summary(
 def _empty_result(trade_date: date, warnings: Optional[List[str]] = None) -> dict:
     return {
         "trade_date": trade_date.isoformat(),
+        "history_as_of": None,
+        "history_lag_days": 0,
         "summary": {
             "limit_up_count": 0, "continuation_count": 0, "first_board_count": 0,
             "board_height": 0, "broken_count": 0, "seal_rate": None,

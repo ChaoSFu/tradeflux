@@ -112,6 +112,8 @@ def test_refresh_only_syncs_limit_up_details(db, client):
 
     with patch("app.services.limit_up_detail_service.fetch_limit_up_details",
                return_value=([LimitUpDetail(code="002412", name="汉森制药", board_count=1)], [], [])), \
+         patch("app.services.limit_up_detail_service.fetch_strong_pool_codes",
+               return_value={"002412"}), \
          patch("app.services.eastmoney_fetcher.fetch_klines_batch", _boom("全量K线")), \
          patch("app.services.eastmoney_fetcher.fetch_strong_pool_codes", _boom("强势股选股API")), \
          patch("app.services.eastmoney_fetcher.fetch_stock_quotes_batch", _boom("实时行情批量拉取")), \
@@ -132,7 +134,9 @@ def test_refresh_failure_keeps_existing_data_and_reports_last_success(db, client
     """
     _seed_sector_with_limit_up(db)
     with patch("app.services.limit_up_detail_service.fetch_limit_up_details",
-               side_effect=TimeoutError("东财超时")):
+               side_effect=TimeoutError("东财超时")), \
+         patch("app.services.limit_up_detail_service.fetch_strong_pool_codes",
+               return_value=set()):
         r = client.post("/limit-up-radar/refresh", params={"date": "2026-08-25"})
 
     body = r.json()

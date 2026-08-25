@@ -164,6 +164,15 @@ export default function LimitUpSectorRadar() {
             数据更新：<span className="font-mono text-text-secondary">{fmtRefreshed(data?.refreshed_at ?? null)}</span>
           </span>
           <span className="text-text-muted">来源：{data?.source === 'eastmoney' ? '东方财富' : '—'}</span>
+          {/* 涨停明细和历史窗口是两份不同新鲜度的数据，必须分开显示：前者手动刷新
+              就能更新，后者要等「每日数据更新」跑完 */}
+          <span className="text-text-muted">
+            历史窗口算至：
+            <span className="font-mono text-text-secondary">{data?.history_as_of || '—'}</span>
+            {!!data?.history_lag_days && data.history_lag_days >= 2 && (
+              <span className="text-warn"> （落后{data.history_lag_days}个交易日）</span>
+            )}
+          </span>
           <span className="text-text-muted/70">不自动刷新，需手动点击</span>
           {refreshErr && (
             <span className="flex items-center gap-1 text-danger">
@@ -173,9 +182,13 @@ export default function LimitUpSectorRadar() {
           )}
         </div>
 
+        {/* 历史窗口过期是会让"近N日涨停次数"整体答非所问的问题，不能只做一行淡色
+            提示——给足视觉重量，并直接告诉用户要做什么 */}
         {data?.warnings?.map((w) => (
-          <div key={w} className="mt-2 text-xs text-warn flex items-center gap-1">
-            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />{w}
+          <div key={w}
+               className="mt-2 px-3 py-2 rounded bg-warn-dim border border-warn/30 text-xs text-warn flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-px" />
+            <span>{w}</span>
           </div>
         ))}
       </div>

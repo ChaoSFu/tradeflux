@@ -90,6 +90,10 @@ class LimitUpRadarResponse(BaseModel):
     # 盘中手动刷新的页面不能让用户误以为看到的是实时数据
     refreshed_at: Optional[str] = None
     source: Optional[str] = None
+    # 近10/20/60日涨停次数实际算到哪一天。盘中今天的 daily_update 还没跑时它是上一个
+    # 交易日（符合预期，今天的涨停在"今日攻击"里单独看）；落后≥2个交易日会进 warnings
+    history_as_of: Optional[str] = None
+    history_lag_days: int = 0
     summary: RadarSummary = RadarSummary()
     sectors: List[RadarSector] = []
     warnings: List[str] = []

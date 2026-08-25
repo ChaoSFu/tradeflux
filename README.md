@@ -64,7 +64,9 @@
 - **🔜 下一步 · P2** — 检测引擎(逆势加仓/摊平/报复/越线/冲动单)· 行为画像 · 我的软肋常驻卡 · 单笔亏损 AI 复盘
 - **📋 规划 · P3+** — 重点问题跟踪 + 事中红线 · 环境高危预警 · 周期 AI 总结 · 知行差指数 · 交易者成熟度模型 · 个人交易宪法
 
-> 详见《产品愿景与进化路线》。
+> 更完整的业务规则与数据链路见 [LOGIC.md](./LOGIC.md)，评分口径见
+> [docs/SCORING_RULES.md](./docs/SCORING_RULES.md)。每日赚钱/亏钱效应的产品定义见
+> [docs/MARKET_EFFECT_PRODUCT.md](./docs/MARKET_EFFECT_PRODUCT.md)。
 
 ---
 
@@ -80,18 +82,120 @@
 
 ---
 
-## 技术栈 & 快速开始
+## 项目现状
 
-后端 FastAPI + SQLAlchemy + PostgreSQL;前端 React + TypeScript + Vite + Tailwind;数据源为东方财富等公开行情接口,每日盘后/盘前自动更新。
+当前仓库是一个前后端分离的单体应用：
 
-```bash
-# 后端（需 Python 3.13 + PostgreSQL）
-cd backend && python3.13 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt && cp .env.example .env
-uvicorn app.main:app --reload --port 8000      # 首次启动自动建表
+- **后端**：FastAPI、SQLAlchemy 2、Pydantic 2、APScheduler。
+- **前端**：React 18、TypeScript、Vite、Tailwind CSS、TanStack Query、
+  Zustand、Recharts。
+- **数据库**：默认使用 PostgreSQL；本地体验也可通过 `DATABASE_URL`
+  切换到 SQLite。
+- **行情数据**：以东方财富为主，并使用 AkShare、新浪财经、腾讯财经作为
+  列表、实时行情或 K 线补充/降级来源。
+- **自动任务**：后端启动时注册盘后更新任务，交易日 15:30 后随机延迟执行；
+  也支持从管理接口或脚本手动触发。
 
-# 前端
-cd frontend && npm install && npm run dev       # 访问 http://localhost:5173
+主要页面覆盖市场趋势、强势股池、板块趋势与情绪、涨跌停分析、弱转强信号、
+自选监管、每日复盘和个人交易日志。AI 叙事目前主要是规则模板，并未接入
+大模型推理服务。
+
+### 目录结构
+
+```text
+tradeflux/
+├── backend/
+│   ├── app/
+│   │   ├── routers/       HTTP API
+│   │   ├── services/      抓取、筛选、评分与市场状态计算
+│   │   ├── models/        SQLAlchemy 数据模型
+│   │   └── schemas/       Pydantic 请求/响应模型
+│   ├── scripts/           初始化、同步、补数与每日更新脚本
+│   └── BACKEND.md         后端详细说明
+├── frontend/src/
+│   ├── pages/             页面
+│   ├── components/        布局、图表与通用组件
+│   ├── api/               后端 API 客户端
+│   └── store/             Zustand 状态
+├── docs/SCORING_RULES.md  评分规则
+└── LOGIC.md               产品逻辑、架构与数据链路
 ```
 
-接口文档:`http://localhost:8000/docs`。线上部署:`git push` → 服务器 `git pull` → 重启后端 + 前端 build。
+## 本地开发
+
+### 1. 启动后端
+
+建议使用 Python 3.13。默认配置需要本机已安装 PostgreSQL，并存在
+`tradeflux` 数据库。
+
+```bash
+cd backend
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn app.main:app --reload --port 8000
+```
+
+如果只想快速体验，可将 `backend/.env` 中的数据库连接改为：
+
+```dotenv
+DATABASE_URL=sqlite:///./tradeflux.db
+```
+
+首次启动会自动建表。健康检查为 <http://localhost:8000/health>，交互式接口
+文档为 <http://localhost:8000/docs>。
+
+### 2. 启动前端
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+访问 <http://localhost:5173>。Vite 开发服务器会将 `/api` 请求代理到
+`http://localhost:8000`。
+
+### 3. 配置鉴权
+
+管理功能使用 JWT 鉴权。生产或共享环境务必在 `backend/.env` 中覆盖默认值：
+
+```dotenv
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=请替换为强密码
+JWT_SECRET_KEY=请替换为随机密钥
+```
+
+随机密钥可用 `openssl rand -hex 32` 生成。不要提交真实密码、令牌或数据库
+凭据。
+
+### 4. 初始化与更新数据
+
+在 `backend` 目录、虚拟环境已激活的情况下运行：
+
+```bash
+python scripts/init_screening.py    # 初始化默认入池规则
+python scripts/sync_boards.py       # 同步板块及成分关系
+python scripts/daily_update.py      # 执行一次日常行情更新
+```
+
+这些任务依赖公网行情接口，耗时和可用性会受交易日、接口限流及网络状况影响。
+详细的抓取降级、互斥锁与更新步骤见 [backend/BACKEND.md](./backend/BACKEND.md)。
+
+## 常用检查
+
+```bash
+cd frontend && npm run build
+cd backend && python -m compileall app scripts
+```
+
+仓库中的 `docker-compose.yml` 仍是早期草案；当前未包含其引用的 Dockerfile，
+因此请以以上本地开发方式为准。
+
+## 说明
+
+- 本项目不连接券商、不执行自动交易。
+- 外部行情接口并非稳定 SLA 服务，抓取逻辑包含降级但仍可能失败。
+- 仓库暂未提供完整的自动化测试套件；修改核心计算逻辑时应结合
+  `docs/SCORING_RULES.md` 做回归核对。

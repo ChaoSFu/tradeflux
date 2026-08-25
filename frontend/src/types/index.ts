@@ -802,6 +802,8 @@ export interface LimitUpRadarResponse {
   trade_date: string | null
   refreshed_at: string | null   // 数据新鲜度三件套，盘中不能让用户误以为是实时
   source: string | null
+  history_as_of: string | null  // 近10/20/60日涨停次数实际算到哪一天
+  history_lag_days: number      // 落后几个交易日；≥2 时 warnings 里会有说明
   summary: LimitUpRadarSummary
   sectors: LimitUpRadarSector[]
   warnings: string[]

@@ -5,7 +5,7 @@
 真正的板块核心因为"今天没涨停"从页面上消失，让用户把"老核心负反馈+低位补涨"
 误读成"板块正在增强"。
 """
-from datetime import date, time
+from datetime import date, time, timedelta
 
 from app.models.limit_up_detail import BrokenBoardDailyDetail, LimitUpDailyDetail
 from app.models.sector import Sector, StockSectorRelation
@@ -53,6 +53,34 @@ def _snap(db, stock, pct):
     return s
 
 
+def _trading_calendar(db, n=60):
+    """
+    建 n 个交易日的"日历"。涨停次数现在是从快照历史现算的，而交易日历本身也是从
+    stock_daily_snapshots 的 distinct 日期反推的，所以测试必须先有日历才能算窗口。
+    用一只专门的日历股来铺这些日期，避免污染被测股票。
+    返回按时间正序的交易日列表。
+    """
+    cal = _stock(db, "000000", "日历股")
+    days, d = [], TODAY
+    while len(days) < n:
+        if d.weekday() < 5:          # 简化：跳过周末即可，测试不需要真实节假日
+            days.append(d)
+        d -= timedelta(days=1)
+    days = sorted(days)
+    for day in days:
+        db.add(StockDailySnapshot(stock_id=cal.id, date=day, close_price=10.0, pct_change=0.0))
+    db.flush()
+    return days
+
+
+def _seed_limit_ups(db, stock, days, indices):
+    """在 days[i] 这些交易日给 stock 写涨停快照（indices 是相对 days 的下标）。"""
+    for i in indices:
+        db.add(StockDailySnapshot(stock_id=stock.id, date=days[i], close_price=10.0,
+                                  pct_change=10.0, is_limit_up=True))
+    db.flush()
+
+
 def _find(result, sector_name):
     return next(s for s in result["sectors"] if s["sector_name"] == sector_name)
 
@@ -68,11 +96,12 @@ def test_case_a_core_with_no_recent_limit_up_is_still_recalled(db):
     近10日涨停它还是消失。
     """
     sec = _sector(db, "中药")
-    anchor = _stock(db, "600664", "哈药股份",
-                    limit_up_days_10d=0, limit_up_days_20d=0,
-                    limit_up_days_60d=6, board_count_60d=2)
-    attacker = _stock(db, "002412", "汉森制药", limit_up_days_10d=1)
+    days = _trading_calendar(db)
+    anchor = _stock(db, "600664", "哈药股份")
+    attacker = _stock(db, "002412", "汉森制药")
     _relate(db, anchor, sec); _relate(db, attacker, sec)
+    # 6次涨停全部落在 40~55 个交易日之前：近10日和近20日窗口内一次都没有
+    _seed_limit_ups(db, anchor, days, [4, 7, 11, 15, 18, 22])
     _snap(db, anchor, -6.2)          # 老核心今天在跌 —— 负反馈
     _limit_up(db, attacker, board=1)
 
@@ -188,8 +217,10 @@ def test_core_that_also_limits_up_today_keeps_its_role_tags(db):
     涨停了），但必须带着核心标签，否则这个信号会被拆散到两个区域里看不出来。
     """
     sec = _sector(db, "中药")
-    st = _stock(db, "600664", "哈药股份", limit_up_days_60d=8, board_count_60d=4)
+    days = _trading_calendar(db)
+    st = _stock(db, "600664", "哈药股份")
     _relate(db, st, sec, is_leader=True)
+    _seed_limit_ups(db, st, days, [3, 6, 9, 12, 16, 20, 24, 28])   # 近60日8次涨停
     _limit_up(db, st, board=3)
 
     card = _find(build_radar(db, TODAY), "中药")
@@ -338,3 +369,177 @@ def test_empty_day_returns_empty_shape_not_error(db):
     assert res["sectors"] == []
     assert res["summary"]["limit_up_count"] == 0
     assert res["trade_date"] == "2026-08-25"
+
+
+# ── 冻结字段回归（用户 2026-08-25 在生产上发现）─────────────────────────────
+
+def test_rolling_counts_are_recomputed_not_read_from_frozen_stock_fields(db):
+    """
+    真实bug回归。生产上 002432 九安医疗在页面显示"近10日涨停2次·近20日涨停5次·
+    近60日涨停9次"，实际拉K线数出来是 0/1/7。
+
+    根因：Stock.limit_up_days_* 只在 daily_update 处理**候选池内**股票时才重算。
+    九安医疗最后一次涨停是 2026-07-31，之后掉出候选池，这三个数字就冻结在7月31日
+    那天算出来的值，一冻17个交易日。而冻结值永远是"股票最热时"算的、必然偏高，
+    Core Recall 恰恰是设计来捞已经冷却的老核心——最需要准的那批正好最不准。
+
+    这里把 Stock 上的字段刻意设成那组错误的冻结值(2/5/9)，快照历史里只放真实的
+    涨停日，断言页面拿到的是现算的真实值而不是冻结值。
+    """
+    sec = _sector(db, "医药生物")
+    days = _trading_calendar(db)
+    stale = _stock(db, "002432", "九安医疗",
+                   limit_up_days_10d=2, limit_up_days_20d=5,   # ← 冻结的错误值
+                   limit_up_days_60d=9, board_count_60d=2)
+    attacker = _stock(db, "002412", "汉森制药")
+    _relate(db, stale, sec); _relate(db, attacker, sec)
+    _limit_up(db, attacker)
+    # 真实涨停历史：近60日7次，最近一次在第38个交易日（近20日窗口内），近10日0次
+    _seed_limit_ups(db, stale, days, [5, 9, 24, 25, 27, 31, 41])
+    _snap(db, stale, -2.48)
+
+    card = _find(build_radar(db, TODAY), "医药生物")
+    core = next(c for c in card["core_stocks"] if c["code"] == "002432")
+    assert core["limit_up_days_10d"] == 0, "冻结值是2，真实近10日一次涨停都没有"
+    assert core["limit_up_days_20d"] == 1, "冻结值是5，真实近20日只有1次"
+    assert core["limit_up_days_60d"] == 7, "冻结值是9，真实近60日7次"
+    # 召回理由是给用户看的事实陈述，不能出现那句假话
+    assert not any("近10日涨停2次" in r for r in core["core_reasons"])
+    assert "近60日涨停7次" in core["core_reasons"]
+    # 近10日为0 ⇒ 不该再挂"当前核心"
+    assert "CURRENT_CORE" not in core["core_roles"]
+
+
+def test_recompute_counts_consecutive_boards_across_trading_days(db):
+    """最高连板要按交易日连续判断，跨周末不算断板。"""
+    from app.services.limit_up_radar_service import compute_limit_up_history
+    days = _trading_calendar(db)
+    st = _stock(db, "000017", "深中华A")
+    _seed_limit_ups(db, st, days, [50, 51, 52, 53, 57])   # 一段4连板 + 一个孤立涨停
+    hist = compute_limit_up_history(db, {st.id}, TODAY)[st.id]
+    assert hist.max_consecutive_60d == 4
+    assert hist.counts[60] == 5
+
+
+def test_recompute_falls_back_when_no_trading_calendar_exists(db):
+    """一条快照都没有（新库/空库）时不能崩，返回全0而不是抛错。"""
+    from app.services.limit_up_radar_service import compute_limit_up_history
+    st = _stock(db, "000001", "测试")
+    hist = compute_limit_up_history(db, {st.id}, TODAY)[st.id]
+    assert hist.counts == {} and hist.max_consecutive_60d == 0
+
+
+# ── 历史窗口新鲜度（用户 2026-08-25 提出）────────────────────────────────────
+
+def test_history_window_excludes_the_in_progress_day(db):
+    """
+    盘中今天的 daily_update 还没跑 → 今天没有快照 → 交易日历自然落在上一个交易日，
+    滚动窗口算的是"截至上一个完整交易日"。今天的涨停在 limit_up_daily_details 里
+    单独展示，不能混进历史窗口重复计算。
+    """
+    sec = _sector(db, "中药")
+    days = _trading_calendar(db)[:-1]        # 刻意不给 TODAY 建快照，模拟盘中
+    db.query(StockDailySnapshot).filter(StockDailySnapshot.date == TODAY).delete()
+    db.flush()
+    st = _stock(db, "002412", "汉森制药")
+    _relate(db, st, sec)
+    _limit_up(db, st)                        # 今天涨停（只在明细表里）
+
+    res = build_radar(db, TODAY)
+    assert res["history_as_of"] == days[-1].isoformat()   # 窗口停在上一交易日
+    assert res["history_lag_days"] <= 1                   # 落后1天是盘中常态
+    assert res["warnings"] == []                          # 不该为此告警
+    # 今天的涨停不能被算进"近10日涨停次数"
+    card = _find(res, "中药")
+    assert card["today_limit_up_stocks"][0]["limit_up_days_10d"] == 0
+
+
+def test_stale_snapshot_history_is_reported_not_silently_used(db):
+    """
+    daily_update 好几天没跑时，交易日历本身是旧的，"近10日"实际变成"截至N天前的
+    10日"。页面照样能给出精确数字，但那个数字回答的不是用户以为的问题——必须显式
+    告知，不能算得出来就当算对了。
+    """
+    sec = _sector(db, "中药")
+    old_day = date(2026, 8, 18)              # 比 TODAY(08-25) 早5个交易日
+    cal = _stock(db, "000000", "日历股")
+    db.add(StockDailySnapshot(stock_id=cal.id, date=old_day, close_price=10.0))
+    st = _stock(db, "002412", "汉森制药")
+    _relate(db, st, sec)
+    _limit_up(db, st)
+    db.flush()
+
+    res = build_radar(db, TODAY)
+    assert res["history_as_of"] == "2026-08-18"
+    assert res["history_lag_days"] >= 2
+    assert any("落后" in w and "每日数据更新" in w for w in res["warnings"])
+
+
+def test_no_snapshot_history_at_all_warns_loudly(db):
+    """
+    一条历史快照都没有时，所有滚动窗口都是0，核心锚会大面积漏召回——这是静默的
+    整体失效，必须明确告警而不是显示成"这些板块本来就没有核心"。
+    """
+    sec = _sector(db, "中药")
+    st = _stock(db, "002412", "汉森制药")
+    _relate(db, st, sec)
+    _limit_up(db, st)
+
+    res = build_radar(db, TODAY)
+    assert res["history_as_of"] is None
+    assert any("没有任何历史快照" in w for w in res["warnings"])
+
+
+# ── 东财选股兜底召回（用户 2026-08-25 提出）──────────────────────────────────
+
+def test_eastmoney_screener_rescues_cores_that_local_snapshots_undercount(db):
+    """
+    本地重算是从快照数涨停日，而快照只在股票进候选池那天才写。生产实测10只核心股
+    覆盖率94.3%，600664哈药股份近60日真实涨停9次、快照里只有6次（漏了07-10/13/14）。
+    数少就是漏召回，而"不能漏掉板块核心"是这个功能的第一原则。
+
+    这里模拟极端情况：本地一条涨停快照都没有（重算全0），但东财选股认为它近期活跃
+    → 必须仍然被召回。
+    """
+    from app.models.app_config import AppConfig
+    from app.services.limit_up_detail_service import core_recall_key
+
+    sec = _sector(db, "中药")
+    _trading_calendar(db)
+    missed = _stock(db, "600664", "哈药股份")      # 本地无任何涨停快照
+    attacker = _stock(db, "002412", "汉森制药")
+    _relate(db, missed, sec); _relate(db, attacker, sec)
+    _limit_up(db, attacker)
+    db.add(AppConfig(key=core_recall_key(TODAY), value="600664,000001"))
+    db.commit()
+
+    card = _find(build_radar(db, TODAY), "中药")
+    core = next(c for c in card["core_stocks"] if c["code"] == "600664")
+    assert core["primary_role"] == "RECENT_CORE"
+    assert any("东财选股" in r for r in core["core_reasons"])
+    # 兜底理由必须说清楚给不出具体次数，不能编一个数字
+    assert any("无法给出具体次数" in r for r in core["core_reasons"])
+
+
+def test_local_reasons_win_when_snapshots_are_complete(db):
+    """
+    本地重算有命中时用本地的具体次数当理由——那是可验证的事实；东财兜底那条
+    含糊的"近期活跃"不该再叠上去，否则同一只股票会显示两套互相重复的理由。
+    """
+    from app.models.app_config import AppConfig
+    from app.services.limit_up_detail_service import core_recall_key
+
+    sec = _sector(db, "中药")
+    days = _trading_calendar(db)
+    st = _stock(db, "600664", "哈药股份")
+    attacker = _stock(db, "002412", "汉森制药")
+    _relate(db, st, sec); _relate(db, attacker, sec)
+    _seed_limit_ups(db, st, days, [4, 7, 11, 15, 18, 22])   # 近60日6次
+    _limit_up(db, attacker)
+    db.add(AppConfig(key=core_recall_key(TODAY), value="600664"))
+    db.commit()
+
+    card = _find(build_radar(db, TODAY), "中药")
+    core = next(c for c in card["core_stocks"] if c["code"] == "600664")
+    assert "近60日涨停6次" in core["core_reasons"]
+    assert not any("东财选股" in r for r in core["core_reasons"])

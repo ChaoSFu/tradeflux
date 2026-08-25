@@ -10,11 +10,60 @@ from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from ..models.app_config import AppConfig
 from ..models.stock import Stock
 from ..models.limit_up_detail import LimitUpDailyDetail, BrokenBoardDailyDetail
+from .eastmoney_fetcher import CORE_RECALL_KEYWORD, fetch_strong_pool_codes
 from .limit_up_detail_fetcher import (
     SOURCE_NAME, BrokenBoardDetail, LimitUpDetail, fetch_limit_up_details,
 )
+
+# 东财选股召回结果按交易日存一份（沿用仓库既有的 AppConfig KV 模式，不为一份
+# 代码清单单独建表）
+CORE_RECALL_KEY_PREFIX = "limit_up_radar:core_recall:"
+
+
+def core_recall_key(trade_date: date) -> str:
+    return f"{CORE_RECALL_KEY_PREFIX}{trade_date.isoformat()}"
+
+
+def sync_core_recall_codes(db: Session, trade_date: date) -> int:
+    """
+    用东财条件选股把"近期活跃、值得进核心区"的股票捞一份存下来。
+
+    这一路存在的意义是补本地重算的缺口：本地是从快照数涨停日，而快照只在股票进
+    候选池那天才写，历史上有缺失就会数少（生产实测覆盖率94.3%）。数少 ⇒ 漏召回，
+    而"不能漏掉板块核心"是这个功能的第一原则。东财这边是服务端实时算的，不依赖
+    我们的历史完整性。
+
+    只用来决定"该不该出现在核心区"，**不用来展示次数**——这个接口的解析器只回传
+    名称/涨跌停方向，拿不到具体次数；展示仍用本地重算值（可验证的下界）。
+    """
+    codes = fetch_strong_pool_codes(keyword=CORE_RECALL_KEYWORD)
+    if not codes:
+        return 0                      # 拉空视为失败，不覆盖上一份（避免整体漏召回）
+    key = core_recall_key(trade_date)
+    row = db.query(AppConfig).filter(AppConfig.key == key).first()
+    val = ",".join(sorted(codes))
+    if row:
+        row.value = val
+    else:
+        db.add(AppConfig(key=key, value=val))
+    db.commit()
+    return len(codes)
+
+
+def get_core_recall_codes(db: Session, trade_date: date) -> set:
+    """读当日的东财召回名单；当天没有就退回最近一份（名单是"近期活跃"，隔天仍有效）。"""
+    row = db.query(AppConfig).filter(AppConfig.key == core_recall_key(trade_date)).first()
+    if not row:
+        row = (
+            db.query(AppConfig)
+            .filter(AppConfig.key.like(f"{CORE_RECALL_KEY_PREFIX}%"))
+            .order_by(AppConfig.key.desc())
+            .first()
+        )
+    return set((row.value or "").split(",")) if row and row.value else set()
 
 
 def _stock_id_map(db: Session, codes: List[str]) -> Dict[str, int]:
