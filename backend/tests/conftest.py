@@ -11,6 +11,7 @@ Integer/Float/Boolean/Date/Time/String/Text，可以直接建。
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 from app.models.stock import Stock, StockDailySnapshot
@@ -26,7 +27,14 @@ _TABLES = [
 
 @pytest.fixture
 def db():
-    engine = create_engine("sqlite://")
+    # StaticPool + check_same_thread=False：FastAPI 的 TestClient 在另一个线程里跑
+    # 请求，默认的 SQLite 连接不允许跨线程，而且每开一个新连接就是一个新的空内存库。
+    # 用同一个连接才能让"测试里建的数据"和"接口读到的数据"是同一个库。
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine, tables=_TABLES)
     session = sessionmaker(bind=engine)()
     try:
