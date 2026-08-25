@@ -457,7 +457,7 @@ export default function WeakToStrongRadar() {
                     <HeaderHint label="MA5" hint="最近5个交易日收盘价的算术平均线，用于判断股价是否收复短期均线支撑（结构修复/确认的判断依据之一）。" />
                   </th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">
-                    <HeaderHint label="涨停空间" hint="(涨停价-现价)/现价。涨停价按该股票真实涨跌停规则算出（主板10%/创业板科创板20%/北交所30%/ST 5%），反映距离涨停还剩多少上涨空间，低于阈值会软上限封顶在WAIT。" />
+                    <HeaderHint label="涨停空间" hint="(涨停价-现价)/现价。涨停价按该股票真实涨跌停规则算出（主板10%/创业板科创板20%/北交所30%，ST股2026-07-06新规后跟同板块非ST规则一致），反映距离涨停还剩多少上涨空间，低于阈值会软上限封顶在WAIT。" />
                   </th>
                   <th className="text-right px-2 py-1.5 text-text-secondary/70 font-medium">
                     <HeaderHint label="Stress R/R" hint="压力情景风险回报比 = 今日剩余涨停空间% / 模拟明日跌停开盘的亏损%，只回答『如果明天真跌停，今天剩的空间值不值得担这个风险』。仅供参考，不参与BUYABLE的硬性拦截判断。" />

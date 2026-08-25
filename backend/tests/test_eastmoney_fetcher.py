@@ -98,13 +98,20 @@ def test_parse_tencent_quote_line_malformed_returns_none():
 # 外部评审指出的P0 bug：w2s_refresh_service此前直接拿判定容差阈值去算涨停价/
 # 压力止损，导致这几个值系统性比真实规则小0.1个百分点。这里锁定两个函数
 # 必须始终保持"容差=真实-0.1"这个关系，不会因为以后改动其中一个而悄悄脱节。
+#
+# 2026-08-25更新：沪深交易所自2026-07-06起主板ST/*ST涨跌幅由5%上调至10%，跟
+# 主板非ST规则完全一致（已用WebSearch核实多个独立信源：新浪财经/澎湃新闻/
+# 证券时报，不是那种chatgpt.com转发链接的不可信来源）；创业板/科创板/北交所
+# 的ST股本来就跟本板块非ST规则一致，从没有过单独更严格的ST规则。也就是说
+# is_st现在对任何板块的百分比都不再产生区分——下面用例把ST案例的期望值从
+# 4.95/5.0改成9.90/10.0（等同主板非ST），不再是一个独立分支。
 
 def test_get_limit_pct_is_detection_tolerance_not_real_rule():
     assert get_limit_pct("600000", False) == 9.90
     assert get_limit_pct("300308", False) == 19.90
     assert get_limit_pct("688525", False) == 19.90
     assert get_limit_pct("830001", False) == 29.90
-    assert get_limit_pct("600123", True) == 4.95
+    assert get_limit_pct("600123", True) == 9.90  # 主板ST：2026-07-06新规后与非ST一致
 
 
 def test_get_actual_limit_pct_is_real_rule():
@@ -112,13 +119,24 @@ def test_get_actual_limit_pct_is_real_rule():
     assert get_actual_limit_pct("300308", False) == 20.0
     assert get_actual_limit_pct("688525", False) == 20.0
     assert get_actual_limit_pct("830001", False) == 30.0
-    assert get_actual_limit_pct("600123", True) == 5.0
+    assert get_actual_limit_pct("600123", True) == 10.0  # 主板ST：2026-07-06新规后与非ST一致
 
 
 def test_actual_limit_pct_is_always_detection_threshold_plus_tolerance():
     for code, is_st, expected_gap in [
         ("600000", False, 0.10), ("300308", False, 0.10),
-        ("688525", False, 0.10), ("830001", False, 0.10), ("600123", True, 0.05),
+        ("688525", False, 0.10), ("830001", False, 0.10), ("600123", True, 0.10),
     ]:
         gap = round(get_actual_limit_pct(code, is_st) - get_limit_pct(code, is_st), 2)
         assert gap == expected_gap
+
+
+def test_st_no_longer_changes_limit_pct_on_any_board():
+    """
+    2026-07-06新规回归测试：is_st=True/False在同一个板块上必须算出完全一样的
+    百分比——这是这次规则调整最容易被未来改动悄悄破坏的地方（比如以后有人
+    "顺手"给ST加回一个独立分支）。主板/创业板科创板/北交所各挑一个代码验证。
+    """
+    for code in ("600000", "300308", "688525", "830001"):
+        assert get_limit_pct(code, True) == get_limit_pct(code, False)
+        assert get_actual_limit_pct(code, True) == get_actual_limit_pct(code, False)

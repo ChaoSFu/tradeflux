@@ -37,15 +37,31 @@ def test_derive_limit_close_price_bse_30pct():
     assert pct == 30.0
 
 
-def test_derive_limit_close_price_st_5pct():
-    # ST股跌停5%
+def test_derive_limit_close_price_arbitrary_5pct():
+    # 纯函数按传入的actual_limit_pct算，不关心这个百分比对应哪类股票——5%只是
+    # 拿来验证数学的任意值，不是在断言"ST=5%"这个事实（2026-07-06新规后主板
+    # ST已经改成10%，跟主板非ST一致，不再是5%，这里改名避免继续暗示旧规则）。
     close, pct = derive_limit_close_price(prev_close=8.00, actual_limit_pct=5.0, is_up=False)
     assert close == 7.60
     assert pct == -5.0
 
 
-def test_derive_limit_close_price_rounds_to_cents():
-    # 前收价不是整数时正确四舍五入到分
+def test_derive_limit_close_price_st_matches_main_board_10pct():
+    # 2026-07-06新规后主板ST涨跌幅规则=10%，跟主板非ST完全一致（不再是5%）
+    close, pct = derive_limit_close_price(prev_close=8.00, actual_limit_pct=10.0, is_up=False)
+    assert close == 7.20
+    assert pct == -10.0
+
+
+def test_derive_limit_close_price_rounds_to_cents_and_pct_stays_consistent():
+    """
+    外部评审指出的真实数学bug回归测试：13.57×1.10=14.927，四舍五入到分是14.93，
+    但14.93相对13.57的真实涨幅是10.02%，不是原样返回的10.00%——如果pct_change
+    不是从四舍五入后的价格反推，会出现"收盘14.93但涨幅写10.00%"这种close/pct
+    两个字段自己又互相对不上的新矛盾（用一个bug"修"另一个bug）。这里锁定两者
+    必须真正数学一致：(close-prev)/prev*100 == 返回的pct，不能只是文档说说。
+    """
     close, pct = derive_limit_close_price(prev_close=13.57, actual_limit_pct=10.0, is_up=True)
-    assert close == round(13.57 * 1.10, 2)
-    assert pct == 10.0
+    assert close == 14.93
+    assert pct == 10.02
+    assert pct == round((close - 13.57) / 13.57 * 100, 2)

@@ -27,10 +27,24 @@ def derive_limit_close_price(prev_close: float, actual_limit_pct: float, is_up: 
     生产上出现过"today_is_limit_up=True却today_pct_change=-6.86%"这种自相矛盾的组合
     （凯莱英002821，2026-08-25）。K线没拉到今天数据、但选股API确认了涨跌停方向时，
     用这个函数反推出正确值，不能让一个已知错误的旧值继续冒充"今日"数据。
+
+    2026-08-25二次修复（外部评审发现的真实数学bug）：涨停价必须先按最小价格变动
+    单位（分）四舍五入，价格本身才是真实成交价；涨跌幅必须从这个"已四舍五入的
+    价格"反推，不能直接返回理论上的 actual_limit_pct 原样——否则会出现
+    close=14.93（13.57×1.10四舍五入）但pct却写成10.00%（实际应为10.02%）这种
+    两个字段自己内部又不一致的新矛盾，等于用一个bug"修"另一个bug。用Decimal+
+    ROUND_HALF_UP（不用Python内置round()的banker's rounding，四舍六入五成双
+    在.5这个边界上跟交易所"四舍五入"习惯不一致，比如round(0.005,2)在Python里
+    是0.0不是0.01）保证价格四舍五入方式贴近真实交易规则。
     """
+    from decimal import Decimal, ROUND_HALF_UP
     signed_pct = actual_limit_pct if is_up else -actual_limit_pct
-    close_price = round(prev_close * (1 + signed_pct / 100), 2)
-    return close_price, signed_pct
+    prev_d = Decimal(str(prev_close))
+    factor_d = Decimal("1") + Decimal(str(signed_pct)) / Decimal("100")
+    close_d = (prev_d * factor_d).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    close_price = float(close_d)
+    pct_change = round(float((close_d - prev_d) / prev_d * 100), 2)
+    return close_price, pct_change
 
 
 # ---------------------------------------------------------------------------

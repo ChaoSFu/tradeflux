@@ -385,11 +385,19 @@ def _upsert_stock(db, info: StockBasicInfo, stats: StockWindowStats, in_pool: bo
 def _upsert_snapshot(
     db, stock: Stock, stats: StockWindowStats, today: date,
     is_limit_up: bool | None = None, is_limit_down: bool | None = None,
+    price_data_fresh: bool = True,
 ) -> None:
     """
     写入今日快照（存在则更新，不存在则新建）。
     is_limit_up / is_limit_down 传入非 None 时为权威值（来自涨跌停选股 API），
     覆盖本地 K 线反推结果；传入 None 时退回本地计算值。
+
+    price_data_fresh=False 时（2026-08-25新增，外部评审指出的真实bug）：
+    close_price/pct_change/turnover_rate 不写入——stats里这几个字段来自已确认
+    过期的K线（今日无数据，降级用历史），如果照常写入会让几天前的旧数据顶着
+    target_date的日期冒充"今日"行情，且不像涨跌停标记那样有自相矛盾的信号可以
+    被发现，属于更隐蔽的静默过期。保留数据库里已有的值（如果这行快照本来就
+    存在）好过用已知错误的值覆盖，新建的行则这几个字段留空，不假装有数据。
     """
     snap = (
         db.query(StockDailySnapshot)
@@ -403,9 +411,10 @@ def _upsert_snapshot(
         snap = StockDailySnapshot(stock_id=stock.id, date=today)
         db.add(snap)
 
-    snap.close_price = stats.today_close_price
-    snap.pct_change = stats.today_pct_change
-    snap.turnover_rate = stats.today_turnover
+    if price_data_fresh:
+        snap.close_price = stats.today_close_price
+        snap.pct_change = stats.today_pct_change
+        snap.turnover_rate = stats.today_turnover
     snap.is_limit_up = stats.today_is_limit_up if is_limit_up is None else is_limit_up
     snap.is_limit_down = stats.today_is_limit_down if is_limit_down is None else is_limit_down
     snap.is_broken_board = stats.today_is_broken_board
@@ -789,13 +798,21 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         api_turnover_codes = {row["code"] for row in api_turnover_rows}
         if api_turnover_codes:
             log.info(f"成交额选股 API: {len(api_turnover_codes)} 只（并入候选股，补全强势股字段）")
-        # 选股结果均为「非ST」，故出现在此 map 的股票当日 is_st=False（摘帽自动修正）。
-        # 用于刷新已知候选股的 name/is_st，并给新股直接命名，替代全市场列表拉取。
+        # 用于刷新已知候选股的 name，并给新股直接命名，替代全市场列表拉取——三路来源
+        # 都可以用来补名字。
         api_name_map: dict[str, str] = {
             **api_pool_names,
             **{c: d["name"] for c, d in api_limit_detail.items()},
             **{row["code"]: row["name"] for row in api_turnover_rows},
         }
+        # 真实bug修复（2026-08-25，外部评审指出）：is_st=False（摘帽自动修正）此前
+        # 只要出现在上面任一来源的合并map里就触发——但 TURNOVER_POOL_KEYWORD（"成交额
+        # 排序前60；成交额大于20亿"）没有"非ST"这个筛选条件，不像STRONG_POOL_KEYWORD/
+        # LIMIT_MOVE_KEYWORD那样明确写了"非ST"。一只真实ST股票只要成交额够大进了成交额
+        # 前60榜单（ST股完全可能放量），就会被这个逻辑误判成"摘帽"清空is_st，进而影响
+        # 涨跌停幅度判定（5%错判成10%）。只有明确带"非ST"筛选条件的两路来源才能触发
+        # is_st=False这个修正，成交额来源只用来补名字，不参与ST状态判断。
+        api_non_st_codes = api_pool_codes | api_limit_codes
 
         # 涨跌停 API 是否真正返回数据（决定是否以其为涨跌停的权威来源）。
         # 失败回退到 DB 时不做权威覆盖/对账，避免循环依赖与误清。
@@ -879,14 +896,17 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             for s in db.query(Stock).filter(Stock.code.in_(all_candidate_codes)).all()
         }
 
-        # 刷新已知候选股的 name / is_st：名字由选股 API 直接带回（api_name_map），
-        # 且关键词为「非ST」→ 出现在结果中即当日非 ST（摘帽/改名自动修正）。
+        # 刷新已知候选股的 name / is_st：名字由选股 API 直接带回（api_name_map，三路
+        # 来源都可以补名字）；is_st=False 只由明确带「非ST」筛选条件的来源触发
+        # （api_non_st_codes，不包括成交额来源，见上面注释）。
         refreshed = 0
         for code, s in known_stocks.items():
             fresh = api_name_map.get(code)
-            if fresh and (s.name != fresh or s.is_st):
+            is_confirmed_non_st = code in api_non_st_codes
+            if fresh and (s.name != fresh or (s.is_st and is_confirmed_non_st)):
                 s.name = fresh
-                s.is_st = False
+                if is_confirmed_non_st:
+                    s.is_st = False
                 refreshed += 1
         if refreshed:
             log.info(f"  刷新股票名称/ST状态 {refreshed} 只（选股API）")
@@ -992,13 +1012,23 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 降级用历史"吞掉——今日涨跌停/连板数永久卡在缺today这天的旧值，且不会
         # 自愈：因为下次再跑，同样的高并发批量请求大概率又撞上同样的限流。
         # 低并发单独重试一轮：脱离批量并发环境后单只股票拉取成功率接近100%。
-        missing_codes = [info for info in db_group if not today_klines.get(info.code)]
+        #
+        # 2026-08-25修复真实bug（外部评审指出）：判断"缺不缺今日数据"此前只看
+        # `today_klines.get(code)` 是否非空——但接口完全可能返回非空list、却没有
+        # target_date这一根（比如只返回到昨天），这种情况被当成"拉取成功"，既不
+        # 会触发下面的低并发重试，也不会被下面 db_today_missing 计入degraded告警，
+        # 是比"完全拉空"更隐蔽的一种静默过期。改成明确检查最后一根bar的日期是不是
+        # target_date，而不是list是否为空。
+        def _has_today_bar(bars: list) -> bool:
+            return bool(bars) and bars[-1].date == target_date
+
+        missing_codes = [info for info in db_group if not _has_today_bar(today_klines.get(info.code))]
         if missing_codes:
             log.info(f"  DB重建组 {len(missing_codes)} 只今日K线拉取失败，低并发重试...")
             retry_klines = fetch_klines_batch(
                 missing_codes, days=db_fetch_days, max_workers=3, delay_between=0.3,
             )
-            recovered = sum(1 for bars in retry_klines.values() if bars)
+            recovered = sum(1 for bars in retry_klines.values() if _has_today_bar(bars))
             if recovered:
                 log.info(f"  重试补齐 {recovered}/{len(missing_codes)} 只")
             today_klines.update(retry_klines)
@@ -1023,9 +1053,10 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
 
         # 今日数据缺失检测（疑似限流）：
         #   full_group 拉空（bars 为空）；db_group 今日 bar 缺失（限流时会静默退回旧历史，
-        #   不计入 failed，必须单独检测）。缺失比例偏高 → 标记 degraded，界面提示数据不完整。
+        #   不计入 failed，必须单独检测——用 _has_today_bar 而不是list是否为空，理由同
+        #   上面重试判断那里）。缺失比例偏高 → 标记 degraded，界面提示数据不完整。
         full_missing = sum(1 for info in full_group if not full_klines.get(info.code))
-        db_today_missing = sum(1 for info in db_group if not today_klines.get(info.code))
+        db_today_missing = sum(1 for info in db_group if not _has_today_bar(today_klines.get(info.code)))
         missing_today = full_missing + db_today_missing
         if candidates and missing_today / len(candidates) >= 0.1:
             api_warnings.append(
@@ -1108,32 +1139,50 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                     auth_ld = d == "down"
                 else:
                     auth_lu = auth_ld = False
-                # 真实bug修复（2026-08-25，用户在生产上发现凯莱英today_is_limit_up=True
-                # 却today_pct_change=-6.86%自相矛盾）：K线拉取当日失败时会静默退回历史
-                # 最后一根（今日无数据，降级用历史那段逻辑），bars[-1]其实是旧数据，
-                # today_close_price/today_pct_change因此是错的；但上面这段涨跌停方向
-                # 是从独立的选股API权威来源覆盖的，跟K线是否成功无关，于是出现"权威涨
-                # 跌停标记正确，但价格/涨幅字段是几天前的旧值"这种组合。K线没拉到今天
-                # 数据、但选股API确认了涨跌停方向时，用derive_limit_close_price精确
-                # 反推出正确值，不能让一个已知错误的旧值继续冒充"今日"数据。
-                if stats.today_bar_date != target_date and (auth_lu or auth_ld):
-                    prev_snap = (
-                        db.query(StockDailySnapshot)
-                        .filter(StockDailySnapshot.stock_id == stock.id, StockDailySnapshot.date < target_date)
-                        .order_by(StockDailySnapshot.date.desc())
-                        .first()
-                    )
-                    if prev_snap and prev_snap.close_price:
-                        actual_pct = get_actual_limit_pct(stats.code, stats.is_st)
-                        stats.today_close_price, stats.today_pct_change = derive_limit_close_price(
-                            prev_snap.close_price, actual_pct, is_up=auth_lu,
-                        )
-                        log.info(f"[涨跌停修正] {stats.code} K线当日拉取失败(退回{stats.today_bar_date})，"
-                                 f"用权威涨跌停方向+前收价反推今日收盘价={stats.today_close_price}/涨幅={stats.today_pct_change}%")
-                _upsert_snapshot(db, stock, stats, target_date,
-                                 is_limit_up=auth_lu, is_limit_down=auth_ld)
             else:
-                _upsert_snapshot(db, stock, stats, target_date)
+                auth_lu = auth_ld = False
+
+            # 真实bug修复（2026-08-25，用户在生产上发现凯莱英today_is_limit_up=True
+            # 却today_pct_change=-6.86%自相矛盾）：K线拉取当日失败时会静默退回历史
+            # 最后一根（今日无数据，降级用历史那段逻辑），bars[-1]其实是旧数据，
+            # today_close_price/today_pct_change因此是错的；但涨跌停方向是从独立的
+            # 选股API权威来源覆盖的，跟K线是否成功无关，于是出现"权威涨跌停标记正确，
+            # 但价格/涨幅字段是几天前的旧值"这种组合。
+            #
+            # price_data_fresh 标记这只股票的 close_price/pct_change/turnover_rate
+            # 是否真的可信——K线数据没过期就直接可信；K线过期但选股API确认了涨跌停
+            # 方向，用derive_limit_close_price精确反推（涨跌停当天的涨幅由交易所
+            # 规则精确决定，不是估计）后也可信。除此之外（K线过期、且不是已确认的
+            # 涨跌停）没有可靠信息来源能确定今天真实价格——这种情况不能让一个已知
+            # 错误的旧值继续冒充"今日"数据（外部评审指出：此前只修了涨跌停这一种
+            # 有自相矛盾信号可查的情况，非涨跌停的普通股票K线过期时依然在静默写入
+            # 假的"今日"快照，因为没有互相矛盾的字段所以更隐蔽、更难发现）。
+            price_data_fresh = stats.today_bar_date == target_date
+            if not price_data_fresh and (auth_lu or auth_ld):
+                prev_snap = (
+                    db.query(StockDailySnapshot)
+                    .filter(StockDailySnapshot.stock_id == stock.id, StockDailySnapshot.date < target_date)
+                    .order_by(StockDailySnapshot.date.desc())
+                    .first()
+                )
+                if prev_snap and prev_snap.close_price:
+                    actual_pct = get_actual_limit_pct(stats.code, stats.is_st)
+                    stats.today_close_price, stats.today_pct_change = derive_limit_close_price(
+                        prev_snap.close_price, actual_pct, is_up=auth_lu,
+                    )
+                    price_data_fresh = True
+                    log.info(f"[涨跌停修正] {stats.code} K线当日拉取失败(退回{stats.today_bar_date})，"
+                             f"用权威涨跌停方向+前收价反推今日收盘价={stats.today_close_price}/涨幅={stats.today_pct_change}%")
+            if not price_data_fresh:
+                log.info(f"[数据过期跳过] {stats.code} K线当日拉取失败(退回{stats.today_bar_date})且非已确认涨跌停，"
+                         f"本次不更新收盘价/涨幅/换手率，保留上次可信值")
+
+            if limit_authority_ok:
+                _upsert_snapshot(db, stock, stats, target_date,
+                                 is_limit_up=auth_lu, is_limit_down=auth_ld,
+                                 price_data_fresh=price_data_fresh)
+            else:
+                _upsert_snapshot(db, stock, stats, target_date, price_data_fresh=price_data_fresh)
 
         db.commit()
         log.end(detail=f"快照写入 {len(stats_list)} 只，强势池: +{new_in_pool}/-{removed_from_pool}，当前 {total_in_pool} 只")
