@@ -131,3 +131,29 @@ def test_fetch_warnings_are_passed_through(db):
         lu, bb, warnings = sync_limit_up_details(db, TODAY)
     assert lu == 1 and bb == 0
     assert any("炸板池" in w for w in warnings)
+
+
+def test_sync_never_touches_stock_scores_or_snapshots(db):
+    """
+    daily_update 里这一步是"独立步骤，失败不影响主流程"，反过来它成功时也不能
+    改动主流程的数据。涨停明细同步只写自己那两张表（唯一例外是给没见过的涨停股
+    补 stocks 存根），绝不碰 Stock 的评分/滚动指标，也不碰 StockDailySnapshot。
+    """
+    from app.models.stock import StockDailySnapshot
+    st = _seed(db, "002821", "凯莱英")
+    st.leader_score = 88.0
+    st.limit_up_days_10d = 3
+    st.board_count_60d = 4
+    db.add(StockDailySnapshot(stock_id=st.id, date=TODAY, close_price=172.23,
+                              pct_change=10.0, board_count=1, leader_score=88.0))
+    db.commit()
+
+    with patch(_PATCH, return_value=([_lu(board_count=9, pct_change=99.9)], [], [])):
+        sync_limit_up_details(db, TODAY)
+
+    db.refresh(st)
+    assert st.leader_score == 88.0          # 评分不被涨停明细改写
+    assert st.limit_up_days_10d == 3
+    assert st.board_count_60d == 4
+    snap = db.query(StockDailySnapshot).filter(StockDailySnapshot.date == TODAY).one()
+    assert snap.close_price == 172.23 and snap.pct_change == 10.0 and snap.board_count == 1

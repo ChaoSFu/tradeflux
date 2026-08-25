@@ -1543,6 +1543,25 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"[turnover] 成交额概览数据同步失败（不影响主流程）: {e}")
             db.rollback()
 
+        # ── 涨停板块雷达：当日涨停/炸板明细归档（独立步骤，失败不影响主流程）──
+        # 盘后跑到的是当天的最终封板状态（封单额/最终封板时间不会再变），作为正式
+        # 存档。页面上的手动刷新是同一个同步函数，盘中随时可以把最新状态刷进来，
+        # 两者写同一张表、互相覆盖没有冲突。
+        # 放在这里而不是更靠前：它只写自己的两张新表，跟本次更新的 K线/评分/板块
+        # 统计没有任何依赖关系；用 try 包住是为了保证东财这个接口挂了也绝不拖垮
+        # 已有的 KLine/Stock/Sector 主链路——涨停明细缺一天，页面显示上一份并标注
+        # 时间即可，比整个 daily_update 失败的代价小得多。
+        try:
+            from app.services.limit_up_detail_service import sync_limit_up_details
+            lu_n, bb_n, lu_warnings = sync_limit_up_details(db, target_date)
+            log.info(f"涨停板块雷达：涨停明细 {lu_n} 只 / 炸板明细 {bb_n} 只")
+            for w in lu_warnings:
+                log.info(f"  {w}")
+        except Exception as e:
+            log.info(f"[limit-up-radar] 涨停明细归档失败（不影响主流程）: {e}")
+            api_warnings.append("涨停明细归档失败，涨停板块雷达可能缺少当日数据")
+            db.rollback()
+
         # ── 弱转强雷达：板块每日快照 + 候选池发现（独立步骤，失败不影响主流程）──
         # 板块快照必须在第5步「刷新板块统计」之后跑（依赖今日 Sector 字段已是最新），
         # 候选发现依赖 Stock.pct_change_20d / close_price 等同样由本次更新写入的字段。
