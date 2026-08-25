@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchMarketState } from '@/api/marketState'
 import {
   triggerUpdate, fetchUpdateStatus,
   triggerSyncBoards, fetchSyncBoardsStatus,
@@ -15,7 +14,6 @@ function formatSecs(secs: number): string {
   const s = Math.round(secs)
   return s >= 60 ? `${Math.floor(s / 60)}分${s % 60}秒` : `${s}秒`
 }
-import { MARKET_PHASE_LABELS } from '@/utils/format'
 import {
   Download, CheckCircle, XCircle,
   ChevronDown, ChevronUp, Settings2, Layers, AlertTriangle, SlidersHorizontal,
@@ -24,14 +22,6 @@ import {
 import { cn } from '@/utils/cn'
 import { useAuthStore } from '@/store/auth'
 import { LoginModal } from '@/components/auth/LoginModal'
-
-const PHASE_DOT: Record<string, string> = {
-  bull_frenzy: 'bg-dragon',
-  warm:        'bg-up',
-  neutral:     'bg-accent',
-  caution:     'bg-warn',
-  bear_fear:   'bg-down',
-}
 
 // ── 单个任务日志抽屉 ──────────────────────────────────────────────────────────
 
@@ -555,11 +545,6 @@ function DataUpdateMenu({ onRequestLogin }: { onRequestLogin: () => void }) {
 // ── Header ────────────────────────────────────────────────────────────────────
 
 export function Header({ title }: { title: string }) {
-  const { data } = useQuery({
-    queryKey: ['market-state'],
-    queryFn: fetchMarketState,
-    staleTime: 60_000,
-  })
   const { isLoggedIn, username, logout } = useAuthStore()
   const [showLogin, setShowLogin] = useState(false)
 
@@ -569,28 +554,12 @@ export function Header({ title }: { title: string }) {
 
       {showLogin && <LoginModal onClose={() => setShowLogin(false)} />}
 
+      {/* 市场阶段/情绪温度/仓位建议这套摘要此前在Header和下面的MarketStateBar
+          里各展示一遍，纯视觉重复——同源数据只需要在MarketStateBar完整展示
+          一次，Header只保留标题/更新状态/配置/登录这些页面级控制，不重复
+          结论（2026-08-25按用户要求清理，backend字段/MarketState模型不动，
+          只是Header这一层不再重复渲染）。 */}
       <div className="flex items-center gap-3">
-        {data && (
-          <div className="flex items-center gap-3 text-xs">
-            <div className="flex items-center gap-1.5">
-              <div className={cn('w-2 h-2 rounded-full', PHASE_DOT[data.market_phase] ?? 'bg-text-muted')} />
-              <span className="text-text-secondary font-medium">
-                {MARKET_PHASE_LABELS[data.market_phase] ?? data.market_phase}
-              </span>
-            </div>
-            <div className="text-text-muted">|</div>
-            <div className="font-mono">
-              <span className="text-up">{data.profit_effect_score.toFixed(0)}</span>
-              <span className="text-text-muted mx-1">/</span>
-              <span className="text-down">{data.loss_effect_score.toFixed(0)}</span>
-            </div>
-            <div className="text-text-muted">温度</div>
-            <div className="font-mono text-accent">{data.emotional_temperature.toFixed(0)}</div>
-            <div className="text-text-muted">仓位建议</div>
-            <div className="font-mono text-warn">{data.suggested_position_level.toFixed(0)}%</div>
-          </div>
-        )}
-
         <DataUpdateMenu onRequestLogin={() => setShowLogin(true)} />
 
         {isLoggedIn && (

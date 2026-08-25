@@ -217,15 +217,18 @@ export function MarketStateBar() {
         {/* 弱转强雷达 Market Gate（2026-08-24按用户要求提到公共卡片里显眼展示）：
             RED 意味着弱转强雷达当天候选表100%会被硬性拦截、不会产生 BUYABLE 结果，
             严重程度上等同于上面的"极端弱势"，同款醒目pill处理，可点击跳转雷达页；
-            GREEN/YELLOW/ORANGE 只是普通Cell，不需要同等视觉权重。 */}
+            GREEN/YELLOW/ORANGE 只是普通Cell，不需要同等视觉权重。文案明确写成
+            "W2S RED"而不是笼统的"弱转强闸门RED"——这只是W2S这一个策略自己的Market
+            Gate，不是全系统/全账户层面的交易许可，避免跟首部其它市场指标一起
+            被误读成"今天全账户都不能买"（2026-08-25按用户要求修正措辞）。 */}
         {w2sGate && (
           w2sGate.market_state === 'RED' ? (
             <button
               onClick={() => navigate('/weak-to-strong-radar')}
-              title="弱转强雷达 Market Gate：RED，今日候选全部硬性拦截，点击查看详情"
+              title="弱转强(W2S)策略的Market Gate：RED，今日W2S候选全部硬性拦截，不代表全系统/全账户禁止交易，点击查看详情"
               className="text-xs font-bold px-2 py-1 rounded-md border whitespace-nowrap bg-danger text-white border-danger animate-pulse-slow shadow-[0_0_18px_-2px_#FF4560]"
             >
-              ⛔ 弱转强闸门 RED · 暂停买入
+              ⛔ W2S RED · 暂停弱转强买入
             </button>
           ) : (
             <button onClick={() => navigate('/weak-to-strong-radar')} className="shrink-0 text-left">
