@@ -9,6 +9,7 @@ import { fetchMarketState, fetchProfitEffect, fetchMarketHistory } from '@/api/m
 import { fetchTurnoverOverview } from '@/api/turnover'
 import { fetchLimitMoves, fetchLimitMovesTrend, fetchStrongPool } from '@/api/stocks'
 import { fetchW2SMarketGate } from '@/api/weakToStrongRadar'
+import { fetchMarketEffectLatest } from '@/api/marketEffects'
 import type { W2SMarketState } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
@@ -61,6 +62,8 @@ export function MarketStateBar() {
   // 弱转强雷达页同源缓存 key（WeakToStrongRadar.tsx 里也是 ['w2s-market-gate']），
   // 两处共享同一次请求；该接口本身全部读库不发外部请求，加这一路查询成本很低
   const { data: w2sGate } = useQuery({ queryKey: ['w2s-market-gate'], queryFn: fetchW2SMarketGate })
+  // 市场效应页同源缓存 key（MarketEffects.tsx 里也是 ['market-effect-latest']）
+  const { data: effect } = useQuery({ queryKey: ['market-effect-latest'], queryFn: fetchMarketEffectLatest })
   // 大成交额赚钱效应（成交额概览页同源缓存 key，两处共享同一次请求）
   const { data: turnover } = useQuery({ queryKey: ['turnover-overview'], queryFn: () => fetchTurnoverOverview() })
   const turnoverUpCount = turnover?.stocks.filter((s) => s.pct_change > 0).length ?? 0
@@ -249,7 +252,11 @@ export function MarketStateBar() {
           <Progress value={state.emotional_temperature} className="w-20" />
         </Cell>
 
-        <Cell label="赚钱效应">
+        {/* 此前叫"赚钱效应"，但统计口径其实是当前 in_strong_pool 股票的当天涨跌幅，
+            跟下面"短线赚亏效应"（market_effect_service 的T-1冻结群体反馈）是两套
+            完全不同方法论的独立指标，共用一个名字会互相误导——改名成"强势股池
+            表现"匹配它真实的数据来源，数值/逻辑不变（2026-08-24按用户要求修复）。 */}
+        <Cell label="强势股池表现">
           {pe?.has_data ? (
             <>
               <span className={cn('font-mono text-base font-bold', pctColor(pe.overall_avg_pct))}>
@@ -259,6 +266,30 @@ export function MarketStateBar() {
                 <span className="text-up">↑{pe.overall_up_count}</span>
                 {' / '}
                 <span className="text-down">↓{pe.overall_down_count}</span>
+              </span>
+            </>
+          ) : <span className="text-text-muted text-xs">—</span>}
+        </Cell>
+
+        {/* 短线赚亏效应（2026-08-24新增）：market_effect_service 的真实语义——T-1是
+            成员资格的冻结时点，不是这个赚亏效应本身的数据日期；service先在T-1冻结
+            涨停/连板/炸板/跌停/强势股这批群体的名单，再用trade_date当天的表现评价
+            这批固定名单，避免"今天涨的都在池子里、今天跌的都被剔除"这种当天重新
+            选样导致的幸存者偏差。不能只显示两个好看的分数——breadth_source降级成
+            tracked_pool时必须显眼标出来，不能悄悄用近似值冒充全市场结果。 */}
+        <Cell label="短线赚亏效应">
+          {effect ? (
+            <>
+              <span className="font-mono text-base font-bold">
+                <span className="text-up">赚{effect.profit_strength.toFixed(0)}</span>
+                {' / '}
+                <span className="text-down">亏{effect.loss_strength.toFixed(0)}</span>
+              </span>
+              <span className={cn(
+                'text-[10px] font-mono',
+                effect.breadth_source === 'tracked_pool' ? 'text-warn' : 'text-text-muted',
+              )}>
+                {effect.trade_date} · {effect.breadth_source === 'tracked_pool' ? 'LOW·跟踪池近似' : 'NORMAL'}
               </span>
             </>
           ) : <span className="text-text-muted text-xs">—</span>}
