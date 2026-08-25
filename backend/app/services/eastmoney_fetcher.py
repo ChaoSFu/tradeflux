@@ -937,6 +937,16 @@ TURNOVER_POOL_KEYWORD = "成交额排序前60；成交额大于20亿"
 # 近60日真实涨停9次、快照里只有6次，漏了07-10/13/14三天）。缺口会让重算偏低，
 # 而偏低意味着**漏召回**——对这个功能来说比多召回严重得多。
 # 这一路只用来兜底"该不该出现在核心区"，展示的次数仍用本地重算值（可验证的下界）。
+# 跟 STRONG_POOL_KEYWORD 的关系（2026-08-25 明确，别再问要不要合并）：
+#   两者都是在找"强势/龙头"，但**范围和松紧是有意不同的，不能合并**：
+#     强势股池：主板非ST、非新股次新；严阈值（60日≥10次/10日≥5次/最高连板≥4）。
+#               进池代价大——每天要算K线、评分、写快照，是系统的重资源跟踪对象。
+#     核心召回：不限主板（雷达的板块里有大量创业板/科创板股）；宽阈值。
+#               代价只是板块卡上多一行，而"漏掉板块核心"是这个功能最不能接受的失败。
+#   合并只能二选一：用严阈值会漏核心，用宽阈值会让强势股池膨胀好几倍。
+#   两者的包含关系改用**本地条件**保证（recall_core_roles 里 stock.in_strong_pool
+#   直接算一条召回理由），这样强势股池怎么改，核心召回都自动覆盖它，不需要在两个
+#   自然语言 prompt 之间维护同步——那才是真正会漂移的地方。
 CORE_RECALL_KEYWORD = (
     "非ST；非退市股票；"
     "近10个交易日涨停天数大于等于2或者"
@@ -1042,7 +1052,8 @@ def fetch_strong_pool_codes(
     page_size: int = 50,
     with_names: bool = False,
     with_detail: bool = False,
-) -> "Set[str] | dict":
+    with_raw: bool = False,
+) -> "Set[str] | dict | list":
     """
     调用东方财富智能选股 search-code 接口。自动分页直到拉取全部结果。
 
@@ -1060,6 +1071,7 @@ def fetch_strong_pool_codes(
     """
     custom_data = f'[{{"type":"text","value":"{keyword}","extra":""}}]'
     details: dict[str, dict] = {}
+    raw_items: list[dict] = []
     page_no = 1
     total: int | None = None
     complete = True
@@ -1118,6 +1130,7 @@ def fetch_strong_pool_codes(
                     "limit_dir": _parse_limit_dir(item),
                     "limit_date": _parse_limit_date(item),
                 }
+                raw_items.append(item)
 
         if not data_list or len(details) >= (total or 0):
             break
@@ -1126,12 +1139,99 @@ def fetch_strong_pool_codes(
 
     # 分页未完整拉完 → 视为不可用，返回空，避免「部分结果」被当作权威全集
     if not complete:
-        return {} if (with_names or with_detail) else set()
+        return [] if with_raw else ({} if (with_names or with_detail) else set())
+    if with_raw:
+        return raw_items
     if with_detail:
         return details
     if with_names:
         return {c: d["name"] for c, d in details.items()}
     return set(details)
+
+
+@dataclass
+class CoreRecallDetail:
+    """
+    东财条件选股回传的"近期活跃度"事实（涨停板块雷达核心召回用），2026-08-25新增。
+    全部由东财服务端实时计算，**不依赖本仓库快照历史的完整性**。
+    """
+    code: str
+    name: str = ""
+    limit_up_days_10d: Optional[int] = None
+    limit_up_days_20d: Optional[int] = None
+    limit_up_days_60d: Optional[int] = None
+    max_board_60d: Optional[int] = None
+    pct_change: Optional[float] = None      # 今日涨跌幅（CHG）
+    turnover_rate: Optional[float] = None
+    price: Optional[float] = None
+
+
+def _parse_core_recall_item(item: dict) -> Optional[CoreRecallDetail]:
+    """
+    解析选股结果里的活跃度字段。字段名带动态日期区间，必须按前缀 + 窗口天数匹配，
+    不能写死完整键名：
+      'DURATION_LIMIT_UP{2026-08-12|2026-08-25|10|天}' = 1   近10日涨停天数
+      'DURATION_LIMIT_UP{2026-07-29|2026-08-25|20|天}' = 6   近20日涨停天数
+      'DURATION_LIMIT_UP{2026-06-02|2026-08-25|60|天}' = 13  近60日涨停天数
+      '区间最高连板[2026-06-02至2026-08-25]'            = 9.00 近60日最高连板
+    2026-08-25 用 002432/600664/002437 三只股票跟真实K线逐项核对，**三只全对**，
+    包括本地快照重算会漏掉3天的 600664（东财60日=9，快照重算只有6）。
+    """
+    code = (item.get("SECURITY_CODE") or "").strip()
+    if not code:
+        return None
+
+    def _i(v):
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return None
+
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    d = CoreRecallDetail(code=code, name=(item.get("SECURITY_SHORT_NAME") or "").strip())
+    for key, val in item.items():
+        if key.startswith("DURATION_LIMIT_UP{"):
+            parts = key.split("|")
+            window = parts[2] if len(parts) > 2 else None
+            if window == "10":
+                d.limit_up_days_10d = _i(val)
+            elif window == "20":
+                d.limit_up_days_20d = _i(val)
+            elif window == "60":
+                d.limit_up_days_60d = _i(val)
+        elif key.startswith("区间最高连板"):
+            d.max_board_60d = _i(val)
+    d.pct_change = _f(item.get("CHG"))
+    d.turnover_rate = _f(item.get("TURNOVER_RATE"))
+    d.price = _f(item.get("NEWEST_PRICE"))
+    return d
+
+
+def fetch_core_recall_details(
+    xc_id: str = "xc11bd34d6790101033c",
+    fingerprint: str = "a3b5b577646954c0a1ff47146894e3d1",
+    keyword: str = CORE_RECALL_KEYWORD,
+    page_size: int = 50,
+) -> Dict[str, CoreRecallDetail]:
+    """
+    拉取核心召回名单 + 每只股票的近期活跃度事实。分页任一页失败即整体判不可用返回
+    空（跟其它选股函数一致，绝不返回部分结果被当成权威全集）。
+    """
+    raw = fetch_strong_pool_codes(
+        xc_id=xc_id, fingerprint=fingerprint, keyword=keyword,
+        page_size=page_size, with_raw=True,
+    )
+    out: Dict[str, CoreRecallDetail] = {}
+    for item in raw:
+        d = _parse_core_recall_item(item)
+        if d:
+            out[d.code] = d
+    return out
 
 
 def _parse_cn_amount(s: str) -> float:
@@ -1237,7 +1337,8 @@ def fetch_limit_move_codes(
     page_size: int = 50,
     with_names: bool = False,
     with_detail: bool = False,
-) -> "Set[str] | dict":
+    with_raw: bool = False,
+) -> "Set[str] | dict | list":
     """
     调用东方财富智能选股 API，获取今日涨停 + 跌停的非ST非退市股票。
     with_names=True → {code: name}；with_detail=True → {code: {name, limit_dir}}；

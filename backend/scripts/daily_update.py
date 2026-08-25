@@ -1553,12 +1553,12 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 时间即可，比整个 daily_update 失败的代价小得多。
         try:
             from app.services.limit_up_detail_service import (
-                sync_limit_up_details, sync_core_recall_codes,
+                sync_limit_up_details, sync_core_recall,
             )
             lu_n, bb_n, lu_warnings = sync_limit_up_details(db, target_date)
             # 板块核心召回名单：本地从快照数涨停日会因历史缺口偏低（实测覆盖率94.3%），
             # 偏低就是漏召回，用东财服务端算好的结果兜底，见 CORE_RECALL_KEYWORD 注释
-            recall_n = sync_core_recall_codes(db, target_date)
+            recall_n = sync_core_recall(db, target_date)
             log.info(f"涨停板块雷达：涨停明细 {lu_n} 只 / 炸板明细 {bb_n} 只 / 核心召回名单 {recall_n} 只")
             for w in lu_warnings:
                 log.info(f"  {w}")

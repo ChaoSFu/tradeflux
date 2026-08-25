@@ -490,56 +490,119 @@ def test_no_snapshot_history_at_all_warns_loudly(db):
     assert any("没有任何历史快照" in w for w in res["warnings"])
 
 
-# ── 东财选股兜底召回（用户 2026-08-25 提出）──────────────────────────────────
+# ── 东财条件选股：核心召回的权威口径（用户 2026-08-25 提出并核实）───────────
 
-def test_eastmoney_screener_rescues_cores_that_local_snapshots_undercount(db):
-    """
-    本地重算是从快照数涨停日，而快照只在股票进候选池那天才写。生产实测10只核心股
-    覆盖率94.3%，600664哈药股份近60日真实涨停9次、快照里只有6次（漏了07-10/13/14）。
-    数少就是漏召回，而"不能漏掉板块核心"是这个功能的第一原则。
-
-    这里模拟极端情况：本地一条涨停快照都没有（重算全0），但东财选股认为它近期活跃
-    → 必须仍然被召回。
-    """
+def _em_recall(db, payload: dict):
+    """写一份东财召回数据。payload: {code: {"lu10","lu20","lu60","mb","chg"}}"""
+    import json
     from app.models.app_config import AppConfig
     from app.services.limit_up_detail_service import core_recall_key
-
-    sec = _sector(db, "中药")
-    _trading_calendar(db)
-    missed = _stock(db, "600664", "哈药股份")      # 本地无任何涨停快照
-    attacker = _stock(db, "002412", "汉森制药")
-    _relate(db, missed, sec); _relate(db, attacker, sec)
-    _limit_up(db, attacker)
-    db.add(AppConfig(key=core_recall_key(TODAY), value="600664,000001"))
+    db.add(AppConfig(key=core_recall_key(TODAY), value=json.dumps(payload)))
     db.commit()
 
-    card = _find(build_radar(db, TODAY), "中药")
-    core = next(c for c in card["core_stocks"] if c["code"] == "600664")
-    assert core["primary_role"] == "RECENT_CORE"
-    assert any("东财选股" in r for r in core["core_reasons"])
-    # 兜底理由必须说清楚给不出具体次数，不能编一个数字
-    assert any("无法给出具体次数" in r for r in core["core_reasons"])
 
-
-def test_local_reasons_win_when_snapshots_are_complete(db):
+def test_eastmoney_counts_win_over_local_snapshot_recompute(db):
     """
-    本地重算有命中时用本地的具体次数当理由——那是可验证的事实；东财兜底那条
-    含糊的"近期活跃"不该再叠上去，否则同一只股票会显示两套互相重复的理由。
-    """
-    from app.models.app_config import AppConfig
-    from app.services.limit_up_detail_service import core_recall_key
+    东财的滚动统计是服务端实时算的，跟真实K线逐项核对过全对；本地从快照重算受
+    快照缺口影响会**偏低**（实测 600664 哈药股份近60日真实9次、快照里只有6次，
+    漏了 07-10/13/14）。偏低就是漏召回，所以东财优先。
 
+    这里本地快照只有6次、东财说9次 → 展示和召回都必须用9。
+    """
     sec = _sector(db, "中药")
     days = _trading_calendar(db)
     st = _stock(db, "600664", "哈药股份")
     attacker = _stock(db, "002412", "汉森制药")
     _relate(db, st, sec); _relate(db, attacker, sec)
-    _seed_limit_ups(db, st, days, [4, 7, 11, 15, 18, 22])   # 近60日6次
+    _seed_limit_ups(db, st, days, [4, 7, 11, 15, 18, 22])      # 本地只数出6次
     _limit_up(db, attacker)
-    db.add(AppConfig(key=core_recall_key(TODAY), value="600664"))
-    db.commit()
+    _em_recall(db, {"600664": {"n": "哈药股份", "lu10": 0, "lu20": 3,
+                               "lu60": 9, "mb": 5, "chg": -0.12}})
 
     card = _find(build_radar(db, TODAY), "中药")
     core = next(c for c in card["core_stocks"] if c["code"] == "600664")
-    assert "近60日涨停6次" in core["core_reasons"]
-    assert not any("东财选股" in r for r in core["core_reasons"])
+    assert core["limit_up_days_60d"] == 9, "东财说9次，不能用本地少数的6次"
+    assert core["limit_up_days_20d"] == 3
+    assert core["board_count_60d"] == 5
+    assert "近60日曾涨停9次（含炸板）" in core["core_reasons"]
+
+
+def test_eastmoney_chg_fills_core_pct_when_daily_snapshot_is_missing(db):
+    """
+    核心锚大多不在候选池内、盘中没有当日快照，"老核心正/负反馈"这个页面最重要的
+    结论此前在盘中完全拿不到。东财选股顺带回传的 CHG 正好补上这个缺口。
+    """
+    sec = _sector(db, "中药")
+    _trading_calendar(db)
+    st = _stock(db, "600664", "哈药股份")
+    attacker = _stock(db, "002412", "汉森制药")
+    _relate(db, st, sec); _relate(db, attacker, sec)
+    _limit_up(db, attacker)
+    _em_recall(db, {"600664": {"n": "哈药股份", "lu10": 0, "lu20": 3,
+                               "lu60": 9, "mb": 5, "chg": -6.2}})
+
+    card = _find(build_radar(db, TODAY), "中药")
+    core = next(c for c in card["core_stocks"] if c["code"] == "600664")
+    assert core["pct_change"] == -6.2          # 没有当日快照也拿得到
+    assert card["core_avg_pct_change"] == -6.2
+    assert card["core_pct_known_count"] == 1
+
+
+def test_local_snapshot_recompute_is_the_fallback_when_eastmoney_unavailable(db):
+    """东财拉不到时（接口失败/名单为空）退回本地重算，不能整个失效。"""
+    sec = _sector(db, "中药")
+    days = _trading_calendar(db)
+    st = _stock(db, "600664", "哈药股份")
+    attacker = _stock(db, "002412", "汉森制药")
+    _relate(db, st, sec); _relate(db, attacker, sec)
+    _seed_limit_ups(db, st, days, [4, 7, 11, 15, 18, 22])
+    _limit_up(db, attacker)
+    # 不写任何 AppConfig → 没有东财数据
+
+    card = _find(build_radar(db, TODAY), "中药")
+    core = next(c for c in card["core_stocks"] if c["code"] == "600664")
+    assert core["limit_up_days_60d"] == 6      # 本地重算值
+    assert "近60日涨停6次" in core["core_reasons"]   # 本地口径=收盘涨停，不带"曾"
+
+
+def test_strong_pool_members_are_always_recalled(db):
+    """
+    强势股池本身就是"选龙头"用的，它的 prompt 里有一条"近20个交易日涨幅前10"是纯
+    趋势、不含涨停，按涨停次数的那几条召回条件覆盖不到。用本地 in_strong_pool
+    保证包含关系，好过在两个自然语言 prompt 之间维护同步。
+    """
+    sec = _sector(db, "中药")
+    _trading_calendar(db)
+    trend = _stock(db, "600519", "趋势股", in_strong_pool=True)   # 无任何涨停记录
+    attacker = _stock(db, "002412", "汉森制药")
+    _relate(db, trend, sec); _relate(db, attacker, sec)
+    _limit_up(db, attacker)
+
+    card = _find(build_radar(db, TODAY), "中药")
+    core = next(c for c in card["core_stocks"] if c["code"] == "600519")
+    assert "在强势股池内" in core["core_reasons"]
+
+
+def test_eastmoney_counts_are_labelled_as_touched_limit_not_closed_limit(db):
+    """
+    东财 DURATION_LIMIT_UP 数的是"当日曾触及涨停"，**含炸板**，跟本地/K线口径的
+    "收盘涨停"不是同一个指标。2026-08-25 用 603580 艾艾精工核实：近60日收盘涨停
+    15天、盘中触板未封4天，合计19，东财正好报19。
+
+    用它做召回没问题（更宽⇒召回更全），但显示成"近60日涨停19次"会被读成19次收盘
+    涨停。文案必须跟指标对齐。
+    """
+    sec = _sector(db, "塑料")
+    _trading_calendar(db)
+    st = _stock(db, "603580", "艾艾精工")
+    attacker = _stock(db, "002412", "汉森制药")
+    _relate(db, st, sec); _relate(db, attacker, sec)
+    _limit_up(db, attacker)
+    _em_recall(db, {"603580": {"n": "艾艾精工", "lu10": 3, "lu20": 6,
+                               "lu60": 19, "mb": 4, "chg": 2.5}})
+
+    card = _find(build_radar(db, TODAY), "塑料")
+    core = next(c for c in card["core_stocks"] if c["code"] == "603580")
+    reasons = core["core_reasons"]
+    assert "近60日曾涨停19次（含炸板）" in reasons
+    assert not any(r == "近60日涨停19次" for r in reasons), "不能让用户读成19次收盘涨停"

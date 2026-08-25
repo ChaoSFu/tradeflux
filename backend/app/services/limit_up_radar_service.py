@@ -30,7 +30,8 @@ from sqlalchemy.orm import Session
 from ..models.limit_up_detail import BrokenBoardDailyDetail, LimitUpDailyDetail
 from ..models.sector import Sector, StockSectorRelation
 from ..models.stock import Stock, StockDailySnapshot
-from .limit_up_detail_service import get_core_recall_codes
+from .eastmoney_fetcher import CoreRecallDetail
+from .limit_up_detail_service import get_core_recall_details
 
 # ── Core Recall 阈值（集中在这里，不散落在逻辑里）────────────────────────────
 # 全部是"召回"阈值：满足任意一条就进入视野。刻意放宽，见模块 docstring 红线1。
@@ -206,8 +207,12 @@ def compute_limit_up_history(
     return out
 
 
-def _hist_count(hist: Optional[LimitUpHistory], window: int, fallback) -> Optional[int]:
-    """现算值优先，拿不到才退回 Stock 上可能已经冻结的旧值。"""
+def _lu_count(em, hist: Optional[LimitUpHistory], window: int, fallback) -> Optional[int]:
+    """展示用的涨停次数。优先级同 recall_core_roles：东财 > 本地重算 > 冻结字段。"""
+    if em is not None:
+        v = {10: em.limit_up_days_10d, 20: em.limit_up_days_20d, 60: em.limit_up_days_60d}[window]
+        if v is not None:
+            return v
     return hist.counts.get(window, 0) if hist is not None else fallback
 
 
@@ -228,7 +233,7 @@ def recall_core_roles(
     stock: Stock,
     rel: Optional[StockSectorRelation],
     hist: Optional[LimitUpHistory] = None,
-    em_selected: bool = False,
+    em: Optional[CoreRecallDetail] = None,
     *,
     core_10d_min: int = DEFAULT_CORE_10D_MIN,
     core_20d_min: int = DEFAULT_CORE_20D_MIN,
@@ -257,7 +262,24 @@ def recall_core_roles(
             out.roles.append(role)
         out.reasons.append(reason)
 
-    if hist is not None:
+    # 优先级：东财条件选股 > 本地快照重算 > Stock 上的冻结字段。
+    # 东财是服务端实时算的、跟真实K线逐项核对过全对；本地重算受快照缺口影响会偏低
+    # （实测600664少3次）；Stock 上的字段对候选池外的股票是冻结的旧值（就是九安医疗
+    # 那个bug）。三者都可能拿不到，所以逐级兜底。
+    # 两个来源数的**不是同一个指标**，文案必须跟着变（2026-08-25核实）：
+    #   东财 DURATION_LIMIT_UP = 当日曾触及涨停的天数，**含炸板**。
+    #     603580 艾艾精工近60日：收盘涨停15天 + 盘中触板未封4天 = 19，东财正好报19。
+    #   本地快照重算 = 收盘涨停天数（跟K线口径一致）。
+    # 用东财做召回是对的（更宽 ⇒ 召回更全，符合"不能漏掉核心"这条第一原则），
+    # 但显示成"近60日涨停19次"会被读成19次收盘涨停，所以标注"曾涨停…含炸板"。
+    verb = "涨停"
+    if em is not None and em.limit_up_days_60d is not None:
+        lu10 = em.limit_up_days_10d or 0
+        lu20 = em.limit_up_days_20d or 0
+        lu60 = em.limit_up_days_60d or 0
+        max_board = em.max_board_60d or 0
+        verb = "曾涨停"
+    elif hist is not None:
         lu10 = hist.counts.get(10, 0)
         lu20 = hist.counts.get(20, 0)
         lu60 = hist.counts.get(60, 0)
@@ -268,14 +290,15 @@ def recall_core_roles(
         lu60 = stock.limit_up_days_60d or 0
         max_board = stock.board_count_60d or 0
 
+    suffix = "（含炸板）" if verb == "曾涨停" else ""
     if lu10 >= core_10d_min:
-        hit("CURRENT_CORE", f"近10日涨停{lu10}次")
+        hit("CURRENT_CORE", f"近10日{verb}{lu10}次{suffix}")
     if lu20 >= core_20d_min:
-        hit("RECENT_CORE", f"近20日涨停{lu20}次")
+        hit("RECENT_CORE", f"近20日{verb}{lu20}次{suffix}")
     if max_board >= core_max_board_min:
         hit("RECENT_CORE", f"近60日最高{max_board}连板")
     if lu60 >= core_60d_min:
-        hit("HISTORICAL_CORE", f"近60日涨停{lu60}次")
+        hit("HISTORICAL_CORE", f"近60日{verb}{lu60}次{suffix}")
     if rel is not None and rel.is_leader:
         hit("SECTOR_LEADER", "板块龙头")
     if rel is not None and rel.is_core:
@@ -287,8 +310,12 @@ def recall_core_roles(
     # 东财那边是服务端实时算的，不依赖我们的历史完整性。
     # 只在本地一条都没命中时才用它兜底——本地有命中时用本地的具体次数当理由，
     # 那是可验证的事实；这条兜底给不出次数，只能说"东财判定近期活跃"。
-    if em_selected and not out.roles:
-        hit("RECENT_CORE", "东财选股：近期涨停活跃（本地快照不全，无法给出具体次数）")
+    # 强势股池成员无条件召回（2026-08-25）。强势股池本身就是"选龙头"用的，它的
+    # prompt 里有一条"近20个交易日涨幅前10"是纯趋势、不含涨停，上面几条按涨停次数
+    # 的条件覆盖不到。用本地的 in_strong_pool 保证包含关系，好过在两个自然语言
+    # prompt 之间维护同步——那才是真正会漂移的地方（见 CORE_RECALL_KEYWORD 注释）。
+    if stock.in_strong_pool and not out.roles:
+        hit("RECENT_CORE", "在强势股池内")
     return out
 
 
@@ -420,7 +447,7 @@ def build_radar(
     # 一次性批量算完所有需要的股票，不在板块循环里逐只查。交易日历只查一次，
     # 顺便评估它有多新——日历本身过期时算出来的窗口是错的，必须显式告知而不是
     # 照样给一个精确但答非所问的数字。
-    em_recall = get_core_recall_codes(db, trade_date)
+    em_recall = get_core_recall_details(db, trade_date)
     trading_days = _trading_days(db, trade_date, limit=60)
     history_as_of, history_lag, freshness_warnings = assess_history_freshness(trading_days, trade_date)
     lu_hist = (compute_limit_up_history(db, need_sids, trade_date, days=trading_days)
@@ -474,7 +501,7 @@ def _build_sector_card(
     stocks: Dict[int, Stock], snaps: Dict[int, StockDailySnapshot],
     rel_lookup: Dict[Tuple[int, int], StockSectorRelation],
     lu_hist: Dict[int, LimitUpHistory],
-    em_recall: Set[str],
+    em_recall: Dict[str, CoreRecallDetail],
     *, include_core: bool,
     core_10d_min: int, core_20d_min: int, core_60d_min: int, core_max_board_min: int,
     max_core_per_sector: int = DEFAULT_MAX_CORE_PER_SECTOR,
@@ -489,7 +516,7 @@ def _build_sector_card(
             continue
         rel = rel_lookup.get((sid, sector.id))
         recall = recall_core_roles(
-            st, rel, lu_hist.get(sid), st.code in em_recall,
+            st, rel, lu_hist.get(sid), em_recall.get(st.code),
             core_10d_min=core_10d_min, core_20d_min=core_20d_min,
             core_60d_min=core_60d_min, core_max_board_min=core_max_board_min,
         )
@@ -512,7 +539,7 @@ def _build_sector_card(
                 "turnover_rate": detail.turnover_rate,
                 "limit_reason": detail.limit_reason,
                 "limit_content": detail.limit_content,
-                "limit_up_days_10d": _hist_count(lu_hist.get(sid), 10, st.limit_up_days_10d),
+                "limit_up_days_10d": _lu_count(em_recall.get(st.code), lu_hist.get(sid), 10, st.limit_up_days_10d),
                 "core_roles": recall.roles,
                 "core_reasons": recall.reasons,
             })
@@ -523,17 +550,23 @@ def _build_sector_card(
 
         if include_core and recall.roles:
             snap = snaps.get(sid)
+            em_d = em_recall.get(st.code)
             core_rows.append({
                 "code": st.code, "name": st.name,
                 "core_roles": recall.roles,
                 "core_reasons": recall.reasons,
                 "primary_role": recall.primary_role,
-                "pct_change": snap.pct_change if snap else None,
-                "limit_up_days_10d": _hist_count(lu_hist.get(sid), 10, st.limit_up_days_10d),
-                "limit_up_days_20d": _hist_count(lu_hist.get(sid), 20, st.limit_up_days_20d),
-                "limit_up_days_60d": _hist_count(lu_hist.get(sid), 60, st.limit_up_days_60d),
-                "board_count_60d": (lu_hist[sid].max_consecutive_60d
-                                    if sid in lu_hist else st.board_count_60d),
+                # 今日涨跌幅：当日快照优先；核心锚大多不在候选池、盘中没有快照，
+                # 这时用东财选股回传的 CHG 兜底——这正是"老核心正/负反馈"这个
+                # 页面最重要结论此前在盘中拿不到的原因
+                "pct_change": (snap.pct_change if snap and snap.pct_change is not None
+                               else (em_d.pct_change if em_d else None)),
+                "limit_up_days_10d": _lu_count(em_d, lu_hist.get(sid), 10, st.limit_up_days_10d),
+                "limit_up_days_20d": _lu_count(em_d, lu_hist.get(sid), 20, st.limit_up_days_20d),
+                "limit_up_days_60d": _lu_count(em_d, lu_hist.get(sid), 60, st.limit_up_days_60d),
+                "board_count_60d": ((em_d.max_board_60d if em_d and em_d.max_board_60d is not None
+                                     else (lu_hist[sid].max_consecutive_60d if sid in lu_hist
+                                           else st.board_count_60d))),
                 "leader_score": st.leader_score,
                 "is_broken_today": sid in broken_sids,
             })

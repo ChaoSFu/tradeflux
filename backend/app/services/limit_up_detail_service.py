@@ -5,6 +5,7 @@
 这一层只做"把外部涨停事实存下来"，不做任何聚合、不碰 Stock/Sector/Snapshot。
 聚合在 limit_up_radar_service 里，读的是本地库。
 """
+import json
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 from ..models.app_config import AppConfig
 from ..models.stock import Stock
 from ..models.limit_up_detail import LimitUpDailyDetail, BrokenBoardDailyDetail
-from .eastmoney_fetcher import CORE_RECALL_KEYWORD, fetch_strong_pool_codes
+from .eastmoney_fetcher import CoreRecallDetail, fetch_core_recall_details
 from .limit_up_detail_fetcher import (
     SOURCE_NAME, BrokenBoardDetail, LimitUpDetail, fetch_limit_up_details,
 )
@@ -27,34 +28,40 @@ def core_recall_key(trade_date: date) -> str:
     return f"{CORE_RECALL_KEY_PREFIX}{trade_date.isoformat()}"
 
 
-def sync_core_recall_codes(db: Session, trade_date: date) -> int:
+def sync_core_recall(db: Session, trade_date: date) -> int:
     """
-    用东财条件选股把"近期活跃、值得进核心区"的股票捞一份存下来。
+    用东财条件选股拉一份"近期活跃股 + 各自的滚动涨停统计"存下来。
 
-    这一路存在的意义是补本地重算的缺口：本地是从快照数涨停日，而快照只在股票进
-    候选池那天才写，历史上有缺失就会数少（生产实测覆盖率94.3%）。数少 ⇒ 漏召回，
-    而"不能漏掉板块核心"是这个功能的第一原则。东财这边是服务端实时算的，不依赖
-    我们的历史完整性。
+    这是核心召回**唯一的权威口径**，本地从快照重算只是它拉取失败时的兜底。
+    2026-08-25 用 002432/600664/002437 跟真实K线逐项核对，东财三只全对；而本地
+    快照重算在 600664 上少了3次（近60日真实9次、快照里只有6次，漏了07-10/13/14），
+    因为快照只在股票进候选池那天才写，历史有缺口就会数少。数少 ⇒ 漏召回，而
+    "不能漏掉板块核心"是这个功能的第一原则。
 
-    只用来决定"该不该出现在核心区"，**不用来展示次数**——这个接口的解析器只回传
-    名称/涨跌停方向，拿不到具体次数；展示仍用本地重算值（可验证的下界）。
+    顺带拿到 CHG（今日涨跌幅），这解决了另一个局限：核心锚大多不在候选池内、
+    没有当日快照，盘中原本看不出"老核心正/负反馈"。
     """
-    codes = fetch_strong_pool_codes(keyword=CORE_RECALL_KEYWORD)
-    if not codes:
+    details = fetch_core_recall_details()
+    if not details:
         return 0                      # 拉空视为失败，不覆盖上一份（避免整体漏召回）
+    payload = {
+        c: {"n": d.name, "lu10": d.limit_up_days_10d, "lu20": d.limit_up_days_20d,
+            "lu60": d.limit_up_days_60d, "mb": d.max_board_60d, "chg": d.pct_change}
+        for c, d in details.items()
+    }
     key = core_recall_key(trade_date)
     row = db.query(AppConfig).filter(AppConfig.key == key).first()
-    val = ",".join(sorted(codes))
+    val = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if row:
         row.value = val
     else:
         db.add(AppConfig(key=key, value=val))
     db.commit()
-    return len(codes)
+    return len(details)
 
 
-def get_core_recall_codes(db: Session, trade_date: date) -> set:
-    """读当日的东财召回名单；当天没有就退回最近一份（名单是"近期活跃"，隔天仍有效）。"""
+def get_core_recall_details(db: Session, trade_date: date) -> Dict[str, CoreRecallDetail]:
+    """读当日的东财召回数据；当天没有就退回最近一份（"近期活跃"隔天仍然成立）。"""
     row = db.query(AppConfig).filter(AppConfig.key == core_recall_key(trade_date)).first()
     if not row:
         row = (
@@ -63,7 +70,21 @@ def get_core_recall_codes(db: Session, trade_date: date) -> set:
             .order_by(AppConfig.key.desc())
             .first()
         )
-    return set((row.value or "").split(",")) if row and row.value else set()
+    if not row or not row.value:
+        return {}
+    try:
+        raw = json.loads(row.value)
+    except (ValueError, TypeError):
+        return {}
+    return {
+        c: CoreRecallDetail(
+            code=c, name=v.get("n", ""),
+            limit_up_days_10d=v.get("lu10"), limit_up_days_20d=v.get("lu20"),
+            limit_up_days_60d=v.get("lu60"), max_board_60d=v.get("mb"),
+            pct_change=v.get("chg"),
+        )
+        for c, v in raw.items() if isinstance(v, dict)
+    }
 
 
 def _stock_id_map(db: Session, codes: List[str]) -> Dict[str, int]:
