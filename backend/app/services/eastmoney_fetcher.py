@@ -947,12 +947,16 @@ TURNOVER_POOL_KEYWORD = "成交额排序前60；成交额大于20亿"
 #   两者的包含关系改用**本地条件**保证（recall_core_roles 里 stock.in_strong_pool
 #   直接算一条召回理由），这样强势股池怎么改，核心召回都自动覆盖它，不需要在两个
 #   自然语言 prompt 之间维护同步——那才是真正会漂移的地方。
+# 末尾三个"涨幅大于-100%"是**恒真条件**，加它们不是为了筛选，而是为了让东财在
+# 结果里带回 INTERVAL_CHG{...|10/20/60|天} 这几列——这个接口的返回列是跟着条件走的，
+# 没提到的指标就不会出现在 payload 里。选股结果不受影响（跌幅不可能超过100%）。
 CORE_RECALL_KEYWORD = (
     "非ST；非退市股票；"
     "近10个交易日涨停天数大于等于2或者"
     "近20个交易日涨停天数大于等于3或者"
     "近60个交易日涨停天数大于等于5或者"
-    "近60个交易日最高连板数大于等于3"
+    "近60个交易日最高连板数大于等于3；"
+    "近10个交易日涨幅大于-100%；近20个交易日涨幅大于-100%；近60个交易日涨幅大于-100%"
 )
 
 _F10_HEADERS = {
@@ -1161,6 +1165,13 @@ class CoreRecallDetail:
     limit_up_days_20d: Optional[int] = None
     limit_up_days_60d: Optional[int] = None
     max_board_60d: Optional[int] = None
+    # 区间涨幅（INTERVAL_CHG）。**是真实复合区间收益**，跟 compute_window_stats 里的
+    # pct_change_Nd（日涨幅简单相加的近似）不是同一个算法：2026-08-25 用 603580
+    # 艾艾精工核对，近60日真实区间涨幅204.85%、日涨幅相加只有123.14%，东财报208.09%
+    # 跟真实值吻合。大涨股票上这个差距非常大，展示时别跟活跃股池那几列混为一谈。
+    interval_chg_10d: Optional[float] = None
+    interval_chg_20d: Optional[float] = None
+    interval_chg_60d: Optional[float] = None
     pct_change: Optional[float] = None      # 今日涨跌幅（CHG）
     turnover_rate: Optional[float] = None
     price: Optional[float] = None
@@ -1204,6 +1215,15 @@ def _parse_core_recall_item(item: dict) -> Optional[CoreRecallDetail]:
                 d.limit_up_days_20d = _i(val)
             elif window == "60":
                 d.limit_up_days_60d = _i(val)
+        elif key.startswith("INTERVAL_CHG{"):
+            parts = key.split("|")
+            window = parts[2] if len(parts) > 2 else None
+            if window == "10":
+                d.interval_chg_10d = _f(val)
+            elif window == "20":
+                d.interval_chg_20d = _f(val)
+            elif window == "60":
+                d.interval_chg_60d = _f(val)
         elif key.startswith("区间最高连板"):
             d.max_board_60d = _i(val)
     d.pct_change = _f(item.get("CHG"))

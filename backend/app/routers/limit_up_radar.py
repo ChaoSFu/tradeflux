@@ -46,6 +46,10 @@ def get_limit_up_radar(
     core_max_board_min: int = Query(radar.DEFAULT_CORE_MAX_BOARD_MIN, ge=1, le=20),
     max_core_per_sector: int = Query(radar.DEFAULT_MAX_CORE_PER_SECTOR, ge=1, le=50,
                                      description='每板块核心锚展示上限（不影响召回，core_count 仍是真实总数）'),
+    min_limit_up: int = Query(radar.DEFAULT_MIN_LIMIT_UP, ge=0, le=50,
+                             description='板块最少涨停只数'),
+    min_board_height: int = Query(radar.DEFAULT_MIN_BOARD_HEIGHT, ge=0, le=20,
+                                  description='板块最低连板高度（与上面是AND关系）'),
     db: Session = Depends(get_db),
 ):
     """涨停板块雷达：按板块聚合当日涨停结构 + 板块核心锚。纯读库，不打外部接口。"""
@@ -56,6 +60,7 @@ def get_limit_up_radar(
         core_10d_min=core_10d_min, core_20d_min=core_20d_min,
         core_60d_min=core_60d_min, core_max_board_min=core_max_board_min,
         max_core_per_sector=max_core_per_sector,
+        min_limit_up=min_limit_up, min_board_height=min_board_height,
     )
     refreshed = get_last_refreshed(db, target)
     result["refreshed_at"] = refreshed.isoformat() if refreshed else None

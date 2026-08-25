@@ -21,6 +21,9 @@ from app.services.limit_up_detail_fetcher import LimitUpDetail
 
 TODAY = date(2026, 8, 25)
 
+# 这些用例只造1只涨停，测的是接口行为不是板块门槛，统一关掉门槛
+_NO_FILTER = {"min_limit_up": 0, "min_board_height": 0}
+
 
 @pytest.fixture
 def client(db):
@@ -53,7 +56,7 @@ def _seed_sector_with_limit_up(db):
 
 def test_get_radar_returns_sectors_with_core_and_freshness(db, client):
     _seed_sector_with_limit_up(db)
-    r = client.get("/limit-up-radar", params={"date": "2026-08-25"})
+    r = client.get("/limit-up-radar", params={**_NO_FILTER, "date": "2026-08-25"})
     assert r.status_code == 200
     body = r.json()
 
@@ -72,21 +75,21 @@ def test_get_radar_returns_sectors_with_core_and_freshness(db, client):
 
 def test_include_core_false_drops_core_section(db, client):
     _seed_sector_with_limit_up(db)
-    body = client.get("/limit-up-radar", params={"date": "2026-08-25", "include_core": "false"}).json()
+    body = client.get("/limit-up-radar", params={**_NO_FILTER, "date": "2026-08-25", "include_core": "false"}).json()
     assert body["sectors"][0]["core_stocks"] == []
 
 
 def test_core_thresholds_are_overridable_via_query(db, client):
     _seed_sector_with_limit_up(db)
     # 把60日门槛提到7，哈药(6次)就只剩"板块龙头"这一条召回理由
-    body = client.get("/limit-up-radar", params={"date": "2026-08-25", "core_60d_min": 7}).json()
+    body = client.get("/limit-up-radar", params={**_NO_FILTER, "date": "2026-08-25", "core_60d_min": 7}).json()
     core = body["sectors"][0]["core_stocks"][0]
     assert core["core_roles"] == ["SECTOR_LEADER"]
 
 
 def test_date_defaults_to_latest_day_with_data(db, client):
     _seed_sector_with_limit_up(db)
-    body = client.get("/limit-up-radar").json()
+    body = client.get("/limit-up-radar", params=_NO_FILTER).json()
     assert body["trade_date"] == "2026-08-25"
 
 
@@ -119,7 +122,7 @@ def test_refresh_only_syncs_limit_up_details(db, client):
          patch("app.services.eastmoney_fetcher.fetch_stock_quotes_batch", _boom("实时行情批量拉取")), \
          patch("app.services.market_state_service.get_current_market_state", _boom("Market State重算")), \
          patch("app.services.w2s_refresh_service.run_refresh", _boom("弱转强雷达刷新")):
-        r = client.post("/limit-up-radar/refresh", params={"date": "2026-08-25"})
+        r = client.post("/limit-up-radar/refresh", params={**_NO_FILTER, "date": "2026-08-25"})
 
     assert r.status_code == 200
     body = r.json()
@@ -137,7 +140,7 @@ def test_refresh_failure_keeps_existing_data_and_reports_last_success(db, client
                side_effect=TimeoutError("东财超时")), \
          patch("app.services.limit_up_detail_service.fetch_core_recall_details",
                return_value={}):
-        r = client.post("/limit-up-radar/refresh", params={"date": "2026-08-25"})
+        r = client.post("/limit-up-radar/refresh", params={**_NO_FILTER, "date": "2026-08-25"})
 
     body = r.json()
     assert r.status_code == 200
@@ -146,7 +149,7 @@ def test_refresh_failure_keeps_existing_data_and_reports_last_success(db, client
     assert body["last_success_at"] == "2026-08-25T14:32:18"
     # 数据还在
     assert db.query(LimitUpDailyDetail).count() == 1
-    assert client.get("/limit-up-radar", params={"date": "2026-08-25"}).json()["summary"]["limit_up_count"] == 1
+    assert client.get("/limit-up-radar", params={**_NO_FILTER, "date": "2026-08-25"}).json()["summary"]["limit_up_count"] == 1
 
 
 def test_group_mode_primary_is_accepted(db, client):
@@ -154,7 +157,7 @@ def test_group_mode_primary_is_accepted(db, client):
     st = db.query(Stock).filter(Stock.code == "002412").one()
     st.primary_sector_id = sec.id
     db.commit()
-    body = client.get("/limit-up-radar", params={"date": "2026-08-25", "group_mode": "primary"}).json()
+    body = client.get("/limit-up-radar", params={**_NO_FILTER, "date": "2026-08-25", "group_mode": "primary"}).json()
     assert [s["sector_name"] for s in body["sectors"]] == ["中药"]
 
 

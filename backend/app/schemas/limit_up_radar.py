@@ -21,7 +21,16 @@ class RadarCoreStock(BaseModel):
     limit_up_days_20d: Optional[int] = None
     limit_up_days_60d: Optional[int] = None
     board_count_60d: Optional[int] = None
+    # 区间涨幅：东财 INTERVAL_CHG，真实复合区间收益。跟活跃股池那几列（日涨幅简单
+    # 相加的近似）不是同一个算法，大涨股票差距很大，不要直接对比
+    interval_chg_10d: Optional[float] = None
+    interval_chg_20d: Optional[float] = None
+    interval_chg_60d: Optional[float] = None
+    # 龙头分/风险分是否为本轮真实计算值。False = 该股今日不在候选池、没有当日快照，
+    # 分数是冻结旧值，页面显示 — 而不是拿旧分数冒充当前
+    scores_as_of_today: bool = False
     leader_score: Optional[float] = None
+    risk_score: Optional[float] = None
     is_broken_today: bool = False
 
 
@@ -42,6 +51,19 @@ class RadarTodayStock(BaseModel):
     limit_reason: Optional[str] = None       # 催化剂，不是板块归属
     limit_content: Optional[str] = None
     limit_up_days_10d: Optional[int] = None
+    limit_up_days_20d: Optional[int] = None
+    limit_up_days_60d: Optional[int] = None
+    board_count_60d: Optional[int] = None
+    # 区间涨幅：东财 INTERVAL_CHG，真实复合区间收益。跟活跃股池那几列（日涨幅简单
+    # 相加的近似）不是同一个算法，大涨股票差距很大，不要直接对比
+    interval_chg_10d: Optional[float] = None
+    interval_chg_20d: Optional[float] = None
+    interval_chg_60d: Optional[float] = None
+    # 龙头分/风险分是否为本轮真实计算值。False = 该股今日不在候选池、没有当日快照，
+    # 分数是冻结旧值，页面显示 — 而不是拿旧分数冒充当前
+    scores_as_of_today: bool = False
+    leader_score: Optional[float] = None
+    risk_score: Optional[float] = None
     core_roles: List[str] = []
     core_reasons: List[str] = []
 
@@ -94,6 +116,10 @@ class LimitUpRadarResponse(BaseModel):
     # 交易日（符合预期，今天的涨停在"今日攻击"里单独看）；落后≥2个交易日会进 warnings
     history_as_of: Optional[str] = None
     history_lag_days: int = 0
+    # 板块入选门槛（AND）+ 因不达标被隐藏的板块数。隐藏数要展示出来，不能悄悄丢
+    filter_min_limit_up: int = 0
+    filter_min_board_height: int = 0
+    hidden_sector_count: int = 0
     summary: RadarSummary = RadarSummary()
     sectors: List[RadarSector] = []
     warnings: List[str] = []

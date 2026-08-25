@@ -81,6 +81,14 @@ def _seed_limit_ups(db, stock, days, indices):
     db.flush()
 
 
+def _radar(db, trade_date=TODAY, **kw):
+    """测试默认关闭板块入选门槛——绝大多数用例只造1只涨停，不关会被门槛整个滤掉，
+    而它们测的不是门槛。门槛本身由 test_sector_threshold_* 专门覆盖。"""
+    kw.setdefault("min_limit_up", 0)
+    kw.setdefault("min_board_height", 0)
+    return build_radar(db, trade_date, **kw)
+
+
 def _find(result, sector_name):
     return next(s for s in result["sectors"] if s["sector_name"] == sector_name)
 
@@ -105,7 +113,7 @@ def test_case_a_core_with_no_recent_limit_up_is_still_recalled(db):
     _snap(db, anchor, -6.2)          # 老核心今天在跌 —— 负反馈
     _limit_up(db, attacker, board=1)
 
-    card = _find(build_radar(db, TODAY), "中药")
+    card = _find(_radar(db, TODAY), "中药")
     codes = [c["code"] for c in card["core_stocks"]]
     assert "600664" in codes, "近60日涨停6次的历史核心必须被召回"
 
@@ -128,7 +136,7 @@ def test_case_b_sector_leader_flag_alone_recalls_the_stock(db):
     _relate(db, other, sec)
     _limit_up(db, other)
 
-    card = _find(build_radar(db, TODAY), "创新药")
+    card = _find(_radar(db, TODAY), "创新药")
     core = next(c for c in card["core_stocks"] if c["code"] == "600276")
     assert core["primary_role"] == "SECTOR_LEADER"
     assert "板块龙头" in core["core_reasons"]
@@ -143,7 +151,7 @@ def test_case_c_plain_first_board_shows_as_attack_not_as_current_core(db):
     _relate(db, plain, sec)
     _limit_up(db, plain, board=1)
 
-    card = _find(build_radar(db, TODAY), "光伏")
+    card = _find(_radar(db, TODAY), "光伏")
     assert [s["code"] for s in card["today_limit_up_stocks"]] == ["300118"]
     row = card["today_limit_up_stocks"][0]
     assert row["core_roles"] == []            # 没有任何核心角色
@@ -165,7 +173,7 @@ def test_case_d_stock_appears_in_every_watched_sector_by_default(db):
     st.primary_sector_id = s1.id
     _limit_up(db, st, board=2)
 
-    res = build_radar(db, TODAY, group_mode="all_watched_sectors")
+    res = _radar(db, TODAY, group_mode="all_watched_sectors")
     assert {s["sector_name"] for s in res["sectors"]} == {"中药", "流感", "创新药"}
     for card in res["sectors"]:
         codes = [x["code"] for x in card["today_limit_up_stocks"]]
@@ -179,7 +187,7 @@ def test_case_d_primary_mode_dedupes_to_one_sector(db):
     st.primary_sector_id = s1.id
     _limit_up(db, st)
 
-    res = build_radar(db, TODAY, group_mode="primary")
+    res = _radar(db, TODAY, group_mode="primary")
     assert [s["sector_name"] for s in res["sectors"]] == ["中药"]
 
 
@@ -223,7 +231,7 @@ def test_core_that_also_limits_up_today_keeps_its_role_tags(db):
     _seed_limit_ups(db, st, days, [3, 6, 9, 12, 16, 20, 24, 28])   # 近60日8次涨停
     _limit_up(db, st, board=3)
 
-    card = _find(build_radar(db, TODAY), "中药")
+    card = _find(_radar(db, TODAY), "中药")
     row = card["today_limit_up_stocks"][0]
     assert row["code"] == "600664"
     assert "SECTOR_LEADER" in row["core_roles"] and "HISTORICAL_CORE" in row["core_roles"]
@@ -260,13 +268,19 @@ def test_missing_time_sorts_last_instead_of_pretending_to_be_earliest(db):
     assert [r["code"] for r in rows] == ["有时间", "无时间"]
 
 
-def test_sectors_sorted_by_count_then_height_then_ladder_then_time(db):
+def test_sectors_sorted_by_board_height_first_then_count(db):
+    """
+    2026-08-25 改为**高度优先**：连板高度是板块情绪级别的直接体现，一个出了5板龙头
+    的板块即使只有2只涨停，也比10只清一色首板的板块更值得先看——首板扎堆更可能是
+    普涨或题材扩散，高板才代表有资金愿意接力。
+    """
     out = sort_sectors([
-        {"sector_name": "少但高", "today_limit_up_count": 2, "board_height": 5, "continuation_count": 1, "earliest_limit_time": time(9, 30), "total_seal_amount": 1e8},
-        {"sector_name": "最多", "today_limit_up_count": 6, "board_height": 2, "continuation_count": 2, "earliest_limit_time": time(10, 0), "total_seal_amount": 1e8},
-        {"sector_name": "同多但更高", "today_limit_up_count": 6, "board_height": 4, "continuation_count": 3, "earliest_limit_time": time(11, 0), "total_seal_amount": 1e8},
+        {"sector_name": "多但全首板", "today_limit_up_count": 10, "board_height": 1, "continuation_count": 0, "earliest_limit_time": time(9, 30), "total_seal_amount": 1e8},
+        {"sector_name": "少但5板", "today_limit_up_count": 2, "board_height": 5, "continuation_count": 1, "earliest_limit_time": time(10, 0), "total_seal_amount": 1e8},
+        {"sector_name": "同5板但更多", "today_limit_up_count": 6, "board_height": 5, "continuation_count": 3, "earliest_limit_time": time(11, 0), "total_seal_amount": 1e8},
+        {"sector_name": "4板", "today_limit_up_count": 8, "board_height": 4, "continuation_count": 2, "earliest_limit_time": time(9, 25), "total_seal_amount": 1e8},
     ])
-    assert [s["sector_name"] for s in out] == ["同多但更高", "最多", "少但高"]
+    assert [s["sector_name"] for s in out] == ["同5板但更多", "少但5板", "4板", "多但全首板"]
 
 
 # ── 板块卡的事实字段 ─────────────────────────────────────────────────────────
@@ -285,7 +299,7 @@ def test_sector_card_reports_ladder_seal_rate_and_earliest_time(db):
                                   first_limit_time=time(9, 40), broken_times=1, pct_change=3.2))
     db.flush()
 
-    card = _find(build_radar(db, TODAY), "中药")
+    card = _find(_radar(db, TODAY), "中药")
     assert card["today_limit_up_count"] == 3
     assert card["board_height"] == 4
     assert card["continuation_count"] == 2 and card["first_board_count"] == 1
@@ -303,7 +317,7 @@ def test_total_seal_amount_is_none_when_nothing_is_known(db):
     _relate(db, st, sec)
     _limit_up(db, st, seal=None)
 
-    card = _find(build_radar(db, TODAY), "中药")
+    card = _find(_radar(db, TODAY), "中药")
     assert card["total_seal_amount"] is None
     assert card["seal_amount_known_count"] == 0
 
@@ -318,7 +332,7 @@ def test_sector_with_no_limit_up_today_is_excluded(db):
     _relate(db, st2, active)
     _limit_up(db, st2)
 
-    names = [s["sector_name"] for s in build_radar(db, TODAY)["sectors"]]
+    names = [s["sector_name"] for s in _radar(db, TODAY)["sectors"]]
     assert names == ["中药"]
 
 
@@ -328,7 +342,7 @@ def test_unwatched_sectors_are_never_grouped(db):
     st = _stock(db, "002412", "汉森制药")
     _relate(db, st, unwatched)
     _limit_up(db, st)
-    assert build_radar(db, TODAY)["sectors"] == []
+    assert _radar(db, TODAY)["sectors"] == []
 
 
 def test_include_core_false_skips_core_recall(db):
@@ -338,7 +352,7 @@ def test_include_core_false_skips_core_recall(db):
     _relate(db, anchor, sec); _relate(db, attacker, sec)
     _limit_up(db, attacker)
 
-    card = _find(build_radar(db, TODAY, include_core=False), "中药")
+    card = _find(_radar(db, TODAY, include_core=False), "中药")
     assert card["core_stocks"] == [] and card["core_count"] == 0
     assert card["today_limit_up_count"] == 1
 
@@ -356,7 +370,7 @@ def test_summary_counts_whole_market_not_just_grouped_sectors(db):
     db.add(BrokenBoardDailyDetail(stock_id=d.id, stock_code=d.code, trade_date=TODAY))
     db.flush()
 
-    res = build_radar(db, TODAY)
+    res = _radar(db, TODAY)
     assert res["summary"]["limit_up_count"] == 2      # 含不属于任何板块的那只
     assert res["summary"]["board_height"] == 3
     assert res["summary"]["broken_count"] == 1
@@ -365,7 +379,7 @@ def test_summary_counts_whole_market_not_just_grouped_sectors(db):
 
 
 def test_empty_day_returns_empty_shape_not_error(db):
-    res = build_radar(db, TODAY)
+    res = _radar(db, TODAY)
     assert res["sectors"] == []
     assert res["summary"]["limit_up_count"] == 0
     assert res["trade_date"] == "2026-08-25"
@@ -398,7 +412,7 @@ def test_rolling_counts_are_recomputed_not_read_from_frozen_stock_fields(db):
     _seed_limit_ups(db, stale, days, [5, 9, 24, 25, 27, 31, 41])
     _snap(db, stale, -2.48)
 
-    card = _find(build_radar(db, TODAY), "医药生物")
+    card = _find(_radar(db, TODAY), "医药生物")
     core = next(c for c in card["core_stocks"] if c["code"] == "002432")
     assert core["limit_up_days_10d"] == 0, "冻结值是2，真实近10日一次涨停都没有"
     assert core["limit_up_days_20d"] == 1, "冻结值是5，真实近20日只有1次"
@@ -445,7 +459,7 @@ def test_history_window_excludes_the_in_progress_day(db):
     _relate(db, st, sec)
     _limit_up(db, st)                        # 今天涨停（只在明细表里）
 
-    res = build_radar(db, TODAY)
+    res = _radar(db, TODAY)
     assert res["history_as_of"] == days[-1].isoformat()   # 窗口停在上一交易日
     assert res["history_lag_days"] <= 1                   # 落后1天是盘中常态
     assert res["warnings"] == []                          # 不该为此告警
@@ -469,7 +483,7 @@ def test_stale_snapshot_history_is_reported_not_silently_used(db):
     _limit_up(db, st)
     db.flush()
 
-    res = build_radar(db, TODAY)
+    res = _radar(db, TODAY)
     assert res["history_as_of"] == "2026-08-18"
     assert res["history_lag_days"] >= 2
     assert any("落后" in w and "每日数据更新" in w for w in res["warnings"])
@@ -485,7 +499,7 @@ def test_no_snapshot_history_at_all_warns_loudly(db):
     _relate(db, st, sec)
     _limit_up(db, st)
 
-    res = build_radar(db, TODAY)
+    res = _radar(db, TODAY)
     assert res["history_as_of"] is None
     assert any("没有任何历史快照" in w for w in res["warnings"])
 
@@ -519,7 +533,7 @@ def test_eastmoney_counts_win_over_local_snapshot_recompute(db):
     _em_recall(db, {"600664": {"n": "哈药股份", "lu10": 0, "lu20": 3,
                                "lu60": 9, "mb": 5, "chg": -0.12}})
 
-    card = _find(build_radar(db, TODAY), "中药")
+    card = _find(_radar(db, TODAY), "中药")
     core = next(c for c in card["core_stocks"] if c["code"] == "600664")
     assert core["limit_up_days_60d"] == 9, "东财说9次，不能用本地少数的6次"
     assert core["limit_up_days_20d"] == 3
@@ -541,7 +555,7 @@ def test_eastmoney_chg_fills_core_pct_when_daily_snapshot_is_missing(db):
     _em_recall(db, {"600664": {"n": "哈药股份", "lu10": 0, "lu20": 3,
                                "lu60": 9, "mb": 5, "chg": -6.2}})
 
-    card = _find(build_radar(db, TODAY), "中药")
+    card = _find(_radar(db, TODAY), "中药")
     core = next(c for c in card["core_stocks"] if c["code"] == "600664")
     assert core["pct_change"] == -6.2          # 没有当日快照也拿得到
     assert card["core_avg_pct_change"] == -6.2
@@ -559,7 +573,7 @@ def test_local_snapshot_recompute_is_the_fallback_when_eastmoney_unavailable(db)
     _limit_up(db, attacker)
     # 不写任何 AppConfig → 没有东财数据
 
-    card = _find(build_radar(db, TODAY), "中药")
+    card = _find(_radar(db, TODAY), "中药")
     core = next(c for c in card["core_stocks"] if c["code"] == "600664")
     assert core["limit_up_days_60d"] == 6      # 本地重算值
     assert "近60日涨停6次" in core["core_reasons"]   # 本地口径=收盘涨停，不带"曾"
@@ -578,7 +592,7 @@ def test_strong_pool_members_are_always_recalled(db):
     _relate(db, trend, sec); _relate(db, attacker, sec)
     _limit_up(db, attacker)
 
-    card = _find(build_radar(db, TODAY), "中药")
+    card = _find(_radar(db, TODAY), "中药")
     core = next(c for c in card["core_stocks"] if c["code"] == "600519")
     assert "在强势股池内" in core["core_reasons"]
 
@@ -601,8 +615,60 @@ def test_eastmoney_counts_are_labelled_as_touched_limit_not_closed_limit(db):
     _em_recall(db, {"603580": {"n": "艾艾精工", "lu10": 3, "lu20": 6,
                                "lu60": 19, "mb": 4, "chg": 2.5}})
 
-    card = _find(build_radar(db, TODAY), "塑料")
+    card = _find(_radar(db, TODAY), "塑料")
     core = next(c for c in card["core_stocks"] if c["code"] == "603580")
     reasons = core["core_reasons"]
     assert "近60日曾涨停19次（含炸板）" in reasons
     assert not any(r == "近60日涨停19次" for r in reasons), "不能让用户读成19次收盘涨停"
+
+
+# ── 板块入选门槛（用户 2026-08-25 要求）──────────────────────────────────────
+
+def _sector_with(db, name, boards):
+    """造一个板块，boards 是每只涨停股的连板数列表。"""
+    sec = _sector(db, name)
+    for i, b in enumerate(boards):
+        st = _stock(db, f"{abs(hash(name)) % 900000 + i:06d}", f"{name}{i}")
+        _relate(db, st, sec)
+        _limit_up(db, st, board=b)
+    return sec
+
+
+def test_sector_threshold_needs_both_count_and_height(db):
+    """
+    门槛是 AND：涨停<3 或 最高连板<3 都不展示。
+    用户原话："涨停个股数<3或者最高连板<3的板块不展示……我要看的是当前最强的板块
+    和可能成为最强的板块。"
+    """
+    _sector_with(db, "达标", [4, 2, 1])        # 涨停3 最高4板 → 留
+    _sector_with(db, "只有个数", [1, 1, 1, 1, 1, 1, 1])  # 涨停7 最高1板 → 滤掉
+    _sector_with(db, "只有高度", [5, 1])       # 涨停2 最高5板 → 滤掉
+    _sector_with(db, "互联网金融", [1, 1])     # 涨停2 最高1板 → 滤掉（用户举的例子）
+
+    res = build_radar(db, TODAY)               # 用默认门槛 3/3
+    assert [s["sector_name"] for s in res["sectors"]] == ["达标"]
+    assert res["hidden_sector_count"] == 3
+    assert res["filter_min_limit_up"] == 3 and res["filter_min_board_height"] == 3
+
+
+def test_sector_threshold_is_adjustable(db):
+    _sector_with(db, "只有个数", [1, 1, 1, 1, 1, 1, 1])
+    _sector_with(db, "只有高度", [5, 1])
+
+    # 放宽高度门槛 → "只有个数"回来
+    res = build_radar(db, TODAY, min_limit_up=3, min_board_height=1)
+    assert [s["sector_name"] for s in res["sectors"]] == ["只有个数"]
+    # 放宽个数门槛 → "只有高度"回来
+    res = build_radar(db, TODAY, min_limit_up=1, min_board_height=3)
+    assert [s["sector_name"] for s in res["sectors"]] == ["只有高度"]
+
+
+def test_hidden_sector_count_is_reported_so_nothing_is_silently_dropped(db):
+    """被滤掉多少个必须返回给页面——用户要能看出是不是把想看的板块也滤掉了。"""
+    _sector_with(db, "达标", [4, 2, 1])
+    for i in range(5):
+        _sector_with(db, f"噪音{i}", [1, 1])
+
+    res = build_radar(db, TODAY)
+    assert len(res["sectors"]) == 1
+    assert res["hidden_sector_count"] == 5

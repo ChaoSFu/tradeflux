@@ -46,7 +46,8 @@ def sync_core_recall(db: Session, trade_date: date) -> int:
         return 0                      # 拉空视为失败，不覆盖上一份（避免整体漏召回）
     payload = {
         c: {"n": d.name, "lu10": d.limit_up_days_10d, "lu20": d.limit_up_days_20d,
-            "lu60": d.limit_up_days_60d, "mb": d.max_board_60d, "chg": d.pct_change}
+            "lu60": d.limit_up_days_60d, "mb": d.max_board_60d, "chg": d.pct_change,
+            "ic10": d.interval_chg_10d, "ic20": d.interval_chg_20d, "ic60": d.interval_chg_60d}
         for c, d in details.items()
     }
     key = core_recall_key(trade_date)
@@ -82,6 +83,8 @@ def get_core_recall_details(db: Session, trade_date: date) -> Dict[str, CoreReca
             limit_up_days_10d=v.get("lu10"), limit_up_days_20d=v.get("lu20"),
             limit_up_days_60d=v.get("lu60"), max_board_60d=v.get("mb"),
             pct_change=v.get("chg"),
+            interval_chg_10d=v.get("ic10"), interval_chg_20d=v.get("ic20"),
+            interval_chg_60d=v.get("ic60"),
         )
         for c, v in raw.items() if isinstance(v, dict)
     }

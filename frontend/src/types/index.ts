@@ -741,7 +741,12 @@ export interface LimitUpRadarCoreStock {
   limit_up_days_20d: number | null
   limit_up_days_60d: number | null
   board_count_60d: number | null
+  interval_chg_10d: number | null   // 区间涨幅（东财真实复合收益，非日涨幅相加）
+  interval_chg_20d: number | null
+  interval_chg_60d: number | null
+  scores_as_of_today: boolean       // false=该股今日不在候选池，分数是冻结旧值
   leader_score: number | null
+  risk_score: number | null
   is_broken_today: boolean
 }
 
@@ -762,6 +767,15 @@ export interface LimitUpRadarTodayStock {
   limit_reason: string | null       // 催化剂，不是板块归属
   limit_content: string | null
   limit_up_days_10d: number | null
+  limit_up_days_20d: number | null
+  limit_up_days_60d: number | null
+  board_count_60d: number | null
+  interval_chg_10d: number | null   // 区间涨幅（东财真实复合收益，非日涨幅相加）
+  interval_chg_20d: number | null
+  interval_chg_60d: number | null
+  scores_as_of_today: boolean       // false=该股今日不在候选池，分数是冻结旧值
+  leader_score: number | null
+  risk_score: number | null
   core_roles: W2SCoreRole[]
   core_reasons: string[]
 }
@@ -804,6 +818,9 @@ export interface LimitUpRadarResponse {
   source: string | null
   history_as_of: string | null  // 近10/20/60日涨停次数实际算到哪一天
   history_lag_days: number      // 落后几个交易日；≥2 时 warnings 里会有说明
+  filter_min_limit_up: number      // 板块入选门槛：最少涨停只数
+  filter_min_board_height: number  // 板块入选门槛：最低连板高度（与上面 AND）
+  hidden_sector_count: number      // 因不达标被隐藏的板块数
   summary: LimitUpRadarSummary
   sectors: LimitUpRadarSector[]
   warnings: string[]

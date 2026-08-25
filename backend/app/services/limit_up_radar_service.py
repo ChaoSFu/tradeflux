@@ -45,6 +45,16 @@ DEFAULT_CORE_MAX_BOARD_MIN = 3  # 近60日最高连板数
 # 排序已经把板块龙头/历史最活跃的排在最前，截断的是长尾。
 DEFAULT_MAX_CORE_PER_SECTOR = 8
 
+# 板块入选门槛（2026-08-25 按用户要求新增）：必须**同时**满足涨停只数和连板高度。
+# 目的是"只看当前最强的板块和可能成为最强的板块"——生产上活跃板块有上百个，绝大
+# 多数是"涨停2只、最高1板"的噪音（互联网金融/零售概念/生物疫苗这类），铺在页面上
+# 会把真正在形成集团进攻的板块淹掉。
+# 注意这是 AND：涨停多但全是首板（如基础化工涨停7/最高1板）也会被滤掉。这是用户
+# 明确要的取舍——首板扎堆更可能是普涨或题材扩散，有高板才说明有资金愿意接力。
+# 两个阈值都可以用查询参数放宽，被滤掉的数量会在响应里返回并显示在页面上。
+DEFAULT_MIN_LIMIT_UP = 3
+DEFAULT_MIN_BOARD_HEIGHT = 3
+
 # 角色标签优先级（数字小=优先展示）。纯粹反映"最近有多活跃"，不是强弱排名。
 _ROLE_PRIORITY = {
     "CURRENT_CORE": 0,     # 近10日还在涨停 —— 当前正在起作用的核心
@@ -356,16 +366,20 @@ def sort_core_stocks(rows: List[dict]) -> List[dict]:
 
 def sort_sectors(sectors: List[dict]) -> List[dict]:
     """
-    板块排序（需求§19）：
-      今日涨停数 DESC → 最高连板 DESC → 连板股数量 DESC → 最早首封时间 ASC → 总封单额 DESC
-    先看谁涨停最多（集团进攻的规模），同规模看谁打出了更高的板（高度），再看有多少
-    只在连板（梯队厚度），再看谁先发动，最后看资金排队规模。
+    板块排序（2026-08-25 按用户要求调整为**高度优先**）：
+      最高连板 DESC → 今日涨停数 DESC → 连板股数量 DESC → 最早首封时间 ASC → 总封单额 DESC
+
+    先看板块打出了多高的板，同样高度再比涨停只数。理由：连板高度是板块**情绪级别**
+    的直接体现——一个出了5板龙头的板块，即使只有5只涨停，也比10只清一色首板的板块
+    更值得先看；首板扎堆更可能是普涨或题材扩散，高板才代表有资金愿意接力。
+    （原来是"涨停数优先"，会把一堆首板齐发的板块排在有高位龙头的板块前面。）
+
     刻意不做 0.4*涨停数+0.3*板高+... 这种加权总分：用户需要能一眼说清"为什么这个
     板块排在前面"，加权分做不到这一点。
     """
     return sorted(sectors, key=lambda s: (
-        -s["today_limit_up_count"],
         -s["board_height"],
+        -s["today_limit_up_count"],
         -s["continuation_count"],
         s["earliest_limit_time"] or _LATE,
         -(s["total_seal_amount"] or 0.0),
@@ -385,6 +399,8 @@ def build_radar(
     core_60d_min: int = DEFAULT_CORE_60D_MIN,
     core_max_board_min: int = DEFAULT_CORE_MAX_BOARD_MIN,
     max_core_per_sector: int = DEFAULT_MAX_CORE_PER_SECTOR,
+    min_limit_up: int = DEFAULT_MIN_LIMIT_UP,
+    min_board_height: int = DEFAULT_MIN_BOARD_HEIGHT,
     max_sectors: int = 40,
 ) -> dict:
     """
@@ -481,6 +497,15 @@ def build_radar(
         if card["today_limit_up_count"] > 0:
             out_sectors.append(card)
 
+    # 门槛过滤：必须同时满足涨停只数和连板高度。被滤掉的数量要返回给页面显示，
+    # 不能悄悄丢——用户得能看出"是不是把想看的板块也滤掉了"。
+    total_with_limit_up = len(out_sectors)
+    out_sectors = [
+        c for c in out_sectors
+        if c["today_limit_up_count"] >= min_limit_up and c["board_height"] >= min_board_height
+    ]
+    hidden = total_with_limit_up - len(out_sectors)
+
     out_sectors = sort_sectors(out_sectors)[:max_sectors]
 
     return {
@@ -489,6 +514,9 @@ def build_radar(
         # 交易日，这是符合预期的——今天的涨停在"今日攻击"里单独展示，不混进历史窗口。
         "history_as_of": history_as_of.isoformat() if history_as_of else None,
         "history_lag_days": history_lag,
+        "filter_min_limit_up": min_limit_up,
+        "filter_min_board_height": min_board_height,
+        "hidden_sector_count": hidden,
         "summary": _build_summary(details, broken, out_sectors),
         "sectors": out_sectors,
         "warnings": freshness_warnings,
@@ -522,6 +550,7 @@ def _build_sector_card(
         )
         detail = detail_by_sid.get(sid)
 
+        _em = em_recall.get(st.code)
         if detail is not None:
             # 今日涨停股：同时带上它的核心角色标签，这样"历史核心今天也涨停了"
             # （最强的共振信号）能被一眼看出来，而不是被拆到两个区域里看不出关系
@@ -539,7 +568,17 @@ def _build_sector_card(
                 "turnover_rate": detail.turnover_rate,
                 "limit_reason": detail.limit_reason,
                 "limit_content": detail.limit_content,
-                "limit_up_days_10d": _lu_count(em_recall.get(st.code), lu_hist.get(sid), 10, st.limit_up_days_10d),
+                "limit_up_days_10d": _lu_count(_em, lu_hist.get(sid), 10, st.limit_up_days_10d),
+                "limit_up_days_20d": _lu_count(_em, lu_hist.get(sid), 20, st.limit_up_days_20d),
+                "limit_up_days_60d": _lu_count(_em, lu_hist.get(sid), 60, st.limit_up_days_60d),
+                "board_count_60d": (_em.max_board_60d if _em and _em.max_board_60d is not None
+                                    else st.board_count_60d),
+                "interval_chg_10d": _em.interval_chg_10d if _em else None,
+                "interval_chg_20d": _em.interval_chg_20d if _em else None,
+                "interval_chg_60d": _em.interval_chg_60d if _em else None,
+                "scores_as_of_today": True,   # 今日涨停股必然进候选池，本轮一定算过
+                "leader_score": st.leader_score,
+                "risk_score": st.risk_score,
                 "core_roles": recall.roles,
                 "core_reasons": recall.reasons,
             })
@@ -567,7 +606,19 @@ def _build_sector_card(
                 "board_count_60d": ((em_d.max_board_60d if em_d and em_d.max_board_60d is not None
                                      else (lu_hist[sid].max_consecutive_60d if sid in lu_hist
                                            else st.board_count_60d))),
-                "leader_score": st.leader_score,
+                # 区间涨幅只用东财的（真实复合区间收益）。Stock.pct_change_Nd 有两个
+                # 问题：对候选池外的股票是冻结旧值；而且算法是"日涨幅简单相加"的近似，
+                # 大涨股票严重低估（603580近60日：真实204.85% vs 相加123.14%）。
+                "interval_chg_10d": em_d.interval_chg_10d if em_d else None,
+                "interval_chg_20d": em_d.interval_chg_20d if em_d else None,
+                "interval_chg_60d": em_d.interval_chg_60d if em_d else None,
+                # 龙头分/风险分是本仓库自己算的，只在 daily_update 处理候选池内股票时
+                # 更新。核心锚大多在池外，那里的分数是冻结旧值——用"今天有没有当日
+                # 快照"判断它是不是本轮真的算过，没算过就给 None，页面显示 —。
+                # 这跟九安医疗那个冻结字段bug是同一类，不能因为字段有值就当它是当期的。
+                "scores_as_of_today": bool(snap),
+                "leader_score": st.leader_score if snap else None,
+                "risk_score": st.risk_score if snap else None,
                 "is_broken_today": sid in broken_sids,
             })
 
@@ -644,6 +695,9 @@ def _empty_result(trade_date: date, warnings: Optional[List[str]] = None) -> dic
         "trade_date": trade_date.isoformat(),
         "history_as_of": None,
         "history_lag_days": 0,
+        "filter_min_limit_up": DEFAULT_MIN_LIMIT_UP,
+        "filter_min_board_height": DEFAULT_MIN_BOARD_HEIGHT,
+        "hidden_sector_count": 0,
         "summary": {
             "limit_up_count": 0, "continuation_count": 0, "first_board_count": 0,
             "board_height": 0, "broken_count": 0, "seal_rate": None,

@@ -54,6 +54,34 @@ const fmtPct = (v: number | null) => (v == null ? '—' : `${v > 0 ? '+' : ''}${
 const coreVerdictTrustworthy = (s: LimitUpRadarSector) =>
   s.core_pct_known_count >= 3 && s.core_pct_known_count / Math.max(s.core_count, 1) >= 0.3
 
+/** 涨停次数三连：10/20/60日。0 显示为暗色，避免一排 0 抢视线 */
+function LuCounts({ a, b, c }: { a: number | null; b: number | null; c: number | null }) {
+  const cell = (v: number | null) => (
+    <span className={cn('inline-block w-6 text-right tabular-nums', v ? 'text-warn' : 'text-text-muted/50')}>
+      {v ?? '—'}
+    </span>
+  )
+  return <span className="font-mono">{cell(a)}<span className="text-text-muted/30 mx-0.5">/</span>{cell(b)}<span className="text-text-muted/30 mx-0.5">/</span>{cell(c)}</span>
+}
+
+/** 区间涨幅三连。数据源是东财真实复合区间收益，跟活跃股池的近似算法不同 */
+function ChgCounts({ a, b, c }: { a: number | null; b: number | null; c: number | null }) {
+  const cell = (v: number | null) => (
+    <span className={cn('inline-block w-14 text-right tabular-nums', pctClass(v))}>
+      {v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`}
+    </span>
+  )
+  return <span className="font-mono text-xs">{cell(a)}{cell(b)}{cell(c)}</span>
+}
+
+/** 龙头分/风险分：只在本轮真的算过时才显示，否则 — （见 scores_as_of_today） */
+function ScoreCell({ v, fresh, tone }: { v: number | null; fresh: boolean; tone: 'dragon' | 'danger' }) {
+  if (!fresh || v == null) {
+    return <span className="text-text-muted/50" title="该股今日不在候选池，没有当日快照，分数是上次入池时的旧值，不展示">—</span>
+  }
+  return <span className={cn('font-mono tabular-nums', tone === 'dragon' ? 'text-dragon' : 'text-danger')}>{Math.round(v)}</span>
+}
+
 const pctClass = (v: number | null) =>
   v == null ? 'text-text-muted' : v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-secondary'
 
@@ -173,6 +201,16 @@ export default function LimitUpSectorRadar() {
               <span className="text-warn"> （落后{data.history_lag_days}个交易日）</span>
             )}
           </span>
+          {/* 门槛和被隐藏的板块数必须显示出来——用户得能看出是不是把想看的板块
+              也滤掉了，而不是以为"今天就这几个板块" */}
+          {!!data && (
+            <span className="text-text-muted">
+              板块门槛：涨停≥{data.filter_min_limit_up} 且 最高≥{data.filter_min_board_height}板
+              {data.hidden_sector_count > 0 && (
+                <span className="text-text-muted/70">（已隐藏 {data.hidden_sector_count} 个不达标板块）</span>
+              )}
+            </span>
+          )}
           <span className="text-text-muted/70">不自动刷新，需手动点击</span>
           {refreshErr && (
             <span className="flex items-center gap-1 text-danger">
@@ -198,8 +236,14 @@ export default function LimitUpSectorRadar() {
         <div className="card p-4"><LoadingRows rows={6} /></div>
       ) : !data?.sectors.length ? (
         <div className="card p-8 text-center text-text-muted text-sm">
-          {data?.trade_date ? `${data.trade_date} 没有涨停板块数据` : '暂无数据'}
-          <div className="mt-2 text-xs">点击右上角「刷新涨停数据」从东方财富拉取当日涨停明细</div>
+          {data?.hidden_sector_count
+            ? `没有板块同时满足「涨停≥${data.filter_min_limit_up} 且 最高≥${data.filter_min_board_height}板」（${data.hidden_sector_count} 个板块因不达标被隐藏）`
+            : (data?.trade_date ? `${data.trade_date} 没有涨停板块数据` : '暂无数据')}
+          <div className="mt-2 text-xs">
+            {data?.hidden_sector_count
+              ? '说明今天没有形成有高度的板块进攻——这本身就是一个市场判断，不是数据缺失'
+              : '点击右上角「刷新涨停数据」从东方财富拉取当日涨停明细'}
+          </div>
         </div>
       ) : (
         <div className="space-y-3">
@@ -351,6 +395,11 @@ function CoreTable({ rows }: { rows: LimitUpRadarCoreStock[] }) {
             <th className="text-left font-normal py-1.5 pr-3">股票</th>
             <th className="text-left font-normal py-1.5 pr-3">角色</th>
             <th className="text-right font-normal py-1.5 pr-3">今日</th>
+            <th className="text-center font-normal py-1.5 pr-3" title="近10日/20日/60日曾涨停次数（东财口径，含炸板）">涨停 10/20/60</th>
+            <th className="text-center font-normal py-1.5 pr-3" title="60日最高连板">高板</th>
+            <th className="text-right font-normal py-1.5 pr-3" title="近10日/20日/60日区间涨幅（真实复合收益，与活跃股池的近似算法不同）">涨幅 10/20/60</th>
+            <th className="text-right font-normal py-1.5 pr-3" title="龙头分。仅当该股今日在候选池、本轮真的算过时才显示">龙头</th>
+            <th className="text-right font-normal py-1.5 pr-3" title="风险分。仅当该股今日在候选池、本轮真的算过时才显示">风险</th>
             <th className="text-left font-normal py-1.5 pr-3">召回理由</th>
           </tr>
         </thead>
@@ -368,6 +417,15 @@ function CoreTable({ rows }: { rows: LimitUpRadarCoreStock[] }) {
               <td className={cn('py-1.5 pr-3 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
                 {fmtPct(r.pct_change)}
               </td>
+              <td className="py-1.5 pr-3 text-center whitespace-nowrap">
+                <LuCounts a={r.limit_up_days_10d} b={r.limit_up_days_20d} c={r.limit_up_days_60d} />
+              </td>
+              <td className="py-1.5 pr-3 text-center font-mono text-dragon tabular-nums">{r.board_count_60d || '—'}</td>
+              <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                <ChgCounts a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
+              </td>
+              <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.leader_score} fresh={r.scores_as_of_today} tone="dragon" /></td>
+              <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.risk_score} fresh={r.scores_as_of_today} tone="danger" /></td>
               <td className="py-1.5 pr-3 text-text-muted">{r.core_reasons.join(' · ') || '—'}</td>
             </tr>
           ))}
@@ -389,6 +447,10 @@ function TodayTable({ rows }: { rows: LimitUpRadarTodayStock[] }) {
             <th className="text-right font-normal py-1.5 pr-3" title="最终封板时间；与首封不同说明中途开过板">终封</th>
             <th className="text-right font-normal py-1.5 pr-3" title="封单额；— 表示东方财富未提供该字段，不是0">封单</th>
             <th className="text-right font-normal py-1.5 pr-3">炸板</th>
+            <th className="text-center font-normal py-1.5 pr-3" title="近10日/20日/60日曾涨停次数（东财口径，含炸板）">涨停 10/20/60</th>
+            <th className="text-right font-normal py-1.5 pr-3" title="近10日/20日/60日区间涨幅（真实复合收益，与活跃股池的近似算法不同）">涨幅 10/20/60</th>
+            <th className="text-right font-normal py-1.5 pr-3" title="龙头分">龙头</th>
+            <th className="text-right font-normal py-1.5 pr-3" title="风险分">风险</th>
             <th className="text-left font-normal py-1.5 pr-3">核心角色</th>
             <th className="text-left font-normal py-1.5">涨停原因（催化剂，非板块归属）</th>
           </tr>
@@ -422,6 +484,14 @@ function TodayTable({ rows }: { rows: LimitUpRadarTodayStock[] }) {
                                   r.broken_times ? 'text-warn' : 'text-text-muted')}>
                   {r.broken_times == null ? '—' : r.broken_times === 0 ? '0' : `${r.broken_times}次`}
                 </td>
+                <td className="py-1.5 pr-3 text-center whitespace-nowrap">
+                  <LuCounts a={r.limit_up_days_10d} b={r.limit_up_days_20d} c={r.limit_up_days_60d} />
+                </td>
+                <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                  <ChgCounts a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
+                </td>
+                <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.leader_score} fresh={r.scores_as_of_today} tone="dragon" /></td>
+                <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.risk_score} fresh={r.scores_as_of_today} tone="danger" /></td>
                 <td className="py-1.5 pr-3"><RoleTags roles={r.core_roles} reasons={r.core_reasons} /></td>
                 <td className="py-1.5 text-text-muted max-w-md" title={r.limit_content || undefined}>
                   {r.limit_reason || '—'}
