@@ -9,7 +9,8 @@ from datetime import date
 
 from app.services.eastmoney_fetcher import (
     _parse_sina_quote_line, _parse_tencent_quote_line, get_limit_pct, get_actual_limit_pct,
-    StockQuote, build_kline_bar, kline_bar_from_quote,
+    StockQuote, build_kline_bar, kline_bar_from_quote, exact_limit_price,
+    _parse_tencent_klines, _parse_sina_klines,
 )
 
 
@@ -197,24 +198,31 @@ def test_kline_bar_from_quote_builds_limit_up_bar_with_real_002821_numbers():
     q = StockQuote(code="002821", name="", price=172.23, pct_change=10.0, open=160.0,
                    high=172.23, low=158.0, prev_close=156.57, turnover_rate=5.37,
                    trade_date=d)
-    bar, turnover_known = kline_bar_from_quote(q, "002821", False, d)
+    bar = kline_bar_from_quote(q, "002821", False, d)
     assert bar.date == d
     assert bar.close_price == 172.23
     assert bar.is_limit_up is True          # 这正是生产上写成 -6.86% 的那一天
     assert bar.is_limit_down is False
-    assert bar.turnover_rate == 5.37
-    assert turnover_known is True
 
 
-def test_kline_bar_from_quote_flags_missing_turnover_instead_of_writing_zero():
-    # 新浪那一路没有换手率字段。换手率参与龙头评分的资金容量项，编一个0%比留空
-    # 错得更远，所以要用 turnover_known=False 告诉调用方"这个字段别落库"。
+def test_repaired_bar_never_carries_turnover_even_when_the_quote_has_it():
+    """
+    行情兜底补出来的bar一律不带换手率，**即使腾讯那一路的行情其实有真实值**。
+    它顶替的是K线接口那一根，而当前K线主力源（腾讯/新浪）本来就不提供换手率、
+    全市场每只股票的换手率长期都是缺失的。只给"K线失败走了兜底"的少数几只带上
+    真实换手率，它们就会凭空多拿到情绪分(+16)和龙头分(+5)——等于"数据源恰好走了
+    哪条路"变成打分优势，而且方向上是"拉取失败反而加分"，说不通。
+    """
     d = date(2026, 8, 25)
-    q = StockQuote(code="002821", name="", price=172.23, prev_close=156.57,
-                   turnover_rate=None, trade_date=d)
-    bar, turnover_known = kline_bar_from_quote(q, "002821", False, d)
-    assert turnover_known is False
-    assert bar.is_limit_up is True
+    with_turnover = StockQuote(code="002821", name="", price=172.23, prev_close=156.57,
+                               turnover_rate=5.37, trade_date=d)
+    without = StockQuote(code="002821", name="", price=172.23, prev_close=156.57,
+                         turnover_rate=None, trade_date=d)
+    a = kline_bar_from_quote(with_turnover, "002821", False, d)
+    b = kline_bar_from_quote(without, "002821", False, d)
+    assert a.turnover_rate is None
+    assert b.turnover_rate is None
+    assert a.is_limit_up is True and b.is_limit_up is True
 
 
 def test_build_kline_bar_agrees_whether_prev_close_is_given_or_back_derived():
@@ -235,3 +243,84 @@ def test_build_kline_bar_agrees_whether_prev_close_is_given_or_back_derived():
         )
         assert derived.is_limit_up == explicit.is_limit_up, (prev, close, pct)
         assert derived.is_limit_down == explicit.is_limit_down, (prev, close, pct)
+
+
+# ── 数据契约统一（2026-08-25）────────────────────────────────────────────────
+# 这轮收口两条契约：
+#   1. 缺失字段必须诚实表达缺失（None），不能用0冒充"已知为0"
+#   2. 同一个市场事实，无论来自哪个数据源，都必须经过同一套判定函数
+
+def test_tencent_and_sina_klines_report_turnover_as_unknown_not_zero():
+    """
+    腾讯/新浪的K线接口都没有换手率字段，而腾讯正是当前K线主力源。此前两个解析器
+    都写 turnover_rate=0.0 顶替，结果生产库里每一天每只股票的换手率全是0.0——
+    情绪分里的 turnover*0.8、龙头分里的 turnover_bonus、以及5日/20日换手趋势
+    全部长期恒为0，一个本该参与打分的因子事实上早已失效，却因为"0是个合法数字"
+    而完全没有报错。必须是 None。
+    """
+    tencent = _parse_tencent_klines(
+        [["2026-08-24", "156.00", "156.57", "157.0", "155.0", "1000"],
+         ["2026-08-25", "160.00", "172.23", "172.23", "158.0", "2000"]],
+        is_st=False, limit_pct=9.90,
+    )
+    sina = _parse_sina_klines(
+        [{"day": "2026-08-24", "open": "156.00", "close": "156.57", "high": "157.0", "low": "155.0", "volume": "1000"},
+         {"day": "2026-08-25", "open": "160.00", "close": "172.23", "high": "172.23", "low": "158.0", "volume": "2000"}],
+        is_st=False, limit_pct=9.90,
+    )
+    assert all(b.turnover_rate is None for b in tencent)
+    assert all(b.turnover_rate is None for b in sina)
+    # 顺带锁住这两路对同一段真实数据（002821 8-25涨停）判定一致
+    assert tencent[-1].is_limit_up is True
+    assert sina[-1].is_limit_up is True
+    assert tencent[-1].close_price == sina[-1].close_price == 172.23
+
+
+def test_exact_limit_price_matches_exchange_rounding():
+    # 主板10%：156.57 → 172.227 → 四舍五入到分 = 172.23（002821 2026-08-25实盘价）
+    assert exact_limit_price(156.57, 10.0, is_up=True) == 172.23
+    assert exact_limit_price(10.00, 10.0, is_up=False) == 9.00
+    assert exact_limit_price(50.00, 20.0, is_up=True) == 60.00   # 创业板/科创板
+    assert exact_limit_price(20.00, 30.0, is_up=True) == 26.00   # 北交所
+    # ROUND_HALF_UP 而不是 Python 内置 round() 的银行家舍入
+    assert exact_limit_price(13.57, 10.0, is_up=True) == 14.93   # 14.927 → 14.93
+
+
+def test_broken_board_requires_actually_touching_the_real_limit_price():
+    """
+    炸板此前用的是 prev*(1+limit_pct/100)*0.999——limit_pct 是K线判定容差(9.90)
+    而不是真实规则(10.0)，再打个0.999，等效阈值只有 +9.79%。一只盘中最高冲到
+    +9.85%、根本没碰过涨停价的股票会被判成炸板，而炸板在风险分里是近3日每次
+    +28分、龙头分里-12分，是全仓库单笔权重最大的惩罚项之一，这个0.2个百分点的
+    宽松带正好覆盖"冲高回落"这类最常见形态。
+    """
+    def bar(high):
+        return build_kline_bar(
+            dt=date(2026, 8, 25), open_p=105.0, close_p=105.0, high_p=high, low_p=104.0,
+            pct=5.0, turnover=None, limit_pct=9.90, prev_close=100.0,
+        )
+    # 前收100 → 真实涨停价110.00
+    assert bar(109.50).is_broken_board is False
+    assert bar(109.85).is_broken_board is False   # 旧逻辑在这里误判为炸板
+    assert bar(109.99).is_broken_board is False   # 旧逻辑在这里误判为炸板
+    assert bar(110.00).is_broken_board is True    # 真的摸到涨停价又没封住 → 炸板
+
+
+def test_broken_board_and_limit_up_share_one_price_definition():
+    """涨停判定和炸板判定必须用同一个涨停价——收盘就封在涨停价上时不能既算涨停
+    又算炸板，两者只能有一个成立。"""
+    b = build_kline_bar(
+        dt=date(2026, 8, 25), open_p=105.0, close_p=110.0, high_p=110.0, low_p=104.0,
+        pct=10.0, turnover=None, limit_pct=9.90, prev_close=100.0,
+    )
+    assert b.is_limit_up is True
+    assert b.is_broken_board is False
+
+
+def test_derive_limit_close_price_uses_the_same_price_function():
+    """反推收盘价跟涨跌停判定必须是同一个价格口径，不能各算各的。"""
+    from app.services.screening_service import derive_limit_close_price
+    for prev, pct, up in [(156.57, 10.0, True), (13.57, 10.0, True), (10.0, 10.0, False),
+                          (50.0, 20.0, True), (20.0, 30.0, True)]:
+        close, _ = derive_limit_close_price(prev, pct, is_up=up)
+        assert close == exact_limit_price(prev, pct, is_up=up), (prev, pct, up)

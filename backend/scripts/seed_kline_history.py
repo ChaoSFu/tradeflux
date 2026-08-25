@@ -123,7 +123,8 @@ def main():
                         date=bar.date,
                         close_price=round(bar.close_price, 4),
                         pct_change=round(bar.pct_change, 4),
-                        turnover_rate=round(bar.turnover_rate, 4),
+                        turnover_rate=(round(bar.turnover_rate, 4)
+                                       if bar.turnover_rate is not None else None),
                         is_limit_up=bar.is_limit_up,
                         is_limit_down=bar.is_limit_down,
                         is_broken_board=bar.is_broken_board,

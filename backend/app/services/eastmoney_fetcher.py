@@ -123,14 +123,23 @@ class StockBasicInfo:
 
 @dataclass
 class KLineBar:
-    """单根 K 线（临时对象，计算后不存入 DB）"""
+    """单根 K 线（临时对象，计算后不存入 DB）
+
+    turnover_rate 是 Optional 且 **None 表示"这个数据源不提供换手率"，不是"换手率
+    是0%"**（2026-08-25改）。腾讯/新浪的K线接口都没有换手率字段，此前两个解析器
+    都写 turnover_rate=0.0 顶替，而腾讯正是当前K线主力源——结果就是生产库里每一
+    天每只股票的换手率全是0.0，情绪分里的 `turnover*0.8`、龙头分里的
+    `turnover_bonus`、以及5日/20日换手趋势全部长期恒为0，一个本该参与打分的因子
+    事实上已经死掉很久，却因为"0是个合法数字"而完全没有报错、没人发现。
+    这是本仓库反复出现的同一类问题：**用0表达"不知道"**。
+    """
     date: date
     open_price: float
     close_price: float
     high_price: float
     low_price: float
     pct_change: float
-    turnover_rate: float
+    turnover_rate: Optional[float]
     is_limit_up: bool = False
     is_limit_down: bool = False
     is_broken_board: bool = False  # 炸板
@@ -220,9 +229,33 @@ def _parse_kline_bar(line: str, is_st: bool = False, limit_pct: float = 9.90) ->
     )
 
 
+def exact_limit_price(prev_close: float, actual_limit_pct: float, is_up: bool) -> float:
+    """
+    交易所真实涨/跌停价 = 四舍五入到分(前收 × (1 ± 实际涨跌幅限制/100))。
+
+    2026-08-25抽出来做唯一口径。此前"涨停价"这个概念在仓库里有三种算法各自为政：
+      · 涨跌停判定：round(prev*(1+(limit_pct+0.1)/100), 2) —— 对的
+      · 炸板判定：  prev*(1+limit_pct/100)*0.999          —— 错的
+      · 反推收盘价：Decimal + ROUND_HALF_UP                —— 对的
+    第二个用的 limit_pct 是**K线判定容差**(9.90)而不是真实规则(10.0)，再乘 0.999，
+    等效阈值只有 +9.79%——一只盘中最高只冲到 +9.85%、从没碰过涨停价的股票会被
+    判成"炸板"。而炸板在风险分里是 近3日每次 +28 分、龙头分里 -12 分，是全仓库
+    单笔权重最大的惩罚项之一，这个 0.2 个百分点的宽松带正好覆盖"冲高回落"这类
+    最常见形态，误判代价很高。
+    用 Decimal + ROUND_HALF_UP 贴近交易所"四舍五入"惯例（Python 内置 round() 是
+    银行家舍入，5 会向偶数靠，跟交易所规则不一致）。
+    """
+    from decimal import Decimal, ROUND_HALF_UP
+
+    signed = actual_limit_pct if is_up else -actual_limit_pct
+    prev_d = Decimal(str(prev_close))
+    factor = Decimal("1") + Decimal(str(signed)) / Decimal("100")
+    return float((prev_d * factor).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
 def build_kline_bar(
     *, dt: date, open_p: float, close_p: float, high_p: float, low_p: float,
-    pct: float, turnover: float, is_st: bool = False, limit_pct: float = 9.90,
+    pct: float, turnover: Optional[float], is_st: bool = False, limit_pct: float = 9.90,
     prev_close: float | None = None,
 ) -> KLineBar:
     """
@@ -243,10 +276,11 @@ def build_kline_bar(
     # 阈值，2026-07-06新规后不再单独更小，这里不需要再为ST单独举例）
     if prev_close is None and close_p > 0 and abs(pct) < 99.9:
         prev_close = close_p / (1 + pct / 100)   # K线接口不给昨收，只能反推
+    actual_limit = limit_pct + 0.1
+    lu_price = None
     if prev_close and prev_close > 0 and close_p > 0:
-        actual_limit = limit_pct + 0.1
-        lu_price = round(prev_close * (1 + actual_limit / 100), 2)
-        ld_price = round(prev_close * (1 - actual_limit / 100), 2)
+        lu_price = exact_limit_price(prev_close, actual_limit, is_up=True)
+        ld_price = exact_limit_price(prev_close, actual_limit, is_up=False)
         # 容差 0.005：规避浮点取整（如 51.699 vs 涨停价 51.70）导致漏判
         is_lu = close_p >= lu_price - 0.005
         is_ld = close_p <= ld_price + 0.005
@@ -255,10 +289,13 @@ def build_kline_bar(
         is_lu = pct >= limit_pct
         is_ld = pct <= -limit_pct
 
-    # 炸板判断：高价触及涨停价，但收盘未封板
-    if not is_st and not is_lu and prev_close > 0:
-        limit_price = prev_close * (1 + limit_pct / 100)
-        is_broken = high_p >= limit_price * 0.999
+    # 炸板判断：盘中最高价确实触及了真实涨停价，但收盘没封住。
+    # 2026-08-25修正：此前这里用的是 prev*(1+limit_pct/100)*0.999，即判定容差
+    # 9.90% 再打个 0.999 折 ≈ +9.79%，比真实涨停价低了 0.2 个百分点，冲高到
+    # +9.8% 从没碰过涨停板的股票会被误判炸板（详见 exact_limit_price 注释）。
+    # 现在跟涨停判定共用同一个 lu_price，同一个事实只有一套价格口径。
+    if not is_st and not is_lu and lu_price is not None:
+        is_broken = high_p >= lu_price - 0.005
     else:
         is_broken = False
 
@@ -285,10 +322,10 @@ def build_kline_bar(
 
 def kline_bar_from_quote(
     quote: "StockQuote", code: str, is_st: bool, expect_date: date,
-) -> "tuple[KLineBar, bool] | None":
+) -> "KLineBar | None":
     """
     用实时行情快照构造 expect_date 这一天的 KLineBar，给"K线接口当日那一根拉不到"
-    做定向兜底。返回 (bar, turnover_known)，无法可信构造时返回 None。
+    做定向兜底。无法可信构造时返回 None。
 
     2026-08-25新增。此前 daily_update 遇到今日K线拉取失败是"降级用历史"——直接拿
     上一根旧bar当今天用，于是收盘价/涨幅/换手率/连板数/各种评分全都是旧的却盖着
@@ -302,9 +339,16 @@ def kline_bar_from_quote(
       2. 没有可信现价或昨收 —— 涨跌停判定完全依赖昨收，缺了只能瞎猜。
       3. 停牌（价格<=0）。
 
-    turnover_known=False 表示这一路数据源没有换手率（新浪就没有，腾讯有）。
-    换手率参与龙头评分的资金容量项，编一个0比留空错得更远，调用方要据此决定
-    是否落库换手率，不能默默写0。
+    换手率一律置 None，**即使腾讯这一路的行情其实带了真实换手率**（2026-08-25
+    的刻意决定）。理由：这根bar是在顶替K线接口那一根，而当前K线主力源（腾讯/
+    新浪）本来就不提供换手率、全市场每只股票的换手率长期都是缺失的。如果只有
+    "K线拉取失败、走了行情兜底"的这少数几只带上真实换手率，它们就会凭空多拿到
+    情绪分里的 `turnover*0.8`（高换手股可达+16）和龙头分里的 turnover_bonus
+    (+5)，等于"数据源恰好走了哪条路"变成了打分优势——龙头分/情绪分是拿来做
+    横向排序和板块均值的，来源不一致造成的系统性偏差比少一个因子更有害，而且
+    "拉取失败反而加分"这个方向本身就说不通。
+    换手率要恢复成一个真正参与打分的因子，应该是给**所有**候选统一补齐，那是
+    一个会改变全市场评分分布的产品决策，不能顺手夹带在一次数据契约修复里。
     """
     if quote.trade_date != expect_date:
         return None
@@ -314,8 +358,7 @@ def kline_bar_from_quote(
     pct = quote.pct_change
     if pct is None:
         pct = round((price - prev_close) / prev_close * 100, 2)
-    turnover_known = quote.turnover_rate is not None
-    bar = build_kline_bar(
+    return build_kline_bar(
         dt=expect_date,
         open_p=quote.open if quote.open and quote.open > 0 else price,
         close_p=price,
@@ -324,12 +367,11 @@ def kline_bar_from_quote(
         high_p=quote.high if quote.high and quote.high > 0 else price,
         low_p=quote.low if quote.low and quote.low > 0 else price,
         pct=pct,
-        turnover=quote.turnover_rate if turnover_known else 0.0,
+        turnover=None,          # 见上面 docstring：刻意不带，避免来源相关的打分偏差
         is_st=is_st,
         limit_pct=get_limit_pct(code, is_st),
         prev_close=prev_close,
     )
-    return bar, turnover_known
 
 
 # ---------------------------------------------------------------------------
@@ -603,8 +645,14 @@ def _parse_tencent_klines(
     """
     解析腾讯财经 K 线数据。
     格式：[date, open, close, high, low, volume]
-    涨跌幅由相邻两根 K 线的收盘价推算；
-    换手率无法获取，设为 0（影响评分精度但不影响涨跌停判断）。
+    涨跌幅由相邻两根 K 线的收盘价推算；换手率该接口不提供，置 None（不是0——
+    见 KLineBar 的 docstring）。
+
+    2026-08-25：涨跌停/炸板/一字板判定改为调用公用的 build_kline_bar()，不再自己
+    抄一份。此前东财/腾讯/新浪三个解析器各写了一套几乎相同的判定代码，而腾讯是
+    当前主力源——意味着以后任何一次判定规则调整如果只改了公用函数，主力源反而
+    改不到，同一只股票会因为"这根bar来自哪个源"得出不同的涨停结论。凯莱英那次
+    事故的本质就是同一个事实在不同来源之间脱节，不能在这里再留一个同样的口子。
     """
     bars: List[KLineBar] = []
     for i, row in enumerate(raw_bars):
@@ -626,38 +674,14 @@ def _parse_tencent_klines(
             pct = (close_p - prev_close) / prev_close * 100 if prev_close > 0 else 0.0
             pct = round(pct, 2)
 
-        # ── 使用实际价格判断涨跌停（与 _parse_kline_bar 保持一致）────────────
-        if prev_close > 0:
-            actual_limit = limit_pct + 0.1
-            lu_price = round(prev_close * (1 + actual_limit / 100), 2)
-            ld_price = round(prev_close * (1 - actual_limit / 100), 2)
-            # 容差 0.005：规避浮点取整（如 51.699 vs 涨停价 51.70）导致漏判
-            is_lu = close_p >= lu_price - 0.005
-            is_ld = close_p <= ld_price + 0.005
-        else:
-            is_lu = pct >= limit_pct
-            is_ld = pct <= -limit_pct
-
-        # 炸板判断（用正确的涨停价）
-        if not is_st and not is_lu and prev_close > 0:
-            limit_price = prev_close * (1 + limit_pct / 100)
-            is_broken = high_p >= limit_price * 0.999
-        else:
-            is_broken = False
-
-        bars.append(KLineBar(
-            date=dt,
-            open_price=open_p,
-            close_price=close_p,
-            high_price=high_p,
-            low_price=low_p,
-            pct_change=pct,
-            turnover_rate=0.0,   # 腾讯接口无换手率
-            is_limit_up=is_lu,
-            is_limit_down=is_ld,
-            is_broken_board=is_broken,
-            is_one_word_limit_up=is_lu and low_p > 0 and low_p >= close_p - 0.005,
-            is_one_word_limit_down=is_ld and high_p > 0 and high_p <= close_p + 0.005,
+        # prev_close 显式传 0.0（不是 None）：第一根没有前置bar，pct 是我们自己填的
+        # 0.0 而不是真实涨跌幅，交给 build_kline_bar 反推会得出 prev_close=close 的
+        # 假前收。传 0.0 表示"确实拿不到前收"，走保守的百分比阈值分支，跟改造前
+        # 这两个解析器的行为完全一致。
+        bars.append(build_kline_bar(
+            dt=dt, open_p=open_p, close_p=close_p, high_p=high_p, low_p=low_p,
+            pct=pct, turnover=None, is_st=is_st, limit_pct=limit_pct,
+            prev_close=prev_close,
         ))
     return bars
 
@@ -716,11 +740,12 @@ def _parse_sina_klines(rows: list[dict], is_st: bool = False, limit_pct: float =
     """
     解析新浪财经K线数据（quotes.sina.cn 的 CN_MarketDataService.getKLineData
     接口，指数/个股通用格式）：[{day, open, close, high, low, volume}, ...]。
-    涨跌幅由相邻两根K线收盘价推算；换手率无法获取，设为0——涨跌停/炸板判断
-    逻辑跟 _parse_tencent_klines 完全一致，只是输入是dict不是list（这里额外
-    用一个运行变量记录上一根有效收盘价，比 Tencent 版直接下标回看
-    raw_bars[i-1] 更稳一点：中间某根数据畸形被跳过时不会拿一个解析失败的
-    值去算涨跌幅）。
+    涨跌幅由相邻两根K线收盘价推算；换手率该接口不提供，置 None（不是0——见
+    KLineBar 的 docstring）。涨跌停/炸板判定跟其他所有来源一样走公用的
+    build_kline_bar()（2026-08-25统一，理由见 _parse_tencent_klines）。
+    跟 Tencent 版的唯一区别是输入是dict不是list，并且用一个运行变量记录上一根
+    有效收盘价，比直接下标回看 rows[i-1] 更稳：中间某根数据畸形被跳过时不会拿
+    一个解析失败的值去算涨跌幅。
     """
     bars: List[KLineBar] = []
     prev_close = 0.0
@@ -737,35 +762,10 @@ def _parse_sina_klines(rows: list[dict], is_st: bool = False, limit_pct: float =
         this_prev_close = 0.0 if i == 0 else prev_close
         pct = round((close_p - this_prev_close) / this_prev_close * 100, 2) if this_prev_close > 0 else 0.0
 
-        if this_prev_close > 0:
-            actual_limit = limit_pct + 0.1
-            lu_price = round(this_prev_close * (1 + actual_limit / 100), 2)
-            ld_price = round(this_prev_close * (1 - actual_limit / 100), 2)
-            is_lu = close_p >= lu_price - 0.005
-            is_ld = close_p <= ld_price + 0.005
-        else:
-            is_lu = pct >= limit_pct
-            is_ld = pct <= -limit_pct
-
-        if not is_st and not is_lu and this_prev_close > 0:
-            limit_price = this_prev_close * (1 + limit_pct / 100)
-            is_broken = high_p >= limit_price * 0.999
-        else:
-            is_broken = False
-
-        bars.append(KLineBar(
-            date=dt,
-            open_price=open_p,
-            close_price=close_p,
-            high_price=high_p,
-            low_price=low_p,
-            pct_change=pct,
-            turnover_rate=0.0,  # 新浪接口无换手率
-            is_limit_up=is_lu,
-            is_limit_down=is_ld,
-            is_broken_board=is_broken,
-            is_one_word_limit_up=is_lu and low_p > 0 and low_p >= close_p - 0.005,
-            is_one_word_limit_down=is_ld and high_p > 0 and high_p <= close_p + 0.005,
+        bars.append(build_kline_bar(
+            dt=dt, open_p=open_p, close_p=close_p, high_p=high_p, low_p=low_p,
+            pct=pct, turnover=None, is_st=is_st, limit_pct=limit_pct,
+            prev_close=this_prev_close,   # 0.0 = 确实拿不到前收，不要反推
         ))
         prev_close = close_p
     return bars

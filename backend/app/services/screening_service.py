@@ -13,7 +13,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from ..models.screening import ScreeningCriteria
-from .eastmoney_fetcher import KLineBar
+from .eastmoney_fetcher import KLineBar, exact_limit_price
 
 
 def derive_limit_close_price(prev_close: float, actual_limit_pct: float, is_up: bool) -> tuple[float, float]:
@@ -36,14 +36,15 @@ def derive_limit_close_price(prev_close: float, actual_limit_pct: float, is_up: 
     ROUND_HALF_UP（不用Python内置round()的banker's rounding，四舍六入五成双
     在.5这个边界上跟交易所"四舍五入"习惯不一致，比如round(0.005,2)在Python里
     是0.0不是0.01）保证价格四舍五入方式贴近真实交易规则。
+
+    2026-08-25三次修复：价格计算本身改为直接调用 exact_limit_price()，不再自己
+    抄一遍 Decimal 逻辑。仓库里"涨停价"一度有三套各自为政的算法（涨跌停判定、
+    炸板判定、这里的反推），其中炸板那套用错了百分比、算出来比真实涨停价低
+    0.2个百分点。同一个市场事实必须只有一个计算口径，否则迟早再次脱节。
     """
-    from decimal import Decimal, ROUND_HALF_UP
-    signed_pct = actual_limit_pct if is_up else -actual_limit_pct
-    prev_d = Decimal(str(prev_close))
-    factor_d = Decimal("1") + Decimal(str(signed_pct)) / Decimal("100")
-    close_d = (prev_d * factor_d).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    close_price = float(close_d)
-    pct_change = round(float((close_d - prev_d) / prev_d * 100), 2)
+    close_price = exact_limit_price(prev_close, actual_limit_pct, is_up)
+    # 涨跌幅必须从"已四舍五入到分的真实价格"反推，见上面第二段说明
+    pct_change = round((close_price - prev_close) / prev_close * 100, 2)
     return close_price, pct_change
 
 
@@ -65,7 +66,7 @@ class StockWindowStats:
                                 # （2026-08-25排查真实bug后新增，见daily_update.py调用点）
     today_close_price: float
     today_pct_change: float
-    today_turnover: float
+    today_turnover: Optional[float]   # None = 数据源不提供换手率，不是0%
     today_is_limit_up: bool
     today_is_limit_down: bool
     today_is_broken_board: bool
@@ -201,9 +202,12 @@ def compute_window_stats(
     #
     # 核心改进：加入换手率趋势（近5日 vs 近20日），区分"量能放大"与"缩量维持"
     # 排除今日数据（收盘后 turnover_rate 可能为 0，影响趋势判断）
+    # 2026-08-25：KLineBar.turnover_rate 现在可能是 None＝"这个数据源不提供换手率"
+    # （腾讯/新浪K线都没有这个字段，而腾讯是当前主力源）。原来的 `> 0` 过滤已经
+    # 把0当缺失处理了，这里补上 None 一起排除，语义不变。
     bars_ex = bars[:-1]  # 排除今日
-    t5_vals  = [b.turnover_rate for b in bars_ex[-5:]  if b.turnover_rate > 0]
-    t20_vals = [b.turnover_rate for b in bars_ex[-20:] if b.turnover_rate > 0]
+    t5_vals  = [b.turnover_rate for b in bars_ex[-5:]  if b.turnover_rate and b.turnover_rate > 0]
+    t20_vals = [b.turnover_rate for b in bars_ex[-20:] if b.turnover_rate and b.turnover_rate > 0]
     if t5_vals and t20_vals:
         avg_t5  = sum(t5_vals)  / len(t5_vals)
         avg_t20 = sum(t20_vals) / len(t20_vals)
@@ -218,7 +222,8 @@ def compute_window_stats(
         + max_board * 5.0                        # 历史板高
         + (12.0 if today.is_limit_up else 0)
         + turn_expansion                         # ★ 量能扩张信号（0–15）
-        + (today.turnover_rate * 0.8 if today.turnover_rate > 0 else 0)
+        # 换手率缺失(None)与真实0%都不加分；None 是常态（腾讯/新浪K线无此字段）
+        + (today.turnover_rate * 0.8 if today.turnover_rate else 0)
     )
 
     # ── 风险分：衡量下行风险烈度 ──────────────────────────────────────────
@@ -257,7 +262,7 @@ def compute_window_stats(
     hist_score     = max(0.0, (max_board - 1) / 7.0) * 12.0
     density_score  = max(0.0, (limit_up_days_60 - 3) / 18.0) * 8.0
     today_bonus    = 5.0 if today.is_limit_up else 0.0
-    turnover_bonus = min(5.0, today.turnover_rate * 0.5)
+    turnover_bonus = min(5.0, today.turnover_rate * 0.5) if today.turnover_rate else 0.0
     sector_bonus   = 12.0 if is_sector_leader else 0.0   # ★ 板块龙头加成
     broken_penalty = 12.0 if today.is_broken_board else 0.0
     leader = max(0.0, min(100.0,

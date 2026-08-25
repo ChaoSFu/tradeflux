@@ -253,7 +253,7 @@ def _snapshots_to_klinebars(snaps: list, code: str = "", is_st: bool = False) ->
             high_price=0.0,
             low_price=0.0,
             pct_change=s.pct_change or 0.0,
-            turnover_rate=s.turnover_rate or 0.0,
+            turnover_rate=s.turnover_rate,   # None 保持 None＝未知，不降级成0.0
             is_limit_up=is_lu,
             is_limit_down=is_ld,
             is_broken_board=bool(s.is_broken_board),
@@ -1163,7 +1163,6 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 可能同样过期的源去修另一个过期的源"，等于换个门再犯一次同样的错。
         # 放在 target_date 自动修正之后：非交易日跑的时候 target_date 已经先被修正到
         # 真实的最后交易日，这里才不会把全市场都当成"缺今日数据"去拉一遍行情。
-        quote_turnover_known: dict[str, bool] = {}
         # 一根历史都没有的股票不补：compute_window_stats 对空bars本来就返回None、
         # 整只跳过，硬塞一根孤零零的当日bar反而会让它带着"基于1根K线"的连板数/
         # N日涨幅/评分混进结果里，比跳过更糟。有历史的才补——补上去等于把K线接口
@@ -1184,13 +1183,11 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 q = quotes.get(info.code)
                 if not q:
                     continue
-                built = kline_bar_from_quote(q, info.code, info.is_st, target_date)
-                if not built:
+                bar = kline_bar_from_quote(q, info.code, info.is_st, target_date)
+                if not bar:
                     if q.trade_date != target_date:
                         rejected_stale_quote += 1
                     continue
-                bar, turnover_known = built
-                quote_turnover_known[info.code] = turnover_known
                 bars = [b for b in klines_map.get(info.code, []) if b.date != target_date]
                 bars.append(bar)
                 klines_map[info.code] = bars
@@ -1200,6 +1197,12 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 + (f"（另有 {rejected_stale_quote} 只行情自身日期也不是{target_date}，已拒绝）"
                    if rejected_stale_quote else "")
             )
+
+        # 上一交易日：全体候选K线里 target_date 之前的最大日期。跟 target_date 自身
+        # "取所有股票最新bar的最大值"同源——几百只股票一起取最大值，个别股票停牌/
+        # 缺数据不会带偏。给下面涨跌停反推校验"前收价确实来自上一交易日"用。
+        prev_dates = [b.date for bars in klines_map.values() for b in bars if b.date < target_date]
+        prev_trading_date = max(prev_dates) if prev_dates else None
 
         # 今日数据缺失检测（疑似限流）：在行情兜底之后统计，反映的是"最终还是没有
         # 可信当日数据"的真实规模，而不是"K线接口这一路失败了多少"——后者已经被
@@ -1271,7 +1274,18 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             # 涨跌停以选股 API 名单为权威来源：方向取 API 显式字段 limit_dir，
             # 缺失时回退 pct 符号。规避本地用前收价反推跌停价的脆弱逻辑
             # （脏前收→漏判 / 北交所阈值缺失）。仅在数据日期与 target_date 一致时生效。
-            if limit_authority_ok:
+            #
+            # 2026-08-25新增 not stats.is_st 这个条件（外部评审指出，核实属实）：
+            # 涨跌停选股的Prompt是"非ST；非退市股票；涨停股票或者跌停股票"，它的
+            # 全集天生就不含ST股。但候选池是三路并集，成交额选股那一路**没有**非ST
+            # 筛选（生产上确实有 *ST威领 这样的ST股因成交额进候选）。于是一只今天
+            # 真涨停的ST股：K线正确判出涨停 → 但它永远不会出现在涨跌停API名单里 →
+            # detail=None → auth_lu=False 被当成权威值写回去，把正确结果覆盖成"没
+            # 涨停"。这是典型的 Authority Universe ≠ Candidate Universe：一个数据源
+            # 的权威性只在它真正覆盖的范围内成立，超出范围的"查不到"是"我不知道"，
+            # 不是"不存在"。ST股这里退回本地K线判定（传None给_upsert_snapshot）。
+            use_limit_authority = limit_authority_ok and not stats.is_st
+            if use_limit_authority:
                 detail = api_limit_detail.get(stats.code)
                 if detail:
                     d = detail["limit_dir"]
@@ -1306,11 +1320,16 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             #   close_pct_fresh — bar是今天的就可信；bar过期但选股API确认了涨跌停
             #     方向时，用交易所规则精确反推同样可信（涨跌停当天的收盘价由规则唯一
             #     确定，不是估计值）。
-            #   turnover_fresh  — 只有bar真的是今天的才可信。反推路径给不出换手率；
-            #     行情兜底路径要看那一路数据源有没有这个字段（新浪没有，腾讯有）。
+            #   turnover_fresh  — 只有bar是今天的、**并且这个数据源真的提供了换手率**
+            #     才可信。2026-08-25改成直接看 stats.today_turnover is not None，而不是
+            #     另外维护一张"哪些股票走了哪条路"的边表：换手率知不知道是 KLineBar
+            #     自己的属性，谁构造的这根bar谁最清楚，不该由下游去猜。当前腾讯/新浪
+            #     K线都不提供换手率（而腾讯是主力源），所以这个值常态就是 None——
+            #     此前它们统一写0.0冒充"已知0%"，生产库里因此每一天每只股票的换手率
+            #     都是0.0，情绪分/龙头分里的换手因子事实上长期失效。
             #   bar_fresh       — 决定所有窗口统计/评分能不能写，见 _upsert_stock 注释。
             close_pct_fresh = bar_fresh
-            turnover_fresh = bar_fresh and quote_turnover_known.get(stats.code, True)
+            turnover_fresh = bar_fresh and stats.today_turnover is not None
             if not close_pct_fresh and (auth_lu or auth_ld):
                 prev_snap = (
                     db.query(StockDailySnapshot)
@@ -1318,20 +1337,32 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                     .order_by(StockDailySnapshot.date.desc())
                     .first()
                 )
-                if prev_snap and prev_snap.close_price:
+                # prev_snap 必须**确实是上一个交易日**才能拿来当前收价（2026-08-25
+                # 收紧，外部评审指出）。它原本只是"DB里 date<target_date 的最近一条"，
+                # 中间完全可能缺了几天：拿 08-21 的收盘价去反推 08-25 的涨停价，算出
+                # 来的是一个凭空捏造的价格，还会被标成 close_pct_fresh=True。
+                # prev_trading_date 取自全体候选K线里 target_date 之前的最大日期——
+                # 跟 target_date 自身的推导同源，几百只股票取最大值足够可靠，不需要
+                # 等独立交易日历落地。证明不了就宁可没有：留着权威涨跌停标记，也比
+                # 捏一个价格出来安全，这跟这轮"宁可缺失，不要伪造确定性"是同一条原则。
+                if prev_snap and prev_snap.close_price and prev_snap.date == prev_trading_date:
                     actual_pct = get_actual_limit_pct(stats.code, stats.is_st)
                     stats.today_close_price, stats.today_pct_change = derive_limit_close_price(
                         prev_snap.close_price, actual_pct, is_up=auth_lu,
                     )
                     close_pct_fresh = True
                     log.info(f"[涨跌停修正] {stats.code} K线+行情当日均拉取失败(退回{stats.today_bar_date})，"
-                             f"用权威涨跌停方向+前收价反推今日收盘价={stats.today_close_price}/涨幅={stats.today_pct_change}%"
-                             f"（换手率与连板数/评分等窗口指标无法反推，本次不更新）")
+                             f"用权威涨跌停方向+前收价({prev_snap.date})反推今日收盘价={stats.today_close_price}"
+                             f"/涨幅={stats.today_pct_change}%（换手率与连板数/评分等窗口指标无法反推，本次不更新）")
+                elif prev_snap and prev_snap.close_price:
+                    log.info(f"[反推放弃] {stats.code} 已确认涨跌停，但DB里最近的前一条快照是"
+                             f"{prev_snap.date}，不是上一交易日{prev_trading_date}，中间有缺口，"
+                             f"拿它当前收价会算出错误的涨跌停价——保留权威涨跌停标记，不反推价格")
             if not close_pct_fresh:
                 log.info(f"[数据过期跳过] {stats.code} K线+行情当日均拉取失败(退回{stats.today_bar_date})"
                          f"且非已确认涨跌停，本次不更新今日快照，保留上次可信值")
 
-            if limit_authority_ok:
+            if use_limit_authority:
                 _upsert_snapshot(db, stock, stats, target_date,
                                  is_limit_up=auth_lu, is_limit_down=auth_ld,
                                  close_pct_fresh=close_pct_fresh, turnover_fresh=turnover_fresh,
@@ -1374,7 +1405,9 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                         stock_id=sid, date=bar.date,
                         close_price=round(bar.close_price, 4),
                         pct_change=round(bar.pct_change or 0.0, 4),
-                        turnover_rate=round(bar.turnover_rate or 0.0, 4),
+                        # None＝该数据源没有换手率，落 NULL 而不是假的0.0
+                        turnover_rate=(round(bar.turnover_rate, 4)
+                                       if bar.turnover_rate is not None else None),
                         is_limit_up=bar.is_limit_up,
                         is_limit_down=bar.is_limit_down,
                         is_broken_board=bar.is_broken_board,
@@ -1391,6 +1424,13 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 当日快照中仍标着涨跌停、但已不在选股 API 名单里的股票，强制清除标记。
         # 解决「盘中涨跌停、尾盘打开」的票因退出候选集而无法被后续更新修正的问题。
         # 仅在数据日期与 target_date 一致时执行，避免用错日期的名单误清。
+        #
+        # 2026-08-25新增 Stock.is_st == False 这个条件：这套对账的逻辑前提是
+        # "api_limit_codes 是今日涨跌停的完整全集，不在里面就是没涨跌停"。但涨跌停
+        # 选股的Prompt写死了"非ST"，这个全集对ST股根本不成立——一只今天真涨停的ST股
+        # 永远不可能出现在名单里，于是每次跑都会被这里强制清掉涨停标记，等于系统性
+        # 地否认所有ST股的涨跌停。ST股不参与这套negative reconciliation，只信本地
+        # K线判定（跟上面写快照那里 use_limit_authority 的口径保持一致）。
         if limit_authority_ok:
             stale_snaps = (
                 db.query(StockDailySnapshot)
@@ -1402,6 +1442,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                         StockDailySnapshot.is_limit_down == True,  # noqa: E712
                     ),
                     Stock.code.notin_(api_limit_codes),
+                    Stock.is_st == False,   # noqa: E712  权威名单不覆盖ST，不能拿它否认ST
                 )
                 .all()
             )
