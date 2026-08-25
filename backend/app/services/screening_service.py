@@ -16,6 +16,23 @@ from ..models.screening import ScreeningCriteria
 from .eastmoney_fetcher import KLineBar
 
 
+def derive_limit_close_price(prev_close: float, actual_limit_pct: float, is_up: bool) -> tuple[float, float]:
+    """
+    纯函数：已确认涨停/跌停时，从前收价+真实涨跌停百分比精确反推今日收盘价/涨幅
+    （不是估计——涨跌停当天的涨跌幅由交易所规则精确决定，不存在中间价）。
+
+    2026-08-25修复真实bug：K线拉取当日失败时会静默退回历史最后一根（"今日无数据，
+    降级用历史"那段逻辑），bars[-1]其实是旧数据，today_close_price/today_pct_change
+    因此是错的；但涨跌停方向是从独立的选股API权威来源覆盖的，跟K线是否成功无关，
+    生产上出现过"today_is_limit_up=True却today_pct_change=-6.86%"这种自相矛盾的组合
+    （凯莱英002821，2026-08-25）。K线没拉到今天数据、但选股API确认了涨跌停方向时，
+    用这个函数反推出正确值，不能让一个已知错误的旧值继续冒充"今日"数据。
+    """
+    signed_pct = actual_limit_pct if is_up else -actual_limit_pct
+    close_price = round(prev_close * (1 + signed_pct / 100), 2)
+    return close_price, signed_pct
+
+
 # ---------------------------------------------------------------------------
 # 窗口统计结果
 # ---------------------------------------------------------------------------
@@ -29,6 +46,9 @@ class StockWindowStats:
     trading_days: int          # 总交易日数（判断次新股）
 
     # 今日数据
+    today_bar_date: date       # bars[-1]的真实日期——K线拉取当日失败会静默退回历史
+                                # 最后一根，这个字段让调用方能判断today_*是不是真的"今天"
+                                # （2026-08-25排查真实bug后新增，见daily_update.py调用点）
     today_close_price: float
     today_pct_change: float
     today_turnover: float
@@ -236,6 +256,7 @@ def compute_window_stats(
         name=name,
         is_st=is_st,
         trading_days=n,
+        today_bar_date=today.date,
         today_close_price=today.close_price,
         today_pct_change=today.pct_change,
         today_turnover=today.turnover_rate,

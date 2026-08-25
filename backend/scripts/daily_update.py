@@ -108,13 +108,13 @@ from app.models.sector import Sector, StockSectorRelation, SectorDailySnapshot
 from app.models.review import DailyReview
 from app.services.eastmoney_fetcher import (
     StockBasicInfo, KLineBar,
-    fetch_main_board_stocks, fetch_klines_batch, get_limit_pct,
+    fetch_main_board_stocks, fetch_klines_batch, get_limit_pct, get_actual_limit_pct,
     fetch_strong_pool_codes, fetch_stock_bk_codes, fetch_limit_move_codes,
     fetch_turnover_top_stocks,
 )
 from app.services.screening_service import (
     StockWindowStats,
-    compute_window_stats, get_active_criteria,
+    compute_window_stats, get_active_criteria, derive_limit_close_price,
 )
 from app.services.sector_phase_service import refresh_sector_phases
 
@@ -1108,6 +1108,28 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                     auth_ld = d == "down"
                 else:
                     auth_lu = auth_ld = False
+                # 真实bug修复（2026-08-25，用户在生产上发现凯莱英today_is_limit_up=True
+                # 却today_pct_change=-6.86%自相矛盾）：K线拉取当日失败时会静默退回历史
+                # 最后一根（今日无数据，降级用历史那段逻辑），bars[-1]其实是旧数据，
+                # today_close_price/today_pct_change因此是错的；但上面这段涨跌停方向
+                # 是从独立的选股API权威来源覆盖的，跟K线是否成功无关，于是出现"权威涨
+                # 跌停标记正确，但价格/涨幅字段是几天前的旧值"这种组合。K线没拉到今天
+                # 数据、但选股API确认了涨跌停方向时，用derive_limit_close_price精确
+                # 反推出正确值，不能让一个已知错误的旧值继续冒充"今日"数据。
+                if stats.today_bar_date != target_date and (auth_lu or auth_ld):
+                    prev_snap = (
+                        db.query(StockDailySnapshot)
+                        .filter(StockDailySnapshot.stock_id == stock.id, StockDailySnapshot.date < target_date)
+                        .order_by(StockDailySnapshot.date.desc())
+                        .first()
+                    )
+                    if prev_snap and prev_snap.close_price:
+                        actual_pct = get_actual_limit_pct(stats.code, stats.is_st)
+                        stats.today_close_price, stats.today_pct_change = derive_limit_close_price(
+                            prev_snap.close_price, actual_pct, is_up=auth_lu,
+                        )
+                        log.info(f"[涨跌停修正] {stats.code} K线当日拉取失败(退回{stats.today_bar_date})，"
+                                 f"用权威涨跌停方向+前收价反推今日收盘价={stats.today_close_price}/涨幅={stats.today_pct_change}%")
                 _upsert_snapshot(db, stock, stats, target_date,
                                  is_limit_up=auth_lu, is_limit_down=auth_ld)
             else:
