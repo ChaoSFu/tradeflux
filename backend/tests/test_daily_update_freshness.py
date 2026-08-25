@@ -10,18 +10,12 @@ get_limit_pct 的规则），但真正会复发的是**落库这一层的判断*
 新鲜度下允许写。所以这里用 SQLite 内存库真的建表、真的调 _upsert_stock /
 _upsert_snapshot，锁住三个具体场景（对应外部评审提的 Golden Case A/B/C）。
 
-只建 stocks / stock_daily_snapshots 两张表：market_breadth_daily 有 JSONB 列，
-SQLite 建不了，而这两张表全是 Integer/Float/Boolean/Date/String，可以直接建。
+SQLite 内存库 fixture 见 tests/conftest.py。
 """
 import importlib.util
 from datetime import date
 from pathlib import Path
 
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-from app.database import Base
 from app.models.stock import Stock, StockDailySnapshot
 from app.services.eastmoney_fetcher import StockBasicInfo
 from app.services.screening_service import StockWindowStats
@@ -34,15 +28,6 @@ _SPEC.loader.exec_module(du)
 
 TODAY = date(2026, 8, 25)
 YESTERDAY = date(2026, 8, 24)
-
-
-@pytest.fixture
-def db():
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine, tables=[Stock.__table__, StockDailySnapshot.__table__])
-    session = sessionmaker(bind=engine)()
-    yield session
-    session.close()
 
 
 def _info(code="002821", name="凯莱英"):
