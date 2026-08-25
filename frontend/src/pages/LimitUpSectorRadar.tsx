@@ -39,6 +39,21 @@ const fmtSeal = (v: number | null) => (v == null ? '—' : `${(v / 1e8).toFixed(
 
 const fmtPct = (v: number | null) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
 
+/**
+ * 「老核心正/负反馈」这个结论要不要给。
+ *
+ * 核心锚的今日涨跌幅来自当日 StockDailySnapshot，而快照只覆盖候选池里的股票
+ * （强势池∪涨跌停∪成交额前列）——宽召回捞出来的核心锚大多不在候选池内，所以
+ * 覆盖率天然偏低。生产实测出现过"21只核心锚里只有1只有当日数据、均值+5.42%"
+ * 的情况：那 1 只代表不了整个板块老核心的状态，直接挂上"老核心正反馈"会把一个
+ * 样本误读成板块级判断，而这恰恰是本页面最重要的那个结论。
+ *
+ * 所以要求至少3只、且覆盖到三成以上才给结论；不够就只给数字和覆盖率，让用户
+ * 自己看下面的核心锚明细。宁可不下结论，不下一个站不住的结论。
+ */
+const coreVerdictTrustworthy = (s: LimitUpRadarSector) =>
+  s.core_pct_known_count >= 3 && s.core_pct_known_count / Math.max(s.core_count, 1) >= 0.3
+
 const pctClass = (v: number | null) =>
   v == null ? 'text-text-muted' : v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-secondary'
 
@@ -248,9 +263,18 @@ function SectorCard({ sector, open, onToggle }: {
                       {fmtPct(sector.core_avg_pct_change)}
                     </span>
                     {sector.core_avg_pct_change != null && (
-                      <span className={sector.core_avg_pct_change > 0 ? 'text-up' : 'text-down'}>
-                        {sector.core_avg_pct_change > 0 ? '老核心正反馈' : '老核心负反馈'}
-                      </span>
+                      coreVerdictTrustworthy(sector) ? (
+                        <span className={sector.core_avg_pct_change > 0 ? 'text-up' : 'text-down'}>
+                          {sector.core_avg_pct_change > 0 ? '老核心正反馈' : '老核心负反馈'}
+                        </span>
+                      ) : (
+                        // 覆盖率太低时只给数字、不给"正/负反馈"结论：21只核心锚里只有1只
+                        // 有当日数据时，那1只的涨跌幅代表不了整个板块老核心的状态，
+                        // 挂上结论会把一个样本误读成板块判断
+                        <span className="text-warn" title="核心锚今日涨跌幅来自当日快照，多数核心锚不在候选池内因而没有快照；样本太少时不给正/负反馈结论">
+                          样本不足，不作判断
+                        </span>
+                      )
                     )}
                     {sector.core_pct_known_count < sector.core_count && (
                       <span className="text-text-muted/70">
