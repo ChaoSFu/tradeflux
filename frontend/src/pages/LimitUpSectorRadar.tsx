@@ -1,0 +1,399 @@
+/**
+ * 涨停板块雷达（2026-08-25新增）。
+ *
+ * 这个页面不是"把涨停数据展示得更丰富"，而是从涨停现象里识别**资金是否正在一个
+ * 板块形成集团进攻**，并确保真正的板块核心不会因为今天没涨停而从视野里消失。
+ *
+ * 所以：先看板块，展开才看个股；每张板块卡把"核心锚今日表现"和"今日涨停梯队"
+ * 放在一起——这两块合起来才能区分「新老核心共振」和「老核心负反馈+低位补涨」，
+ * 单看今日涨停数量这两种完全相反的结构长得一模一样。
+ *
+ * 所有分组/排序/召回逻辑都在后端（见 limit_up_radar_service.py），这里只负责展示，
+ * 不重新计算哪只股票属于哪个板块——避免跟弱转强雷达/主线/活跃股池产生多套归属语义。
+ */
+import { useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
+import { RefreshCw, ChevronDown, ChevronRight, AlertTriangle, Flame } from 'lucide-react'
+import { fetchLimitUpRadar, refreshLimitUpDetails } from '@/api/limitUpRadar'
+import { Badge } from '@/components/ui/badge'
+import { LoadingRows } from '@/components/common/LoadingSpinner'
+import { cn } from '@/utils/cn'
+import type {
+  LimitUpRadarSector, LimitUpRadarTodayStock, LimitUpRadarCoreStock, W2SCoreRole,
+} from '@/types'
+
+// 角色标签：只反映"被召回的原因"，不是强弱排名（Core Recall != Core Classification）
+const ROLE_LABEL: Record<W2SCoreRole, { text: string; variant: 'dragon' | 'accent' | 'warn' | 'muted' }> = {
+  SECTOR_LEADER:   { text: '板块龙头', variant: 'dragon' },
+  SECTOR_CORE:     { text: '板块核心', variant: 'dragon' },
+  CURRENT_CORE:    { text: '当前核心', variant: 'accent' },
+  RECENT_CORE:     { text: '近期核心', variant: 'warn' },
+  HISTORICAL_CORE: { text: '历史核心', variant: 'muted' },
+}
+
+const fmtTime = (t: string | null) => (t ? t.slice(0, 5) : '—')
+
+/** 封单额：null 是"东财没给"，必须显示 — 而不是 0.00亿 */
+const fmtSeal = (v: number | null) => (v == null ? '—' : `${(v / 1e8).toFixed(2)}亿`)
+
+const fmtPct = (v: number | null) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
+
+const pctClass = (v: number | null) =>
+  v == null ? 'text-text-muted' : v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-secondary'
+
+const fmtRefreshed = (iso: string | null) => {
+  if (!iso) return '从未刷新'
+  const d = new Date(iso)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+}
+
+function BoardTag({ n }: { n: number | null }) {
+  if (!n) return <span className="text-text-muted">—</span>
+  return (
+    <Badge variant={n >= 3 ? 'dragon' : n >= 2 ? 'up' : 'muted'}>
+      {n === 1 ? '首板' : `${n}板`}
+    </Badge>
+  )
+}
+
+export default function LimitUpSectorRadar() {
+  const qc = useQueryClient()
+  const [includeCore, setIncludeCore] = useState(true)
+  const [primaryOnly, setPrimaryOnly] = useState(false)
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
+  const [refreshErr, setRefreshErr] = useState<string | null>(null)
+
+  const params = {
+    include_core: includeCore,
+    group_mode: primaryOnly ? ('primary' as const) : ('all_watched_sectors' as const),
+  }
+  const { data, isLoading } = useQuery({
+    queryKey: ['limit-up-radar', params],
+    queryFn: () => fetchLimitUpRadar(params),
+  })
+
+  const refresh = useMutation({
+    mutationFn: () => refreshLimitUpDetails(),
+    onSuccess: (res) => {
+      // 后端刷新失败不抛错，而是 ok=false + 上次成功时间：页面继续显示旧数据并
+      // 明确标注，不伪装成最新
+      setRefreshErr(res.ok ? null : res.error || '刷新失败')
+      if (res.ok) qc.invalidateQueries({ queryKey: ['limit-up-radar'] })
+    },
+    onError: (e: Error) => setRefreshErr(e.message),
+  })
+
+  const toggle = (id: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+
+  const s = data?.summary
+
+  return (
+    <div className="space-y-4">
+      {/* ── 顶部：事实摘要 + 数据新鲜度 ───────────────────────────────────── */}
+      <div className="card p-4">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2">
+              <Flame className="w-5 h-5 text-danger" />
+              <h1 className="text-lg font-bold text-text-primary">涨停板块雷达</h1>
+              <span className="text-sm text-text-muted font-mono">{data?.trade_date || '—'}</span>
+            </div>
+            <p className="text-xs text-text-muted mt-1">
+              资金今天在哪些板块形成集团进攻 · 板块核心是谁 · 老核心与新涨停是否共振
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+              <input type="checkbox" checked={includeCore} className="accent-accent"
+                     onChange={(e) => setIncludeCore(e.target.checked)} />
+              补全板块核心
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer"
+                   title="默认一只股票可出现在多个关注板块（优先不漏核心）；勾选后只按主板块归组去重">
+              <input type="checkbox" checked={primaryOnly} className="accent-accent"
+                     onChange={(e) => setPrimaryOnly(e.target.checked)} />
+              仅主板块
+            </label>
+            <button
+              onClick={() => refresh.mutate()}
+              disabled={refresh.isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm bg-accent-dim text-accent hover:bg-accent/20 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={cn('w-3.5 h-3.5', refresh.isPending && 'animate-spin')} />
+              刷新涨停数据
+            </button>
+          </div>
+        </div>
+
+        {/* 事实摘要 */}
+        <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-3 mt-4">
+          <Stat label="涨停" value={s?.limit_up_count ?? '—'} tone="up" />
+          <Stat label="连板" value={s?.continuation_count ?? '—'} tone="dragon" />
+          <Stat label="首板" value={s?.first_board_count ?? '—'} />
+          <Stat label="最高板" value={s?.board_height ? `${s.board_height}板` : '—'} tone="dragon" />
+          <Stat label="炸板" value={s?.broken_count ?? '—'} tone="down" />
+          <Stat label="封板率" value={s?.seal_rate != null ? `${s.seal_rate}%` : '—'} />
+          <Stat label="活跃板块" value={s?.active_sector_count ?? '—'} tone="accent" />
+        </div>
+
+        {/* 数据新鲜度：盘中手动刷新的页面必须让用户知道这份数据是什么时候抓的 */}
+        <div className="flex items-center gap-3 mt-3 pt-3 border-t border-bg-border text-xs flex-wrap">
+          <span className="text-text-muted">
+            数据更新：<span className="font-mono text-text-secondary">{fmtRefreshed(data?.refreshed_at ?? null)}</span>
+          </span>
+          <span className="text-text-muted">来源：{data?.source === 'eastmoney' ? '东方财富' : '—'}</span>
+          <span className="text-text-muted/70">不自动刷新，需手动点击</span>
+          {refreshErr && (
+            <span className="flex items-center gap-1 text-danger">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              刷新失败（{refreshErr}），下方仍为上次成功的数据
+            </span>
+          )}
+        </div>
+
+        {data?.warnings?.map((w) => (
+          <div key={w} className="mt-2 text-xs text-warn flex items-center gap-1">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />{w}
+          </div>
+        ))}
+      </div>
+
+      {/* ── 板块卡 ────────────────────────────────────────────────────────── */}
+      {isLoading ? (
+        <div className="card p-4"><LoadingRows rows={6} /></div>
+      ) : !data?.sectors.length ? (
+        <div className="card p-8 text-center text-text-muted text-sm">
+          {data?.trade_date ? `${data.trade_date} 没有涨停板块数据` : '暂无数据'}
+          <div className="mt-2 text-xs">点击右上角「刷新涨停数据」从东方财富拉取当日涨停明细</div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {data.sectors.map((sec) => (
+            <SectorCard
+              key={sec.sector_id}
+              sector={sec}
+              open={expanded.has(sec.sector_id)}
+              onToggle={() => toggle(sec.sector_id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Stat({ label, value, tone }: {
+  label: string; value: React.ReactNode; tone?: 'up' | 'down' | 'dragon' | 'accent'
+}) {
+  const toneCls = tone === 'up' ? 'text-up' : tone === 'down' ? 'text-down'
+    : tone === 'dragon' ? 'text-dragon' : tone === 'accent' ? 'text-accent' : 'text-text-primary'
+  return (
+    <div>
+      <div className="text-xs text-text-muted">{label}</div>
+      <div className={cn('text-lg font-bold font-mono leading-tight', toneCls)}>{value}</div>
+    </div>
+  )
+}
+
+function SectorCard({ sector, open, onToggle }: {
+  sector: LimitUpRadarSector; open: boolean; onToggle: () => void
+}) {
+  const ladder = sector.board_ladder
+    .map((e) => `${e.board === 1 ? '首板' : `${e.board}板`}×${e.count}`)
+    .join(' ｜ ')
+
+  return (
+    <div className="card overflow-hidden p-0">
+      {/* 板块头：一行看完这个板块今天的攻击强度 */}
+      <button onClick={onToggle} className="w-full text-left px-4 py-3 hover:bg-bg-elevated/50 transition-colors">
+        <div className="flex items-start gap-3">
+          {open ? <ChevronDown className="w-4 h-4 mt-1 shrink-0 text-text-muted" />
+                : <ChevronRight className="w-4 h-4 mt-1 shrink-0 text-text-muted" />}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className="text-base font-bold text-text-primary">{sector.sector_name}</span>
+              <Badge variant="up">涨停 {sector.today_limit_up_count}</Badge>
+              {sector.continuation_count > 0 && <Badge variant="dragon">连板 {sector.continuation_count}</Badge>}
+              {sector.board_height > 0 && <Badge variant="dragon">最高 {sector.board_height}板</Badge>}
+            </div>
+
+            <div className="flex items-center gap-x-4 gap-y-1 mt-1.5 text-xs text-text-secondary flex-wrap font-mono">
+              <span>首封最早 {fmtTime(sector.earliest_limit_time)}</span>
+              <span>封单合计 {fmtSeal(sector.total_seal_amount)}</span>
+              <span>封板率 {sector.seal_rate != null ? `${sector.seal_rate}%` : '—'}</span>
+              <span>炸板 {sector.broken_count}</span>
+              {ladder && <span className="text-text-muted">梯队：{ladder}</span>}
+            </div>
+
+            {/* 老核心今日表现——跟今日涨停梯队并排看，才能区分共振和补涨 */}
+            {sector.core_count > 0 && (
+              <div className="mt-1.5 text-xs flex items-center gap-2 flex-wrap">
+                <span className="text-text-muted">核心锚 {sector.core_count} 只 · 今日均值</span>
+                {sector.core_pct_known_count === 0 ? (
+                  // 核心锚涨跌幅来自当日快照，daily_update 跑完前不存在。这里必须
+                  // 说清楚是"还没有数据"，显示成 0.00% 或 — 会被误读成"核心走平"
+                  <span className="text-text-muted" title="核心锚今日涨跌幅取自当日快照，需等当天『每日数据更新』跑完才有">
+                    待当日数据更新
+                  </span>
+                ) : (
+                  <>
+                    <span className={cn('font-mono font-bold', pctClass(sector.core_avg_pct_change))}>
+                      {fmtPct(sector.core_avg_pct_change)}
+                    </span>
+                    {sector.core_avg_pct_change != null && (
+                      <span className={sector.core_avg_pct_change > 0 ? 'text-up' : 'text-down'}>
+                        {sector.core_avg_pct_change > 0 ? '老核心正反馈' : '老核心负反馈'}
+                      </span>
+                    )}
+                    {sector.core_pct_known_count < sector.core_count && (
+                      <span className="text-text-muted/70">
+                        （{sector.core_pct_known_count}/{sector.core_count} 只有当日数据）
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-bg-border px-4 py-3 space-y-4">
+          {sector.core_stocks.length > 0 && (
+            <section>
+              <h3 className="text-xs font-semibold text-text-secondary mb-2">
+                核心锚 <span className="font-normal text-text-muted">（今日未涨停，按历史市场辨识度召回，不代表当前强弱）</span>
+                {sector.core_shown_count < sector.core_count && (
+                  <span className="font-normal text-text-muted/70">
+                    {' '}· 显示前 {sector.core_shown_count} / 共 {sector.core_count} 只
+                  </span>
+                )}
+              </h3>
+              <CoreTable rows={sector.core_stocks} />
+            </section>
+          )}
+
+          <section>
+            <h3 className="text-xs font-semibold text-text-secondary mb-2">
+              今日攻击 <span className="font-normal text-text-muted">（{sector.today_limit_up_count} 只涨停）</span>
+            </h3>
+            <TodayTable rows={sector.today_limit_up_stocks} />
+          </section>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RoleTags({ roles, reasons }: { roles: W2SCoreRole[]; reasons: string[] }) {
+  if (!roles.length) return null
+  return (
+    <span className="inline-flex items-center gap-1 flex-wrap" title={reasons.join(' · ')}>
+      {roles.map((r) => {
+        const cfg = ROLE_LABEL[r]
+        return cfg ? <Badge key={r} variant={cfg.variant}>{cfg.text}</Badge> : null
+      })}
+    </span>
+  )
+}
+
+function CoreTable({ rows }: { rows: LimitUpRadarCoreStock[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-text-muted border-b border-bg-border">
+            <th className="text-left font-normal py-1.5 pr-3">股票</th>
+            <th className="text-left font-normal py-1.5 pr-3">角色</th>
+            <th className="text-right font-normal py-1.5 pr-3">今日</th>
+            <th className="text-left font-normal py-1.5 pr-3">召回理由</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.code} className="border-b border-bg-border/40 last:border-0">
+              <td className="py-1.5 pr-3 whitespace-nowrap">
+                <Link to={`/stocks/${r.code}`} className="text-text-primary hover:text-accent">
+                  <span className="font-medium">{r.name}</span>
+                  <span className="ml-1.5 font-mono text-text-muted">{r.code}</span>
+                </Link>
+                {r.is_broken_today && <Badge variant="down" className="ml-1.5">炸板</Badge>}
+              </td>
+              <td className="py-1.5 pr-3"><RoleTags roles={r.core_roles} reasons={r.core_reasons} /></td>
+              <td className={cn('py-1.5 pr-3 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
+                {fmtPct(r.pct_change)}
+              </td>
+              <td className="py-1.5 pr-3 text-text-muted">{r.core_reasons.join(' · ') || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function TodayTable({ rows }: { rows: LimitUpRadarTodayStock[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-text-muted border-b border-bg-border">
+            <th className="text-left font-normal py-1.5 pr-3">股票</th>
+            <th className="text-left font-normal py-1.5 pr-3">板位</th>
+            <th className="text-right font-normal py-1.5 pr-3" title="首次封板时间">首封</th>
+            <th className="text-right font-normal py-1.5 pr-3" title="最终封板时间；与首封不同说明中途开过板">终封</th>
+            <th className="text-right font-normal py-1.5 pr-3" title="封单额；— 表示东方财富未提供该字段，不是0">封单</th>
+            <th className="text-right font-normal py-1.5 pr-3">炸板</th>
+            <th className="text-left font-normal py-1.5 pr-3">核心角色</th>
+            <th className="text-left font-normal py-1.5">涨停原因（催化剂，非板块归属）</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const reopened = r.first_limit_time && r.last_limit_time && r.first_limit_time !== r.last_limit_time
+            return (
+              <tr key={r.code} className="border-b border-bg-border/40 last:border-0 align-top">
+                <td className="py-1.5 pr-3 whitespace-nowrap">
+                  <Link to={`/stocks/${r.code}`} className="text-text-primary hover:text-accent">
+                    <span className="font-medium">{r.name}</span>
+                    <span className="ml-1.5 font-mono text-text-muted">{r.code}</span>
+                  </Link>
+                </td>
+                <td className="py-1.5 pr-3 whitespace-nowrap">
+                  <BoardTag n={r.board_count} />
+                  {r.limit_stat_days != null && r.limit_stat_count != null && r.limit_stat_days > 1 && (
+                    <span className="ml-1.5 text-text-muted font-mono">
+                      {r.limit_stat_days}日{r.limit_stat_count}板
+                    </span>
+                  )}
+                </td>
+                <td className="py-1.5 pr-3 text-right font-mono whitespace-nowrap">{fmtTime(r.first_limit_time)}</td>
+                <td className={cn('py-1.5 pr-3 text-right font-mono whitespace-nowrap',
+                                  reopened ? 'text-warn' : 'text-text-secondary')}>
+                  {fmtTime(r.last_limit_time)}
+                </td>
+                <td className="py-1.5 pr-3 text-right font-mono whitespace-nowrap">{fmtSeal(r.seal_amount)}</td>
+                <td className={cn('py-1.5 pr-3 text-right font-mono whitespace-nowrap',
+                                  r.broken_times ? 'text-warn' : 'text-text-muted')}>
+                  {r.broken_times == null ? '—' : r.broken_times === 0 ? '0' : `${r.broken_times}次`}
+                </td>
+                <td className="py-1.5 pr-3"><RoleTags roles={r.core_roles} reasons={r.core_reasons} /></td>
+                <td className="py-1.5 text-text-muted max-w-md" title={r.limit_content || undefined}>
+                  {r.limit_reason || '—'}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}

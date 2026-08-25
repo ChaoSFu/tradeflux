@@ -38,6 +38,11 @@ DEFAULT_CORE_20D_MIN = 3        # 近20日涨停次数
 DEFAULT_CORE_60D_MIN = 5        # 近60日涨停次数
 DEFAULT_CORE_MAX_BOARD_MIN = 3  # 近60日最高连板数
 
+# 每个板块最多展示几只核心锚。这是**展示上限**，不是召回上限——core_count 始终是
+# 召回到的真实数量。宽召回下一个大行业板块可能召回30+只核心，全部铺在卡片上没法看；
+# 排序已经把板块龙头/历史最活跃的排在最前，截断的是长尾。
+DEFAULT_MAX_CORE_PER_SECTOR = 8
+
 # 角色标签优先级（数字小=优先展示）。纯粹反映"最近有多活跃"，不是强弱排名。
 _ROLE_PRIORITY = {
     "CURRENT_CORE": 0,     # 近10日还在涨停 —— 当前正在起作用的核心
@@ -172,6 +177,7 @@ def build_radar(
     core_20d_min: int = DEFAULT_CORE_20D_MIN,
     core_60d_min: int = DEFAULT_CORE_60D_MIN,
     core_max_board_min: int = DEFAULT_CORE_MAX_BOARD_MIN,
+    max_core_per_sector: int = DEFAULT_MAX_CORE_PER_SECTOR,
     max_sectors: int = 40,
 ) -> dict:
     """
@@ -251,6 +257,7 @@ def build_radar(
             include_core=include_core,
             core_10d_min=core_10d_min, core_20d_min=core_20d_min,
             core_60d_min=core_60d_min, core_max_board_min=core_max_board_min,
+            max_core_per_sector=max_core_per_sector,
         )
         # 今天一只涨停都没有的板块不进雷达——这是"涨停板块雷达"，不是板块列表
         if card["today_limit_up_count"] > 0:
@@ -273,6 +280,7 @@ def _build_sector_card(
     rel_lookup: Dict[Tuple[int, int], StockSectorRelation],
     *, include_core: bool,
     core_10d_min: int, core_20d_min: int, core_60d_min: int, core_max_board_min: int,
+    max_core_per_sector: int = DEFAULT_MAX_CORE_PER_SECTOR,
 ) -> dict:
     today_rows: List[dict] = []
     core_rows: List[dict] = []
@@ -334,6 +342,13 @@ def _build_sector_card(
 
     today_rows = sort_today_stocks(today_rows)
     core_rows = sort_core_stocks(core_rows)
+    core_total = len(core_rows)
+    # 核心锚今日涨跌幅取自当日 StockDailySnapshot。**在当天 daily_update 跑完之前
+    # 这个快照还不存在**（盘中手动刷新正是这种情况），此时 pct_change 全是 None，
+    # 平均值也只能是 None——不拿昨天的收盘涨幅顶today，那回答不了"老核心今天是
+    # 正反馈还是负反馈"这个问题。页面据此显示"待当日数据更新"，不显示成 0.00%。
+    core_pct_known = sum(1 for r in core_rows if r["pct_change"] is not None)
+    core_rows = core_rows[:max_core_per_sector]     # 展示截断，core_count 仍是真实总数
 
     boards = [r["board_count"] or 0 for r in today_rows]
     continuation = sum(1 for b in boards if b >= 2)
@@ -366,7 +381,9 @@ def _build_sector_card(
         # 0——0 会被读成"没有资金排队"，跟"不知道"完全是两回事
         "total_seal_amount": sum(seals) if seals else None,
         "seal_amount_known_count": len(seals),
-        "core_count": len(core_rows),
+        "core_count": core_total,
+        "core_shown_count": len(core_rows),
+        "core_pct_known_count": core_pct_known,
         # 核心锚今日平均涨跌幅：判断老核心是正反馈还是负反馈的关键事实
         "core_avg_pct_change": round(sum(core_pcts) / len(core_pcts), 2) if core_pcts else None,
         "core_stocks": core_rows,

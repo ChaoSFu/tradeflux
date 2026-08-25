@@ -712,3 +712,107 @@ export interface W2SMainlines {
   mainlines: W2SMainlineSector[]
   data_as_of: string | null  // 板块数据实际计算自哪天，过期要显眼提示，不能包装成实时
 }
+
+// ─── 涨停板块雷达（2026-08-25新增）────────────────────────────────────────────
+// 这个页面回答的不是"今天有哪些股票涨停"，而是"资金今天在哪些板块形成集团进攻，
+// 板块核心是谁，老核心和新涨停有没有共振"。所以输出单位是板块，不是个股。
+
+export type W2SCoreRole =
+  | 'CURRENT_CORE'     // 近10日还在涨停 —— 当前正在起作用的核心
+  | 'RECENT_CORE'      // 近20日活跃 / 打出过高连板
+  | 'HISTORICAL_CORE'  // 只有60日窗口才够得着 —— 历史核心/情绪锚
+  | 'SECTOR_LEADER'
+  | 'SECTOR_CORE'
+
+export interface LimitUpBoardLadderEntry {
+  board: number
+  count: number
+}
+
+/** 板块核心锚：今天**没有**涨停，但历史上有足够市场辨识度，不能从视野里消失 */
+export interface LimitUpRadarCoreStock {
+  code: string
+  name: string
+  core_roles: W2SCoreRole[]
+  core_reasons: string[]        // 可解释理由，如"近60日涨停6次"
+  primary_role: W2SCoreRole | null
+  pct_change: number | null     // 今日涨跌幅 —— 判断老核心正/负反馈的关键
+  limit_up_days_10d: number | null
+  limit_up_days_20d: number | null
+  limit_up_days_60d: number | null
+  board_count_60d: number | null
+  leader_score: number | null
+  is_broken_today: boolean
+}
+
+/** 今日涨停股。core_roles 非空表示它同时也是板块核心（最强的共振信号） */
+export interface LimitUpRadarTodayStock {
+  code: string
+  name: string
+  board_count: number | null
+  limit_stat_days: number | null
+  limit_stat_count: number | null
+  first_limit_time: string | null   // 首次封板
+  last_limit_time: string | null    // 最终封板（≠首封时才有意义）
+  seal_amount: number | null        // 封单额（元）；null=东财没给，不是0
+  broken_times: number | null
+  pct_change: number | null
+  price: number | null
+  turnover_rate: number | null
+  limit_reason: string | null       // 催化剂，不是板块归属
+  limit_content: string | null
+  limit_up_days_10d: number | null
+  core_roles: W2SCoreRole[]
+  core_reasons: string[]
+}
+
+export interface LimitUpRadarSector {
+  sector_id: number
+  sector_name: string
+  sector_phase: number | null
+  today_limit_up_count: number
+  continuation_count: number
+  first_board_count: number
+  board_height: number
+  board_ladder: LimitUpBoardLadderEntry[]
+  broken_count: number
+  seal_rate: number | null
+  earliest_limit_time: string | null
+  total_seal_amount: number | null   // null=没有任何一只给了封单额
+  seal_amount_known_count: number
+  core_count: number            // 召回到的真实总数
+  core_shown_count: number      // 实际返回条数（展示截断）
+  core_pct_known_count: number  // 其中有当日涨跌幅的只数（0=当日数据还没更新）
+  core_avg_pct_change: number | null // 核心锚今日平均涨跌幅
+  core_stocks: LimitUpRadarCoreStock[]
+  today_limit_up_stocks: LimitUpRadarTodayStock[]
+}
+
+export interface LimitUpRadarSummary {
+  limit_up_count: number
+  continuation_count: number
+  first_board_count: number
+  board_height: number
+  broken_count: number
+  seal_rate: number | null
+  active_sector_count: number
+}
+
+export interface LimitUpRadarResponse {
+  trade_date: string | null
+  refreshed_at: string | null   // 数据新鲜度三件套，盘中不能让用户误以为是实时
+  source: string | null
+  summary: LimitUpRadarSummary
+  sectors: LimitUpRadarSector[]
+  warnings: string[]
+}
+
+export interface LimitUpRadarRefreshResponse {
+  ok: boolean
+  trade_date: string | null
+  limit_up_written: number
+  broken_written: number
+  refreshed_at: string | null
+  error: string | null
+  last_success_at: string | null
+}

@@ -63,7 +63,11 @@ class RadarSector(BaseModel):
     total_seal_amount: Optional[float] = None    # None=没有任何一只给了封单额
     seal_amount_known_count: int = 0
 
-    core_count: int = 0
+    core_count: int = 0            # 召回到的核心锚真实总数
+    core_shown_count: int = 0      # 实际返回的条数（展示截断，长尾不展开）
+    # 核心锚今日涨跌幅需要当日 StockDailySnapshot；盘中 daily_update 还没跑时它不
+    # 存在，此时下面两个字段分别是 None / 0，页面显示"待当日数据更新"而不是 0.00%
+    core_pct_known_count: int = 0
     core_avg_pct_change: Optional[float] = None  # 核心锚今日平均涨跌幅
 
     core_stocks: List[RadarCoreStock] = []
