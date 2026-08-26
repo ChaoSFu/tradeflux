@@ -1196,7 +1196,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # dump 是**加速手段不是依赖**：没配 key、下载失败、pyarrow 没装、解析出错，
         # 任何一种都静默退回逐股那条老路，只记日志，绝不让整轮更新失败。
         today_klines: dict = {}
-        dump_hit: set[str] = set()
+        dump_hit: set[str] = set()        # dump 把历史缺口补齐了，不用逐股拉
+        dump_no_today: set[str] = set()   # 且 dump 里没有当日那一根 —— 当日走实时行情
         _fuyao_key = get_fuyao_key()
         if _fuyao_key and db_group:
             try:
@@ -1209,27 +1210,41 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                         dump_bars, mb = {}, 0.0
                 for info in db_group:
                     bars = dump_bars.get(info.code) or []
-                    if not bars:
-                        continue
                     hist = db_klines_map.get(info.code) or []
-                    # 只有当 dump 真的把缺口从头盖到尾才算命中：既要有 target_date
-                    # 那一根，也要跟库里已有历史**接得上**（dump 最早一根不能晚于
-                    # 库里最后一根的次日，否则中间是个洞）。接不上的退回逐股拉，
-                    # 让它按自己的缺口天数去补——"覆盖了一部分"不算覆盖，这跟
-                    # require_date 那条"返回了但缺那一天必须算没拿到"是同一条原则。
-                    if bars[-1].date != target_date:
+                    if not bars or not hist:
+                        continue          # 没历史的属于 full_group 那类，dump 的10天不够
+                    # dump 只负责**历史缺口**，当日那一根不归它管——它是收盘后生成的，
+                    # 盘中拿它当实时数据一定是错的（用户 2026-08-26 指出）。
+                    #
+                    # 上一版这里要求 bars[-1].date == target_date，等于逼 dump 把当日
+                    # 也给齐，否则整只票退回逐股拉。后果是**盘中/盘前/周末 dump 完全
+                    # 不起作用**：盘中 dump 末根是昨天 → 0/182 命中 → 182 次逐股请求，
+                    # 而 dump 引进来就是为了消灭这 182 次请求。盘前那一跑更冤——它要的
+                    # 就是昨天的数据，dump 手里正好有。
+                    #
+                    # 现在的判据只问一件事：**这段历史缺口 dump 能不能接上并补齐**。
+                    #   · 接得上：dump 最早一根不能晚于库里最后一根的次日，否则中间是洞
+                    #   · 有推进：dump 最后一根不能早于库里最后一根，否则等于没补
+                    # 当日那一根交给下面的「定向行情兜底」——它拿实时行情构造 bar，
+                    # 而且会校验行情自身的 trade_date 必须等于 target_date，拒绝过期源。
+                    if bars[0].date > hist[-1].date + timedelta(days=1):
                         continue
-                    if hist and bars[0].date > hist[-1].date + timedelta(days=1):
+                    if bars[-1].date < hist[-1].date:
                         continue
                     today_klines[info.code] = bars
                     dump_hit.add(info.code)
+                    if bars[-1].date != target_date:
+                        dump_no_today.add(info.code)
                 _ci = dump_cache_info() or {}
                 _MODE = {"covered": "复用缓存(已覆盖当日)", "unchanged": "复用缓存(上游未变)",
                          "downloaded": "重新下载"}
                 _how = _MODE.get(dump_last_access().get("mode"), "?")
+                _tail = (f"；其中 {len(dump_no_today)} 只 dump 无当日数据，当日bar走实时行情"
+                         if dump_no_today else "")
                 log.info(f"  📦 fuyao dump({mb:.1f}MB，覆盖至 {_ci.get('max_trade_date','?')}，"
                          f"{(_ci.get('fetched_at') or '')[11:19]} 取得，本次{_how})："
-                         f"{len(dump_hit)}/{len(db_group)} 只直接命中，省下同等数量的逐股请求")
+                         f"历史缺口命中 {len(dump_hit)}/{len(db_group)} 只，"
+                         f"省下同等数量的逐股请求{_tail}")
             except Exception as e:  # noqa: BLE001
                 log.warning(f"fuyao dump 不可用（{type(e).__name__}: {e}），"
                             f"本轮全部退回逐股K线接口")
@@ -1277,7 +1292,13 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         def _has_today_bar(bars: list) -> bool:
             return bool(bars) and bars[-1].date == target_date
 
-        missing_codes = [info for info in db_group if not _has_today_bar(today_klines.get(info.code))]
+        # dump 已补齐历史、只差当日那一根的股票**不进这个重试**：它们"缺今日"是
+        # 设计使然（dump 收盘后才有当日数据），不是拉取失败。放进来会让盘中 182 只
+        # 全部走低并发逐股重试，比不用 dump 还慢——那正是这条链路要消灭的东西。
+        # 它们的当日bar由下面的「定向行情兜底」用实时行情补，那条路是批量的。
+        missing_codes = [info for info in db_group
+                         if info.code not in dump_no_today
+                         and not _has_today_bar(today_klines.get(info.code))]
         if missing_codes:
             log.info(f"  DB重建组 {len(missing_codes)} 只今日K线拉取失败，低并发重试...")
             retry_klines = fetch_klines_batch(

@@ -292,3 +292,50 @@ def test_下载失败绝不能毁掉手上那份好缓存(_clean_cache, monkeypa
         with fd.daily_k_dump("key", require_date=date(2026, 8, 27), retries=1):
             pass
     assert fd._data_path(fd.DUMP_KIND_10D).read_bytes() == good, "旧缓存必须原样保留"
+
+
+# ── dump 只管历史，当日那一根走实时行情（2026-08-26 用户指出）─────────────────
+#
+# 上一版的命中判据是 bars[-1].date == target_date，等于逼 dump 把当日也给齐。
+# 后果是**盘中/盘前/周末 dump 完全不起作用**：盘中 dump 末根是昨天 → 0/182 命中 →
+# 182 次逐股请求，而 dump 引进来就是为了消灭这 182 次请求。
+#
+# 用户原话："dump 数据不是为了解决拉历史k线的问题吗？它不解决获取当前实时K线数据
+# 的任务，通过其他实时接口获取。" —— 而且 dump 是收盘后生成的，盘中拿它当实时数据
+# 一定是错的。所以判据只该问"这段历史缺口能不能接上并补齐"。
+
+def _hit(dump_first, dump_last, hist_last, target):
+    """复刻 daily_update 里的 dump 命中判据。"""
+    from datetime import timedelta
+    if dump_first > hist_last + timedelta(days=1):
+        return None                      # 中间有洞，接不上
+    if dump_last < hist_last:
+        return None                      # 没推进，等于没补
+    return "full" if dump_last == target else "history_only"
+
+
+D = date
+
+
+def test_盘中dump只到昨天_仍然算命中历史缺口():
+    """盘中：dump 末根昨天，库里历史到前天。历史缺口补上了，当日走实时行情。"""
+    assert _hit(D(2026, 8, 13), D(2026, 8, 25), D(2026, 8, 24), D(2026, 8, 26)) == "history_only"
+
+
+def test_盘后dump含当日_历史与当日一并命中():
+    assert _hit(D(2026, 8, 13), D(2026, 8, 26), D(2026, 8, 25), D(2026, 8, 26)) == "full"
+
+
+def test_盘前跑上一交易日_dump正好覆盖():
+    """09:27 盘前 target 修正后是上一交易日，dump 手里正好有——上一版这里 0 命中。"""
+    assert _hit(D(2026, 8, 13), D(2026, 8, 25), D(2026, 8, 24), D(2026, 8, 25)) == "full"
+
+
+def test_接不上的缺口不算命中():
+    """库里历史停在 7月，dump 只有近10个交易日 —— 中间是个洞，必须退回逐股拉。"""
+    assert _hit(D(2026, 8, 13), D(2026, 8, 26), D(2026, 7, 20), D(2026, 8, 26)) is None
+
+
+def test_dump比库里还旧不算命中():
+    """停牌股：库里已经有到 08-25，dump 末根 08-20，用了等于倒退。"""
+    assert _hit(D(2026, 8, 6), D(2026, 8, 20), D(2026, 8, 25), D(2026, 8, 26)) is None
