@@ -916,8 +916,32 @@ def fetch_klines_batch(
             return True
         return require_date is not None and bars[-1].date != require_date
 
-    groups = _split_round_robin(stocks, 2)
-    tencent_group, sina_group = groups[0], groups[1]
+    # ── 决定怎么在腾讯/新浪之间分配（2026-08-26）────────────────────────────
+    # 原来无条件 50/50 轮询。但**新浪盘中不发布当日未完成的bar**（实测：盘中腾讯
+    # 末根=今天、新浪末根=昨天；收盘后两者一致）。所以盘中把一半股票分给新浪是
+    # 纯浪费——那一半必然缺当日bar，只能靠交叉兜底再打一次腾讯，等于两倍请求。
+    #
+    # 判断"新浪现在能不能给当日bar"不看时钟（节假日/临时休市/新浪改行为都会让
+    # 硬编码的市场时段失效），而是**拿一只股票探一次**：一个请求的成本，自我校正。
+    #   探到新浪有当日bar（盘后）→ 照旧 50/50，两个源各担一半，对限流更友好
+    #   探到没有（盘中）        → 全部走腾讯，新浪只做失败兜底
+    if require_date is not None and len(stocks) > 2:
+        probe = stocks[0]
+        sina_has_today = False
+        try:
+            pb = _fetch_kline_sina(probe.code, probe.market, days, probe.is_st,
+                                   get_limit_pct(probe.code, probe.is_st), 10)
+            sina_has_today = bool(pb) and pb[-1].date == require_date
+        except Exception:  # noqa: BLE001
+            sina_has_today = False
+        if not sina_has_today:
+            tencent_group, sina_group = stocks, []
+        else:
+            groups = _split_round_robin(stocks, 2)
+            tencent_group, sina_group = groups[0], groups[1]
+    else:
+        groups = _split_round_robin(stocks, 2)
+        tencent_group, sina_group = groups[0], groups[1]
 
     results: Dict[str, List[KLineBar]] = {}
     with ThreadPoolExecutor(max_workers=2) as executor:

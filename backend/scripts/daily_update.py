@@ -118,6 +118,11 @@ from app.services.screening_service import (
 )
 from app.services.sector_phase_service import refresh_sector_phases
 
+# K线批量拉取并发。原来 db_group 用 30、full_group 用 15，30 对单一数据源偏高
+# （生产日志出现过成片 JSONDecodeError）。修掉"全体按最大缺口拉"之后每只股票
+# 的 payload 从 ~52天 降到 2-3 天，不再需要靠高并发抢时间，统一降到 12。
+_KLINE_WORKERS = 12
+
 
 
 
@@ -1052,28 +1057,45 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         db_klines_map, db_group, full_group = _build_klines_from_db(candidates, db, target_date)
         log.info(f"DB重建 {len(db_group)} 只（拉近2日），全量拉取 {len(full_group)} 只")
 
-        # 全量拉取（新股 / 历史不足）：提高并发并去掉逐请求延迟。
-        # 同一 K 线接口在 DB 重建组已用 20 并发/0 延迟稳定运行，这里取 15 留余量。
+        # 全量拉取（新股 / 历史不足）。并发统一用 _KLINE_WORKERS——原来 full 用15、
+        # db 用30，30 对同一个源偏高（生产上出现过成片 JSONDecodeError），而且修掉
+        # 上面那个"全体按最大缺口拉"之后 payload 小了一个数量级，不需要靠高并发抢时间。
         full_klines = fetch_klines_batch(
-            full_group, days=65, max_workers=15, delay_between=0.0,
+            full_group, days=65, max_workers=_KLINE_WORKERS, delay_between=0.0,
             require_date=target_date,
         ) if full_group else {}
 
-        # DB 重建组拉取天数：仅拉 2 天、payload 极小，可用更高并发（取 30 防限流）。
-        # 边界2：按「DB 最新快照 → target_date」的最大缺口决定天数，避免连续停机多日后
-        # days=2 只补 1 根、中间留空洞（MA60/连板数会偏差）。常态 gap=1 → 拉 3 天。
-        db_fetch_days = 2
-        if db_group:
-            latest_hist = [bars[-1].date for bars in db_klines_map.values() if bars]
-            if latest_hist:
-                gap = (target_date - min(latest_hist)).days
-                db_fetch_days = max(2, min(gap + 2, 65))
-        if db_fetch_days > 3:
-            log.info(f"  DB重建检测到缺口，拉取近 {db_fetch_days} 天补齐")
-        today_klines = fetch_klines_batch(
-            db_group, days=db_fetch_days, max_workers=30, delay_between=0.0,
-            require_date=target_date,
-        ) if db_group else {}
+        # DB 重建组拉取天数：**按每只股票各自的缺口算**，不是全体取一个最大值。
+        #
+        # 2026-08-26 修复：原来是 gap = target_date - min(所有股票的最新快照日期)，
+        # min() 取的是全体里最旧的那一个——只要有一只股票的历史停在50天前（比如
+        # 长期停牌、或刚进候选池历史不全），**全部 180+ 只都会按52天拉**，而本该
+        # 只拉 2-3 天。生产日志里 "拉取近52天补齐/49天/65天" 几乎每次都触发，
+        # payload 是应有的 20 倍，既是慢的主因，也是把限流打出来的主因。
+        # 边界2 那个"连续停机多日不能只补1根"的初衷仍然保留，只是改成按股票各算。
+        by_days: dict[int, List[StockBasicInfo]] = {}
+        for info in db_group:
+            bars = db_klines_map.get(info.code) or []
+            if bars:
+                gap = (target_date - bars[-1].date).days
+                d = max(2, min(gap + 2, 65))
+            else:
+                d = 65          # 没有任何历史，按全量补
+            by_days.setdefault(d, []).append(info)
+
+        today_klines = {}
+        if by_days:
+            spread = sorted(by_days)
+            if spread[-1] > 3:
+                big = sum(len(v) for k, v in by_days.items() if k > 3)
+                log.info(f"  DB重建缺口分组：{len(by_days)} 档（{spread[0]}~{spread[-1]}天），"
+                         f"其中 {big}/{len(db_group)} 只需要补多天")
+            for d, group in by_days.items():
+                today_klines.update(fetch_klines_batch(
+                    group, days=d, max_workers=_KLINE_WORKERS, delay_between=0.0,
+                    require_date=target_date,
+                ))
+        db_fetch_days = max(by_days) if by_days else 2   # 下面重试用
 
         # 高并发批量拉取下，个别股票会因限流/连接重置静默拉空（fetch_kline 内部
         # 东财→腾讯双重兜底都失败）。若不重试，这些股票会一直被下面"今日无数据，

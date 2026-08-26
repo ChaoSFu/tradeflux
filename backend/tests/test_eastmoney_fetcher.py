@@ -474,3 +474,75 @@ def test_cross_fallback_never_downgrades_an_existing_history_window():
                                  require_date=today)
 
     assert len(out["000001"]) == 60, "交叉源没有更好的结果时，保留原有历史窗口"
+
+
+def test_batch_skips_sina_entirely_when_it_cannot_serve_the_required_date():
+    """
+    盘中新浪不发布当日未完成的bar，所以把一半股票分给它是纯浪费——那一半必然缺
+    当日bar，只能靠交叉兜底再打一次腾讯，等于两倍请求。
+
+    判断用**探测**而不是看时钟：拿一只股票问新浪有没有当日bar。探到没有就全部
+    走腾讯，新浪只做失败兜底。（写死市场时段的话，节假日/临时休市/新浪改行为都
+    会让它失效。）
+    """
+    from unittest.mock import patch
+    from app.services.eastmoney_fetcher import fetch_klines_batch, StockBasicInfo
+
+    today, yesterday = date(2026, 8, 26), date(2026, 8, 25)
+    stocks = [StockBasicInfo(code=f"00000{i}", name=f"股{i}", market=0, is_st=False,
+                             pct_change=0.0, turnover_rate=0.0) for i in range(8)]
+
+    def _bar(d):
+        return [KLineBar(date=d, open_price=1.0, close_price=1.0, high_price=1.0,
+                         low_price=1.0, pct_change=0.0, turnover_rate=None)]
+
+    sina_calls, tencent_calls = [], []
+
+    def _sina_no_today(code, market, days, is_st, lp, timeout):
+        sina_calls.append(code)
+        return _bar(yesterday)
+
+    def _tencent_ok(code, market, days, is_st, lp, timeout):
+        tencent_calls.append(code)
+        return _bar(today)
+
+    with patch("app.services.eastmoney_fetcher._fetch_kline_sina", _sina_no_today), \
+         patch("app.services.eastmoney_fetcher._fetch_kline_tencent", _tencent_ok), \
+         patch("app.services.eastmoney_fetcher._fetch_kline_eastmoney",
+               lambda *a, **kw: (_ for _ in ()).throw(AssertionError("不该走到东财"))):
+        out = fetch_klines_batch(stocks, days=3, max_workers=2, delay_between=0.0,
+                                 require_date=today)
+
+    assert all(v[-1].date == today for v in out.values())
+    assert len(tencent_calls) == 8, "探测到新浪给不了当日bar → 全部走腾讯"
+    assert len(sina_calls) == 1, "新浪只被探测调用了一次，没有浪费半批请求"
+
+
+def test_batch_still_splits_across_both_sources_when_sina_has_the_date():
+    """收盘后新浪也有当日bar，这时照旧两个源各担一半——对限流更友好。"""
+    from unittest.mock import patch
+    from app.services.eastmoney_fetcher import fetch_klines_batch, StockBasicInfo
+
+    today = date(2026, 8, 26)
+    stocks = [StockBasicInfo(code=f"00000{i}", name=f"股{i}", market=0, is_st=False,
+                             pct_change=0.0, turnover_rate=0.0) for i in range(8)]
+    bar = [KLineBar(date=today, open_price=1.0, close_price=1.0, high_price=1.0,
+                    low_price=1.0, pct_change=0.0, turnover_rate=None)]
+
+    sina_calls, tencent_calls = [], []
+
+    def _sina(code, *a, **kw):
+        sina_calls.append(code); return bar
+
+    def _tencent(code, *a, **kw):
+        tencent_calls.append(code); return bar
+
+    with patch("app.services.eastmoney_fetcher._fetch_kline_sina", _sina), \
+         patch("app.services.eastmoney_fetcher._fetch_kline_tencent", _tencent):
+        fetch_klines_batch(stocks, days=3, max_workers=2, delay_between=0.0,
+                           require_date=today)
+
+    # 4/4 分摊。新浪那边多一次是探测调用（探的是 stocks[0]，它随后被分到腾讯组），
+    # 一个请求的成本换掉"盘中浪费半批"，划算。
+    assert len(tencent_calls) == 4, "新浪能给当日bar时，两个源各担一半"
+    assert set(sina_calls) - {stocks[0].code} == {s.code for s in stocks[1::2]}
