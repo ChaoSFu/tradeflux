@@ -65,6 +65,10 @@ DUMP_KIND_10D = "daily-k-10d"
 _SH_TZ = timezone(timedelta(hours=8))
 
 
+class FuyaoError(RuntimeError):
+    """fuyao 请求/响应层失败。跟"数据本身没有"是两回事，见 fetch_interval_returns。"""
+
+
 def get_api_key() -> Optional[str]:
     """
     取 API Key。没配就是没启用，返回 None，不报错。
@@ -97,28 +101,66 @@ def _download_url(api_key: str, kind: str, timeout: int = 30) -> Optional[str]:
     return (body.get("data") or {}).get("presigned_url")
 
 
+def _download_once(url: str, dest: Path, timeout: int) -> int:
+    """
+    下载一次并**校验完整性**。返回写入字节数；不完整则抛异常。
+
+    校验是必需的：S3 会在传输中途断开（2026-08-26 生产实测 "peer closed connection
+    without sending complete message body (received 360820 bytes, expected 1077889)"）。
+    httpx 这种情况会抛 RemoteProtocolError，但**不是每次都抛**——短读也可能安静
+    结束，那样落地的就是一个截断的 Parquet，pyarrow 解析时才炸，或者更糟：
+    解析出一部分数据，我们拿半份行情去算涨停。所以字节数必须自己对。
+    """
+    written = 0
+    expected = None
+    with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+        with c.stream("GET", url) as resp:
+            resp.raise_for_status()
+            cl = resp.headers.get("content-length")
+            expected = int(cl) if cl and cl.isdigit() else None
+            with open(dest, "wb") as f:
+                for chunk in resp.iter_bytes(1 << 20):
+                    f.write(chunk)
+                    written += len(chunk)
+    if expected is not None and written != expected:
+        raise FuyaoError(f"下载不完整：收到 {written} 字节，应为 {expected}")
+    if written < 1024:
+        raise FuyaoError(f"下载内容过小（{written} 字节），不像是 Parquet")
+    return written
+
+
 @contextmanager
 def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
-                 timeout: int = 180) -> Iterator[Optional[Path]]:
+                 timeout: int = 180, retries: int = 2) -> Iterator[Optional[Path]]:
     """
     下载 dump 并在退出时**删除文件**（用户要求：用完即删，不在磁盘留副本）。
 
-    任何一步失败都 yield None 而不是抛异常——K线还有逐股接口那条完整的老路，
-    dump 是加速手段，不该因为它挂了就让整轮更新失败。
+    失败 yield None，不抛异常——K线还有逐股接口那条完整的老路，dump 是加速手段，
+    不该因为它挂了就让整轮更新失败。**调用方那边的 except 分支也必须真的能跑通**：
+    2026-08-26 生产事故就是 except 里调了个不存在的 log.warning()，错误处理器自己
+    抛 AttributeError，把可兜底的下载中断升级成了整个步骤失败。
+
+    重试 2 次：S3 传输中断是典型的瞬时故障，而预签名链接只活 5 分钟、重试要连
+    取链接一起重来（同一个链接可能已经失效）。
     """
     dest = Path(gettempdir()) / f"fuyao_{kind}_{int(time.time())}.parquet"
     try:
-        url = _download_url(api_key, kind)
-        if not url:
-            yield None
-            return
-        with httpx.Client(timeout=timeout, follow_redirects=True) as c:
-            with c.stream("GET", url) as resp:
-                resp.raise_for_status()
-                with open(dest, "wb") as f:
-                    for chunk in resp.iter_bytes(1 << 20):
-                        f.write(chunk)
-        yield dest
+        last_err: Optional[str] = None
+        for attempt in range(retries + 1):
+            try:
+                url = _download_url(api_key, kind)   # 每次重新取，旧链接可能已过期
+                if not url:
+                    last_err = "接口没有返回下载链接"
+                else:
+                    _download_once(url, dest, timeout)
+                    yield dest
+                    return
+            except Exception as e:  # noqa: BLE001
+                last_err = f"{type(e).__name__}: {str(e)[:120]}"
+                dest.unlink(missing_ok=True)         # 别把半份文件留给下一次重试
+            if attempt < retries:
+                time.sleep(1.5)
+        raise FuyaoError(last_err or "下载失败")
     finally:
         try:
             dest.unlink(missing_ok=True)
@@ -185,10 +227,6 @@ def load_bars(path: Path, wanted: Dict[str, bool]) -> Dict[str, List[KLineBar]]:
 
 
 # ── 单只历史K线：补区间涨幅 ────────────────────────────────────────────────────
-
-class FuyaoError(RuntimeError):
-    """fuyao 请求/响应层失败。跟"数据本身没有"是两回事，见 fetch_interval_returns。"""
-
 
 def fetch_interval_returns(api_key: str, code: str, market_suffix: str,
                            windows=(10, 20, 60), timeout: int = 15,

@@ -119,3 +119,70 @@ def test_无效收盘价整行跳过(tmp_path):
     ])
     bars = load_bars(p, {"600984": False})["600984"]
     assert [b.date for b in bars] == [date(2026, 8, 26)]
+
+
+# ── 2026-08-26 生产事故：兜底路径自己崩了 ─────────────────────────────────────
+#
+# fuyao dump 下载被 S3 中途掐断（收到 360820 字节 / 应为 1077889），daily_update 的
+# except 分支本该记个警告然后退回逐股拉取。但那句写的是 log.warning()，而 StepLogger
+# 当时只有 info/error —— **错误处理器自己抛 AttributeError**，把一个可兜底的瞬时故障
+# 升级成了「拉取K线数据」整步失败、当天日更中止。
+#
+# 兜底路径写错比没有兜底更糟：它把小故障放大成大故障，而且平时永远测不出来——
+# 只有真出事那一次才执行到。所以这里专门测"出事的时候"。
+
+def test_StepLogger_有warning方法(tmp_path, monkeypatch):
+    """三处 except 分支都在调它。少一个方法就等于三颗定时炸弹。"""
+    import importlib.util
+    from pathlib import Path as _P
+    spec = importlib.util.spec_from_file_location(
+        "_du_log", _P(__file__).resolve().parents[1] / "scripts" / "daily_update.py")
+    du = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(du)
+    for m in ("info", "warning", "error", "begin", "end"):
+        assert callable(getattr(du.StepLogger, m, None)), f"StepLogger 缺 {m}()"
+
+
+def test_下载不完整必须报错而不是留个截断文件(tmp_path, monkeypatch):
+    """
+    短读不一定抛异常，也可能安静结束——那样落地的就是截断的 Parquet：轻则解析时
+    才炸，重则解析出一部分数据，我们拿半份行情去算涨停。字节数必须自己对。
+    """
+    import httpx
+    from app.services import fuyao_dump as fd
+
+    class _Resp:
+        headers = {"content-length": "1077889"}
+        def raise_for_status(self): pass
+        def iter_bytes(self, n): yield b"x" * 360820      # 只收到三分之一
+    class _Ctx:
+        def __enter__(self): return _Resp()
+        def __exit__(self, *a): return False
+    class _Client:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def stream(self, *a, **kw): return _Ctx()
+    monkeypatch.setattr(fd.httpx, "Client", _Client)
+
+    dest = tmp_path / "d.parquet"
+    with pytest.raises(fd.FuyaoError, match="下载不完整"):
+        fd._download_once("http://x", dest, 10)
+
+
+def test_下载失败重试后仍失败则抛FuyaoError并清干净(tmp_path, monkeypatch):
+    from app.services import fuyao_dump as fd
+    calls = []
+    monkeypatch.setattr(fd, "_download_url", lambda k, kind, **kw: calls.append(1) or "http://x")
+    def _boom(url, dest, timeout):
+        dest.write_bytes(b"half")          # 模拟落了半个文件
+        raise fd.FuyaoError("下载不完整：收到 1 字节，应为 2")
+    monkeypatch.setattr(fd, "_download_once", _boom)
+    monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
+
+    with pytest.raises(fd.FuyaoError):
+        with fd.daily_k_dump("k", retries=2) as p:
+            pass
+    assert len(calls) == 3, "应重试 2 次，且每次都重新取链接（预签名链接只活5分钟）"
+    import glob, tempfile
+    assert not glob.glob(f"{tempfile.gettempdir()}/fuyao_*.parquet"), "半份文件必须清掉"

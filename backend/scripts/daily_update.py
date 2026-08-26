@@ -85,6 +85,18 @@ class StepLogger:
         """步骤内的详情日志。"""
         self._log(f"  {msg}")
 
+    def warning(self, msg: str):
+        """
+        步骤内的警告：出了问题但已被兜底，步骤本身不算失败。
+
+        2026-08-26 加这个方法是被真事故逼出来的：三处 except 分支里写了
+        log.warning()，而 StepLogger 当时只有 info/error——**错误处理器自己抛了
+        AttributeError**，把一个本该被兜底的 fuyao dump 下载中断，升级成了整个
+        「拉取K线数据」步骤失败、当天日更直接中止。
+        兜底路径写错比没有兜底更糟：它会把小故障放大成大故障，而且平时测不出来。
+        """
+        self._log(f"  ⚠️  {msg}")
+
     def summary(self):
         """输出最终汇总表。"""
         total = time.time() - self.started_at.timestamp()
@@ -1213,7 +1225,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 log.info(f"  📦 fuyao dump({mb:.1f}MB)：{len(dump_hit)}/{len(db_group)} 只"
                          f"直接命中，省下同等数量的逐股请求；文件已删除")
             except Exception as e:  # noqa: BLE001
-                log.warning(f"  ⚠️  fuyao dump 不可用（{type(e).__name__}: {e}），"
+                log.warning(f"fuyao dump 不可用（{type(e).__name__}: {e}），"
                             f"本轮全部退回逐股K线接口")
         elif db_group:
             log.info("  未配置 FUYAO_API_KEY，K线走逐股接口（配置后可省下绝大部分请求）")
@@ -1389,7 +1401,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         market_now = probe_market_now()
         if market_now is None:
             market_now = datetime.now(SH_TZ)
-            log.warning(f"⚠️  市场时间探测失败，退回本机时钟 {market_now:%H:%M:%S}（"
+            log.warning(f"市场时间探测失败，退回本机时钟 {market_now:%H:%M:%S}（"
                         f"若本机时区/时间不准，可能把盘中价误判为收盘价）")
         run_settled = bar_is_settled(target_date, market_now)
         log.info(f"市场时间 {market_now:%Y-%m-%d %H:%M:%S} → {target_date} "
