@@ -21,7 +21,7 @@ import sys
 import os
 import argparse
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -112,6 +112,9 @@ from app.services.eastmoney_fetcher import (
     fetch_strong_pool_codes, fetch_stock_bk_codes, fetch_limit_move_codes,
     fetch_turnover_top_stocks, fetch_stock_quotes_batch, kline_bar_from_quote,
     bar_is_settled, probe_market_now, SH_TZ,
+)
+from app.services.fuyao_dump import (
+    get_api_key as get_fuyao_key, daily_k_dump, load_bars,
 )
 from app.services.screening_service import (
     StockWindowStats,
@@ -1083,8 +1086,54 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 只拉 2-3 天。生产日志里 "拉取近52天补齐/49天/65天" 几乎每次都触发，
         # payload 是应有的 20 倍，既是慢的主因，也是把限流打出来的主因。
         # 边界2 那个"连续停机多日不能只补1根"的初衷仍然保留，只是改成按股票各算。
+        # ── dump 优先：全市场日K一次下载，替代逐股拉取 ────────────────────────
+        # 用户 2026-08-26 定的边界：一天一次、只更新库里已关注的股票、用完即删、
+        # 新增股票仍走实时接口。这里对应的就是 db_group（库里有历史、只需补最近
+        # 几天缺口）——它是大头；full_group 需要 65 天窗口，dump 的 10 天不够，
+        # 继续走原来的逐股接口。
+        #
+        # dump 是**加速手段不是依赖**：没配 key、下载失败、pyarrow 没装、解析出错，
+        # 任何一种都静默退回逐股那条老路，只记日志，绝不让整轮更新失败。
+        today_klines: dict = {}
+        dump_hit: set[str] = set()
+        _fuyao_key = get_fuyao_key()
+        if _fuyao_key and db_group:
+            try:
+                with daily_k_dump(_fuyao_key) as dump_path:
+                    if dump_path:
+                        wanted = {i.code: i.is_st for i in db_group}
+                        dump_bars = load_bars(dump_path, wanted)
+                        mb = dump_path.stat().st_size / 1048576
+                    else:
+                        dump_bars, mb = {}, 0.0
+                for info in db_group:
+                    bars = dump_bars.get(info.code) or []
+                    if not bars:
+                        continue
+                    hist = db_klines_map.get(info.code) or []
+                    # 只有当 dump 真的把缺口从头盖到尾才算命中：既要有 target_date
+                    # 那一根，也要跟库里已有历史**接得上**（dump 最早一根不能晚于
+                    # 库里最后一根的次日，否则中间是个洞）。接不上的退回逐股拉，
+                    # 让它按自己的缺口天数去补——"覆盖了一部分"不算覆盖，这跟
+                    # require_date 那条"返回了但缺那一天必须算没拿到"是同一条原则。
+                    if bars[-1].date != target_date:
+                        continue
+                    if hist and bars[0].date > hist[-1].date + timedelta(days=1):
+                        continue
+                    today_klines[info.code] = bars
+                    dump_hit.add(info.code)
+                log.info(f"  📦 fuyao dump({mb:.1f}MB)：{len(dump_hit)}/{len(db_group)} 只"
+                         f"直接命中，省下同等数量的逐股请求；文件已删除")
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"  ⚠️  fuyao dump 不可用（{type(e).__name__}: {e}），"
+                            f"本轮全部退回逐股K线接口")
+        elif db_group:
+            log.info("  未配置 FUYAO_API_KEY，K线走逐股接口（配置后可省下绝大部分请求）")
+
         by_days: dict[int, List[StockBasicInfo]] = {}
         for info in db_group:
+            if info.code in dump_hit:
+                continue            # dump 已覆盖，不用再打外部接口
             bars = db_klines_map.get(info.code) or []
             if bars:
                 gap = (target_date - bars[-1].date).days
@@ -1093,13 +1142,13 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 d = 65          # 没有任何历史，按全量补
             by_days.setdefault(d, []).append(info)
 
-        today_klines = {}
         if by_days:
             spread = sorted(by_days)
             if spread[-1] > 3:
                 big = sum(len(v) for k, v in by_days.items() if k > 3)
+                need = sum(len(v) for v in by_days.values())
                 log.info(f"  DB重建缺口分组：{len(by_days)} 档（{spread[0]}~{spread[-1]}天），"
-                         f"其中 {big}/{len(db_group)} 只需要补多天")
+                         f"其中 {big}/{need} 只需要补多天")
             for d, group in by_days.items():
                 today_klines.update(fetch_klines_batch(
                     group, days=d, max_workers=_KLINE_WORKERS, delay_between=0.0,
