@@ -369,7 +369,7 @@ function Stat({ label, value, tone }: {
 }
 
 type CoreSortKey = 'pct_change' | 'lu10' | 'lu20' | 'lu60' | 'board' | 'ic10' | 'ic20' | 'ic60' | 'leader' | 'risk'
-type TodaySortKey = 'board' | 'first' | 'last' | 'seal' | 'broken' | 'lu10' | 'lu20' | 'lu60'
+type TodaySortKey = 'pct_change' | 'board' | 'first' | 'last' | 'seal' | 'broken' | 'lu10' | 'lu20' | 'lu60'
   | 'ic10' | 'ic20' | 'ic60' | 'leader' | 'risk'
 
 type SortCtl<K extends string> = { sort: SortState<K>; onSort: (k: K) => void }
@@ -545,7 +545,7 @@ function CoreTable({ rows, ctl }: { rows: LimitUpRadarCoreStock[]; ctl: SortCtl<
 }
 
 const TODAY_PICK = (r: LimitUpRadarTodayStock, k: TodaySortKey) => ({
-  board: r.board_count, first: r.first_limit_time, last: r.last_limit_time,
+  pct_change: r.pct_change, board: r.board_count, first: r.first_limit_time, last: r.last_limit_time,
   seal: r.seal_amount, broken: r.broken_times,
   lu10: r.limit_up_days_10d, lu20: r.limit_up_days_20d, lu60: r.limit_up_days_60d,
   ic10: r.interval_chg_10d, ic20: r.interval_chg_20d, ic60: r.interval_chg_60d,
@@ -561,6 +561,8 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
           <tr className="text-text-muted border-b border-bg-border">
             <th className="text-left font-normal py-1.5 pr-3">股票</th>
             <SortTh col="board" label="板位" {...ctl} align="left" />
+            <SortTh col="pct_change" label="今日" {...ctl}
+                    title="当日涨跌幅。涨停股不都是+10%——创业板/科创板20%、北交所30%，炸板过的还会更低" />
             <SortTh col="first" label="首封" {...ctl} title="首次封板时间" />
             <SortTh col="last" label="终封" {...ctl} title="最终封板时间；与首封不同说明中途开过板" />
             <SortTh col="seal" label="封单" {...ctl} title="封单额；— 表示东方财富未提供该字段，不是0" />
@@ -595,6 +597,9 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
                       {r.limit_stat_days}日{r.limit_stat_count}板
                     </span>
                   )}
+                </td>
+                <td className={cn('py-1.5 pr-3 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
+                  {fmtPct(r.pct_change)}
                 </td>
                 <td className="py-1.5 pr-3 text-right font-mono whitespace-nowrap">{fmtTime(r.first_limit_time)}</td>
                 <td className={cn('py-1.5 pr-3 text-right font-mono whitespace-nowrap',
