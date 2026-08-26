@@ -20,7 +20,8 @@ import { Badge } from '@/components/ui/badge'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 import type {
-  LimitUpRadarSector, LimitUpRadarTodayStock, LimitUpRadarCoreStock, W2SCoreRole,
+  LimitUpRadarSector, LimitUpRadarTodayStock, LimitUpRadarCoreStock,
+  LimitUpRadarBrokenStock, W2SCoreRole,
 } from '@/types'
 
 // 角色标签：只反映"被召回的原因"，不是强弱排名（Core Recall != Core Classification）
@@ -170,6 +171,7 @@ export default function LimitUpSectorRadar() {
   const [refreshErr, setRefreshErr] = useState<string | null>(null)
   const coreSort = useSort<CoreSortKey>()
   const todaySort = useSort<TodaySortKey>()
+  const brokenSort = useSort<BrokenSortKey>()
 
   const params = {
     include_core: includeCore,
@@ -347,6 +349,7 @@ export default function LimitUpSectorRadar() {
               onToggle={() => toggle(sec.sector_id)}
               coreSort={coreSort}
               todaySort={todaySort}
+              brokenSort={brokenSort}
             />
           ))}
         </div>
@@ -369,14 +372,16 @@ function Stat({ label, value, tone }: {
 }
 
 type CoreSortKey = 'pct_change' | 'lu10' | 'lu20' | 'lu60' | 'board' | 'ic10' | 'ic20' | 'ic60' | 'leader' | 'risk'
+type BrokenSortKey = 'board' | 'gap' | 'broken' | 'pct_change' | 'first' | 'turnover' | 'amount' | 'amp'
 type TodaySortKey = 'pct_change' | 'board' | 'board60' | 'first' | 'last' | 'seal' | 'broken' | 'lu10' | 'lu20' | 'lu60'
   | 'ic10' | 'ic20' | 'ic60' | 'leader' | 'risk'
 
 type SortCtl<K extends string> = { sort: SortState<K>; onSort: (k: K) => void }
 
-function SectorCard({ sector, open, onToggle, coreSort, todaySort }: {
+function SectorCard({ sector, open, onToggle, coreSort, todaySort, brokenSort }: {
   sector: LimitUpRadarSector; open: boolean; onToggle: () => void
   coreSort: SortCtl<CoreSortKey>; todaySort: SortCtl<TodaySortKey>
+  brokenSort: SortCtl<BrokenSortKey>
 }) {
   const ladder = sector.board_ladder
     .map((e) => `${e.board === 1 ? '首板' : `${e.board}板`}×${e.count}`)
@@ -465,10 +470,22 @@ function SectorCard({ sector, open, onToggle, coreSort, todaySort }: {
 
           <section>
             <h3 className="text-xs font-semibold text-text-secondary mb-2">
-              今日攻击 <span className="font-normal text-text-muted">（{sector.today_limit_up_count} 只涨停）</span>
+              今日涨停 <span className="font-normal text-text-muted">（{sector.today_limit_up_count} 只）</span>
             </h3>
             <TodayTable rows={sector.today_limit_up_stocks} ctl={todaySort} />
           </section>
+
+          {sector.broken_stocks.length > 0 && (
+            <section>
+              <h3 className="text-xs font-semibold text-text-secondary mb-2">
+                今日炸板{' '}
+                <span className="font-normal text-text-muted">
+                  （{sector.broken_count} 只 · 盘中触及涨停但收盘没封住，看封板有多不坚决）
+                </span>
+              </h3>
+              <BrokenTable rows={sector.broken_stocks} ctl={brokenSort} />
+            </section>
+          )}
         </div>
       )}
     </div>
@@ -702,3 +719,113 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
   )
 }
 
+
+const BROKEN_PICK = (r: LimitUpRadarBrokenStock, k: BrokenSortKey) => ({
+  board: r.board_count, gap: r.gap_to_limit_pct, broken: r.broken_times,
+  pct_change: r.pct_change, first: r.first_limit_time,
+  turnover: r.turnover_rate, amount: r.amount, amp: r.amplitude,
+}[k])
+
+/**
+ * 今日炸板（2026-08-26新增）。
+ *
+ * 这张表回答的问题只有一个：**今天这个板块里有多少票封板不坚决、烂到什么程度。**
+ * 所以列的选取跟涨停表不同，不是把涨停表照搬一遍换个数据源：
+ *   · 「距涨停」是核心列——炸板收 -5% 和炸板收 +9% 完全是两回事，光看涨跌幅
+ *     还分不出来是"打了一下就走"还是"封了半天塌了"
+ *   · 「板位」在前——6天5板的高位股炸板是板块见顶信号，首板冲高回落只是情绪一般
+ *   · 「炸板次数」——反复开合说明多空分歧极大
+ *   · 没有「终封」列：炸板池本来就没有最终封板时间，它就是没封住
+ *
+ * 默认排序由后端给（连板降序 → 回落幅度升序 → 炸板次数降序），点表头可改。
+ *
+ * 关于跟涨停表重复：一只 14:30 炸板或回封的票可能同时出现在两边——涨停池和
+ * 炸板池是两个独立接口、并发拉取，没有可比的时间戳。这种重复可以容忍，不做
+ * 强制去重（用户 2026-08-26 确认）：随便挑一边丢掉才是真的丢信息。
+ */
+function BrokenTable({ rows, ctl }: { rows: LimitUpRadarBrokenStock[]; ctl: SortCtl<BrokenSortKey> }) {
+  const sorted = applySort(rows, ctl.sort, BROKEN_PICK)
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full table-fixed text-xs">
+        <colgroup>
+          <col className="w-[13rem]" />
+          <col className="w-[9rem]" />
+          <col className="w-[6.5rem]" />
+          <col className="w-[5rem]" />
+          <col className="w-[5.5rem]" />
+          <col className="w-[4.5rem]" />
+          <col className="w-[4.5rem]" />
+          <col className="w-[5rem]" />
+          <col className="w-[5.5rem]" />
+          <col className="w-[5rem]" />
+          <col />
+        </colgroup>
+        <thead>
+          <tr className="text-text-muted border-b border-bg-border">
+            <th className="text-left font-normal py-1.5 pr-3">股票</th>
+            <th className="text-left font-normal py-1.5 pr-3">核心角色</th>
+            <SortTh col="board" label="板位" {...ctl} align="left" />
+            <SortTh col="pct_change" label="今日" {...ctl} />
+            <SortTh col="gap" label="距涨停" {...ctl}
+                    title="收盘价相对当日涨停价的差距。-0.5% 是打了一下就走，-8% 是封了又塌——封板不坚决的程度全在这一列" />
+            <SortTh col="broken" label="炸板" {...ctl} title="当日开板次数；反复开合说明多空分歧极大" />
+            <SortTh col="first" label="首封" {...ctl} title="首次触及涨停的时间。炸板池没有最终封板时间——它就是没封住" />
+            <SortTh col="amp" label="振幅" {...ctl} />
+            <SortTh col="turnover" label="换手" {...ctl} />
+            <SortTh col="amount" label="成交额" {...ctl} />
+            <th className="text-left font-normal py-1.5">召回理由</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((r) => (
+            <tr key={r.code} className="border-b border-bg-border/40 last:border-0 align-top">
+              <td className="py-1.5 pr-3 whitespace-nowrap">
+                <Link to={`/stocks/${r.code}`} className="text-text-primary hover:text-accent">
+                  <span className="font-medium">{r.name}</span>
+                  <span className="ml-1.5 font-mono text-text-muted">{r.code}</span>
+                </Link>
+              </td>
+              <td className="py-1.5 pr-3"><RoleTags roles={r.core_roles} reasons={r.core_reasons} /></td>
+              <td className="py-1.5 pr-3 whitespace-nowrap">
+                <BoardTag n={r.board_count} />
+                {r.limit_stat_days != null && r.limit_stat_count != null && r.limit_stat_days > 1 && (
+                  <span className="ml-1.5 text-text-muted font-mono">
+                    {r.limit_stat_days}日{r.limit_stat_count}板
+                  </span>
+                )}
+              </td>
+              <td className={cn('py-1.5 pr-3 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
+                {fmtPct(r.pct_change)}
+              </td>
+              <td className={cn('py-1.5 pr-3 text-right font-mono whitespace-nowrap',
+                                r.gap_to_limit_pct == null ? 'text-text-muted'
+                                  : r.gap_to_limit_pct <= -5 ? 'text-down font-bold'
+                                  : r.gap_to_limit_pct <= -2 ? 'text-warn' : 'text-text-secondary')}
+                  title={r.price != null && r.limit_price != null
+                    ? `收盘 ${r.price} / 涨停价 ${r.limit_price}` : undefined}>
+                {fmtPct(r.gap_to_limit_pct)}
+              </td>
+              <td className={cn('py-1.5 pr-3 text-right font-mono whitespace-nowrap',
+                                (r.broken_times ?? 0) >= 3 ? 'text-down font-bold'
+                                  : r.broken_times ? 'text-warn' : 'text-text-muted')}>
+                {r.broken_times == null ? '—' : `${r.broken_times}次`}
+              </td>
+              <td className="py-1.5 pr-3 text-right font-mono whitespace-nowrap">{fmtTime(r.first_limit_time)}</td>
+              <td className="py-1.5 pr-3 text-right font-mono text-text-secondary whitespace-nowrap">
+                {r.amplitude == null ? '—' : `${r.amplitude.toFixed(1)}%`}
+              </td>
+              <td className="py-1.5 pr-3 text-right font-mono text-text-secondary whitespace-nowrap">
+                {r.turnover_rate == null ? '—' : `${r.turnover_rate.toFixed(1)}%`}
+              </td>
+              <td className="py-1.5 pr-3 text-right font-mono text-text-secondary whitespace-nowrap">
+                {fmtSeal(r.amount)}
+              </td>
+              <NoteCell text={r.core_reasons.join(' · ') || null} />
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}

@@ -366,6 +366,25 @@ def sort_core_stocks(rows: List[dict]) -> List[dict]:
     ))
 
 
+def sort_broken_stocks(rows: List[dict]) -> List[dict]:
+    """
+    炸板排序：**按"封板有多不坚决"从重到轻**，不是按代码或时间。
+
+    这一块要回答的问题只有一个——今天这个板块里有多少票是封不住的、烂到什么程度。
+    所以排序键依次是：
+      1. 连板数降序：高位板炸板是板块见顶信号，首板炸板只是情绪一般，量级不同
+      2. 距涨停价的回落幅度升序（越负越靠前）：炸板收 -5% 和炸板收 +9% 完全两回事
+      3. 炸板次数降序：反复开合说明分歧极大
+    全部用字典序比较，不做加权打分——本页面不出黑箱分数。
+    """
+    return sorted(rows, key=lambda r: (
+        -(r.get("board_count") or 0),
+        r.get("gap_to_limit_pct") if r.get("gap_to_limit_pct") is not None else 0.0,
+        -(r.get("broken_times") or 0),
+        r.get("code") or "",
+    ))
+
+
 def sort_sectors(sectors: List[dict]) -> List[dict]:
     """
     板块排序（2026-08-25 按用户要求调整为**高度优先**）：
@@ -444,6 +463,7 @@ def build_radar(
 
     detail_by_sid = {d.stock_id: d for d in details}
     broken_sids = {b.stock_id for b in broken}
+    broken_by_sid = {b.stock_id: b for b in broken}
 
     # ── 一次性批量取齐所有需要的本地数据（不做 N+1）──────────────────────────
     sectors: List[Sector] = db.query(Sector).filter(Sector.is_watched == True).all()  # noqa: E712
@@ -511,7 +531,7 @@ def build_radar(
         if not sector:
             continue
         card = _build_sector_card(
-            sector, sids, detail_by_sid, broken_sids, stocks, snaps, rel_lookup, lu_hist,
+            sector, sids, detail_by_sid, broken_sids, broken_by_sid, stocks, snaps, rel_lookup, lu_hist,
             em_recall, radar_scores,
             ic_extra=ic_extra, include_core=include_core,
             core_10d_min=core_10d_min, core_20d_min=core_20d_min,
@@ -551,6 +571,7 @@ def build_radar(
 def _build_sector_card(
     sector: Sector, sids: Set[int],
     detail_by_sid: Dict[int, LimitUpDailyDetail], broken_sids: Set[int],
+    broken_by_sid: Dict[int, BrokenBoardDailyDetail],
     stocks: Dict[int, Stock], snaps: Dict[int, StockDailySnapshot],
     rel_lookup: Dict[Tuple[int, int], StockSectorRelation],
     lu_hist: Dict[int, LimitUpHistory],
@@ -564,6 +585,7 @@ def _build_sector_card(
     ic_extra = ic_extra or {}
     today_rows: List[dict] = []
     core_rows: List[dict] = []
+    broken_rows: List[dict] = []
     broken_in_sector = 0
 
     for sid in sids:
@@ -615,6 +637,30 @@ def _build_sector_card(
 
         if sid in broken_sids:
             broken_in_sector += 1
+            bd = broken_by_sid.get(sid)
+            if bd is not None:
+                # 「封板不坚决」的量化：炸板后离涨停价还差多少。
+                # 一只 6天5板 的高位股炸板收 -5%，和一只首板冲高回落 0.5%，对板块
+                # 的含义完全不同——这一列就是用来把这两者分开的。
+                gap = None
+                if bd.price and bd.limit_price and bd.limit_price > 0:
+                    gap = round((bd.price / bd.limit_price - 1) * 100, 2)
+                broken_rows.append({
+                    "code": bd.stock_code, "name": bd.stock_name or bd.stock_code,
+                    "pct_change": bd.pct_change,
+                    "price": bd.price, "limit_price": bd.limit_price,
+                    "gap_to_limit_pct": gap,
+                    "board_count": bd.board_count,
+                    "limit_stat_days": bd.limit_stat_days,
+                    "limit_stat_count": bd.limit_stat_count,
+                    "first_limit_time": bd.first_limit_time,
+                    "broken_times": bd.broken_times,
+                    "turnover_rate": bd.turnover_rate,
+                    "amount": bd.amount,
+                    "amplitude": bd.amplitude,
+                    "core_roles": recall.roles,
+                    "core_reasons": recall.reasons,
+                })
 
         if include_core and recall.roles:
             snap = snaps.get(sid)
@@ -677,6 +723,7 @@ def _build_sector_card(
 
     lu_n = len(today_rows)
     seal_rate = round(lu_n / (lu_n + broken_in_sector) * 100, 1) if (lu_n + broken_in_sector) else None
+    broken_rows = sort_broken_stocks(broken_rows)
 
     return {
         "sector_id": sector.id,
@@ -688,6 +735,7 @@ def _build_sector_card(
         "board_height": max(boards) if boards else 0,
         "board_ladder": [{"board": b, "count": c} for b, c in sorted(ladder.items(), reverse=True)],
         "broken_count": broken_in_sector,
+        "broken_stocks": broken_rows,
         "seal_rate": seal_rate,
         "earliest_limit_time": min(times) if times else None,
         # 封单额只对"东财给了封单额的那些股票"求和；一只都没给时返回 None 而不是

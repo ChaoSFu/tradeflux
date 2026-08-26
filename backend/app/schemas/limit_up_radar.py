@@ -80,6 +80,7 @@ class RadarSector(BaseModel):
     board_ladder: List[BoardLadderEntry] = []
 
     broken_count: int = 0
+    broken_stocks: List["RadarBrokenStock"] = []
     seal_rate: Optional[float] = None            # 涨停/(涨停+炸板) %
     earliest_limit_time: Optional[time] = None
     total_seal_amount: Optional[float] = None    # None=没有任何一只给了封单额
@@ -94,6 +95,37 @@ class RadarSector(BaseModel):
 
     core_stocks: List[RadarCoreStock] = []
     today_limit_up_stocks: List[RadarTodayStock] = []
+
+
+class RadarBrokenStock(BaseModel):
+    """
+    炸板股：盘中触及涨停但收盘没封住。这一块回答的问题只有一个——
+    **今天这个板块里有多少票封板不坚决、烂到什么程度**。
+
+    跟涨停/炸板互斥性有关的一点（用户 2026-08-26 明确）：理论上一只票同一时刻
+    只可能在其中一边，但涨停池和炸板池是两个独立接口、并发拉取，一只 14:30 炸板
+    或回封的票可能同时出现在两份名单里。这种重复**可以容忍**，不做强制去重——
+    强行去重要么依赖两个接口的时间戳（它们没有可比的时间戳），要么就得随便挑一边
+    丢掉，那才是真的丢信息。
+    """
+    code: str
+    name: str
+    pct_change: Optional[float] = None
+    price: Optional[float] = None
+    limit_price: Optional[float] = None
+    # 距涨停价还差多少 %（负数=已回落）。封板不坚决程度的核心量化：
+    # 炸板收 -5% 和炸板收 +9% 完全是两回事
+    gap_to_limit_pct: Optional[float] = None
+    board_count: Optional[int] = None        # 高位板炸板是见顶信号，首板炸板只是情绪一般
+    limit_stat_days: Optional[int] = None
+    limit_stat_count: Optional[int] = None
+    first_limit_time: Optional[time] = None  # 炸板池没有"最终封板时间"——它就是没封住
+    broken_times: Optional[int] = None       # 反复开合说明分歧极大
+    turnover_rate: Optional[float] = None
+    amount: Optional[float] = None
+    amplitude: Optional[float] = None
+    core_roles: List[str] = []
+    core_reasons: List[str] = []
 
 
 class RadarSummary(BaseModel):

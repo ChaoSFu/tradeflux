@@ -780,6 +780,27 @@ export interface LimitUpRadarTodayStock {
   core_reasons: string[]
 }
 
+export interface LimitUpRadarBrokenStock {
+  code: string
+  name: string
+  pct_change: number | null
+  price: number | null
+  limit_price: number | null
+  /** 距涨停价还差多少 %（负数=已回落）。封板不坚决程度的核心量化 */
+  gap_to_limit_pct: number | null
+  board_count: number | null
+  limit_stat_days: number | null
+  limit_stat_count: number | null
+  /** 炸板池没有"最终封板时间"——它就是没封住 */
+  first_limit_time: string | null
+  broken_times: number | null
+  turnover_rate: number | null
+  amount: number | null
+  amplitude: number | null
+  core_roles: W2SCoreRole[]
+  core_reasons: string[]
+}
+
 export interface LimitUpRadarSector {
   sector_id: number
   sector_name: string
@@ -800,6 +821,7 @@ export interface LimitUpRadarSector {
   core_avg_pct_change: number | null // 核心锚今日平均涨跌幅
   core_stocks: LimitUpRadarCoreStock[]
   today_limit_up_stocks: LimitUpRadarTodayStock[]
+  broken_stocks: LimitUpRadarBrokenStock[]
 }
 
 export interface LimitUpRadarSummary {

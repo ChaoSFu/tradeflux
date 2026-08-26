@@ -226,6 +226,15 @@ def _upsert_broken_boards(
         row.broken_times = b.broken_times
         row.pct_change = b.pct_change
         row.em_industry = b.em_industry
+        row.price = b.price
+        row.limit_price = b.limit_price
+        row.board_count = b.board_count
+        row.limit_stat_days = b.limit_stat_days
+        row.limit_stat_count = b.limit_stat_count
+        row.turnover_rate = b.turnover_rate
+        row.amount = b.amount
+        row.float_market_cap = b.float_market_cap
+        row.amplitude = b.amplitude
         row.source = SOURCE_NAME
         row.source_trade_date = trade_date
         row.refreshed_at = now

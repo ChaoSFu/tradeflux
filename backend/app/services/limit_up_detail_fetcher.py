@@ -84,7 +84,18 @@ class LimitUpDetail:
 
 @dataclass
 class BrokenBoardDetail:
-    """炸板（盘中触及涨停但收盘没封住）事实，用于算封板率。"""
+    """
+    炸板（盘中触及涨停但收盘没封住）事实。
+
+    2026-08-26 补全字段：此前只解析了 7 个字段，而 getTopicZBPool 的原始响应里
+    换手率(hs)/成交额(amount)/流通市值(ltsz)/涨停价(ztp)/连板统计(zttj)/振幅(zf)
+    一直都在，只是没人取。用户找来一个新接口(stockextenddata typelist Ty=4)想补
+    这些字段，实测那个接口的字段是本接口的子集，还少了振幅、没有 date 参数
+    （查不了历史）、要带 dn;/st;/uid; 几个空 header 和一个写死的 ut token——
+    换过去是净亏。所以是把现有接口解析全，不是换源。
+
+    炸板池**没有** lbt（最终封板时间）：它收盘就是没封住，本来就没有"最终封板"。
+    """
     code: str
     name: str
     market: Optional[int] = None
@@ -92,6 +103,16 @@ class BrokenBoardDetail:
     first_limit_time: Optional[time] = None
     broken_times: Optional[int] = None
     em_industry: Optional[str] = None
+    # ── 以下 2026-08-26 补全 ──────────────────────────────────────────────
+    price: Optional[float] = None            # 最新价（元）
+    limit_price: Optional[float] = None      # 当日涨停价（元），跟最新价的差=回落幅度
+    board_count: Optional[int] = None        # 连板数——高位板炸板和首板炸板不是一回事
+    limit_stat_days: Optional[int] = None    # "N天M板" 的 N
+    limit_stat_count: Optional[int] = None   # "N天M板" 的 M
+    turnover_rate: Optional[float] = None    # 换手率 %
+    amount: Optional[float] = None           # 成交额（元）
+    float_market_cap: Optional[float] = None # 流通市值（元）
+    amplitude: Optional[float] = None        # 振幅 %
 
 
 def parse_em_time(raw) -> Optional[time]:
@@ -161,17 +182,39 @@ def parse_zt_pool_row(row: dict) -> Optional[LimitUpDetail]:
 
 
 def parse_zb_pool_row(row: dict) -> Optional[BrokenBoardDetail]:
+    """
+    解析炸板池单行。字段口径 2026-08-26 用实盘数据逐个对照腾讯行情核实：
+    600508 上海能源 p=11450→11.45（现价，×1000）、ztp=11960→11.96（涨停价，
+    昨收10.87×1.1=11.957四舍五入）、hs=10.851→换手率%、amount=1218008048→
+    成交额12.18亿、ltsz=11585169540→流通市值115.85亿、zbc=1→炸板1次、
+    zttj={'days':3,'ct':2}→3天2板，全部与腾讯独立核对一致。
+    注意价格是 ×1000（涨停池也是），不是 ×100。
+    """
     code = (row or {}).get("c")
     if not code:
         return None
+    price, ztp = _num(row.get("p")), _num(row.get("ztp"))
+    zdp, hs, zf = _num(row.get("zdp")), _num(row.get("hs")), _num(row.get("zf"))
+    zttj = row.get("zttj") or {}
+    if not isinstance(zttj, dict):
+        zttj = {}
     return BrokenBoardDetail(
         code=str(code),
         name=str(row.get("n") or "").replace(" ", ""),
         market=_int(row.get("m")),
-        pct_change=round(_num(row.get("zdp")), 2) if _num(row.get("zdp")) is not None else None,
+        pct_change=round(zdp, 2) if zdp is not None else None,
         first_limit_time=parse_em_time(row.get("fbt")),
         broken_times=_int(row.get("zbc")),
         em_industry=(str(row["hybk"]) if row.get("hybk") else None),
+        price=round(price / 1000, 3) if price is not None else None,
+        limit_price=round(ztp / 1000, 3) if ztp is not None else None,
+        board_count=_int(row.get("lbc")),
+        limit_stat_days=_int(zttj.get("days")),
+        limit_stat_count=_int(zttj.get("ct")),
+        turnover_rate=round(hs, 2) if hs is not None else None,
+        amount=_num(row.get("amount")),
+        float_market_cap=_num(row.get("ltsz")),
+        amplitude=round(zf, 2) if zf is not None else None,
     )
 
 

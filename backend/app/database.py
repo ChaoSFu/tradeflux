@@ -40,6 +40,16 @@ def _apply_schema_patches():
     from sqlalchemy import text
 
     patches = [
+        # 炸板明细补全字段（2026-08-26，东财一直返回只是没解析）
+        "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS price FLOAT",
+        "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS limit_price FLOAT",
+        "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS board_count INTEGER",
+        "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS limit_stat_days INTEGER",
+        "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS limit_stat_count INTEGER",
+        "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS turnover_rate FLOAT",
+        "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS amount FLOAT",
+        "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS float_market_cap FLOAT",
+        "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS amplitude FLOAT",
         # StockDailySnapshot：当日观测是否为收盘后终值（见 model 注释里的生产事故）
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS is_settled BOOLEAN DEFAULT FALSE NOT NULL",
         # Sector 新增字段（板块筛选指标）

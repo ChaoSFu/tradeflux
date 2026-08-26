@@ -285,3 +285,52 @@ def test_请求失败与历史不足必须分得开(db):
     assert any("603615" in f and "Timeout" in f for f in fail), "请求失败要带原因"
     assert any("603615" not in f and "历史不足" in f for f in fail), "历史不足是事实，另一类"
     assert len(fail) == 2
+
+
+# ── 炸板池字段补全（2026-08-26）────────────────────────────────────────────────
+#
+# getTopicZBPool 的换手率/成交额/流通市值/涨停价/连板统计/振幅一直都返回，
+# 但 parse_zb_pool_row 只取了 7 个。用户为了补这些字段找来一个新接口
+# （stockextenddata typelist Ty=4），dump 原始响应才发现现成的就够——那个新接口
+# 的字段是本接口的子集，还少振幅、没有 date 参数、要带写死的 ut token。
+# 下面这行数据是 2026-08-26 上海能源的真实响应，已跟腾讯行情逐项核对。
+
+def test_炸板池字段按实盘口径解析(db):
+    from app.services.limit_up_detail_fetcher import parse_zb_pool_row
+    b = parse_zb_pool_row({
+        'c': '600508', 'n': '上海能源', 'm': 1,
+        'p': 11450,        # ×1000，不是 ×100
+        'ztp': 11960,      # 涨停价：昨收 10.87 × 1.1 = 11.957 → 11.96
+        'zdp': 5.33578634262085, 'hs': 10.851305961608887,
+        'amount': 1218008048, 'ltsz': 11585169540.0,
+        'zbc': 1, 'zf': 14.811407089233398, 'fbt': 132003,
+        'hybk': '煤炭开采', 'zttj': {'days': 3, 'ct': 2}, 'lbc': 2,
+    })
+    assert b.price == 11.45 and b.limit_price == 11.96, "价格是×1000，按×100解析会差10倍"
+    assert b.turnover_rate == 10.85
+    assert b.amount == 1218008048 and b.float_market_cap == 11585169540
+    assert (b.board_count, b.limit_stat_days, b.limit_stat_count) == (2, 3, 2)
+    assert b.amplitude == 14.81
+    assert b.first_limit_time.hour == 13 and b.first_limit_time.minute == 20
+    # 封板不坚决程度：收盘离涨停价还差多少
+    assert round((b.price / b.limit_price - 1) * 100, 2) == -4.26
+
+
+def test_炸板池缺字段一律None不填0(db):
+    from app.services.limit_up_detail_fetcher import parse_zb_pool_row
+    b = parse_zb_pool_row({'c': '000001', 'n': '平安银行'})
+    for f in ('price', 'limit_price', 'turnover_rate', 'amount',
+              'float_market_cap', 'amplitude', 'board_count'):
+        assert getattr(b, f) is None, f"{f} 缺失必须是 None，0 会被读成真实的零"
+
+
+def test_炸板排序按封板不坚决程度(db):
+    """高位板炸板排前面；同板位看回落幅度；再看反复开合次数。"""
+    from app.services.limit_up_radar_service import sort_broken_stocks
+    rows = [
+        {'code': 'A', 'board_count': 1, 'gap_to_limit_pct': -0.5, 'broken_times': 1},
+        {'code': 'B', 'board_count': 5, 'gap_to_limit_pct': -5.0, 'broken_times': 1},
+        {'code': 'C', 'board_count': 1, 'gap_to_limit_pct': -8.0, 'broken_times': 1},
+        {'code': 'D', 'board_count': 1, 'gap_to_limit_pct': -0.5, 'broken_times': 4},
+    ]
+    assert [r['code'] for r in sort_broken_stocks(rows)] == ['B', 'C', 'D', 'A']

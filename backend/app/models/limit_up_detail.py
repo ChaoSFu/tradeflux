@@ -87,6 +87,19 @@ class BrokenBoardDailyDetail(Base):
     pct_change = Column(Float, nullable=True)
     em_industry = Column(String(50), nullable=True)
 
+    # 2026-08-26 补全。这些字段东财 getTopicZBPool 一直都返回，只是此前没解析——
+    # 炸板这一块要回答的是"封板有多不坚决"，光有涨跌幅和首封时间答不了：
+    # 一个 6天5板 的高位股炸板，和一个首板冲高回落，对板块的含义完全不同。
+    price = Column(Float, nullable=True)             # 最新价（元）
+    limit_price = Column(Float, nullable=True)       # 当日涨停价（元）
+    board_count = Column(Integer, nullable=True)     # 连板数
+    limit_stat_days = Column(Integer, nullable=True) # "N天M板" 的 N
+    limit_stat_count = Column(Integer, nullable=True)# "N天M板" 的 M
+    turnover_rate = Column(Float, nullable=True)     # 换手率 %
+    amount = Column(Float, nullable=True)            # 成交额（元）
+    float_market_cap = Column(Float, nullable=True)  # 流通市值（元）
+    amplitude = Column(Float, nullable=True)         # 振幅 %
+
     source = Column(String(30), nullable=True)
     source_trade_date = Column(Date, nullable=True)
     refreshed_at = Column(DateTime, nullable=True)
