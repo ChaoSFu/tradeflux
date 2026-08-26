@@ -40,6 +40,8 @@ def _apply_schema_patches():
     from sqlalchemy import text
 
     patches = [
+        # StockDailySnapshot：当日观测是否为收盘后终值（见 model 注释里的生产事故）
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS is_settled BOOLEAN DEFAULT FALSE NOT NULL",
         # Sector 新增字段（板块筛选指标）
         "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS sector_type VARCHAR(20)",
         "ALTER TABLE sectors ADD COLUMN IF NOT EXISTS stock_count INTEGER DEFAULT 0 NOT NULL",

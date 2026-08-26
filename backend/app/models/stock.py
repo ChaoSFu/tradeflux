@@ -67,6 +67,21 @@ class StockDailySnapshot(Base):
     pct_change = Column(Float, nullable=True)      # 当日涨跌幅 %
     turnover_rate = Column(Float, nullable=True)   # 换手率 %
 
+    # 这一行的当日观测是不是**收盘之后**取的（2026-08-26新增）。
+    # False = 盘中快照，close_price 是当时的现价而不是收盘价，随时会变。
+    #
+    # 加这一列是因为一个真实的生产事故：daily_update 可以被 UI 随时手动触发，
+    # 用户 2026-08-26 盘中点了 9 次（09:46~14:00）。腾讯K线接口盘中就发当日那根
+    # 未收盘的 bar，`bar.date == today` 成立，于是每一次都把当时的现价写成了
+    # "今日收盘价"。收盘后 15:30 那一跑对 19% 的股票K线拉取失败，代码走
+    # "保留上次可信值"分支——但保留下来的其实是 14:00 的盘中价。600984 因此在库里
+    # 记成 close=5.43/+9.92%（盘中封板那一刻），实际收盘 4.66/-5.67% 是炸板大阴线，
+    # 而这个假涨停会直接进涨停板块雷达的连板数和龙头分。
+    #
+    # 有了它，"保留上次可信值"才第一次真的成立：只有 is_settled=True 的旧值才算
+    # 终值可以保留，盘中值必须被清掉而不是就地转正。
+    is_settled = Column(Boolean, default=False, nullable=False)
+
     # 每日标志位（从 K 线判断后写入）
     is_limit_up = Column(Boolean, default=False, nullable=False)
     is_limit_down = Column(Boolean, default=False, nullable=False)

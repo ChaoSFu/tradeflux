@@ -21,7 +21,7 @@ import random
 import string
 import threading
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Tuple, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1698,16 +1698,34 @@ class StockQuote:
     # 一律当作不可信、不用于补K线（东财push2这一路就是None：它的字段集里没有
     # 可靠日期字段，而且生产上这一路本来就已经降级为纯兜底）。
     trade_date: Optional[date] = None
+    # 完整的行情时间戳（2026-08-26新增）。只有日期不够用：腾讯的K线接口在盘中就会
+    # 发当日那根**尚未收盘**的bar，它的date确实是今天，close字段却是现价。此前
+    # daily_update 只校验"bar是不是今天的"，于是盘中每跑一次就把当时的现价当收盘价
+    # 写进当日快照——生产上用户一天手动点了9次更新，600984盘中封涨停时被记成
+    # close=5.43/+9.92%，实际收盘4.66/-5.67%（炸板），库里却是一个涨停。
+    # 这个时间戳是**市场自己给的时间**，比本机时钟可靠（也不用硬编码15:00收盘、
+    # 半日市那种特例），所以判定"这一天收没收盘"一律以它为准。
+    trade_dt: Optional[datetime] = None
 
 
 TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
 
 
-def _parse_tencent_trade_date(fields: list[str]) -> Optional[date]:
+SH_TZ = timezone(timedelta(hours=8))
+# A股收盘时间。用它只是给"已收盘"划一条线，不用于判断"现在能不能拿到数据"——
+# 后者一律用能力探测（见 fetch_klines_batch 里的新浪当日bar探测），不看时钟。
+_MARKET_CLOSE = dtime(15, 0)
+
+
+def _parse_tencent_trade_dt(fields: list[str]) -> Optional[datetime]:
     """
     腾讯字段30是 'YYYYMMDDHHMMSS' 形式的行情时间戳（2026-08-25用实盘响应核对：
-    sh600000 返回 '20260825161259'，跟当天日期一致）。取不到/格式不对返回 None，
-    调用方按"日期未知=不可信"处理，不猜。
+    sh600000 返回 '20260825161259'；2026-08-26盘后复核 sh600984 返回
+    '20260826161449'，秒级都对得上）。取不到/格式不对返回 None，调用方按
+    "时间未知=不可信"处理，不猜。
+
+    时分秒部分残缺时退回当天 00:00:00——那样 bar_is_settled() 会判成"未收盘"，
+    是安全的方向（宁可少写一次，不可把盘中价当收盘价）。
     """
     if len(fields) <= 30:
         return None
@@ -1715,9 +1733,52 @@ def _parse_tencent_trade_date(fields: list[str]) -> Optional[date]:
     if len(raw) < 8 or not raw[:8].isdigit():
         return None
     try:
-        return date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
+        y, m, d = int(raw[:4]), int(raw[4:6]), int(raw[6:8])
+        hh = mm = ss = 0
+        if len(raw) >= 14 and raw[8:14].isdigit():
+            hh, mm, ss = int(raw[8:10]), int(raw[10:12]), int(raw[12:14])
+        return datetime(y, m, d, hh, mm, ss, tzinfo=SH_TZ)
     except ValueError:
         return None
+
+
+def _parse_tencent_trade_date(fields: list[str]) -> Optional[date]:
+    """只要日期的场景（校验行情是不是今天的）。时间部分见 _parse_tencent_trade_dt。"""
+    dt = _parse_tencent_trade_dt(fields)
+    return dt.date() if dt else None
+
+
+def bar_is_settled(bar_date: date, market_now: datetime) -> bool:
+    """
+    这根bar代表的那个交易日**收盘了没有**——决定它的 close 是"收盘价"还是"现价"。
+
+    这是本仓库第三个"同一个市场事实只能有一套判定函数"的地方（前两个是
+    build_kline_bar 和 exact_limit_price）。之所以必须单独抽出来：腾讯K线接口盘中
+    就发当日bar，`bar.date == today` 恒为真，光看日期永远分不出"今天已收盘的终值"
+    和"今天进行中的现价"。
+
+    market_now 用市场自己的时间戳（腾讯行情字段30），不用本机时钟。
+    """
+    if bar_date < market_now.date():
+        return True            # 历史交易日，必然已收盘
+    if bar_date > market_now.date():
+        return False           # 未来日期，防御性判否
+    return market_now.time() >= _MARKET_CLOSE
+
+
+def probe_market_now(timeout: int = 8) -> Optional[datetime]:
+    """
+    向腾讯要一条报价，读出**市场时间**。整轮 daily_update 只需要问一次。
+
+    拿不到返回 None，调用方自己决定退回本机时钟还是放弃——这里不替它做决定，
+    也不悄悄用本机时钟冒充市场时间（那正是"自证式新鲜度"那类坑）。
+    """
+    try:
+        quotes = _fetch_quotes_tencent([("600000", 1)], timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return None
+    q = quotes.get("600000")
+    return q.trade_dt if q else None
 
 
 def _parse_tencent_quote_line(line: str) -> Optional[Tuple[str, "StockQuote"]]:
@@ -1763,6 +1824,7 @@ def _parse_tencent_quote_line(line: str) -> Optional[Tuple[str, "StockQuote"]]:
             open=open_p, high=high, low=low, prev_close=prev_close,
             volume=volume, amount=amount, turnover_rate=turnover_rate,
             trade_date=_parse_tencent_trade_date(fields),
+            trade_dt=_parse_tencent_trade_dt(fields),
         )
     except (ValueError, IndexError):
         return None

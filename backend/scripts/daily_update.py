@@ -111,6 +111,7 @@ from app.services.eastmoney_fetcher import (
     fetch_main_board_stocks, fetch_klines_batch, get_limit_pct, get_actual_limit_pct,
     fetch_strong_pool_codes, fetch_stock_bk_codes, fetch_limit_move_codes,
     fetch_turnover_top_stocks, fetch_stock_quotes_batch, kline_bar_from_quote,
+    bar_is_settled, probe_market_now, SH_TZ,
 )
 from app.services.screening_service import (
     StockWindowStats,
@@ -431,7 +432,7 @@ def _upsert_snapshot(
     db, stock: Stock, stats: StockWindowStats, today: date,
     is_limit_up: bool | None = None, is_limit_down: bool | None = None,
     close_pct_fresh: bool = True, turnover_fresh: bool = True,
-    derived_fresh: bool = True,
+    derived_fresh: bool = True, settled: bool = True,
 ) -> None:
     """
     写入今日快照（存在则更新，不存在则新建）。
@@ -468,12 +469,21 @@ def _upsert_snapshot(
     if not snap:
         if not (close_pct_fresh or turnover_fresh or derived_fresh):
             return          # 今天这只股票没有任何可信观测，不建空行
-        snap = StockDailySnapshot(stock_id=stock.id, date=today)
+        snap = StockDailySnapshot(stock_id=stock.id, date=today, is_settled=False)
         db.add(snap)
 
     if close_pct_fresh:
         snap.close_price = stats.today_close_price
         snap.pct_change = stats.today_pct_change
+        snap.is_settled = settled
+    elif settled and not snap.is_settled and snap.close_price is not None:
+        # 收盘后这一跑没能拿到新数据，而行里存着的是**盘中**写的现价。
+        # 旧代码在这里什么也不做，日志还写着"保留上次可信值"——那句话的前提
+        # （上次写的是收盘价）在 UI 可随时手动触发的现实下根本不成立，盘中价
+        # 就这样就地转正成了当日收盘价。宁可缺失，不要伪造：清掉。
+        snap.close_price = None
+        snap.pct_change = None
+        snap.turnover_rate = None
     if turnover_fresh:
         snap.turnover_rate = stats.today_turnover
     # 涨跌停标志：选股API给了权威值就用权威值（跟K线新不新鲜无关，它是独立来源）；
@@ -1230,6 +1240,24 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         prev_dates = [b.date for bars in klines_map.values() for b in bars if b.date < target_date]
         prev_trading_date = max(prev_dates) if prev_dates else None
 
+        # ── target_date 那天收盘了没有 ──────────────────────────────────────
+        # 整轮只问一次市场时间。这个判断决定本次写入的是"当日终值"还是"盘中快照"：
+        # daily_update 可以被 UI 随时手动触发，而腾讯K线接口盘中就发当日那根未收盘
+        # 的 bar，它的 date 确实是今天、close 却是现价。只看日期分不出这两者，
+        # 2026-08-26 生产上就因此把 14:00 的盘中价当成了收盘价（见 model 注释）。
+        #
+        # 时间取自腾讯行情字段30（市场自己的时间戳），不用本机时钟：既避免服务器
+        # 时钟漂移，也天然处理半日市这种收盘时间不是15:00的日子。探测不到才退回
+        # 本机 Asia/Shanghai 时钟——那是最后手段，会明确记进日志。
+        market_now = probe_market_now()
+        if market_now is None:
+            market_now = datetime.now(SH_TZ)
+            log.warning(f"⚠️  市场时间探测失败，退回本机时钟 {market_now:%H:%M:%S}（"
+                        f"若本机时区/时间不准，可能把盘中价误判为收盘价）")
+        run_settled = bar_is_settled(target_date, market_now)
+        log.info(f"市场时间 {market_now:%Y-%m-%d %H:%M:%S} → {target_date} "
+                 f"{'已收盘，本次写入当日终值' if run_settled else '尚未收盘，本次写入盘中快照(is_settled=False)'}")
+
         # 今日数据缺失检测（疑似限流）：在行情兜底之后统计，反映的是"最终还是没有
         # 可信当日数据"的真实规模，而不是"K线接口这一路失败了多少"——后者已经被
         # 上面的重试和行情兜底救回来一部分，拿它告警会虚高。
@@ -1385,18 +1413,21 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                              f"{prev_snap.date}，不是上一交易日{prev_trading_date}，中间有缺口，"
                              f"拿它当前收价会算出错误的涨跌停价——保留权威涨跌停标记，不反推价格")
             if not close_pct_fresh:
+                # 旧文案是"保留上次可信值"——那是错的，见 _upsert_snapshot 里的说明：
+                # 盘中手动跑过的话，"上次"写的就是盘中现价，不是收盘价。
                 log.info(f"[数据过期跳过] {stats.code} K线+行情当日均拉取失败(退回{stats.today_bar_date})"
-                         f"且非已确认涨跌停，本次不更新今日快照，保留上次可信值")
+                         f"且非已确认涨跌停；只有上次写入确实是收盘后终值时才保留，"
+                         f"是盘中值则清空（本次{'已收盘' if run_settled else '盘中'}）")
 
             if use_limit_authority:
                 _upsert_snapshot(db, stock, stats, target_date,
                                  is_limit_up=auth_lu, is_limit_down=auth_ld,
                                  close_pct_fresh=close_pct_fresh, turnover_fresh=turnover_fresh,
-                                 derived_fresh=bar_fresh)
+                                 derived_fresh=bar_fresh, settled=run_settled)
             else:
                 _upsert_snapshot(db, stock, stats, target_date,
                                  close_pct_fresh=close_pct_fresh, turnover_fresh=turnover_fresh,
-                                 derived_fresh=bar_fresh)
+                                 derived_fresh=bar_fresh, settled=run_settled)
 
         db.commit()
         log.end(detail=f"快照写入 {len(stats_list)} 只，强势池: +{new_in_pool}/-{removed_from_pool}，当前 {total_in_pool} 只")
