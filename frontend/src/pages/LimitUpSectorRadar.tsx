@@ -11,11 +11,11 @@
  * 所有分组/排序/召回逻辑都在后端（见 limit_up_radar_service.py），这里只负责展示，
  * 不重新计算哪只股票属于哪个板块——避免跟弱转强雷达/主线/活跃股池产生多套归属语义。
  */
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { RefreshCw, ChevronDown, ChevronUp, ChevronsUpDown, ChevronRight, AlertTriangle, Flame } from 'lucide-react'
-import { fetchLimitUpRadar, refreshLimitUpDetails } from '@/api/limitUpRadar'
+import { fetchLimitUpRadar, refreshLimitUpDetails, fetchRefreshStatus } from '@/api/limitUpRadar'
 import { Badge } from '@/components/ui/badge'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
@@ -180,15 +180,42 @@ export default function LimitUpSectorRadar() {
     queryFn: () => fetchLimitUpRadar(params),
   })
 
+  // 刷新是后台任务（约40秒），POST 只负责启动，之后轮询状态直到跑完再刷新数据。
+  // 这不违反"不做自动轮询"——那条约束针对的是"页面自己定时打外部接口"，这里是
+  // 用户主动点击后为了拿到这一次的结果而轮询本地状态，拿到就停。
+  const [busy, setBusy] = useState(false)
+  const [step, setStep] = useState<string | null>(null)
+  const pollRef = useRef<number | null>(null)
+
+  const stopPolling = () => {
+    if (pollRef.current) { window.clearInterval(pollRef.current); pollRef.current = null }
+  }
+  useEffect(() => stopPolling, [])
+
+  const startPolling = () => {
+    stopPolling()
+    pollRef.current = window.setInterval(async () => {
+      try {
+        const st = await fetchRefreshStatus()
+        setStep(st.step)
+        if (!st.running) {
+          stopPolling(); setBusy(false); setStep(null)
+          setRefreshErr(st.ok ? null : st.error || '刷新失败')
+          if (st.ok) qc.invalidateQueries({ queryKey: ['limit-up-radar'] })
+        }
+      } catch {
+        // 单次状态查询失败不终止轮询，下一拍再试；真正的失败会由后端状态给出
+      }
+    }, 1500)
+  }
+
   const refresh = useMutation({
     mutationFn: () => refreshLimitUpDetails(),
     onSuccess: (res) => {
-      // 后端刷新失败不抛错，而是 ok=false + 上次成功时间：页面继续显示旧数据并
-      // 明确标注，不伪装成最新
-      setRefreshErr(res.ok ? null : res.error || '刷新失败')
-      if (res.ok) qc.invalidateQueries({ queryKey: ['limit-up-radar'] })
+      if (!res.ok) { setRefreshErr(res.error || '刷新失败'); return }
+      setBusy(true); setStep(res.step ?? '启动中'); startPolling()
     },
-    onError: (e: Error) => setRefreshErr(e.message),
+    onError: (e: Error) => { setBusy(false); setRefreshErr(e.message) },
   })
 
   const toggle = (id: number) =>
@@ -230,11 +257,12 @@ export default function LimitUpSectorRadar() {
             </label>
             <button
               onClick={() => refresh.mutate()}
-              disabled={refresh.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm bg-accent-dim text-accent hover:bg-accent/20 transition-colors disabled:opacity-50"
+              disabled={refresh.isPending || busy}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm bg-accent-dim text-accent hover:bg-accent/20 transition-colors disabled:opacity-60"
+              title="拉取涨停池/炸板池/涨停原因/核心召回，并为本页股票重算龙头分与风险分。约30-40秒。"
             >
-              <RefreshCw className={cn('w-3.5 h-3.5', refresh.isPending && 'animate-spin')} />
-              刷新涨停数据
+              <RefreshCw className={cn('w-3.5 h-3.5', (refresh.isPending || busy) && 'animate-spin')} />
+              {busy ? (step || '刷新中…') : '刷新涨停数据'}
             </button>
           </div>
         </div>

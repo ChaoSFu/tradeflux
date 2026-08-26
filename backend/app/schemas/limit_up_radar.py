@@ -127,6 +127,10 @@ class LimitUpRadarResponse(BaseModel):
 
 class LimitUpRadarRefreshResponse(BaseModel):
     ok: bool
+    # 后台线程执行：POST 立即返回 running=true，页面轮询 /refresh/status 到 running=false
+    # 再刷新数据。整个刷新实测约40秒（东财3接口+100只K线），同步返回会被前端超时掐断
+    running: bool = False
+    step: Optional[str] = None    # 当前进行到哪一步，给按钮上显示
     trade_date: Optional[str] = None
     limit_up_written: int = 0
     broken_written: int = 0

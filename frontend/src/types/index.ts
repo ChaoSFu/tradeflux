@@ -828,6 +828,8 @@ export interface LimitUpRadarResponse {
 
 export interface LimitUpRadarRefreshResponse {
   ok: boolean
+  running: boolean          // 后台是否还在跑；页面轮询到 false 才刷新数据
+  step: string | null       // 当前步骤，显示在按钮上
   trade_date: string | null
   limit_up_written: number
   broken_written: number

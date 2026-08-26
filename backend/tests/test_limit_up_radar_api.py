@@ -25,6 +25,18 @@ TODAY = date(2026, 8, 25)
 _NO_FILTER = {"min_limit_up": 0, "min_board_height": 0}
 
 
+@pytest.fixture(autouse=True)
+def _reset_job():
+    """后台 job 状态是模块级的，用例之间必须重置，否则前一个留下的 running=True
+    会让后一个的 POST 直接被"已有任务在运行中"挡掉。"""
+    limit_up_radar._job.update({
+        "running": False, "ok": None, "error": None, "trade_date": None,
+        "limit_up_written": 0, "broken_written": 0, "scores_recomputed": 0,
+        "finished_at": None, "step": None,
+    })
+    yield
+
+
 @pytest.fixture
 def client(db):
     app = FastAPI()
@@ -100,6 +112,17 @@ def test_empty_day_returns_empty_not_500(db, client):
     assert body["refreshed_at"] is None
 
 
+def _run_job(db, target=TODAY):
+    """
+    直接驱动后台 job。POST 之后真正干活的是后台线程，而线程里用的是真实 SessionLocal，
+    测试注入的 SQLite 会话进不去——所以这里 patch 掉会话工厂后直接调 job 函数，
+    走的是完全相同的代码路径，而且不用 sleep 等线程，确定性更好。
+    """
+    with patch("app.routers.limit_up_radar.SessionLocal", return_value=db), \
+         patch.object(db, "close", lambda: None):
+        limit_up_radar._run_refresh_job(target)
+
+
 def test_refresh_only_syncs_limit_up_details(db, client):
     """
     需求要求的护栏：手动刷新的范围必须严格受限。
@@ -119,24 +142,21 @@ def test_refresh_only_syncs_limit_up_details(db, client):
 
     with patch("app.services.limit_up_detail_service.fetch_limit_up_details",
                return_value=([LimitUpDetail(code="002412", name="汉森制药", board_count=1)], [], [])), \
-         patch("app.services.limit_up_detail_service.fetch_core_recall_details",
-               return_value={}), \
+         patch("app.services.limit_up_detail_service.fetch_core_recall_details", return_value={}), \
          patch("app.services.limit_up_detail_service.fetch_klines_batch",
                return_value={}) as kl, \
          patch("app.services.eastmoney_fetcher.fetch_strong_pool_codes", _boom("强势股选股API")), \
          patch("app.services.eastmoney_fetcher.fetch_stock_quotes_batch", _boom("实时行情批量拉取")), \
          patch("app.services.market_state_service.get_current_market_state", _boom("Market State重算")), \
          patch("app.services.w2s_refresh_service.run_refresh", _boom("弱转强雷达刷新")):
-        r = client.post("/limit-up-radar/refresh", params={**_NO_FILTER, "date": "2026-08-25"})
+        _run_job(db)
 
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is True and body["limit_up_written"] == 1
-    assert body["refreshed_at"] is not None
+    body = client.get("/limit-up-radar/refresh/status").json()
+    assert body["running"] is False and body["ok"] is True
+    assert body["limit_up_written"] == 1
     # K线拉取允许，但只能针对本页面的股票——不能变成全市场
     if kl.called:
-        requested = kl.call_args[0][0]
-        assert len(requested) <= 200, "刷新时的K线拉取必须限定在页面股票范围内"
+        assert len(kl.call_args[0][0]) <= 200, "刷新时的K线拉取必须限定在页面股票范围内"
 
 
 def test_refresh_failure_keeps_existing_data_and_reports_last_success(db, client):
@@ -146,19 +166,68 @@ def test_refresh_failure_keeps_existing_data_and_reports_last_success(db, client
     """
     _seed_sector_with_limit_up(db)
     with patch("app.services.limit_up_detail_service.fetch_limit_up_details",
-               side_effect=TimeoutError("东财超时")), \
-         patch("app.services.limit_up_detail_service.fetch_core_recall_details",
-               return_value={}):
-        r = client.post("/limit-up-radar/refresh", params={**_NO_FILTER, "date": "2026-08-25"})
+               side_effect=TimeoutError("东财超时")):
+        _run_job(db)
 
-    body = r.json()
-    assert r.status_code == 200
+    body = client.get("/limit-up-radar/refresh/status").json()
+    assert body["running"] is False
     assert body["ok"] is False
     assert "TimeoutError" in body["error"]
-    assert body["last_success_at"] == "2026-08-25T14:32:18"
     # 数据还在
     assert db.query(LimitUpDailyDetail).count() == 1
-    assert client.get("/limit-up-radar", params={**_NO_FILTER, "date": "2026-08-25"}).json()["summary"]["limit_up_count"] == 1
+    assert client.get("/limit-up-radar",
+                      params={**_NO_FILTER, "date": "2026-08-25"}).json()["summary"]["limit_up_count"] == 1
+
+
+def test_refresh_recomputes_scores_only_for_stocks_on_this_page(db, client):
+    """
+    龙头分/风险分是本仓库用65日K线窗口自己算的，东财给不了；而 daily_update 只对
+    候选池内的股票重算，核心锚大多在池外、那里的分数是冻结旧值。刷新按钮要把这个
+    页面的数据全部刷新，所以现算——但**范围严格限定在页面上的股票**，且结果不写
+    进 Stock（刷新接口有"不改动主流程数据"的硬保证）。
+    """
+    from app.services.limit_up_detail_service import get_radar_scores
+    from app.services.eastmoney_fetcher import KLineBar
+
+    _seed_sector_with_limit_up(db)
+    st = db.query(Stock).filter(Stock.code == "002412").one()
+    st.leader_score = 11.0
+    st.risk_score = 22.0
+    db.commit()
+
+    bars = [KLineBar(date=date(2026, 8, d), open_price=0.0, close_price=10.0 + d,
+                     high_price=0.0, low_price=0.0, pct_change=1.0, turnover_rate=None)
+            for d in range(1, 26)]
+
+    with patch("app.services.limit_up_detail_service.fetch_limit_up_details",
+               return_value=([LimitUpDetail(code="002412", name="汉森制药", board_count=1)], [], [])), \
+         patch("app.services.limit_up_detail_service.fetch_core_recall_details", return_value={}), \
+         patch("app.services.limit_up_detail_service.fetch_klines_batch",
+               return_value={"002412": bars, "600664": bars}):
+        _run_job(db)
+
+    # 现算结果存在页面作用域，**没有**写进 Stock
+    scores = get_radar_scores(db, TODAY)
+    assert "002412" in scores and "ls" in scores["002412"]
+    db.refresh(st)
+    assert st.leader_score == 11.0 and st.risk_score == 22.0, "刷新不能改动 Stock 上的分数"
+
+
+def test_post_refresh_returns_immediately_and_reports_running(db, client):
+    """
+    整个刷新实测约40秒，同步返回会被前端 axios 的15秒超时掐断——后台干完了活、
+    前端却收不到响应，页面不刷新。所以 POST 立即返回 running=true，页面轮询
+    /refresh/status 拿结果。
+    """
+    with patch("app.routers.limit_up_radar.threading.Thread") as th:
+        body = client.post("/limit-up-radar/refresh", params={"date": "2026-08-25"}).json()
+    assert body["ok"] is True and body["running"] is True
+    assert th.called, "必须起后台线程，不能同步跑完再返回"
+
+    # 已有任务在跑时不重复启动
+    body2 = client.post("/limit-up-radar/refresh", params={"date": "2026-08-25"}).json()
+    assert body2["ok"] is False and "运行中" in body2["error"]
+    limit_up_radar._job.update({"running": False})
 
 
 def test_group_mode_primary_is_accepted(db, client):
@@ -201,10 +270,9 @@ def test_refresh_recomputes_scores_only_for_stocks_on_this_page(db, client):
          patch("app.services.limit_up_detail_service.fetch_core_recall_details", return_value={}), \
          patch("app.services.limit_up_detail_service.fetch_klines_batch",
                return_value={"002412": bars, "600664": bars}):
-        r = client.post("/limit-up-radar/refresh", params={"date": "2026-08-25"})
+        _run_job(db)
 
-    assert r.json()["ok"] is True
-    assert r.json()["scores_recomputed"] >= 1
+    assert client.get("/limit-up-radar/refresh/status").json()["scores_recomputed"] >= 1
 
     # 现算结果存在页面作用域，**没有**写进 Stock
     scores = get_radar_scores(db, TODAY)
