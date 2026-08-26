@@ -369,7 +369,7 @@ function Stat({ label, value, tone }: {
 }
 
 type CoreSortKey = 'pct_change' | 'lu10' | 'lu20' | 'lu60' | 'board' | 'ic10' | 'ic20' | 'ic60' | 'leader' | 'risk'
-type TodaySortKey = 'pct_change' | 'board' | 'first' | 'last' | 'seal' | 'broken' | 'lu10' | 'lu20' | 'lu60'
+type TodaySortKey = 'pct_change' | 'board' | 'board60' | 'first' | 'last' | 'seal' | 'broken' | 'lu10' | 'lu20' | 'lu60'
   | 'ic10' | 'ic20' | 'ic60' | 'leader' | 'risk'
 
 type SortCtl<K extends string> = { sort: SortState<K>; onSort: (k: K) => void }
@@ -494,16 +494,62 @@ const CORE_PICK = (r: LimitUpRadarCoreStock, k: CoreSortKey) => ({
   leader: r.leader_score, risk: r.risk_score,
 }[k])
 
+/**
+ * 核心锚与今日攻击共用的列网格（2026-08-26）。
+ *
+ * 这两张表此前是各自独立的 <table className="w-full">，列宽按各自内容自动算，
+ * 所以「10日涨停」这种两边都有的列永远错开一截，上下扫读对不上号。改成
+ * table-fixed + 同一份 colgroup：两边缺的列留空占位，位置就必然一致。
+ *
+ * 顺带把核心锚的「角色」从第2列挪到第17列，跟今日攻击的「核心角色」同列——
+ * 它俩本来就是同一份数据（core_roles），此前只是放在了不同位置。
+ * 「说明」列不给宽度，由它吸收剩余空间；两张表规则相同，所以照样对齐。
+ */
+function RadarCols() {
+  return (
+    <colgroup>
+      <col className="w-[13rem]" />{/* 股票 */}
+      <col className="w-[6.5rem]" />{/* 板位（核心锚今日未涨停，留空）*/}
+      <col className="w-[5rem]" />{/* 今日 */}
+      <col className="w-[4.5rem]" />{/* 首封 */}
+      <col className="w-[4.5rem]" />{/* 终封 */}
+      <col className="w-[5rem]" />{/* 封单 */}
+      <col className="w-[4rem]" />{/* 炸板 */}
+      <col className="w-[5rem]" />{/* 10日涨停 */}
+      <col className="w-[5rem]" />{/* 20日涨停 */}
+      <col className="w-[5rem]" />{/* 60日涨停 */}
+      <col className="w-[5rem]" />{/* 60日高板 */}
+      <col className="w-[5.5rem]" />{/* 10日涨幅 */}
+      <col className="w-[5.5rem]" />{/* 20日涨幅 */}
+      <col className="w-[5.5rem]" />{/* 60日涨幅 */}
+      <col className="w-[4.5rem]" />{/* 龙头分 */}
+      <col className="w-[4.5rem]" />{/* 风险分 */}
+      <col className="w-[9rem]" />{/* 核心角色 */}
+      <col />{/* 说明：召回理由 / 涨停原因 */}
+    </colgroup>
+  )
+}
+
+/** 占位空列：这张表没有这个字段。留空而不是塞 —，因为"不适用"和"没数据"不是一回事。 */
+const Pad = ({ n }: { n: number }) => (
+  <>{Array.from({ length: n }, (_, i) => <td key={i} className="py-1.5 pr-3" />)}</>
+)
+const PadTh = ({ n }: { n: number }) => (
+  <>{Array.from({ length: n }, (_, i) => <th key={i} className="py-1.5 pr-3" />)}</>
+)
+
 function CoreTable({ rows, ctl }: { rows: LimitUpRadarCoreStock[]; ctl: SortCtl<CoreSortKey> }) {
   const sorted = applySort(rows, ctl.sort, CORE_PICK)
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-xs">
+      <table className="w-full table-fixed text-xs">
+        <RadarCols />
         <thead>
           <tr className="text-text-muted border-b border-bg-border">
             <th className="text-left font-normal py-1.5 pr-3">股票</th>
-            <th className="text-left font-normal py-1.5 pr-3">角色</th>
+            <PadTh n={1} />{/* 板位：核心锚今日未涨停 */}
             <SortTh col="pct_change" label="今日" {...ctl} />
+            <PadTh n={4} />{/* 首封/终封/封单/炸板：同上 */}
             <SortTh col="lu10" label="10日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
             <SortTh col="lu20" label="20日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
             <SortTh col="lu60" label="60日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
@@ -513,12 +559,13 @@ function CoreTable({ rows, ctl }: { rows: LimitUpRadarCoreStock[]; ctl: SortCtl<
             <SortTh col="ic60" label="60日涨幅" {...ctl} title="真实复合区间收益，与活跃股池的近似算法不同" />
             <SortTh col="leader" label="龙头分" {...ctl} title="刷新按钮会为本页股票现算；—表示本轮没算过，不拿旧值冒充" />
             <SortTh col="risk" label="风险分" {...ctl} title="刷新按钮会为本页股票现算；—表示本轮没算过，不拿旧值冒充" />
-            <th className="text-left font-normal py-1.5 pr-3">召回理由</th>
+            <th className="text-left font-normal py-1.5 pr-3">核心角色</th>
+            <th className="text-left font-normal py-1.5">召回理由</th>
           </tr>
         </thead>
         <tbody>
           {sorted.map((r) => (
-            <tr key={r.code} className="border-b border-bg-border/40 last:border-0">
+            <tr key={r.code} className="border-b border-bg-border/40 last:border-0 align-top">
               <td className="py-1.5 pr-3 whitespace-nowrap">
                 <Link to={`/stocks/${r.code}`} className="text-text-primary hover:text-accent">
                   <span className="font-medium">{r.name}</span>
@@ -526,16 +573,18 @@ function CoreTable({ rows, ctl }: { rows: LimitUpRadarCoreStock[]; ctl: SortCtl<
                 </Link>
                 {r.is_broken_today && <Badge variant="down" className="ml-1.5">炸板</Badge>}
               </td>
-              <td className="py-1.5 pr-3"><RoleTags roles={r.core_roles} reasons={r.core_reasons} /></td>
+              <Pad n={1} />
               <td className={cn('py-1.5 pr-3 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
                 {fmtPct(r.pct_change)}
               </td>
+              <Pad n={4} />
               <LuCells a={r.limit_up_days_10d} b={r.limit_up_days_20d} c={r.limit_up_days_60d} />
               <td className="py-1.5 pr-3 text-right font-mono text-dragon tabular-nums">{r.board_count_60d || '—'}</td>
               <ChgCells a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
               <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.leader_score} fresh={r.scores_as_of_today} tone="dragon" /></td>
               <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.risk_score} fresh={r.scores_as_of_today} tone="danger" /></td>
-              <td className="py-1.5 pr-3 text-text-muted">{r.core_reasons.join(' · ') || '—'}</td>
+              <td className="py-1.5 pr-3"><RoleTags roles={r.core_roles} reasons={r.core_reasons} /></td>
+              <td className="py-1.5 text-text-muted">{r.core_reasons.join(' · ') || '—'}</td>
             </tr>
           ))}
         </tbody>
@@ -545,7 +594,8 @@ function CoreTable({ rows, ctl }: { rows: LimitUpRadarCoreStock[]; ctl: SortCtl<
 }
 
 const TODAY_PICK = (r: LimitUpRadarTodayStock, k: TodaySortKey) => ({
-  pct_change: r.pct_change, board: r.board_count, first: r.first_limit_time, last: r.last_limit_time,
+  pct_change: r.pct_change, board: r.board_count, board60: r.board_count_60d,
+  first: r.first_limit_time, last: r.last_limit_time,
   seal: r.seal_amount, broken: r.broken_times,
   lu10: r.limit_up_days_10d, lu20: r.limit_up_days_20d, lu60: r.limit_up_days_60d,
   ic10: r.interval_chg_10d, ic20: r.interval_chg_20d, ic60: r.interval_chg_60d,
@@ -556,7 +606,8 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
   const sorted = applySort(rows, ctl.sort, TODAY_PICK)
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-xs">
+      <table className="w-full table-fixed text-xs">
+        <RadarCols />
         <thead>
           <tr className="text-text-muted border-b border-bg-border">
             <th className="text-left font-normal py-1.5 pr-3">股票</th>
@@ -570,6 +621,7 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
             <SortTh col="lu10" label="10日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
             <SortTh col="lu20" label="20日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
             <SortTh col="lu60" label="60日涨停" {...ctl} title="东财口径：当日曾触及涨停，含炸板" />
+            <SortTh col="board60" label="60日高板" {...ctl} />
             <SortTh col="ic10" label="10日涨幅" {...ctl} title="真实复合区间收益" />
             <SortTh col="ic20" label="20日涨幅" {...ctl} title="真实复合区间收益" />
             <SortTh col="ic60" label="60日涨幅" {...ctl} title="真实复合区间收益" />
@@ -612,11 +664,12 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
                   {r.broken_times == null ? '—' : r.broken_times === 0 ? '0' : `${r.broken_times}次`}
                 </td>
                 <LuCells a={r.limit_up_days_10d} b={r.limit_up_days_20d} c={r.limit_up_days_60d} />
+                <td className="py-1.5 pr-3 text-right font-mono text-dragon tabular-nums">{r.board_count_60d || '—'}</td>
                 <ChgCells a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
                 <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.leader_score} fresh={r.scores_as_of_today} tone="dragon" /></td>
                 <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.risk_score} fresh={r.scores_as_of_today} tone="danger" /></td>
                 <td className="py-1.5 pr-3"><RoleTags roles={r.core_roles} reasons={r.core_reasons} /></td>
-                <td className="py-1.5 text-text-muted max-w-md" title={r.limit_content || undefined}>
+                <td className="py-1.5 text-text-muted" title={r.limit_content || undefined}>
                   {r.limit_reason || '—'}
                 </td>
               </tr>
