@@ -243,13 +243,19 @@ def fetch_limit_reasons(trade_date: date, timeout: int = 25) -> Dict[str, Tuple[
 
 def fetch_limit_up_details(
     trade_date: date, timeout: int = 20,
-) -> Tuple[List[LimitUpDetail], List[BrokenBoardDetail], List[str]]:
+) -> Tuple[List[LimitUpDetail], Optional[List[BrokenBoardDetail]], List[str]]:
     """
     一次性取齐涨停板块雷达需要的全部外部事实，返回 (涨停明细, 炸板明细, 警告列表)。
 
     三个接口互相独立降级：涨停池是主干，它失败就整体抛错（没有涨停名单这个功能无意义）；
     炸板池和涨停原因失败只记 warning、其余数据照常返回——封板率显示不出来、原因留空，
     好过整页打不开。
+
+    **炸板明细失败时返回 None，不是 []**（2026-08-26修，生产上真的删了数据）：
+    此前失败返回空列表，调用方无法区分"拉到了，今天确实没有炸板"和"根本没拉到"，
+    于是 _prune_stale 把空列表当权威名单，**把已有的 20 条炸板明细全删了**——日志
+    里"炸板池拉取失败（ConnectTimeout）"和"清理旧行：炸板 20 条"是同一次运行打出
+    来的。这跟 KLineBar.turnover_rate 那次是同一个病：用空值表达"不知道"。
     """
     warnings: List[str] = []
     details = fetch_limit_up_pool(trade_date, timeout=timeout)  # 失败直接抛，由调用方处理
@@ -257,8 +263,9 @@ def fetch_limit_up_details(
     try:
         broken = fetch_broken_board_pool(trade_date, timeout=timeout)
     except Exception as e:  # noqa: BLE001
-        broken = []
-        warnings.append(f"炸板池拉取失败（{type(e).__name__}），封板率本次无法计算")
+        broken = None       # None = 没拉到；[] 是"拉到了，今天没有炸板"，两者不能混
+        warnings.append(f"炸板池拉取失败（{type(e).__name__}），封板率本次无法计算，"
+                        f"已有炸板明细保持不变")
 
     try:
         reasons = fetch_limit_reasons(trade_date, timeout=timeout + 5)

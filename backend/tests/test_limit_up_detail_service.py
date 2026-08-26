@@ -157,3 +157,47 @@ def test_sync_never_touches_stock_scores_or_snapshots(db):
     assert st.board_count_60d == 4
     snap = db.query(StockDailySnapshot).filter(StockDailySnapshot.date == TODAY).one()
     assert snap.close_price == 172.23 and snap.pct_change == 10.0 and snap.board_count == 1
+
+
+# ── 炸板池拉取失败 ≠ 今天没有炸板（2026-08-26 生产事故回归）──────────────────
+#
+# 事故：18:16 那一跑日志里，"炸板池拉取失败（ConnectTimeout），封板率本次无法计算"
+# 和"清理已不在名单中的旧行：涨停 0 条 / 炸板 20 条"是**同一次运行**打出来的。
+# fetch 失败时返回空列表，_prune_stale 把这份"空名单"当成权威事实，
+# 于是已有的 20 条炸板明细被全删。sync 的 docstring 早就写着"外部接口失败时
+# 绝不删除已有数据"，但代码做不到——因为失败和"确实没有"用了同一个值表达。
+#
+# 这跟 KLineBar.turnover_rate 那次是同一个病：用空值表达"不知道"。
+
+def test_炸板池拉取失败不得删除已有炸板明细(db):
+    _seed(db, "002821", "凯莱英")
+    _seed(db, "002176", "江特电机")
+    with patch(_PATCH, return_value=([_lu()], [_bb()], [])):
+        sync_limit_up_details(db, TODAY)
+    assert db.query(BrokenBoardDailyDetail).filter_by(trade_date=TODAY).count() == 1
+
+    # 下一次刷新：炸板池挂了 → broken=None（不是 []）
+    with patch(_PATCH, return_value=([_lu()], None,
+                                     ["炸板池拉取失败（ConnectTimeout），封板率本次无法计算"])):
+        lu, bb, warnings = sync_limit_up_details(db, TODAY)
+
+    assert db.query(BrokenBoardDailyDetail).filter_by(trade_date=TODAY).count() == 1, \
+        "拉取失败时那份空名单是故障不是事实，不能拿它去 prune"
+    assert bb == 0, "本次没写入炸板，返回 0"
+    assert any("炸板池" in w for w in warnings)
+    assert not any("炸板 1 条" in w for w in warnings), "不该报告删除"
+
+
+def test_炸板池真的返回空则照常清理(db):
+    """区别对待的另一半：拉到了、确实一只炸板都没有，旧行就该清掉。"""
+    _seed(db, "002821", "凯莱英")
+    _seed(db, "002176", "江特电机")
+    with patch(_PATCH, return_value=([_lu()], [_bb()], [])):
+        sync_limit_up_details(db, TODAY)
+    assert db.query(BrokenBoardDailyDetail).filter_by(trade_date=TODAY).count() == 1
+
+    with patch(_PATCH, return_value=([_lu()], [], [])):
+        sync_limit_up_details(db, TODAY)
+
+    assert db.query(BrokenBoardDailyDetail).filter_by(trade_date=TODAY).count() == 0, \
+        "[] 是权威的'今天没有炸板'，该清就得清——这正是要跟 None 分开的原因"

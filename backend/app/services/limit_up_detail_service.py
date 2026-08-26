@@ -134,17 +134,24 @@ def sync_limit_up_details(
     details, broken, warnings = fetch_limit_up_details(trade_date, timeout=timeout)
     now = datetime.now()
 
-    all_codes = [d.code for d in details] + [b.code for b in broken]
+    all_codes = [d.code for d in details] + [b.code for b in (broken or [])]
     id_map = _stock_id_map(db, all_codes)
 
     lu_written = _upsert_limit_ups(db, details, id_map, trade_date, now)
-    bb_written = _upsert_broken_boards(db, broken, id_map, trade_date, now)
+    bb_written = _upsert_broken_boards(db, broken, id_map, trade_date, now) if broken is not None else 0
 
     # 当日已不在涨停名单里的旧行要清掉：盘中多次刷新时，一只14:30炸板打开的股票
     # 会从涨停池消失、进入炸板池，如果不删除它上一次刷新留下的涨停行，页面会同时
     # 把它显示成"涨停"和"炸板"。以 target_date 当日为范围，不影响历史。
+    #
+    # **清理的前提是这次真的拿到了权威名单**（2026-08-26修，生产上真的删了数据）：
+    # broken is None 表示炸板池根本没拉到，此时那份"空名单"不是事实而是故障，
+    # 拿它去 prune 会把已有的 20 条炸板明细全删光——日志里"炸板池拉取失败
+    # （ConnectTimeout）"和"清理旧行：炸板 20 条"就是同一次运行打出来的。
+    # 上面 docstring 里"外部接口失败时绝不删除已有数据"这句话，到这里才真的成立。
     lu_removed = _prune_stale(db, LimitUpDailyDetail, trade_date, {d.code for d in details})
-    bb_removed = _prune_stale(db, BrokenBoardDailyDetail, trade_date, {b.code for b in broken})
+    bb_removed = (_prune_stale(db, BrokenBoardDailyDetail, trade_date, {b.code for b in broken})
+                  if broken is not None else 0)
     if lu_removed or bb_removed:
         warnings.append(f"清理已不在名单中的旧行：涨停 {lu_removed} 条 / 炸板 {bb_removed} 条")
 
