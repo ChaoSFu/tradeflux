@@ -35,6 +35,7 @@
 设计原则跟本仓库数据契约一致（见 daily_update.py / eastmoney_fetcher.py 的相关注释）：
 拿不到的字段一律 None，不用 0 或空串冒充"已知"。
 """
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, time
 from typing import Dict, List, Optional, Tuple
@@ -258,20 +259,28 @@ def fetch_limit_up_details(
     来的。这跟 KLineBar.turnover_rate 那次是同一个病：用空值表达"不知道"。
     """
     warnings: List[str] = []
-    details = fetch_limit_up_pool(trade_date, timeout=timeout)  # 失败直接抛，由调用方处理
 
-    try:
-        broken = fetch_broken_board_pool(trade_date, timeout=timeout)
-    except Exception as e:  # noqa: BLE001
-        broken = None       # None = 没拉到；[] 是"拉到了，今天没有炸板"，两者不能混
-        warnings.append(f"炸板池拉取失败（{type(e).__name__}），封板率本次无法计算，"
-                        f"已有炸板明细保持不变")
+    # 三个接口**并发**打（2026-08-26改）：它们互相独立、分属两个不同域名
+    # （push2ex / datacenter），串行等于把三段网络延迟加起来。用户点一次刷新要等
+    # 40 秒，这里是大头之一。并发3路对同一家的压力等同于页面正常打开时的请求数。
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_zt = ex.submit(fetch_limit_up_pool, trade_date, timeout)
+        f_zb = ex.submit(fetch_broken_board_pool, trade_date, timeout)
+        f_rs = ex.submit(fetch_limit_reasons, trade_date, timeout + 5)
 
-    try:
-        reasons = fetch_limit_reasons(trade_date, timeout=timeout + 5)
-    except Exception as e:  # noqa: BLE001
-        reasons = {}
-        warnings.append(f"涨停原因拉取失败（{type(e).__name__}），本次不显示涨停原因")
+        details = f_zt.result()     # 涨停池失败直接抛，由调用方处理：没有涨停名单
+                                    # 这个功能就没有意义，不做"部分成功"的降级
+        try:
+            broken = f_zb.result()
+        except Exception as e:  # noqa: BLE001
+            broken = None   # None = 没拉到；[] 是"拉到了，今天没有炸板"，两者不能混
+            warnings.append(f"炸板池拉取失败（{type(e).__name__}），封板率本次无法计算，"
+                            f"已有炸板明细保持不变")
+        try:
+            reasons = f_rs.result()
+        except Exception as e:  # noqa: BLE001
+            reasons = {}
+            warnings.append(f"涨停原因拉取失败（{type(e).__name__}），本次不显示涨停原因")
 
     for d in details:
         reason, content = reasons.get(d.code, (None, None))

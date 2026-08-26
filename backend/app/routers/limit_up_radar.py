@@ -9,6 +9,8 @@
 避免不必要的限流/封禁风险。
 """
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from typing import Optional
 
@@ -21,9 +23,12 @@ from ..schemas.limit_up_radar import (
 )
 from ..services import limit_up_radar_service as radar
 from ..services.limit_up_detail_fetcher import SOURCE_NAME
+from ..models.limit_up_detail import LimitUpDailyDetail
+from ..models.stock import Stock
 from ..services.limit_up_detail_service import (
-    get_last_refreshed, get_latest_detail_date, sync_limit_up_details,
-    sync_core_recall, refresh_radar_scores,
+    backfill_interval_chg, get_core_recall_details, get_last_refreshed,
+    get_latest_detail_date, sync_limit_up_details, sync_core_recall,
+    refresh_radar_scores,
 )
 
 router = APIRouter(prefix="/limit-up-radar", tags=["limit-up-radar"])
@@ -82,7 +87,7 @@ _lock = threading.Lock()
 _job: dict = {
     "running": False, "ok": None, "error": None, "trade_date": None,
     "limit_up_written": 0, "broken_written": 0, "scores_recomputed": 0,
-    "finished_at": None, "step": None,
+    "finished_at": None, "step": None, "elapsed": None, "timings": None,
 }
 
 
@@ -91,26 +96,82 @@ def _set(**kw) -> None:
         _job.update(kw)
 
 
-def _run_refresh_job(target: date) -> None:
+def _recall_in_own_session(target: date) -> None:
+    """核心召回跑在自己的 session 里——它要跟涨停明细并发，而 Session 不是线程安全的。"""
     db = SessionLocal()
     try:
-        _set(step="拉取涨停/炸板明细")
-        lu, bb, _w = sync_limit_up_details(db, target)
+        sync_core_recall(db, target)
+    finally:
+        db.close()
+
+
+def _run_refresh_job(target: date) -> None:
+    """
+    刷新这个页面的全部数据，**尽量并行**。
+
+    范围就是雷达卡片区（摘要 + 板块卡片 + 核心锚 + 今日攻击），刻意**不碰**顶部
+    那条 MarketStateBar——它是布局级组件，数据来自 Sector/快照等全局表，刷新它
+    等于跑半个 daily_update，而且会改到别的页面共享的状态。
+
+    并行结构：
+        ┌ A 涨停明细（内部又并发3路：涨停池/炸板池/涨停原因）
+        └ B 东财条件选股（板块核心召回）        ← A、B 互不依赖，同时跑
+        ↓
+        C 区间涨幅补全（今日攻击里不在召回名单的股票）  ← 要 A 的涨停名单 + B 的召回名单
+        D 重算龙头分/风险分                              ← 要 A/B 的结果，纯DB
+    """
+    t0 = time.time()
+    db = SessionLocal()
+    timings: dict = {}
+    try:
+        # ── A ∥ B ────────────────────────────────────────────────────────────
+        _set(step="拉取涨停明细 + 核心召回（并行）")
+        recall_err = None
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_recall = ex.submit(_recall_in_own_session, target)
+            lu, bb, _w = sync_limit_up_details(db, target)   # 失败整体失败，见下面 except
+            try:
+                f_recall.result()
+            except Exception as e:  # noqa: BLE001
+                recall_err = f"{type(e).__name__}: {e}"      # 召回失败不影响涨停明细
+        timings["明细+召回"] = round(time.time() - t0, 1)
         _set(limit_up_written=lu, broken_written=bb)
 
-        # 下面两步失败不影响涨停明细这个主要目的，各自 try
+        # ── C：区间涨幅补全 ──────────────────────────────────────────────────
+        # 今日攻击的 10/20/60日涨幅只认东财召回的 INTERVAL_CHG，今天首板、历史没
+        # 涨停记录的票必然不在那份名单里，整行显示 —。日更已经在补，刷新按钮此前
+        # 漏了，于是"点了刷新还是 —"。
+        t1 = time.time()
+        try:
+            _set(step="补全区间涨幅")
+            recall = get_core_recall_details(db, target)
+            rows = (
+                db.query(LimitUpDailyDetail.stock_code, Stock.market)
+                .join(Stock, Stock.id == LimitUpDailyDetail.stock_id)
+                .filter(LimitUpDailyDetail.trade_date == target).all()
+            )
+            need = [(c, m or "SH") for c, m in rows
+                    if not (recall.get(c) and recall[c].interval_chg_60d is not None)]
+            if need:
+                backfill_interval_chg(db, target, need)
+            timings["区间涨幅"] = round(time.time() - t1, 1)
+        except Exception:  # noqa: BLE001
+            db.rollback()
+
+        # ── D：龙头分/风险分（纯 DB 计算）────────────────────────────────────
+        t2 = time.time()
         scores_n = 0
         try:
-            _set(step="东财条件选股（板块核心召回）")
-            sync_core_recall(db, target)
             _set(step="重算本页股票龙头分/风险分")
             scores_n = refresh_radar_scores(db, target)
+            timings["评分"] = round(time.time() - t2, 1)
         except Exception:  # noqa: BLE001
             db.rollback()
 
         refreshed = get_last_refreshed(db, target)
-        _set(running=False, ok=True, error=None, trade_date=target.isoformat(),
+        _set(running=False, ok=True, error=recall_err, trade_date=target.isoformat(),
              scores_recomputed=scores_n, step=None,
+             elapsed=round(time.time() - t0, 1), timings=timings,
              finished_at=(refreshed or datetime.now()).isoformat())
     except Exception as e:  # noqa: BLE001
         db.rollback()
@@ -163,4 +224,5 @@ def get_refresh_status():
         scores_recomputed=j["scores_recomputed"],
         refreshed_at=j["finished_at"] if j["ok"] else None,
         error=j["error"], last_success_at=j["finished_at"],
+        elapsed=j.get("elapsed"), timings=j.get("timings"),
     )

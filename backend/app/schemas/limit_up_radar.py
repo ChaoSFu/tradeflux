@@ -140,6 +140,11 @@ class LimitUpRadarRefreshResponse(BaseModel):
     # 标注 REFRESH FAILED，绝不伪装成最新
     error: Optional[str] = None
     last_success_at: Optional[str] = None
+    # 本次总耗时与各步耗时（秒）。报出来才知道慢在哪——"尽量快"要能被验证，
+    # 不能只是感觉。2026-08-26 把明细与召回改成并行、明细内部3个接口也并发之后，
+    # 这两个数字是判断改动是否真的生效的唯一依据。
+    elapsed: Optional[float] = None
+    timings: Optional[dict] = None
 
 
 GroupMode = Literal["all_watched_sectors", "primary"]
