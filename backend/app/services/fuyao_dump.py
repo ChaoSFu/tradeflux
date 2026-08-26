@@ -1,5 +1,16 @@
 """
-同花顺官方 API（fuyao.aicubes.cn）全市场日K dump —— K线主力源（2026-08-26新增）。
+同花顺官方 API（fuyao.aicubes.cn）接入（2026-08-26新增）。
+
+两个用途，走两个不同的端点、**刻意用不同的复权口径**：
+
+  · daily-k-10d dump（本模块主体）—— K线主力源，`adjusted=none` 未复权。
+    涨停判定按的是当日实际成交价，前复权会让历史涨停价失真。
+  · prices/historical（fetch_interval_returns）—— 区间涨幅，`adjust=forward` 前复权。
+    "这只票近60日涨了多少"问的是投资者的真实复合收益，必须含除权除息调整。
+
+同一个数据源两种口径不是不一致，是两个问题的正确答案各不相同。
+
+━━ 以下是 dump 部分 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ## 为什么要有它
 
@@ -170,4 +181,62 @@ def load_bars(path: Path, wanted: Dict[str, bool]) -> Dict[str, List[KLineBar]]:
             ))
         if bars:
             out[code] = bars
+    return out
+
+
+# ── 单只历史K线：补区间涨幅 ────────────────────────────────────────────────────
+
+def fetch_interval_returns(api_key: str, code: str, market_suffix: str,
+                           windows=(10, 20, 60), timeout: int = 15) -> Optional[dict]:
+    """
+    取单只股票的 N 个交易日复合涨幅，返回 {10: pct, 20: pct, 60: pct}；拿不到返回 None。
+
+    为什么需要它：涨停板块雷达的区间涨幅列此前**只认**东财核心召回接口的
+    INTERVAL_CHG，进不了那份召回名单（356只）的股票整行显示 —。今天首板、
+    历史没有涨停记录的票必然进不去——金诚信、江西铜业、迪阿股份都是这种。
+
+    为什么不用 Stock.pct_change_Nd 顶上：那个字段是**日涨幅简单相加**的近似，
+    对大涨股严重低估（603580近60日：真实204.85% vs 相加123.14%，差80个百分点）。
+    显示一个错40%的数比显示 — 更糟，所以当时宁可空着。现在有了精确来源才补。
+
+    `adjust=forward` 前复权：区间收益问的是"持有这段时间赚了多少"，必须含除权
+    除息调整。跟 dump 的未复权是两个问题，见模块 docstring。
+
+    窗口按**交易日**倒数，不是自然日：请求一个足够宽的日历窗口（60交易日≈90个
+    自然日，这里按最大窗口的3倍取，够覆盖春节长假），拿回来的 bar 序列自己数。
+    数不够就该窗口返回 None——不用"有多少算多少"凑一个偏小的数糊弄。
+    """
+    max_win = max(windows)
+    end = datetime.now(_SH_TZ)
+    start = end - timedelta(days=max_win * 3 + 30)
+    try:
+        with httpx.Client(timeout=timeout) as c:
+            resp = c.get(f"{FUYAO_BASE}/api/a-share/prices/historical",
+                         params={"thscode": f"{code}.{market_suffix}", "interval": "1d",
+                                 "start": int(start.timestamp() * 1000),
+                                 "end": int(end.timestamp() * 1000),
+                                 "adjust": "forward"},
+                         headers={"X-api-key": api_key})
+        body = resp.json()
+    except Exception:  # noqa: BLE001
+        return None
+    if body.get("code") != 0:
+        return None
+    items = ((body.get("data") or {}).get("item")) or []
+    closes = [(it.get("date_ms"), it.get("close_price")) for it in items]
+    closes = [(d, c) for d, c in closes if d is not None and c]
+    if len(closes) < 2:
+        return None
+    closes.sort(key=lambda x: x[0])
+    latest = closes[-1][1]
+
+    out = {}
+    for w in windows:
+        # 近N个交易日涨幅 = 最新收盘 / N个交易日前的收盘 - 1
+        # closes[-1] 是今天，往前数 w 根即 closes[-1-w]
+        if len(closes) < w + 1:
+            out[w] = None          # 上市不满N个交易日，就是没有，不凑
+            continue
+        base = closes[-1 - w][1]
+        out[w] = round((latest / base - 1) * 100, 2) if base else None
     return out

@@ -6,12 +6,15 @@
 聚合在 limit_up_radar_service 里，读的是本地库。
 """
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
 from ..models.app_config import AppConfig
+from .fuyao_dump import fetch_interval_returns, get_api_key
 from ..models.stock import Stock
 from ..models.limit_up_detail import LimitUpDailyDetail, BrokenBoardDailyDetail
 from .eastmoney_fetcher import (
@@ -262,6 +265,74 @@ def get_latest_detail_date(db: Session) -> Optional[date]:
 
 
 SCORES_KEY_PREFIX = "limit_up_radar:scores:"
+INTERVAL_KEY_PREFIX = "limit_up_radar:interval_chg:"
+
+
+def interval_chg_key(d: date) -> str:
+    return f"{INTERVAL_KEY_PREFIX}{d.isoformat()}"
+
+
+def get_interval_chg(db: Session, trade_date: date) -> Dict[str, dict]:
+    """
+    读当日补全的区间涨幅 {code: {"10": pct, "20": pct, "60": pct}}。
+
+    这是东财核心召回 INTERVAL_CHG 的**补充而非替代**：召回名单里有的股票仍用
+    东财的值（同一来源，口径统一），只有进不了召回名单的今日涨停股才走这里。
+    跟 core_recall 不同，这份数据**不做隔天退回**——区间涨幅是逐日变化的，
+    拿昨天的值贴今天的标签就是伪造。当天没有就是没有，页面显示 —。
+    """
+    row = db.query(AppConfig).filter(AppConfig.key == interval_chg_key(trade_date)).first()
+    if not row or not row.value:
+        return {}
+    try:
+        return json.loads(row.value) or {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def backfill_interval_chg(db: Session, trade_date: date, codes_markets,
+                          max_workers: int = 3, delay: float = 0.15) -> int:
+    """
+    给"区间涨幅缺失"的股票逐只补全，写进 AppConfig。返回补到的股票数。
+
+    **刻意低并发**（默认3路 + 每次请求间隔0.15秒）：fuyao 的 QPS 上限文档没写，
+    错误码里只有一个 `4001 频率超限 | 超过约定 QPS`。实测 20 并发 40 次没触发，
+    但那是天花板未知情况下的一次采样，不是许可。这个补全任务不在关键路径上
+    （缺了页面显示 — ，跟现在一样），没有任何理由去试探限流边界——本仓库为
+    "被限流"付出的代价已经够多了。
+
+    codes_markets: [(6位代码, "SH"/"SZ"/"BJ")]
+    """
+    key = get_api_key()
+    if not key or not codes_markets:
+        return 0
+
+    out: Dict[str, dict] = get_interval_chg(db, trade_date)
+
+    def _one(cm):
+        code, suffix = cm
+        time.sleep(delay)
+        return code, fetch_interval_returns(key, code, suffix)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for code, res in ex.map(_one, codes_markets):
+            if res:
+                # 只存拿到值的窗口。None 不写——"没拿到"和"值是0"必须能分开，
+                # 这是本仓库反复踩的同一个坑
+                got = {str(w): v for w, v in res.items() if v is not None}
+                if got:
+                    out[code] = got
+
+    if not out:
+        return 0
+    row = db.query(AppConfig).filter(AppConfig.key == interval_chg_key(trade_date)).first()
+    if row:
+        row.value = json.dumps(out, ensure_ascii=False)
+    else:
+        db.add(AppConfig(key=interval_chg_key(trade_date),
+                         value=json.dumps(out, ensure_ascii=False)))
+    db.commit()
+    return len(out)
 
 
 def scores_key(trade_date: date) -> str:

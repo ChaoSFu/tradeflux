@@ -201,3 +201,59 @@ def test_炸板池真的返回空则照常清理(db):
 
     assert db.query(BrokenBoardDailyDetail).filter_by(trade_date=TODAY).count() == 0, \
         "[] 是权威的'今天没有炸板'，该清就得清——这正是要跟 None 分开的原因"
+
+
+# ── 区间涨幅补全：只补东财召回名单之外的股票 ──────────────────────────────────
+#
+# 那三列此前只认东财核心召回接口的 INTERVAL_CHG，进不了那份名单的股票整行显示 —。
+# 今天首板、历史没涨停记录的票必然进不去（金诚信、江西铜业、迪阿股份都是），
+# 而它们恰恰是最需要判断"是不是已经涨过一大截"的那批。
+
+def test_区间涨幅优先东财召回_没有才用补全的(db):
+    from app.services.limit_up_radar_service import _ic
+    from app.services.eastmoney_fetcher import CoreRecallDetail
+
+    em = CoreRecallDetail(code="603580", name="艾艾精工",
+                          interval_chg_10d=12.0, interval_chg_20d=None, interval_chg_60d=204.85)
+    extra = {"603580": {"10": 99.0, "20": 33.0, "60": 99.0}}
+
+    assert _ic(em, extra, "603580", 10) == 12.0, "东财有值就用东财，同一列不混来源"
+    assert _ic(em, extra, "603580", 60) == 204.85
+    assert _ic(em, extra, "603580", 20) == 33.0, "东财这个窗口没给，才轮到补全的"
+    assert _ic(None, extra, "603580", 10) == 99.0, "根本不在召回名单里，全用补全的"
+    assert _ic(None, {}, "603580", 10) is None, "两边都没有就是 —，不拿近似值顶上"
+
+
+def test_区间涨幅不做隔天退回(db):
+    """核心召回名单隔天仍成立（"近期活跃"），但区间涨幅逐日变化，拿昨天的贴今天就是伪造。"""
+    from app.models.app_config import AppConfig
+    from app.services.limit_up_detail_service import get_interval_chg, interval_chg_key
+    import json as _json
+
+    yesterday = date(2026, 8, 24)
+    db.add(AppConfig(key=interval_chg_key(yesterday),
+                     value=_json.dumps({"603979": {"10": 5.0}})))
+    db.commit()
+
+    assert get_interval_chg(db, yesterday) == {"603979": {"10": 5.0}}
+    assert get_interval_chg(db, TODAY) == {}, "当天没有就是没有，不退回昨天的值"
+
+
+def test_没配key时补全静默跳过(db):
+    from app.services.limit_up_detail_service import backfill_interval_chg
+    from unittest.mock import patch
+    with patch("app.services.limit_up_detail_service.get_api_key", return_value=None):
+        assert backfill_interval_chg(db, TODAY, [("603979", "SH")]) == 0
+
+
+def test_补全只写拿到值的窗口(db):
+    """None 不写——"没拿到"和"值是0"必须能分开。"""
+    from app.services.limit_up_detail_service import backfill_interval_chg, get_interval_chg
+    from unittest.mock import patch
+    with patch("app.services.limit_up_detail_service.get_api_key", return_value="k"), \
+         patch("app.services.limit_up_detail_service.fetch_interval_returns",
+               return_value={10: 5.0, 20: None, 60: 0.0}):
+        n = backfill_interval_chg(db, TODAY, [("603979", "SH")], max_workers=1, delay=0)
+    assert n == 1
+    got = get_interval_chg(db, TODAY)["603979"]
+    assert got == {"10": 5.0, "60": 0.0}, "0.0 是真实的'没涨没跌'要留，None 是'没拿到'不能写"

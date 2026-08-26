@@ -31,7 +31,9 @@ from ..models.limit_up_detail import BrokenBoardDailyDetail, LimitUpDailyDetail
 from ..models.sector import Sector, StockSectorRelation
 from ..models.stock import Stock, StockDailySnapshot
 from .eastmoney_fetcher import CoreRecallDetail
-from .limit_up_detail_service import get_core_recall_details, get_radar_scores
+from .limit_up_detail_service import (
+    get_core_recall_details, get_interval_chg, get_radar_scores,
+)
 
 # ── Core Recall 阈值（集中在这里，不散落在逻辑里）────────────────────────────
 # 全部是"召回"阈值：满足任意一条就进入视野。刻意放宽，见模块 docstring 红线1。
@@ -388,6 +390,22 @@ def sort_sectors(sectors: List[dict]) -> List[dict]:
 
 # ── 主聚合 ───────────────────────────────────────────────────────────────────
 
+def _ic(em, extra: Dict[str, dict], code: str, window: int):
+    """
+    区间涨幅取值：东财核心召回优先，没有才用 fuyao 逐只补的那份。
+
+    顺序不能反——召回名单覆盖的是"曾经强过"的股票，那一列的其它字段
+    （涨停天数/最高连板）也来自东财，同一行混两个来源的口径会让人对不上账。
+    两边都没有就返回 None，页面显示 —，不拿 Stock.pct_change_Nd 那个
+    "日涨幅简单相加"的近似值顶上（大涨股能低估80个百分点）。
+    """
+    if em is not None:
+        v = getattr(em, f"interval_chg_{window}d", None)
+        if v is not None:
+            return v
+    return (extra.get(code) or {}).get(str(window))
+
+
 def build_radar(
     db: Session,
     trade_date: date,
@@ -464,6 +482,10 @@ def build_radar(
     # 顺便评估它有多新——日历本身过期时算出来的窗口是错的，必须显式告知而不是
     # 照样给一个精确但答非所问的数字。
     em_recall = get_core_recall_details(db, trade_date)
+    # 区间涨幅补全：东财核心召回名单之外的今日涨停股（今天首板、历史没涨停记录的
+    # 票必然进不去那份名单），由 daily_update 收尾时逐只从 fuyao 拉回来。
+    # 只补东财没有的，召回名单里有的仍用东财的值——同一列不混两个来源的口径。
+    ic_extra = get_interval_chg(db, trade_date)
     # 页面作用域的龙头分/风险分（刷新按钮现算的，见 refresh_radar_scores）。
     # 优先级高于 Stock 上的值——后者只对候选池内股票是最新的。
     radar_scores = get_radar_scores(db, trade_date)
@@ -491,7 +513,7 @@ def build_radar(
         card = _build_sector_card(
             sector, sids, detail_by_sid, broken_sids, stocks, snaps, rel_lookup, lu_hist,
             em_recall, radar_scores,
-            include_core=include_core,
+            ic_extra=ic_extra, include_core=include_core,
             core_10d_min=core_10d_min, core_20d_min=core_20d_min,
             core_60d_min=core_60d_min, core_max_board_min=core_max_board_min,
             max_core_per_sector=max_core_per_sector,
@@ -534,10 +556,12 @@ def _build_sector_card(
     lu_hist: Dict[int, LimitUpHistory],
     em_recall: Dict[str, CoreRecallDetail],
     radar_scores: Dict[str, dict],
-    *, include_core: bool,
+    *, ic_extra: Optional[Dict[str, dict]] = None,
+    include_core: bool,
     core_10d_min: int, core_20d_min: int, core_60d_min: int, core_max_board_min: int,
     max_core_per_sector: int = DEFAULT_MAX_CORE_PER_SECTOR,
 ) -> dict:
+    ic_extra = ic_extra or {}
     today_rows: List[dict] = []
     core_rows: List[dict] = []
     broken_in_sector = 0
@@ -578,9 +602,9 @@ def _build_sector_card(
                 "limit_up_days_60d": _lu_count(_em, lu_hist.get(sid), 60, st.limit_up_days_60d),
                 "board_count_60d": (_em.max_board_60d if _em and _em.max_board_60d is not None
                                     else st.board_count_60d),
-                "interval_chg_10d": _em.interval_chg_10d if _em else None,
-                "interval_chg_20d": _em.interval_chg_20d if _em else None,
-                "interval_chg_60d": _em.interval_chg_60d if _em else None,
+                "interval_chg_10d": _ic(_em, ic_extra, st.code, 10),
+                "interval_chg_20d": _ic(_em, ic_extra, st.code, 20),
+                "interval_chg_60d": _ic(_em, ic_extra, st.code, 60),
                 "scores_as_of_today": True,   # 今日涨停股必然进候选池，本轮一定算过
                 "leader_score": (_sc["ls"] if _sc else st.leader_score),
                 "risk_score": (_sc["rs"] if _sc else st.risk_score),

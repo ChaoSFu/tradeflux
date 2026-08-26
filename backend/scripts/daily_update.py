@@ -1761,6 +1761,41 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"涨停板块雷达：涨停明细 {lu_n} 只 / 炸板明细 {bb_n} 只 / 核心召回名单 {recall_n} 只")
             for w in lu_warnings:
                 log.info(f"  {w}")
+
+            # ── 区间涨幅补全（收尾步骤，低并发）─────────────────────────────
+            # 区间涨幅那三列此前只认东财核心召回接口的 INTERVAL_CHG，进不了那份
+            # 名单（今天356只）的股票整行显示 —。今天首板、历史没涨停记录的票
+            # 必然进不去，而它们恰恰是用户最需要判断"是不是已经涨过一大截"的那批。
+            #
+            # 不用 Stock.pct_change_Nd 顶上：那是"日涨幅简单相加"的近似，大涨股
+            # 能低估80个百分点（603580近60日 真实204.85% vs 相加123.14%）。
+            # 显示一个错40%的数比显示 — 更糟。所以只在有精确来源时才补。
+            #
+            # 只补缺的那几只（常态 6~50 只），**并发压到3路+每次间隔0.15秒**：
+            # fuyao 的 QPS 上限文档没写，实测20并发没触发限流但那是天花板未知下的
+            # 一次采样、不是许可。这个任务不在关键路径上（补不到就跟现在一样显示 —），
+            # 没有任何理由去试探限流边界。
+            try:
+                from app.services.limit_up_detail_service import (
+                    backfill_interval_chg, get_core_recall_details,
+                )
+                from app.models.limit_up_detail import LimitUpDailyDetail
+                _recall = get_core_recall_details(db, target_date)
+                _rows = (
+                    db.query(LimitUpDailyDetail.stock_code, Stock.market)
+                    .join(Stock, Stock.id == LimitUpDailyDetail.stock_id)
+                    .filter(LimitUpDailyDetail.trade_date == target_date)
+                    .all()
+                )
+                _need = [(c, m or "SH") for c, m in _rows
+                         if not (_recall.get(c) and _recall[c].interval_chg_60d is not None)]
+                if _need:
+                    n_ic = backfill_interval_chg(db, target_date, _need)
+                    log.info(f"  区间涨幅补全：{len(_need)} 只不在东财召回名单里，"
+                             f"逐只拉取补到 {n_ic} 只（3并发）")
+            except Exception as e:  # noqa: BLE001
+                log.info(f"  区间涨幅补全失败（不影响主流程）: {e}")
+                db.rollback()
         except Exception as e:
             log.info(f"[limit-up-radar] 涨停明细归档失败（不影响主流程）: {e}")
             api_warnings.append("涨停明细归档失败，涨停板块雷达可能缺少当日数据")
