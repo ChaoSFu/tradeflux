@@ -243,7 +243,7 @@ def test_没配key时补全静默跳过(db):
     from app.services.limit_up_detail_service import backfill_interval_chg
     from unittest.mock import patch
     with patch("app.services.limit_up_detail_service.get_api_key", return_value=None):
-        assert backfill_interval_chg(db, TODAY, [("603979", "SH")]) == 0
+        assert backfill_interval_chg(db, TODAY, [("603979", "SH")]) == (0, [])
 
 
 def test_补全只写拿到值的窗口(db):
@@ -253,7 +253,35 @@ def test_补全只写拿到值的窗口(db):
     with patch("app.services.limit_up_detail_service.get_api_key", return_value="k"), \
          patch("app.services.limit_up_detail_service.fetch_interval_returns",
                return_value={10: 5.0, 20: None, 60: 0.0}):
-        n = backfill_interval_chg(db, TODAY, [("603979", "SH")], max_workers=1, delay=0)
-    assert n == 1
+        n, fail = backfill_interval_chg(db, TODAY, [("603979", "SH")], max_workers=1, delay=0)
+    assert n == 1 and fail == []
     got = get_interval_chg(db, TODAY)["603979"]
     assert got == {"10": 5.0, "60": 0.0}, "0.0 是真实的'没涨没跌'要留，None 是'没拿到'不能写"
+
+
+def test_请求失败与历史不足必须分得开(db):
+    """
+    生产上 22 只补到 21 只，日志说不清那 1 只是请求挂了还是上市太短。
+    查腾讯才知道 603615 有 81 根完整历史——是请求失败。分不清故障和事实等于没监控。
+    """
+    from app.services.limit_up_detail_service import backfill_interval_chg
+    from app.services.fuyao_dump import FuyaoError
+    from unittest.mock import patch
+
+    def _fake(key, code, suffix, **kw):
+        if code == "603615":
+            raise FuyaoError("ReadTimeout: timed out")     # 请求挂了
+        if code == "301999":
+            return {10: None, 20: None, 60: None}          # 新股，历史真的不够
+        return {10: 5.0, 20: 8.0, 60: 12.0}
+
+    with patch("app.services.limit_up_detail_service.get_api_key", return_value="k"), \
+         patch("app.services.limit_up_detail_service.fetch_interval_returns", _fake):
+        n, fail = backfill_interval_chg(
+            db, TODAY, [("603979", "SH"), ("603615", "SH"), ("301999", "SZ")],
+            max_workers=1, delay=0)
+
+    assert n == 1
+    assert any("603615" in f and "Timeout" in f for f in fail), "请求失败要带原因"
+    assert any("603615" not in f and "历史不足" in f for f in fail), "历史不足是事实，另一类"
+    assert len(fail) == 2

@@ -186,10 +186,22 @@ def load_bars(path: Path, wanted: Dict[str, bool]) -> Dict[str, List[KLineBar]]:
 
 # ── 单只历史K线：补区间涨幅 ────────────────────────────────────────────────────
 
+class FuyaoError(RuntimeError):
+    """fuyao 请求/响应层失败。跟"数据本身没有"是两回事，见 fetch_interval_returns。"""
+
+
 def fetch_interval_returns(api_key: str, code: str, market_suffix: str,
-                           windows=(10, 20, 60), timeout: int = 15) -> Optional[dict]:
+                           windows=(10, 20, 60), timeout: int = 15,
+                           retries: int = 1) -> dict:
     """
-    取单只股票的 N 个交易日复合涨幅，返回 {10: pct, 20: pct, 60: pct}；拿不到返回 None。
+    取单只股票的 N 个交易日复合涨幅，返回 {10: pct, 20: pct, 60: pct}。
+
+    **拿不到数据抛 FuyaoError，不返回 None**（2026-08-26改，我自己刚写的代码就踩了
+    同一个坑）：第一版任何失败都返回 None，调用方无从区分"请求失败"和"上市不满N个
+    交易日所以真的没有"。生产上 603615 茶花股份补全失败，日志只说"补到21只"，
+    查了腾讯才知道它有81根完整历史——是请求挂了，不是数据不够。现在彻底分开：
+      · 请求/响应层失败 → 抛 FuyaoError，调用方记日志、可重试
+      · 数据不够（bar数 < 窗口+1）→ dict 里该窗口是 None，是事实不是故障
 
     为什么需要它：涨停板块雷达的区间涨幅列此前**只认**东财核心召回接口的
     INTERVAL_CHG，进不了那份召回名单（356只）的股票整行显示 —。今天首板、
@@ -209,24 +221,33 @@ def fetch_interval_returns(api_key: str, code: str, market_suffix: str,
     max_win = max(windows)
     end = datetime.now(_SH_TZ)
     start = end - timedelta(days=max_win * 3 + 30)
-    try:
-        with httpx.Client(timeout=timeout) as c:
-            resp = c.get(f"{FUYAO_BASE}/api/a-share/prices/historical",
-                         params={"thscode": f"{code}.{market_suffix}", "interval": "1d",
-                                 "start": int(start.timestamp() * 1000),
-                                 "end": int(end.timestamp() * 1000),
-                                 "adjust": "forward"},
-                         headers={"X-api-key": api_key})
-        body = resp.json()
-    except Exception:  # noqa: BLE001
-        return None
-    if body.get("code") != 0:
-        return None
+    params = {"thscode": f"{code}.{market_suffix}", "interval": "1d",
+              "start": int(start.timestamp() * 1000),
+              "end": int(end.timestamp() * 1000), "adjust": "forward"}
+
+    last_err = ""
+    for attempt in range(retries + 1):
+        try:
+            with httpx.Client(timeout=timeout) as c:
+                resp = c.get(f"{FUYAO_BASE}/api/a-share/prices/historical",
+                             params=params, headers={"X-api-key": api_key})
+            body = resp.json()
+        except Exception as e:  # noqa: BLE001
+            last_err = f"{type(e).__name__}: {str(e)[:60]}"
+        else:
+            if body.get("code") == 0:
+                break
+            last_err = f"code={body.get('code')} {body.get('message')}"
+        if attempt < retries:
+            time.sleep(0.5)     # 低并发场景下重试一次几乎零成本
+    else:
+        raise FuyaoError(last_err)
+
     items = ((body.get("data") or {}).get("item")) or []
     closes = [(it.get("date_ms"), it.get("close_price")) for it in items]
     closes = [(d, c) for d, c in closes if d is not None and c]
     if len(closes) < 2:
-        return None
+        raise FuyaoError(f"返回 {len(closes)} 根有效K线，不足以算任何窗口")
     closes.sort(key=lambda x: x[0])
     latest = closes[-1][1]
 

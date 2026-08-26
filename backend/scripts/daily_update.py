@@ -1790,9 +1790,14 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 _need = [(c, m or "SH") for c, m in _rows
                          if not (_recall.get(c) and _recall[c].interval_chg_60d is not None)]
                 if _need:
-                    n_ic = backfill_interval_chg(db, target_date, _need)
+                    n_ic, ic_fail = backfill_interval_chg(db, target_date, _need)
                     log.info(f"  区间涨幅补全：{len(_need)} 只不在东财召回名单里，"
                              f"逐只拉取补到 {n_ic} 只（3并发）")
+                    if ic_fail:
+                        # 失败明细必须落地：只报"补到21只"分不出那1只是请求挂了
+                        # 还是上市太短本来就没有——分不清故障和事实等于没有监控
+                        log.info(f"    未补到 {len(ic_fail)} 只：{'、'.join(ic_fail[:8])}"
+                                 + ("…" if len(ic_fail) > 8 else ""))
             except Exception as e:  # noqa: BLE001
                 log.info(f"  区间涨幅补全失败（不影响主流程）: {e}")
                 db.rollback()

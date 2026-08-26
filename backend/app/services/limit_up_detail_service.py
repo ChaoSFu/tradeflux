@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from ..models.app_config import AppConfig
-from .fuyao_dump import fetch_interval_returns, get_api_key
+from .fuyao_dump import FuyaoError, fetch_interval_returns, get_api_key
 from ..models.stock import Stock
 from ..models.limit_up_detail import LimitUpDailyDetail, BrokenBoardDailyDetail
 from .eastmoney_fetcher import (
@@ -291,7 +291,7 @@ def get_interval_chg(db: Session, trade_date: date) -> Dict[str, dict]:
 
 
 def backfill_interval_chg(db: Session, trade_date: date, codes_markets,
-                          max_workers: int = 3, delay: float = 0.15) -> int:
+                          max_workers: int = 3, delay: float = 0.15) -> Tuple[int, List[str]]:
     """
     给"区间涨幅缺失"的股票逐只补全，写进 AppConfig。返回补到的股票数。
 
@@ -301,30 +301,44 @@ def backfill_interval_chg(db: Session, trade_date: date, codes_markets,
     （缺了页面显示 — ，跟现在一样），没有任何理由去试探限流边界——本仓库为
     "被限流"付出的代价已经够多了。
 
+    返回 (补到的股票数, 失败明细)。**失败必须报出来**：第一版只返回一个数字，
+    生产上 22 只补到 21 只，日志说不清那 1 只是"请求失败"还是"上市不满60个交易日
+    所以本来就没有"——查了腾讯才发现 603615 有 81 根完整历史，是请求挂了。
+    分不清故障和事实，就等于没有监控。
+
     codes_markets: [(6位代码, "SH"/"SZ"/"BJ")]
     """
     key = get_api_key()
     if not key or not codes_markets:
-        return 0
+        return 0, []
 
     out: Dict[str, dict] = get_interval_chg(db, trade_date)
+    failures: List[str] = []
 
     def _one(cm):
         code, suffix = cm
         time.sleep(delay)
-        return code, fetch_interval_returns(key, code, suffix)
+        try:
+            return code, fetch_interval_returns(key, code, suffix), None
+        except FuyaoError as e:
+            return code, None, str(e)
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        for code, res in ex.map(_one, codes_markets):
-            if res:
-                # 只存拿到值的窗口。None 不写——"没拿到"和"值是0"必须能分开，
-                # 这是本仓库反复踩的同一个坑
-                got = {str(w): v for w, v in res.items() if v is not None}
-                if got:
-                    out[code] = got
+        for code, res, err in ex.map(_one, codes_markets):
+            if err:
+                failures.append(f"{code}({err})")
+                continue
+            # 只存拿到值的窗口。None 不写——"没拿到"和"值是0"必须能分开，
+            # 这是本仓库反复踩的同一个坑
+            got = {str(w): v for w, v in (res or {}).items() if v is not None}
+            if got:
+                out[code] = got
+            else:
+                # 请求成功但一个窗口都算不出 = 上市太短，是事实不是故障
+                failures.append(f"{code}(历史不足)")
 
     if not out:
-        return 0
+        return 0, failures
     row = db.query(AppConfig).filter(AppConfig.key == interval_chg_key(trade_date)).first()
     if row:
         row.value = json.dumps(out, ensure_ascii=False)
@@ -332,7 +346,7 @@ def backfill_interval_chg(db: Session, trade_date: date, codes_markets,
         db.add(AppConfig(key=interval_chg_key(trade_date),
                          value=json.dumps(out, ensure_ascii=False)))
     db.commit()
-    return len(out)
+    return len(out), failures
 
 
 def scores_key(trade_date: date) -> str:
