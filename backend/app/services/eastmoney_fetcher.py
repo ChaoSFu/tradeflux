@@ -727,7 +727,18 @@ def _fetch_kline_tencent(
         resp = client.get(TENCENT_KLINE_URL, params={
             "param": f"{full_code},day,,,{days},qfq",
         })
-        data = resp.json()
+        try:
+            data = resp.json()
+        except Exception as parse_err:  # noqa: BLE001
+            # 生产上成片出现 JSONDecodeError，但本机复现不了（16只×30并发全绿），
+            # 判断是服务器出口IP被限流。光看异常类型说明不了问题——把状态码和body
+            # 前200字符打出来才能区分"403限流页/空body/格式变了"。写法跟
+            # fetch_stock_quotes_batch 里东财那段诊断保持一致。
+            raise ValueError(
+                f"腾讯K线响应无法解析为JSON（{type(parse_err).__name__}）："
+                f"HTTP {resp.status_code}，body长度={len(resp.content)}，"
+                f"前200字符={resp.text[:200]!r}"
+            ) from parse_err
         node = data.get("data", {}).get(full_code, {}) or {}
         # 前复权数据在 qfqday；部分股票（北交所、无复权调整的沪深股）落在 day，回退取之
         raw_bars = node.get("qfqday") or node.get("day") or []
@@ -785,7 +796,10 @@ def _fetch_kline_sina(
         text = client.get(url).text
     start, end = text.find("("), text.rfind(")")
     if start < 0 or end <= start:
-        raise ValueError("新浪财经 K 线返回格式异常")
+        # 同上：把实际响应打出来，否则"格式异常"四个字定位不了任何东西
+        raise ValueError(
+            f"新浪K线返回格式异常：body长度={len(text)}，前200字符={text[:200]!r}"
+        )
     rows = _json.loads(text[start + 1: end])
     if not rows:
         raise ValueError("新浪财经 K 线返回空数据")
