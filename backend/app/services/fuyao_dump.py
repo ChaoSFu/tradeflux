@@ -55,8 +55,18 @@ _SH_TZ = timezone(timedelta(hours=8))
 
 
 def get_api_key() -> Optional[str]:
-    """API Key 从环境变量取（.env 里配 FUYAO_API_KEY=...）。没配就是没启用，不报错。"""
-    key = (os.environ.get("FUYAO_API_KEY") or "").strip()
+    """
+    取 API Key。没配就是没启用，返回 None，不报错。
+
+    **必须走 settings 而不是只读 os.environ**：本项目的 .env 是 pydantic-settings
+    加载的，它只填充 settings 对象，**不会把值注入 os.environ**。第一版只读
+    os.environ，结果用户明明在 .env 里配好了，日志还在打"未配置 FUYAO_API_KEY"。
+    os.environ 作为补充保留——systemd 的 Environment= 或 shell export 走的是那条路。
+    """
+    from ..config import settings
+    key = (getattr(settings, "FUYAO_API_KEY", "") or "").strip()
+    if not key:
+        key = (os.environ.get("FUYAO_API_KEY") or "").strip()
     return key or None
 
 

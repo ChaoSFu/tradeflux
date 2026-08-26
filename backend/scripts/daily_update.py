@@ -526,6 +526,94 @@ def _upsert_snapshot(
 # 板块统计更新
 # ---------------------------------------------------------------------------
 
+
+def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
+                                  handled: set, fuyao_key: Optional[str],
+                                  log) -> int:
+    """
+    结算「盘中进过候选池、收盘前又掉出去」的那些股票的当日快照。
+
+    2026-08-26 生产事故的**第二个**洞（第一个是盘中值就地转正，见 _upsert_snapshot）。
+    形状是这样的：
+
+      · 600984 盘中封涨停 → 选股API 把它当"涨停股票"返回 → 进候选池 → 写下
+        close=5.43 这一行（盘中价，标 is_settled=False）
+      · 收盘前炸板 → **不再是涨停股，选股API 不再返回它** → 收盘那一跑的候选池里
+        根本没有它 → _upsert_snapshot 从头到尾没走到它身上
+      · 那行盘中价就永久留在库里。不是"跑了但拉取失败"，是压根没跑它
+
+    当天 229 条快照里有 45 条属于这种情况（候选池只有 184 只），而这些恰恰是
+    **当天异动最剧烈**的股票——炸板、跌停、冲高回落，正是雷达最该看准的那批。
+
+    只修当日观测字段（收盘价/涨跌幅/涨跌停标志），不重算窗口指标、不碰强势池
+    成员和板块关联：这些股票已经掉出候选池，把它们塞回 candidates 会改变
+    "候选池"的语义，影响下游一大片。拿不到数据就清空——跟 _upsert_snapshot
+    同一条原则，宁可缺失不要伪造。
+
+    只在已收盘的那一跑执行（盘中跑没有"终值"可言）。
+    """
+    if not run_settled:
+        return 0
+
+    stale = (
+        db.query(StockDailySnapshot, Stock)
+        .join(Stock, Stock.id == StockDailySnapshot.stock_id)
+        .filter(StockDailySnapshot.date == target_date,
+                StockDailySnapshot.is_settled.is_(False))
+        .all()
+    )
+    todo = [(snap, stock) for snap, stock in stale if stock.code not in handled]
+    if not todo:
+        return 0
+
+    log.info(f"  [掉出池补结算] {len(todo)} 只盘中进过池子、收盘前掉出去的股票，"
+             f"当日快照还是盘中值，补拉K线结算")
+
+    infos = [StockBasicInfo(code=st.code, name=st.name,
+                            market=0 if st.market == "SH" else 1,
+                            is_st=st.is_st, pct_change=0.0, turnover_rate=0.0)
+             for _, st in todo]
+
+    # 先试 dump（全市场都在文件里，这几十只是零额外请求），不行再逐股拉
+    bars_map: dict = {}
+    if fuyao_key:
+        try:
+            with daily_k_dump(fuyao_key) as dump_path:
+                if dump_path:
+                    bars_map = load_bars(dump_path, {i.code: i.is_st for i in infos})
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"    dump 不可用（{type(e).__name__}），退回逐股拉取")
+    miss = [i for i in infos if not (bars_map.get(i.code) or [])]
+    if miss:
+        bars_map.update(fetch_klines_batch(miss, days=3, max_workers=_KLINE_WORKERS,
+                                           delay_between=0.0, require_date=target_date))
+
+    fixed = cleared = 0
+    for snap, stock in todo:
+        bars = bars_map.get(stock.code) or []
+        bar = bars[-1] if bars and bars[-1].date == target_date else None
+        if bar:
+            snap.close_price = bar.close_price
+            snap.pct_change = bar.pct_change
+            snap.is_limit_up = bar.is_limit_up
+            snap.is_limit_down = bar.is_limit_down
+            snap.is_broken_board = bar.is_broken_board
+            snap.is_one_word_limit_up = bar.is_one_word_limit_up
+            snap.is_one_word_limit_down = bar.is_one_word_limit_down
+            if bar.turnover_rate is not None:
+                snap.turnover_rate = bar.turnover_rate
+            snap.is_settled = True
+            fixed += 1
+        else:
+            snap.close_price = None
+            snap.pct_change = None
+            snap.turnover_rate = None
+            cleared += 1
+    db.commit()
+    log.info(f"  [掉出池补结算] 结算 {fixed} 只，拿不到数据清空 {cleared} 只")
+    return fixed
+
+
 def _refresh_sector_stats(db, target_date) -> None:
     """
     重新计算板块统计指标，使用直接 DB 联查替代懒加载，避免 N+1 查询。
@@ -1480,6 +1568,11 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
 
         db.commit()
         log.end(detail=f"快照写入 {len(stats_list)} 只，强势池: +{new_in_pool}/-{removed_from_pool}，当前 {total_in_pool} 只")
+
+        _settle_dropped_out_snapshots(
+            db, target_date, run_settled,
+            handled={st.code for st in stats_list}, fuyao_key=_fuyao_key, log=log,
+        )
 
         # ── 第4.05步：历史快照自举 ────────────────────────────────
         # full_group 这次全量拉到的 65 日 K 线，把历史日(< target_date)一并落库，

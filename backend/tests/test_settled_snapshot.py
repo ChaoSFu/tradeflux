@@ -134,3 +134,81 @@ class TestUpsertSnapshotSettled:
         snap = db.query(StockDailySnapshot).one()
         assert snap.close_price == 4.94
         assert snap.is_settled is True
+
+
+class _Log:
+    """daily_update 里的 log 是主函数局部变量，测试注入一个哑实现。"""
+    def info(self, *a, **k): pass
+    def warning(self, *a, **k): pass
+
+
+# ── 第二个洞：盘中进过池子、收盘前掉出去的股票，没人回来修它 ──────────────────
+#
+# 2026-08-26 18:08 那一跑明确打了"已收盘，本次写入当日终值"，但 600984 等 5 只
+# 复查还是盘中价。日志里 `已有 229 条快照` 而 `快照写入 184 只`——差的 45 只
+# 就是这类：盘中封涨停时被选股API当"涨停股票"返回、进了候选池写下盘中价，
+# 收盘前炸板后不再是涨停股、选股API 不再返回它，收盘那一跑的候选池里根本没有它。
+
+class TestSettleDroppedOut:
+    @staticmethod
+    def _seed(db, code="600984", close=5.43, pct=9.92, settled=False):
+        stock = Stock(code=code, name="建设机械", market="SH")
+        db.add(stock); db.flush()
+        db.add(StockDailySnapshot(stock_id=stock.id, date=TODAY, close_price=close,
+                                  pct_change=pct, is_limit_up=True, is_settled=settled))
+        db.flush()
+        return stock
+
+    def test_掉出池子的股票被补结算(self, db, monkeypatch):
+        from app.services.eastmoney_fetcher import build_kline_bar
+        self._seed(db)
+        real = build_kline_bar(dt=TODAY, open_p=4.9, close_p=4.66, high_p=5.43, low_p=4.6,
+                               pct=-5.67, turnover=None, prev_close=4.94)
+        monkeypatch.setattr(du, "fetch_klines_batch", lambda *a, **k: {"600984": [real]})
+        n = du._settle_dropped_out_snapshots(db, TODAY, run_settled=True,
+                                             handled=set(), fuyao_key=None, log=_Log())
+        snap = db.query(StockDailySnapshot).one()
+        assert n == 1
+        assert snap.close_price == 4.66, "必须用真收盘价覆盖盘中价"
+        assert snap.is_limit_up is False, "炸板不是涨停"
+        assert snap.is_broken_board is True
+        assert snap.is_settled is True
+
+    def test_拿不到数据则清空不保留盘中价(self, db, monkeypatch):
+        self._seed(db)
+        monkeypatch.setattr(du, "fetch_klines_batch", lambda *a, **k: {})
+        du._settle_dropped_out_snapshots(db, TODAY, run_settled=True,
+                                         handled=set(), fuyao_key=None, log=_Log())
+        snap = db.query(StockDailySnapshot).one()
+        assert snap.close_price is None, "宁可缺失，不要让盘中价冒充收盘价"
+        assert snap.is_settled is False
+
+    def test_本轮已处理过的股票不重复拉(self, db, monkeypatch):
+        self._seed(db)
+        called = []
+        monkeypatch.setattr(du, "fetch_klines_batch",
+                            lambda *a, **k: called.append(1) or {})
+        n = du._settle_dropped_out_snapshots(db, TODAY, run_settled=True,
+                                             handled={"600984"}, fuyao_key=None, log=_Log())
+        assert n == 0 and called == [], "已在候选池里跑过的，不该再拉一次"
+
+    def test_已结算的行不动(self, db, monkeypatch):
+        self._seed(db, close=4.66, pct=-5.67, settled=True)
+        called = []
+        monkeypatch.setattr(du, "fetch_klines_batch",
+                            lambda *a, **k: called.append(1) or {})
+        du._settle_dropped_out_snapshots(db, TODAY, run_settled=True,
+                                         handled=set(), fuyao_key=None, log=_Log())
+        assert called == []
+        assert db.query(StockDailySnapshot).one().close_price == 4.66
+
+    def test_盘中跑不做补结算(self, db, monkeypatch):
+        """盘中没有"终值"可言，这时候去结算等于把另一个盘中价写成终值。"""
+        self._seed(db)
+        called = []
+        monkeypatch.setattr(du, "fetch_klines_batch",
+                            lambda *a, **k: called.append(1) or {})
+        n = du._settle_dropped_out_snapshots(db, TODAY, run_settled=False,
+                                             handled=set(), fuyao_key=None, log=_Log())
+        assert n == 0 and called == []
+        assert db.query(StockDailySnapshot).one().close_price == 5.43

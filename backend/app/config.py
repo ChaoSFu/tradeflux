@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7天
 
+    # 同花顺官方金融数据API（https://fuyao.aicubes.cn）的 API Key。
+    # 配置后 daily_update 的K线走"全市场日K dump 一次下载"，替代逐股拉取几百次请求。
+    # 空 = 未启用，完全退回腾讯/新浪逐股接口，功能不受影响。
+    FUYAO_API_KEY: str = ""
+
     @property
     def cors_origins_list(self) -> List[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",")]
