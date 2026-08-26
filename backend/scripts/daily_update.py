@@ -127,6 +127,7 @@ from app.services.eastmoney_fetcher import (
 )
 from app.services.fuyao_dump import (
     get_api_key as get_fuyao_key, daily_k_dump, load_bars,
+    dump_cache_info, dump_last_access,
 )
 from app.services.screening_service import (
     StockWindowStats,
@@ -590,7 +591,7 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
     bars_map: dict = {}
     if fuyao_key:
         try:
-            with daily_k_dump(fuyao_key) as dump_path:
+            with daily_k_dump(fuyao_key, require_date=target_date) as dump_path:
                 if dump_path:
                     bars_map = load_bars(dump_path, {i.code: i.is_st for i in infos})
         except Exception as e:  # noqa: BLE001
@@ -1199,7 +1200,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         _fuyao_key = get_fuyao_key()
         if _fuyao_key and db_group:
             try:
-                with daily_k_dump(_fuyao_key) as dump_path:
+                with daily_k_dump(_fuyao_key, require_date=target_date) as dump_path:
                     if dump_path:
                         wanted = {i.code: i.is_st for i in db_group}
                         dump_bars = load_bars(dump_path, wanted)
@@ -1222,8 +1223,13 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                         continue
                     today_klines[info.code] = bars
                     dump_hit.add(info.code)
-                log.info(f"  📦 fuyao dump({mb:.1f}MB)：{len(dump_hit)}/{len(db_group)} 只"
-                         f"直接命中，省下同等数量的逐股请求；文件已删除")
+                _ci = dump_cache_info() or {}
+                _MODE = {"covered": "复用缓存(已覆盖当日)", "unchanged": "复用缓存(上游未变)",
+                         "downloaded": "重新下载"}
+                _how = _MODE.get(dump_last_access().get("mode"), "?")
+                log.info(f"  📦 fuyao dump({mb:.1f}MB，覆盖至 {_ci.get('max_trade_date','?')}，"
+                         f"{(_ci.get('fetched_at') or '')[11:19]} 取得，本次{_how})："
+                         f"{len(dump_hit)}/{len(db_group)} 只直接命中，省下同等数量的逐股请求")
             except Exception as e:  # noqa: BLE001
                 log.warning(f"fuyao dump 不可用（{type(e).__name__}: {e}），"
                             f"本轮全部退回逐股K线接口")

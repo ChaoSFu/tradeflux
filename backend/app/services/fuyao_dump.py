@@ -26,7 +26,11 @@ Parquet 里，一次下载 9 秒。请求数从几百降到 1。
 1. **一天只下一次**，不做常驻缓存。
 2. **只用来更新库里已经关注的股票**，不因为 dump 里有全市场就把快照表撑爆
    （5,545 只 × 每天 vs 现在的几百行）。
-3. **用完即删**，不在磁盘上留副本。
+3. **一天只真正下载成功一次**：本地缓存一份，按"内容覆盖到哪个交易日"判定是否
+   复用（不是按路径日期——路径里的日期是生成日，同一路径的早盘版本可能只到昨天）。
+   上游出了新版本才重新下载并顶掉旧的。原来是"用完即删"，用户 2026-08-26 改的：
+   盘中手动刷新一天点过 9 次，每次重下 1MB 纯属浪费，而且每多下一次就多一次
+   被 S3 中途掐断的机会——那正是当天那场事故的导火索。
 4. **新进候选池、库里没有历史的股票走原来的逐股接口**——它们需要 65 天窗口，
    dump 的 10 天不够，而这类股票每天只有个位数到几十只，请求量可控。
 
@@ -48,7 +52,9 @@ fuyao 的 A股行情快照和估值快照里也都没有（估值只给 PE/PB/PS
 都没有，推都推不出来）。所以这里一律 turnover_rate=None ——"不知道"就写 None，
 不用 0 冒充，这是本仓库反复踩过的坑。换手率是另一条独立的线，走腾讯行情。
 """
+import json
 import os
+import re
 import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -101,6 +107,91 @@ def _download_url(api_key: str, kind: str, timeout: int = 30) -> Optional[str]:
     return (body.get("data") or {}).get("presigned_url")
 
 
+# ── 本地缓存 ─────────────────────────────────────────────────────────────────
+#
+# 同一个交易日内，dump 的内容**不一定**恒定：路径里的日期是"生成日"，收盘前生成的
+# 20260826 版本可能只含到 08-25，收盘后重新生成、路径不变而内容变了。所以缓存不能
+# 按日期判定，要按内容。
+#
+# 缓存策略（用户 2026-08-26 定，取代原来的"用完即删"）：
+#   1. 手上这份已经覆盖了要的交易日 → 直接用，**零网络请求**
+#   2. 否则花 1 个字节问一下上游文件多大（Range: bytes=0-0 拿 Content-Range 总长）：
+#      生成日和大小都没变 ⇒ 上游还是那份，重下也是白下，继续用缓存
+#   3. 变了才真下载；下载成功后原子替换，旧的自然被顶掉
+#
+# 动机是盘中手动刷新：用户一天点过 9 次更新，每次重下 1MB 纯属浪费，而且每多一次
+# 下载就多一次被 S3 中途掐断的机会（那正是今天那场事故的导火索）。
+_CACHE_DIR = Path(gettempdir()) / "tradeflux_fuyao_dump"
+
+# 上一次取 dump 是怎么解决的。**刻意不按时间判断该不该重下**——那等于假设 fuyao
+# 什么时候重新生成文件，而我们控制不了它的排期。这个仓库已经在"假设别人的行为"上
+# 栽过好几次（新浪盘中不发当日bar、腾讯盘中发未收盘的bar），所以判据一律取自内容
+# 本身。把每次的解决方式记下来，跑几天就能免费得到"各时段 dump 到底什么样"的
+# 实证画像，而不是现在拍脑袋。
+_LAST_ACCESS: dict = {"mode": None, "at": None}
+
+
+def dump_last_access() -> dict:
+    """上次取 dump 的方式：covered=缓存已覆盖所需交易日；unchanged=上游没变；
+    downloaded=真下载了一次。给日志用。"""
+    return dict(_LAST_ACCESS)
+
+
+def _mark(mode: str) -> None:
+    _LAST_ACCESS.update(mode=mode, at=datetime.now(_SH_TZ).isoformat(timespec="seconds"))
+
+
+def _data_path(kind: str) -> Path:
+    return _CACHE_DIR / f"{kind}.parquet"
+
+
+def _meta_path(kind: str) -> Path:
+    return _CACHE_DIR / f"{kind}.meta.json"
+
+
+def _read_meta(kind: str) -> Optional[dict]:
+    try:
+        return json.loads(_meta_path(kind).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def dump_max_date(path: Path) -> Optional[date]:
+    """
+    只读 date_ms 一列，取文件里最新的交易日。
+
+    这是缓存能不能复用的唯一判据——**不看路径里的日期**。路径日期是"生成日"，
+    2026-08-26 那份 dump 在 17:34 含当日数据，但同一路径的早盘版本可能只到 08-25，
+    仓库为"返回了但缺那一天"这类问题付过的代价已经够多了。
+    """
+    try:
+        import pyarrow.parquet as pq
+        t = pq.read_table(path, columns=["date_ms"])
+        vals = t.column("date_ms").to_pylist()
+        return _ms_to_date(max(vals)) if vals else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _remote_size(url: str, timeout: int = 20) -> Optional[int]:
+    """
+    只下 1 个字节问出文件总长（Content-Range: bytes 0-0/1077889）。
+
+    预签名链接一般只授权 GET，HEAD 会被拒，所以用 Range 请求代替。
+    拿不到返回 None，调用方按"判断不了 ⇒ 重新下载"处理，不猜。
+    """
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+            resp = c.get(url, headers={"Range": "bytes=0-0"})
+        cr = resp.headers.get("content-range") or ""
+        if "/" in cr:
+            total = cr.rsplit("/", 1)[1].strip()
+            return int(total) if total.isdigit() else None
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 def _download_once(url: str, dest: Path, timeout: int) -> int:
     """
     下载一次并**校验完整性**。返回写入字节数；不完整则抛异常。
@@ -129,44 +220,83 @@ def _download_once(url: str, dest: Path, timeout: int) -> int:
     return written
 
 
+def _path_date(url: str) -> Optional[str]:
+    m = re.search(r"/releases/(\d{8})/", url)
+    return m.group(1) if m else None
+
+
 @contextmanager
 def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
+                 require_date: Optional[date] = None,
                  timeout: int = 180, retries: int = 2) -> Iterator[Optional[Path]]:
     """
-    下载 dump 并在退出时**删除文件**（用户要求：用完即删，不在磁盘留副本）。
+    取 dump 文件路径，**带本地缓存**：一天只需要真正下载成功一次。
 
-    失败 yield None，不抛异常——K线还有逐股接口那条完整的老路，dump 是加速手段，
-    不该因为它挂了就让整轮更新失败。**调用方那边的 except 分支也必须真的能跑通**：
-    2026-08-26 生产事故就是 except 里调了个不存在的 log.warning()，错误处理器自己
-    抛 AttributeError，把可兜底的下载中断升级成了整个步骤失败。
+    require_date 传入要用的交易日；缓存已经覆盖它就零请求直接复用。不传则每次都
+    去问一下上游有没有变（仍然可能命中缓存，只花 1 个字节）。
 
-    重试 2 次：S3 传输中断是典型的瞬时故障，而预签名链接只活 5 分钟、重试要连
-    取链接一起重来（同一个链接可能已经失效）。
+    失败抛 FuyaoError，不返回 None——K线还有逐股接口那条完整的老路，调用方兜住即可。
+    **但调用方那边的 except 分支必须真的能跑通**：2026-08-26 生产事故就是 except 里
+    调了个不存在的 log.warning()，错误处理器自己抛 AttributeError，把可兜底的下载
+    中断升级成了整个步骤失败。
+
+    下载走临时文件 + 原子替换：一次失败的下载绝不能毁掉手上那份好的缓存。
     """
-    dest = Path(gettempdir()) / f"fuyao_{kind}_{int(time.time())}.parquet"
-    try:
-        last_err: Optional[str] = None
-        for attempt in range(retries + 1):
-            try:
-                url = _download_url(api_key, kind)   # 每次重新取，旧链接可能已过期
-                if not url:
-                    last_err = "接口没有返回下载链接"
-                else:
-                    _download_once(url, dest, timeout)
-                    yield dest
-                    return
-            except Exception as e:  # noqa: BLE001
-                last_err = f"{type(e).__name__}: {str(e)[:120]}"
-                dest.unlink(missing_ok=True)         # 别把半份文件留给下一次重试
-            if attempt < retries:
-                time.sleep(1.5)
-        raise FuyaoError(last_err or "下载失败")
-    finally:
-        try:
-            dest.unlink(missing_ok=True)
-        except OSError:
-            pass
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    data, meta = _data_path(kind), _read_meta(kind)
 
+    # ① 缓存已覆盖要的交易日 → 零请求
+    if data.exists() and meta:
+        cached_max = meta.get("max_trade_date")
+        if require_date and cached_max and cached_max >= require_date.isoformat():
+            _mark("covered")
+            yield data
+            return
+
+    last_err: Optional[str] = None
+    for attempt in range(retries + 1):
+        try:
+            url = _download_url(api_key, kind)   # 每次重新取，预签名链接只活5分钟
+            if not url:
+                last_err = "接口没有返回下载链接"
+            else:
+                # ② 生成日和大小都没变 ⇒ 上游还是那份，重下也是白下
+                size = _remote_size(url, timeout=20)
+                if (data.exists() and meta and size is not None
+                        and meta.get("size") == size
+                        and meta.get("path_date") == _path_date(url)):
+                    _mark("unchanged")
+                    yield data
+                    return
+                # ③ 真下载。临时文件 + 原子替换，失败不毁旧缓存
+                tmp = data.with_suffix(".parquet.tmp")
+                try:
+                    written = _download_once(url, tmp, timeout)
+                    mx = dump_max_date(tmp)
+                    if mx is None:
+                        raise FuyaoError("下载完成但解析不出任何交易日，文件可能损坏")
+                    os.replace(tmp, data)
+                    _meta_path(kind).write_text(json.dumps({
+                        "path_date": _path_date(url), "size": written,
+                        "max_trade_date": mx.isoformat(),
+                        "fetched_at": datetime.now(_SH_TZ).isoformat(),
+                    }, ensure_ascii=False), encoding="utf-8")
+                finally:
+                    tmp.unlink(missing_ok=True)
+                _mark("downloaded")
+                yield data
+                return
+        except Exception as e:  # noqa: BLE001
+            last_err = f"{type(e).__name__}: {str(e)[:120]}"
+        if attempt < retries:
+            time.sleep(1.5)
+    raise FuyaoError(last_err or "下载失败")
+
+
+def dump_cache_info(kind: str = DUMP_KIND_10D) -> Optional[dict]:
+    """给日志用：手上这份缓存是什么时候的、覆盖到哪一天。"""
+    meta = _read_meta(kind)
+    return meta if meta and _data_path(kind).exists() else None
 
 def _ms_to_date(ms: int) -> date:
     """dump 的 date_ms 是 Asia/Shanghai 零点，必须按 +08 解释，别用本机时区。"""
