@@ -1771,10 +1771,10 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             # 能低估80个百分点（603580近60日 真实204.85% vs 相加123.14%）。
             # 显示一个错40%的数比显示 — 更糟。所以只在有精确来源时才补。
             #
-            # 只补缺的那几只（常态 6~50 只），**并发压到3路+每次间隔0.15秒**：
-            # fuyao 的 QPS 上限文档没写，实测20并发没触发限流但那是天花板未知下的
-            # 一次采样、不是许可。这个任务不在关键路径上（补不到就跟现在一样显示 —），
-            # 没有任何理由去试探限流边界。
+            # 只补缺的那几只（常态 6~50 只），并发 12。这个数字是量出来的不是拍的：
+            # 对 prices/historical 本身做 12并发×24次，全部 code=0、无 4001、无丢包。
+            # 此前压到 3，是因为当时唯一的并发实测打的是 prices/snapshot——那个端点
+            # 返回一行、这个返回200+根bar，重两个数量级，结论不能直接搬。
             try:
                 from app.services.limit_up_detail_service import (
                     backfill_interval_chg, get_core_recall_details,
@@ -1792,7 +1792,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 if _need:
                     n_ic, ic_fail = backfill_interval_chg(db, target_date, _need)
                     log.info(f"  区间涨幅补全：{len(_need)} 只不在东财召回名单里，"
-                             f"逐只拉取补到 {n_ic} 只（3并发）")
+                             f"逐只拉取补到 {n_ic} 只")
                     if ic_fail:
                         # 失败明细必须落地：只报"补到21只"分不出那1只是请求挂了
                         # 还是上市太短本来就没有——分不清故障和事实等于没有监控
