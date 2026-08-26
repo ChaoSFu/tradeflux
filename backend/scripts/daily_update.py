@@ -1056,6 +1056,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 同一 K 线接口在 DB 重建组已用 20 并发/0 延迟稳定运行，这里取 15 留余量。
         full_klines = fetch_klines_batch(
             full_group, days=65, max_workers=15, delay_between=0.0,
+            require_date=target_date,
         ) if full_group else {}
 
         # DB 重建组拉取天数：仅拉 2 天、payload 极小，可用更高并发（取 30 防限流）。
@@ -1071,6 +1072,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"  DB重建检测到缺口，拉取近 {db_fetch_days} 天补齐")
         today_klines = fetch_klines_batch(
             db_group, days=db_fetch_days, max_workers=30, delay_between=0.0,
+            require_date=target_date,
         ) if db_group else {}
 
         # 高并发批量拉取下，个别股票会因限流/连接重置静默拉空（fetch_kline 内部
@@ -1093,6 +1095,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"  DB重建组 {len(missing_codes)} 只今日K线拉取失败，低并发重试...")
             retry_klines = fetch_klines_batch(
                 missing_codes, days=db_fetch_days, max_workers=3, delay_between=0.3,
+                require_date=target_date,
             )
             recovered = sum(1 for bars in retry_klines.values() if _has_today_bar(bars))
             if recovered:
@@ -1109,6 +1112,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"  全量组 {len(full_missing_codes)} 只今日K线缺失，低并发重试...")
             retry_full = fetch_klines_batch(
                 full_missing_codes, days=65, max_workers=3, delay_between=0.3,
+                require_date=target_date,
             )
             recovered_full = sum(1 for bars in retry_full.values() if _has_today_bar(bars))
             if recovered_full:

@@ -391,3 +391,86 @@ def test_batch_falls_back_to_eastmoney_only_when_both_primaries_fail():
         out = fetch_klines_batch(stocks, days=65, max_workers=2, delay_between=0.0)
 
     assert out["000001"][0].turnover_rate == 3.0   # 东财兜底能补回换手率
+
+
+def test_batch_treats_missing_required_date_as_a_miss_not_as_success():
+    """
+    2026-08-26 定位到的真实问题（生产日志 90→45→45 的"每次恰好一半"规律）：
+
+        腾讯日K：66根，末根 2026-08-26（盘中就发布当天未完成的bar）
+        新浪日K：65根，末根 2026-08-25（盘中不发布当天那根）
+
+    盘中跑 daily_update 时，轮询分到新浪组的股票**无论重试多少次都拿不到当日bar**
+    ——不是报错，是这个源就没有。而只按"结果为空"判断的话，新浪返回的65根非空
+    数据会被当成成功，交叉兜底压根不触发，那批股票只能掉到实时行情兜底。
+
+    实拉验证：12只股票 days=3，不传 require_date 时 6/12 拿到当日bar，
+    传了之后 12/12。
+    """
+    from unittest.mock import patch
+    from app.services.eastmoney_fetcher import fetch_klines_batch, StockBasicInfo
+
+    today, yesterday = date(2026, 8, 26), date(2026, 8, 25)
+    stocks = [
+        StockBasicInfo(code=f"00000{i}", name=f"股{i}", market=0, is_st=False,
+                       pct_change=0.0, turnover_rate=0.0)
+        for i in range(6)
+    ]
+
+    def _bars(last_day):
+        return [KLineBar(date=d, open_price=1.0, close_price=1.0, high_price=1.0,
+                         low_price=1.0, pct_change=0.0, turnover_rate=None)
+                for d in (yesterday, last_day)] if last_day != yesterday else \
+               [KLineBar(date=yesterday, open_price=1.0, close_price=1.0, high_price=1.0,
+                         low_price=1.0, pct_change=0.0, turnover_rate=None)]
+
+    def _tencent(code, market, days, is_st, lp, timeout):
+        return _bars(today)          # 腾讯有当日bar
+
+    def _sina(code, market, days, is_st, lp, timeout):
+        return _bars(yesterday)      # 新浪只到昨天——非空，但缺当日
+
+    em_called = []
+
+    def _em(code, market, days, is_st, lp, timeout):
+        em_called.append(code)
+        return _bars(today)
+
+    with patch("app.services.eastmoney_fetcher._fetch_kline_tencent", _tencent), \
+         patch("app.services.eastmoney_fetcher._fetch_kline_sina", _sina), \
+         patch("app.services.eastmoney_fetcher._fetch_kline_eastmoney", _em):
+        # 不传 require_date：新浪那半组的"65根但缺今天"被当成成功
+        without = fetch_klines_batch(stocks, days=3, max_workers=2, delay_between=0.0)
+        # 传了：缺当日bar算 miss → 交叉兜底到腾讯 → 全部拿到
+        with_req = fetch_klines_batch(stocks, days=3, max_workers=2, delay_between=0.0,
+                                      require_date=today)
+
+    assert sum(1 for v in without.values() if v[-1].date == today) == 3, "轮询分组，一半走新浪"
+    assert sum(1 for v in with_req.values() if v[-1].date == today) == 6, "交叉兜底后全部拿到当日bar"
+    assert em_called == [], "腾讯能补上时不该惊动已被限流的东财"
+
+
+def test_cross_fallback_never_downgrades_an_existing_history_window():
+    """
+    交叉兜底拿到的数据更差时不能覆盖原来那份。新浪那份虽然缺当日bar，但65根历史
+    窗口是有效的——如果腾讯这次只返回了2根，用它盖掉会让窗口统计（MA60/连板数）
+    全部失真。
+    """
+    from unittest.mock import patch
+    from app.services.eastmoney_fetcher import fetch_klines_batch, StockBasicInfo
+
+    today = date(2026, 8, 26)
+    stocks = [StockBasicInfo(code="000001", name="股", market=0, is_st=False,
+                             pct_change=0.0, turnover_rate=0.0)]
+    long_hist = [KLineBar(date=date(2026, 6, 1), open_price=1.0, close_price=1.0,
+                          high_price=1.0, low_price=1.0, pct_change=0.0, turnover_rate=None)
+                 for _ in range(60)]
+
+    with patch("app.services.eastmoney_fetcher._fetch_kline_tencent",
+               lambda *a, **kw: long_hist), \
+         patch("app.services.eastmoney_fetcher._fetch_kline_sina", lambda *a, **kw: []), \
+         patch("app.services.eastmoney_fetcher._fetch_kline_eastmoney", lambda *a, **kw: []):
+        out = fetch_klines_batch(stocks, days=65, max_workers=2, delay_between=0.0,
+                                 require_date=today)
+
+    assert len(out["000001"]) == 60, "交叉源没有更好的结果时，保留原有历史窗口"

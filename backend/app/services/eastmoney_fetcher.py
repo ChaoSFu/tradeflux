@@ -879,6 +879,7 @@ def fetch_klines_batch(
     days: int = 65,
     max_workers: int = 5,
     delay_between: float = 0.1,
+    require_date: Optional[date] = None,
 ) -> Dict[str, List[KLineBar]]:
     """
     并发批量拉取多只股票的 K 线。返回 {code: [KLineBar, ...]}。
@@ -894,6 +895,26 @@ def fetch_klines_batch(
     """
     if not stocks:
         return {}
+
+    def _is_miss(bars) -> bool:
+        """
+        这只股票算不算"没拿到"。require_date 传入时，**返回了数据但没有那一天的
+        bar 也算没拿到**——这是 2026-08-26 定位到的真实问题：
+
+          腾讯日K：66根，末根 2026-08-26（盘中就发布当天未完成的bar）
+          新浪日K：65根，末根 2026-08-25（盘中不发布当天那根）
+
+        所以盘中跑 daily_update 时，轮询分到新浪组的股票无论重试多少次都拿不到
+        当日bar——不是报错，是这个源就没有。生产日志实测：181只拆两组 → 新浪那
+        90只全部缺当日bar → 重试重新轮询 → 45只这次分到腾讯成功、45只又分到新浪
+        → 只能走实时行情兜底。90→45→45 完全是分组比例，跟限流没关系。
+
+        只按"结果为空"判断时，新浪返回的65根非空数据会被当成成功，交叉兜底压根
+        不会触发，这才是那45只掉到兜底路径的原因。
+        """
+        if not bars:
+            return True
+        return require_date is not None and bars[-1].date != require_date
 
     groups = _split_round_robin(stocks, 2)
     tencent_group, sina_group = groups[0], groups[1]
@@ -923,8 +944,8 @@ def fetch_klines_batch(
     # 缺失、且只补得到今天这一根。先把另一个健康主力源试完再谈兜底。
     cross_pairs = []
     tencent_codes = {s.code for s in tencent_group}
-    retry_on_sina = [s for s in stocks if not results.get(s.code) and s.code in tencent_codes]
-    retry_on_tencent = [s for s in stocks if not results.get(s.code) and s.code not in tencent_codes]
+    retry_on_sina = [s for s in stocks if _is_miss(results.get(s.code)) and s.code in tencent_codes]
+    retry_on_tencent = [s for s in stocks if _is_miss(results.get(s.code)) and s.code not in tencent_codes]
     if retry_on_sina:
         cross_pairs.append((retry_on_sina, _fetch_kline_sina, "新浪(交叉兜底)"))
     if retry_on_tencent:
@@ -937,16 +958,25 @@ def fetch_klines_batch(
             ]
             for f in as_completed(futs):
                 for code, bars in f.result().items():
-                    if bars:
+                    # 只有交叉源拿到的更好（非空、且满足 require_date）才覆盖；
+                    # 否则保留原来那份历史数据——它虽然缺当日bar，但历史窗口是有效的
+                    if bars and not _is_miss(bars):
+                        results[code] = bars
+                    elif bars and not results.get(code):
                         results[code] = bars
 
     # 两个主力源都拿不到才轮到东财（单跳，不递归）
-    missing_stocks = [s for s in stocks if not results.get(s.code)]
+    missing_stocks = [s for s in stocks if _is_miss(results.get(s.code))]
     if missing_stocks:
         em_results = _fetch_kline_group(
             missing_stocks, days, max_workers, delay_between, _fetch_kline_eastmoney, "东财",
         )
-        results.update(em_results)
+        # 不能 results.update(em_results) 一把覆盖：兜底源失败时返回的是空 list，
+        # 会把前面主力源拿到的"有效历史窗口、只是缺当日bar"整个抹掉，窗口统计
+        # （MA60/连板数/N日涨停）随之全部失真。只有确实更好才替换。
+        for code, bars in em_results.items():
+            if bars and (not results.get(code) or not _is_miss(bars)):
+                results[code] = bars
 
     return results
 
