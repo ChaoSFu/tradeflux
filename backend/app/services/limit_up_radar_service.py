@@ -51,11 +51,28 @@ DEFAULT_MAX_CORE_PER_SECTOR = 8
 # 目的是"只看当前最强的板块和可能成为最强的板块"——生产上活跃板块有上百个，绝大
 # 多数是"涨停2只、最高1板"的噪音（互联网金融/零售概念/生物疫苗这类），铺在页面上
 # 会把真正在形成集团进攻的板块淹掉。
-# 注意这是 AND：涨停多但全是首板（如基础化工涨停7/最高1板）也会被滤掉。这是用户
-# 明确要的取舍——首板扎堆更可能是普涨或题材扩散，有高板才说明有资金愿意接力。
-# 两个阈值都可以用查询参数放宽，被滤掉的数量会在响应里返回并显示在页面上。
+# 判定规则（2026-08-26 从纯 AND 改为 AND 或 OR 的组合）：
+#
+#     (涨停 >= MIN_LIMIT_UP 且 最高连板 >= MIN_BOARD_HEIGHT)  或  涨停 >= MIN_LIMIT_UP_ALONE
+#
+# 前半条是原来的 AND：已经走出高度的主线板块。
+# 后半条是新加的逃生口，起因是用户发现「病原体防治」当天 4 只涨停却不展示——它
+# 最高只有 2 板，被 AND 的后半截挡掉了，而那 4 只涨停比当时展示的 9 个板块里 6 个
+# 都多（那些只有 3 只）。它的形态是 3 只首板 + 1 只一字2板、首封全在 09:25~09:37、
+# 封板率 80%，典型的"资金今天在这里形成了集团进攻，但还没分出龙头"。
+#
+# 这两条捕捉的是**两种不同的强**：前者是纵向高度（有人愿意接力），后者是横向
+# 一致性（今天同时开火的票够多）。这个页面的立项目的原话就是"识别资金是否正在
+# 一个板块形成集团进攻"，纯 AND 会把所有"横向强、纵向还没起来"的板块全滤掉，
+# 而那正是次日主升的候选池。
+#
+# 阈值取 4 是量出来的不是拍的：当天数据下 4 只多出 3 个板块（智能驾驶/病原体防治/
+# 国产芯片，全是 4涨停2板 的同一形态），5 只多出 0 个（等于没改），而把高度门槛
+# 降到 2 会从 9 个涨到 17 个——那正是用户当初嫌"板块太多"要加门槛的状态。
+# 三个阈值都可以用查询参数调，被滤掉的数量会在响应里返回并显示在页面上。
 DEFAULT_MIN_LIMIT_UP = 3
 DEFAULT_MIN_BOARD_HEIGHT = 3
+DEFAULT_MIN_LIMIT_UP_ALONE = 4
 
 # 角色标签优先级（数字小=优先展示）。纯粹反映"最近有多活跃"，不是强弱排名。
 _ROLE_PRIORITY = {
@@ -438,6 +455,7 @@ def build_radar(
     max_core_per_sector: int = DEFAULT_MAX_CORE_PER_SECTOR,
     min_limit_up: int = DEFAULT_MIN_LIMIT_UP,
     min_board_height: int = DEFAULT_MIN_BOARD_HEIGHT,
+    min_limit_up_alone: int = DEFAULT_MIN_LIMIT_UP_ALONE,
     max_sectors: int = 40,
 ) -> dict:
     """
@@ -542,12 +560,15 @@ def build_radar(
         if card["today_limit_up_count"] > 0:
             out_sectors.append(card)
 
-    # 门槛过滤：必须同时满足涨停只数和连板高度。被滤掉的数量要返回给页面显示，
-    # 不能悄悄丢——用户得能看出"是不是把想看的板块也滤掉了"。
+    # 门槛过滤（规则见文件头 DEFAULT_MIN_* 的注释）：
+    #   有高度的主线（涨停够多 且 连板够高）  或  横向一致性够强（涨停单独够多）
+    # 被滤掉的数量要返回给页面显示，不能悄悄丢——用户得能看出"是不是把想看的板块
+    # 也滤掉了"。min_limit_up_alone <= 0 视为关闭后半条，退回纯 AND。
     total_with_limit_up = len(out_sectors)
     out_sectors = [
         c for c in out_sectors
-        if c["today_limit_up_count"] >= min_limit_up and c["board_height"] >= min_board_height
+        if (c["today_limit_up_count"] >= min_limit_up and c["board_height"] >= min_board_height)
+        or (min_limit_up_alone > 0 and c["today_limit_up_count"] >= min_limit_up_alone)
     ]
     hidden = total_with_limit_up - len(out_sectors)
 
@@ -561,6 +582,7 @@ def build_radar(
         "history_lag_days": history_lag,
         "filter_min_limit_up": min_limit_up,
         "filter_min_board_height": min_board_height,
+        "filter_min_limit_up_alone": min_limit_up_alone,
         "hidden_sector_count": hidden,
         "summary": _build_summary(details, broken, out_sectors),
         "sectors": out_sectors,
@@ -776,6 +798,7 @@ def _empty_result(trade_date: date, warnings: Optional[List[str]] = None) -> dic
         "history_lag_days": 0,
         "filter_min_limit_up": DEFAULT_MIN_LIMIT_UP,
         "filter_min_board_height": DEFAULT_MIN_BOARD_HEIGHT,
+        "filter_min_limit_up_alone": DEFAULT_MIN_LIMIT_UP_ALONE,
         "hidden_sector_count": 0,
         "summary": {
             "limit_up_count": 0, "continuation_count": 0, "first_board_count": 0,

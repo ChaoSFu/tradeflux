@@ -840,8 +840,13 @@ export interface LimitUpRadarResponse {
   source: string | null
   history_as_of: string | null  // 近10/20/60日涨停次数实际算到哪一天
   history_lag_days: number      // 落后几个交易日；≥2 时 warnings 里会有说明
-  filter_min_limit_up: number      // 板块入选门槛：最少涨停只数
-  filter_min_board_height: number  // 板块入选门槛：最低连板高度（与上面 AND）
+  // 板块入选门槛。规则是：
+  //   (涨停>=filter_min_limit_up 且 最高连板>=filter_min_board_height)
+  //   或 涨停>=filter_min_limit_up_alone
+  // 前者抓"已走出高度的主线"，后者抓"横向一致性够强但还没分出龙头"
+  filter_min_limit_up: number
+  filter_min_board_height: number
+  filter_min_limit_up_alone: number   // 0 = 关闭后半条，退回纯 AND
   hidden_sector_count: number      // 因不达标被隐藏的板块数
   summary: LimitUpRadarSummary
   sectors: LimitUpRadarSector[]

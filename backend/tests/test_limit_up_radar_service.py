@@ -634,32 +634,62 @@ def _sector_with(db, name, boards):
     return sec
 
 
-def test_sector_threshold_needs_both_count_and_height(db):
+def test_sector_threshold_and_branch(db):
     """
-    门槛是 AND：涨停<3 或 最高连板<3 都不展示。
+    第一条（AND）：涨停够多**且**连板够高 —— 已经走出高度的主线。
     用户原话："涨停个股数<3或者最高连板<3的板块不展示……我要看的是当前最强的板块
     和可能成为最强的板块。"
+
+    2026-08-26 改动：这一条仍在，但不再是唯一的入选路径，见下面 alone 分支。
     """
-    _sector_with(db, "达标", [4, 2, 1])        # 涨停3 最高4板 → 留
-    _sector_with(db, "只有个数", [1, 1, 1, 1, 1, 1, 1])  # 涨停7 最高1板 → 滤掉
-    _sector_with(db, "只有高度", [5, 1])       # 涨停2 最高5板 → 滤掉
+    _sector_with(db, "达标", [4, 2, 1])        # 涨停3 最高4板 → 留（AND）
+    _sector_with(db, "只有高度", [5, 1])       # 涨停2 最高5板 → 滤掉（两条都不满足）
     _sector_with(db, "互联网金融", [1, 1])     # 涨停2 最高1板 → 滤掉（用户举的例子）
 
-    res = build_radar(db, TODAY)               # 用默认门槛 3/3
+    res = build_radar(db, TODAY)
     assert [s["sector_name"] for s in res["sectors"]] == ["达标"]
-    assert res["hidden_sector_count"] == 3
+    assert res["hidden_sector_count"] == 2
     assert res["filter_min_limit_up"] == 3 and res["filter_min_board_height"] == 3
+    assert res["filter_min_limit_up_alone"] == 4
+
+
+def test_sector_threshold_alone_branch(db):
+    """
+    第二条（OR）：涨停只数单独达到 4 就入选，不看高度。
+
+    起因是用户 2026-08-26 发现「病原体防治」4 只涨停却不展示——它最高只有 2 板，
+    被纯 AND 挡掉，而那 4 只涨停比当时展示的 9 个板块里 6 个都多。捕捉的是
+    **横向一致性**（今天同时开火的票够多），跟第一条的纵向高度是两种不同的强。
+
+    **已知取舍**：这一条不看高度，所以"涨停7全是首板"也会进来——而用户此前明确
+    说过首板扎堆更可能是普涨/题材扩散、想滤掉。当天实测这条只多放进 3 个板块
+    （全是 4涨停2板 的同一形态），没出现全首板的情况；真要卡住那种，改成
+    "涨停>=4 且 最高>=2" 即可，那样今天的结果一模一样。
+    """
+    _sector_with(db, "病原体防治", [2, 1, 1, 1])          # 涨停4 最高2板 → 靠 alone 入选
+    _sector_with(db, "全首板", [1, 1, 1, 1, 1, 1, 1])     # 涨停7 最高1板 → 也会入选（取舍）
+    _sector_with(db, "不够宽", [1, 1, 1])                 # 涨停3 最高1板 → 两条都不满足
+    res = build_radar(db, TODAY)
+    assert set(s["sector_name"] for s in res["sectors"]) == {"病原体防治", "全首板"}
+    assert res["hidden_sector_count"] == 1
+
+
+def test_sector_threshold_alone_can_be_disabled(db):
+    """min_limit_up_alone=0 关掉第二条，退回改动前的纯 AND。"""
+    _sector_with(db, "病原体防治", [2, 1, 1, 1])
+    res = build_radar(db, TODAY, min_limit_up_alone=0)
+    assert res["sectors"] == []
+    assert res["hidden_sector_count"] == 1
 
 
 def test_sector_threshold_is_adjustable(db):
     _sector_with(db, "只有个数", [1, 1, 1, 1, 1, 1, 1])
     _sector_with(db, "只有高度", [5, 1])
 
-    # 放宽高度门槛 → "只有个数"回来
-    res = build_radar(db, TODAY, min_limit_up=3, min_board_height=1)
+    # 单独验 AND 那一支时要先关掉 alone，否则"只有个数"永远靠 7>=4 入选
+    res = build_radar(db, TODAY, min_limit_up=3, min_board_height=1, min_limit_up_alone=0)
     assert [s["sector_name"] for s in res["sectors"]] == ["只有个数"]
-    # 放宽个数门槛 → "只有高度"回来
-    res = build_radar(db, TODAY, min_limit_up=1, min_board_height=3)
+    res = build_radar(db, TODAY, min_limit_up=1, min_board_height=3, min_limit_up_alone=0)
     assert [s["sector_name"] for s in res["sectors"]] == ["只有高度"]
 
 
@@ -672,3 +702,50 @@ def test_hidden_sector_count_is_reported_so_nothing_is_silently_dropped(db):
     res = build_radar(db, TODAY)
     assert len(res["sectors"]) == 1
     assert res["hidden_sector_count"] == 5
+
+
+# ── 板块门槛：AND 之外加一条"横向一致性"逃生口（2026-08-26）──────────────────
+#
+# 起因：用户发现「病原体防治」当天 4 只涨停却不展示——它最高只有 2 板，被纯 AND
+# 挡掉，而那 4 只涨停比当时展示的 9 个板块里 6 个都多。它的形态是 3 只首板 +
+# 1 只一字2板、首封全在 09:25~09:37、封板率 80%，典型的"资金今天在这里形成了
+# 集团进攻但还没分出龙头"——正是这个页面立项要抓的东西。
+
+def _sec(name, lu, bh):
+    return {"sector_name": name, "today_limit_up_count": lu, "board_height": bh}
+
+
+def _passes(c, min_lu=3, min_bh=3, min_alone=4):
+    return ((c["today_limit_up_count"] >= min_lu and c["board_height"] >= min_bh)
+            or (min_alone > 0 and c["today_limit_up_count"] >= min_alone))
+
+
+def test_有高度的主线仍然入选():
+    assert _passes(_sec("黄金概念", 6, 5)) is True
+    assert _passes(_sec("智能家居", 3, 3)) is True
+
+
+def test_横向一致性够强但没高度也能入选():
+    """病原体防治：4只涨停、最高2板。纯 AND 会滤掉它。"""
+    assert _passes(_sec("病原体防治", 4, 2)) is True
+    assert _passes(_sec("病原体防治", 4, 2), min_alone=0) is False, "关掉逃生口应退回纯AND"
+
+
+def test_噪音板块仍然被滤掉():
+    """两条都不满足的才是真噪音——这个页面加门槛的初衷不能被冲掉。"""
+    assert _passes(_sec("互联网金融", 2, 1)) is False
+    assert _passes(_sec("零售概念", 3, 1)) is False, "3只全首板：横向不够宽、纵向没高度"
+
+
+def test_阈值取4而不是2或5():
+    """
+    量出来的不是拍的：当天数据下 alone=4 多出 3 个板块（全是4涨停2板的同一形态），
+    alone=5 多出 0 个（等于没改）；而把高度门槛降到 2 会从 9 个涨到 17 个，
+    正是用户当初嫌"板块太多"要加门槛的状态。
+    """
+    s = _sec("病原体防治", 4, 2)
+    assert _passes(s, min_alone=4) is True
+    assert _passes(s, min_alone=5) is False
+    # 降高度门槛那条路会把 3只全首板 的噪音也放进来，所以不走
+    assert _passes(_sec("零售概念", 3, 1), min_bh=2) is False
+    assert _passes(_sec("零售概念", 3, 2), min_bh=2) is True

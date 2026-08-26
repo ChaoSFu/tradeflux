@@ -309,7 +309,12 @@ export default function LimitUpSectorRadar() {
               也滤掉了，而不是以为"今天就这几个板块" */}
           {!!data && (
             <span className="text-text-muted">
-              板块门槛：涨停≥{data.filter_min_limit_up} 且 最高≥{data.filter_min_board_height}板
+              <span title={'两条任一满足即展示：\n' +
+                           `· 涨停≥${data.filter_min_limit_up} 且 最高≥${data.filter_min_board_height}板 —— 已经走出高度的主线\n` +
+                           `· 涨停≥${data.filter_min_limit_up_alone} —— 今天同时开火的票够多，横向一致性强但还没分出龙头`}>
+                板块门槛：涨停≥{data.filter_min_limit_up} 且 最高≥{data.filter_min_board_height}板
+                {data.filter_min_limit_up_alone > 0 && `，或涨停≥${data.filter_min_limit_up_alone}`}
+              </span>
               {data.hidden_sector_count > 0 && (
                 <span className="text-text-muted/70">（已隐藏 {data.hidden_sector_count} 个不达标板块）</span>
               )}
@@ -341,7 +346,9 @@ export default function LimitUpSectorRadar() {
       ) : !data?.sectors.length ? (
         <div className="card p-8 text-center text-text-muted text-sm">
           {data?.hidden_sector_count
-            ? `没有板块同时满足「涨停≥${data.filter_min_limit_up} 且 最高≥${data.filter_min_board_height}板」（${data.hidden_sector_count} 个板块因不达标被隐藏）`
+            ? `没有板块满足「涨停≥${data.filter_min_limit_up} 且 最高≥${data.filter_min_board_height}板」`
+              + (data.filter_min_limit_up_alone > 0 ? `，也没有板块涨停≥${data.filter_min_limit_up_alone}` : '')
+              + `（${data.hidden_sector_count} 个板块因不达标被隐藏）`
             : (data?.trade_date ? `${data.trade_date} 没有涨停板块数据` : '暂无数据')}
           <div className="mt-2 text-xs">
             {data?.hidden_sector_count

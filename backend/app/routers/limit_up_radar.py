@@ -56,6 +56,8 @@ def get_limit_up_radar(
                              description='板块最少涨停只数'),
     min_board_height: int = Query(radar.DEFAULT_MIN_BOARD_HEIGHT, ge=0, le=20,
                                   description='板块最低连板高度（与上面是AND关系）'),
+    min_limit_up_alone: int = Query(radar.DEFAULT_MIN_LIMIT_UP_ALONE, ge=0, le=50,
+                                    description='涨停只数单独达到该值即可入选（与上面那组是OR关系）；0=关闭'),
     db: Session = Depends(get_db),
 ):
     """涨停板块雷达：按板块聚合当日涨停结构 + 板块核心锚。纯读库，不打外部接口。"""
@@ -67,6 +69,7 @@ def get_limit_up_radar(
         core_60d_min=core_60d_min, core_max_board_min=core_max_board_min,
         max_core_per_sector=max_core_per_sector,
         min_limit_up=min_limit_up, min_board_height=min_board_height,
+        min_limit_up_alone=min_limit_up_alone,
     )
     refreshed = get_last_refreshed(db, target)
     result["refreshed_at"] = refreshed.isoformat() if refreshed else None

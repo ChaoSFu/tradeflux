@@ -148,9 +148,14 @@ class LimitUpRadarResponse(BaseModel):
     # 交易日（符合预期，今天的涨停在"今日攻击"里单独看）；落后≥2个交易日会进 warnings
     history_as_of: Optional[str] = None
     history_lag_days: int = 0
-    # 板块入选门槛（AND）+ 因不达标被隐藏的板块数。隐藏数要展示出来，不能悄悄丢
+    # 板块入选门槛 + 因不达标被隐藏的板块数。规则是
+    #   (涨停>=filter_min_limit_up 且 最高连板>=filter_min_board_height)
+    #   或 涨停>=filter_min_limit_up_alone
+    # 隐藏数要展示出来，不能悄悄丢
     filter_min_limit_up: int = 0
     filter_min_board_height: int = 0
+    # 涨停只数单独达标即可入选的阈值（与上面那组是 OR）。0=关闭，退回纯 AND
+    filter_min_limit_up_alone: int = 0
     hidden_sector_count: int = 0
     summary: RadarSummary = RadarSummary()
     sectors: List[RadarSector] = []
