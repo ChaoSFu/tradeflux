@@ -25,12 +25,22 @@ import type {
 } from '@/types'
 
 // 角色标签：只反映"被召回的原因"，不是强弱排名（Core Recall != Core Classification）
-const ROLE_LABEL: Record<W2SCoreRole, { text: string; variant: 'dragon' | 'accent' | 'warn' | 'muted' }> = {
-  SECTOR_LEADER:   { text: '板块龙头', variant: 'dragon' },
-  SECTOR_CORE:     { text: '板块核心', variant: 'dragon' },
-  CURRENT_CORE:    { text: '当前核心', variant: 'accent' },
-  RECENT_CORE:     { text: '近期核心', variant: 'warn' },
-  HISTORICAL_CORE: { text: '历史核心', variant: 'muted' },
+/**
+ * 核心角色标签（2026-08-26 简化）。
+ *
+ * 原来全是四个字（当前核心/近期核心/历史核心/板块龙头/板块核心），一只票挂三个
+ * 标签就得换行，把整行撑成两行高，几十行叠起来表格全乱。
+ *
+ * 简化的依据是**列头已经写着「核心角色」**，每个标签里再重复一遍"核心"是纯冗余。
+ * 这三个角色本质上只是时间窗口的差别（近10日 / 近20日 / 只有60日窗口够得着），
+ * 所以留下能区分窗口的那两个字就够。全称走 title 悬停，一个字没丢。
+ */
+const ROLE_LABEL: Record<W2SCoreRole, { text: string; full: string; variant: 'dragon' | 'accent' | 'warn' | 'muted' }> = {
+  SECTOR_LEADER:   { text: '龙头', full: '板块龙头', variant: 'dragon' },
+  SECTOR_CORE:     { text: '板块', full: '板块核心', variant: 'dragon' },
+  CURRENT_CORE:    { text: '当前', full: '当前核心 —— 近10日仍在涨停', variant: 'accent' },
+  RECENT_CORE:     { text: '近期', full: '近期核心 —— 近20日活跃或打出过高连板', variant: 'warn' },
+  HISTORICAL_CORE: { text: '历史', full: '历史核心 —— 只有60日窗口才够得着，情绪锚', variant: 'muted' },
 }
 
 const fmtTime = (t: string | null) => (t ? t.slice(0, 5) : '—')
@@ -492,10 +502,17 @@ function SectorCard({ sector, open, onToggle, coreSort, todaySort, brokenSort }:
   )
 }
 
+/**
+ * 角色标签组。**不换行**（2026-08-26）：一只票最多挂 3 个标签，原来 flex-wrap
+ * 会把行撑成两行高，同一张表里高矮不齐，扫读时眼睛要不停重新对齐。
+ * 简化标签后 3 个也放得下；万一还是超宽，宁可横向溢出被列宽裁掉，也不撑高行。
+ */
 function RoleTags({ roles, reasons }: { roles: W2SCoreRole[]; reasons: string[] }) {
   if (!roles.length) return null
+  const full = roles.map((r) => ROLE_LABEL[r]?.full).filter(Boolean).join(' · ')
   return (
-    <span className="inline-flex items-center gap-1 flex-wrap" title={reasons.join(' · ')}>
+    <span className="inline-flex items-center gap-1 flex-nowrap whitespace-nowrap overflow-hidden"
+          title={[full, reasons.join(' · ')].filter(Boolean).join('\n')}>
       {roles.map((r) => {
         const cfg = ROLE_LABEL[r]
         return cfg ? <Badge key={r} variant={cfg.variant}>{cfg.text}</Badge> : null
@@ -518,11 +535,12 @@ const CORE_PICK = (r: LimitUpRadarCoreStock, k: CoreSortKey) => ({
  * 各自独立的 <table className="w-full"> 做不到这点——列宽按各自内容自动算，
  * 「10日涨停」这种两边都有的列永远错开一截。改成 table-fixed + 同一份 colgroup。
  *
- * 列序按"两边都有的在前，只有今日攻击才有的在后"排（用户 2026-08-26 定）：
- *   1-12  股票/核心角色/今日/涨停次数×3/60日高板/区间涨幅×3/龙头分/风险分  ← 两表共有
- *   13-17 板位/首封/终封/封单/炸板                                        ← 核心锚为空
- *   18    说明（召回理由 / 涨停原因）
- * 这样核心锚的空白连成右侧一整块，而不是散在中间把数字列冲开。
+ * 列序按"两边都有的在前，只有今日涨停才有的在后"排（用户 2026-08-26 定）：
+ *   1-13  股票/核心角色/今日/涨停次数×3/60日高板/区间涨幅×3/龙头分/风险分/说明 ← 共有
+ *   14-18 板位/首封/终封/封单/炸板                                          ← 核心锚为空
+ * 说明列（召回理由/涨停原因）**紧挨风险分**，不隔着一片空白——核心锚原来把它甩到
+ * 第18列，中间空 5 列，读一行要横跨半个屏幕。现在核心锚的空白全在最右边，
+ * 视觉上等于不存在。
  *
  * 核心角色排在股票之后：它跟股票一样是"这一行是谁"的身份信息，不是指标。
  * 全部列都给固定宽度，容器更宽时浏览器按比例均摊多余空间——两表规则相同，
@@ -543,12 +561,12 @@ function RadarCols() {
       <col className="w-[5.5rem]" />{/* 60日涨幅 */}
       <col className="w-[4.5rem]" />{/* 龙头分 */}
       <col className="w-[4.5rem]" />{/* 风险分 */}
+      <col className="w-[9rem]" />{/* 说明（召回理由 / 涨停原因）*/}
       <col className="w-[6.5rem]" />{/* 板位 —— 以下5列核心锚为空 */}
       <col className="w-[4.5rem]" />{/* 首封 */}
       <col className="w-[4.5rem]" />{/* 终封 */}
       <col className="w-[5rem]" />{/* 封单 */}
-      <col className="w-[4rem]" />{/* 炸板 */}
-      <col className="w-[9rem]" />{/* 说明 */}
+      <col />{/* 炸板 */}
     </colgroup>
   )
 }
@@ -597,8 +615,8 @@ function CoreTable({ rows, ctl }: { rows: LimitUpRadarCoreStock[]; ctl: SortCtl<
             <SortTh col="ic60" label="60日涨幅" {...ctl} title="真实复合区间收益，与活跃股池的近似算法不同" />
             <SortTh col="leader" label="龙头分" {...ctl} title="刷新按钮会为本页股票现算；—表示本轮没算过，不拿旧值冒充" />
             <SortTh col="risk" label="风险分" {...ctl} title="刷新按钮会为本页股票现算；—表示本轮没算过，不拿旧值冒充" />
+            <th className="text-left font-normal py-1.5 pr-3">召回理由</th>
             <PadTh n={5} />{/* 板位/首封/终封/封单/炸板：核心锚今日未涨停 */}
-            <th className="text-left font-normal py-1.5" title="召回理由">召回理由</th>
           </tr>
         </thead>
         <tbody>
@@ -620,8 +638,8 @@ function CoreTable({ rows, ctl }: { rows: LimitUpRadarCoreStock[]; ctl: SortCtl<
               <ChgCells a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
               <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.leader_score} fresh={r.scores_as_of_today} tone="dragon" /></td>
               <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.risk_score} fresh={r.scores_as_of_today} tone="danger" /></td>
-              <Pad n={5} />
               <NoteCell text={r.core_reasons.join(' · ') || null} />
+              <Pad n={5} />
             </tr>
           ))}
         </tbody>
@@ -660,12 +678,12 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
             <SortTh col="ic60" label="60日涨幅" {...ctl} title="真实复合区间收益" />
             <SortTh col="leader" label="龙头分" {...ctl} />
             <SortTh col="risk" label="风险分" {...ctl} />
+            <th className="text-left font-normal py-1.5 pr-3" title="涨停原因（催化剂，非板块归属）">涨停原因</th>
             <SortTh col="board" label="板位" {...ctl} align="left" />
             <SortTh col="first" label="首封" {...ctl} title="首次封板时间" />
             <SortTh col="last" label="终封" {...ctl} title="最终封板时间；与首封不同说明中途开过板" />
             <SortTh col="seal" label="封单" {...ctl} title="封单额；— 表示东方财富未提供该字段，不是0" />
             <SortTh col="broken" label="炸板" {...ctl} />
-            <th className="text-left font-normal py-1.5" title="涨停原因（催化剂，非板块归属）">涨停原因</th>
           </tr>
         </thead>
         <tbody>
@@ -688,6 +706,10 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
                 <ChgCells a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
                 <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.leader_score} fresh={r.scores_as_of_today} tone="dragon" /></td>
                 <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.risk_score} fresh={r.scores_as_of_today} tone="danger" /></td>
+                <NoteCell
+                  text={r.limit_reason}
+                  full={[r.limit_reason, r.limit_content].filter(Boolean).join('\n\n') || null}
+                />
                 <td className="py-1.5 pr-3 whitespace-nowrap">
                   <BoardTag n={r.board_count} />
                   {r.limit_stat_days != null && r.limit_stat_count != null && r.limit_stat_days > 1 && (
@@ -706,10 +728,6 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
                                   r.broken_times ? 'text-warn' : 'text-text-muted')}>
                   {r.broken_times == null ? '—' : r.broken_times === 0 ? '0' : `${r.broken_times}次`}
                 </td>
-                <NoteCell
-                  text={r.limit_reason}
-                  full={[r.limit_reason, r.limit_content].filter(Boolean).join('\n\n') || null}
-                />
               </tr>
             )
           })}

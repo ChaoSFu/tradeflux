@@ -210,16 +210,42 @@ export default function MarketTrend() {
     }
     return m
   }, [updownSeries])
-  // 涨跌比轴用对数刻度、以1为中心对称——2和0.5到1的像素距离相等，公平体现同等幅度
-  // 的偏多/偏空；上限按实际数据算但封顶（UPDOWN_RATIO_CAP），避免个别极端交易日
-  // （如跌停股极少导致比值飙到几十倍）把整根轴的刻度拉爆、其余正常日子都挤在底部。
-  const UPDOWN_RATIO_CAP = 4
-  const updownAxisK = useMemo(() => {
-    const vals = [...updownRatioByDate.values()].filter((v) => v > 0)
-    if (!vals.length) return 2
-    const maxDev = Math.max(...vals.map((v) => Math.max(v, 1 / v)))
-    return Math.min(Math.max(maxDev, 1.5), UPDOWN_RATIO_CAP)
+  // 涨跌比轴：对数刻度，**域按区间实际极值取，不封顶**（2026-08-26改）。
+  //
+  // 原来是以1为中心对称、上限硬封在 4，配 allowDataOverflow —— 超出的直接被裁掉。
+  // 用生产真实数据实测：近120日窗口里 25 个交易日，**4 个被裁**（07-24 的 0.11、
+  // 07-27 的 18.16、07-31 的 6.44、08-17 的 4.07），占 16%。而被裁的线会贴在边框上，
+  // 读起来像"那天就是 0.25"，比不画更糟——这跟本仓库"不能让缺失伪装成一个具体值"
+  // 是同一条原则。
+  //
+  // 代价说清楚：极端日（18.16）会把正常日子的波动压扁约 2 倍（对数跨度 2.77→5.33）。
+  // 但"看不全"和"看得扁"里只能选一个，用户要的是全部可见。
+  //
+  // 不再强制对称：**对数刻度本身就保证 2x 和 0.5x 到 1 的像素距离相等**，那是 log
+  // 的性质不是对称的功劳；对称只是把 1 那条线钉在正中间，代价是空出半根轴。
+  // 取消后 1 线的位置本身就成了信息——它落得低说明这段时间整体偏多。
+  const updownDomain = useMemo<[number, number]>(() => {
+    const vals = [...updownRatioByDate.values()].filter((v) => Number.isFinite(v) && v > 0)
+    if (!vals.length) return [0.5, 2]
+    const pad = 1.12                      // 对数轴留白按比例，不能加减固定值
+    // 下限/上限都保证把 1 包进来，否则那条中性参考线会跑到图外
+    return [Math.min(Math.min(...vals) / pad, 1 / 1.2),
+            Math.max(Math.max(...vals) * pad, 1.2)]
   }, [updownRatioByDate])
+
+  // 刻度用 1-2-5 阶梯自己生成。recharts 的对数轴自动刻度在非整十倍区间上很难看
+  // （改前那版轴上是 0.30/0.50/0.70/1.0/2.0/4.0，疏密不均）。
+  const updownTicks = useMemo(() => {
+    const [lo, hi] = updownDomain
+    const out: number[] = []
+    for (let e = -3; e <= 3; e++) {
+      for (const m of [1, 2, 5]) {
+        const v = m * Math.pow(10, e)
+        if (v >= lo && v <= hi) out.push(+v.toPrecision(3))
+      }
+    }
+    return out
+  }, [updownDomain])
 
   const chartData = useMemo(() => {
     const series = selected?.series ?? []
@@ -390,7 +416,8 @@ export default function MarketTrend() {
                       orientation="right"
                       tick={{ fill: '#737A96', fontSize: 11 }} axisLine={false} tickLine={false} width={52}
                       scale={overlay === 'updown' ? 'log' : 'linear'}
-                      domain={overlay === 'updown' ? [1 / updownAxisK, updownAxisK] : ['auto', 'auto']}
+                      domain={overlay === 'updown' ? updownDomain : ['auto', 'auto']}
+                      ticks={overlay === 'updown' ? updownTicks : undefined}
                       allowDataOverflow={overlay === 'updown'}
                       tickFormatter={(v: number) => {
                         if (overlay === 'margin') return `${v}万亿`
