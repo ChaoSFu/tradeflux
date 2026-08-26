@@ -870,8 +870,9 @@ def fetch_klines_batch(
     并发批量拉取多只股票的 K 线。返回 {code: [KLineBar, ...]}。
 
     2026-08-23起：候选轮询拆两组，分别用腾讯/新浪并发拉取（组内仍按
-    max_workers 并发多只股票），两路都没拿到数据的股票统一交给东财push2his
-    兜底一次（单跳，不递归）——push2/push2his 这一系域名生产环境被持续限流
+    max_workers 并发多只股票）。2026-08-26 增加**交叉兜底**：本组主力失败的股票
+    先去试另一个主力源（分到腾讯的试新浪，反之亦然），两个主力源都拿不到才交给
+    东财push2his 兜底一次（单跳，不递归）——push2/push2his 这一系域名生产环境被持续限流
     （详见弱转强雷达行情拉取的同一次诊断，K线专属指数早在更早前就已确认
     "长期被针对性限流"，见 fetch_index_kline），不再让它做主力，只留兜底
     角色。腾讯/新浪都没有换手率字段，东财兜底成功的那部分股票换手率能补回，
@@ -899,6 +900,33 @@ def fetch_klines_batch(
         for future in as_completed(futures):
             results.update(future.result())
 
+    # ── 交叉兜底：分到腾讯的失败了去试新浪，反之亦然（2026-08-26新增）──────────
+    # 原来是"本组主力失败 → 直接跳东财"。问题是东财 push2his 生产环境长期被针对性
+    # 限流（RemoteProtocolError 成片），而**另一个主力源当时往往是好的**——它只是
+    # 恰好没被分到这只股票而已。生产日志实测：002078 分在腾讯组，腾讯
+    # JSONDecodeError → 直接撞东财 RemoteProtocolError → 失败，全程没试过新浪。
+    # 那次 169 只里有 106 只（63%）最后是靠实时行情补当日bar 救回来的，代价是换手率
+    # 缺失、且只补得到今天这一根。先把另一个健康主力源试完再谈兜底。
+    cross_pairs = []
+    tencent_codes = {s.code for s in tencent_group}
+    retry_on_sina = [s for s in stocks if not results.get(s.code) and s.code in tencent_codes]
+    retry_on_tencent = [s for s in stocks if not results.get(s.code) and s.code not in tencent_codes]
+    if retry_on_sina:
+        cross_pairs.append((retry_on_sina, _fetch_kline_sina, "新浪(交叉兜底)"))
+    if retry_on_tencent:
+        cross_pairs.append((retry_on_tencent, _fetch_kline_tencent, "腾讯(交叉兜底)"))
+    if cross_pairs:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futs = [
+                executor.submit(_fetch_kline_group, grp, days, max_workers, delay_between, fn, label)
+                for grp, fn, label in cross_pairs
+            ]
+            for f in as_completed(futs):
+                for code, bars in f.result().items():
+                    if bars:
+                        results[code] = bars
+
+    # 两个主力源都拿不到才轮到东财（单跳，不递归）
     missing_stocks = [s for s in stocks if not results.get(s.code)]
     if missing_stocks:
         em_results = _fetch_kline_group(

@@ -10,7 +10,7 @@ from datetime import date
 from app.services.eastmoney_fetcher import (
     _parse_sina_quote_line, _parse_tencent_quote_line, get_limit_pct, get_actual_limit_pct,
     StockQuote, build_kline_bar, kline_bar_from_quote, exact_limit_price,
-    _parse_tencent_klines, _parse_sina_klines,
+    _parse_tencent_klines, _parse_sina_klines, KLineBar,
 )
 
 
@@ -324,3 +324,70 @@ def test_derive_limit_close_price_uses_the_same_price_function():
                           (50.0, 20.0, True), (20.0, 30.0, True)]:
         close, _ = derive_limit_close_price(prev, pct, is_up=up)
         assert close == exact_limit_price(prev, pct, is_up=up), (prev, pct, up)
+
+
+# ── K线批量拉取的兜底顺序（2026-08-26，用户看生产日志发现）──────────────────
+
+def test_batch_tries_the_other_primary_source_before_falling_back_to_eastmoney():
+    """
+    分到腾讯组的股票腾讯失败时，必须先去试新浪（另一个主力源），而不是直接跳东财。
+
+    生产日志实测过这个漏洞：002078 分在腾讯组 → 腾讯 JSONDecodeError → 直接撞
+    东财 RemoteProtocolError → 失败，全程没试过新浪，而新浪当时是好的（另一组正常
+    在跑）。东财 push2his 生产环境长期被针对性限流，跳过一个健康主力源直接去撞它，
+    等于白白放弃。那一轮 169 只里 106 只（63%）最后靠实时行情补当日bar 救回来，
+    代价是换手率缺失且只补得到今天一根。
+    """
+    from unittest.mock import patch
+    from app.services.eastmoney_fetcher import fetch_klines_batch, StockBasicInfo
+
+    stocks = [
+        StockBasicInfo(code=f"00000{i}", name=f"股{i}", market=0, is_st=False,
+                       pct_change=0.0, turnover_rate=0.0)
+        for i in range(4)
+    ]
+    bar = [KLineBar(date=date(2026, 8, 26), open_price=1.0, close_price=1.0,
+                    high_price=1.0, low_price=1.0, pct_change=0.0, turnover_rate=None)]
+
+    def _tencent_always_fails(code, market, days, is_st, lp, timeout):
+        raise ValueError("腾讯挂了")
+
+    calls = {"sina": [], "em": []}
+
+    def _sina_ok(code, market, days, is_st, lp, timeout):
+        calls["sina"].append(code)
+        return bar
+
+    def _em(code, market, days, is_st, lp, timeout):
+        calls["em"].append(code)
+        return bar
+
+    with patch("app.services.eastmoney_fetcher._fetch_kline_tencent", _tencent_always_fails), \
+         patch("app.services.eastmoney_fetcher._fetch_kline_sina", _sina_ok), \
+         patch("app.services.eastmoney_fetcher._fetch_kline_eastmoney", _em):
+        out = fetch_klines_batch(stocks, days=65, max_workers=2, delay_between=0.0)
+
+    assert len(out) == 4 and all(out[s.code] for s in stocks)
+    # 腾讯组那两只必须由新浪交叉兜底救回，东财一次都不该被调用
+    assert len(calls["sina"]) == 4, "腾讯组失败的股票要交叉去试新浪"
+    assert calls["em"] == [], "两个主力源之一能拿到数据时，绝不该轮到已知被限流的东财"
+
+
+def test_batch_falls_back_to_eastmoney_only_when_both_primaries_fail():
+    from unittest.mock import patch
+    from app.services.eastmoney_fetcher import fetch_klines_batch, StockBasicInfo
+
+    stocks = [StockBasicInfo(code="000001", name="股", market=0, is_st=False,
+                             pct_change=0.0, turnover_rate=0.0)]
+    bar = [KLineBar(date=date(2026, 8, 26), open_price=1.0, close_price=1.0,
+                    high_price=1.0, low_price=1.0, pct_change=0.0, turnover_rate=3.0)]
+
+    def _fail(*a, **kw):
+        raise ValueError("挂了")
+
+    with patch("app.services.eastmoney_fetcher._fetch_kline_tencent", _fail), \
+         patch("app.services.eastmoney_fetcher._fetch_kline_sina", _fail), \
+         patch("app.services.eastmoney_fetcher._fetch_kline_eastmoney", lambda *a, **kw: bar):
+        out = fetch_klines_batch(stocks, days=65, max_workers=2, delay_between=0.0)
+
+    assert out["000001"][0].turnover_rate == 3.0   # 东财兜底能补回换手率
