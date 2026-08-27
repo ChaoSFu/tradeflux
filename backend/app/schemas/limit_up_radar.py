@@ -129,6 +129,18 @@ class RadarBrokenStock(BaseModel):
     turnover_rate: Optional[float] = None
     amount: Optional[float] = None
     amplitude: Optional[float] = None
+    # 跟 RadarTodayStock 同名同义的历史指标（2026-08-27补）：一个 6天5板 的高位股
+    # 炸板，和一个从没涨停过的票冲高回落，对板块的含义天差地别
+    limit_up_days_10d: Optional[int] = None
+    limit_up_days_20d: Optional[int] = None
+    limit_up_days_60d: Optional[int] = None
+    board_count_60d: Optional[int] = None
+    interval_chg_10d: Optional[float] = None
+    interval_chg_20d: Optional[float] = None
+    interval_chg_60d: Optional[float] = None
+    scores_as_of_today: bool = True
+    leader_score: Optional[float] = None
+    risk_score: Optional[float] = None
     core_roles: List[str] = []
     core_reasons: List[str] = []
 

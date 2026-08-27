@@ -797,6 +797,17 @@ export interface LimitUpRadarBrokenStock {
   turnover_rate: number | null
   amount: number | null
   amplitude: number | null
+  /** 跟 LimitUpRadarTodayStock 同名同义的历史指标 */
+  limit_up_days_10d: number | null
+  limit_up_days_20d: number | null
+  limit_up_days_60d: number | null
+  board_count_60d: number | null
+  interval_chg_10d: number | null
+  interval_chg_20d: number | null
+  interval_chg_60d: number | null
+  scores_as_of_today: boolean
+  leader_score: number | null
+  risk_score: number | null
   core_roles: W2SCoreRole[]
   core_reasons: string[]
 }

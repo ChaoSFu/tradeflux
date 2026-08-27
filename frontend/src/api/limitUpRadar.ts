@@ -5,6 +5,8 @@ export interface LimitUpRadarParams {
   date?: string
   include_core?: boolean
   group_mode?: 'all_watched_sectors' | 'primary'
+  /** 板块排序主键：最高连板(默认) / 最高断板 */
+  sector_sort?: 'board_height' | 'broken_streak_height'
 }
 
 export const fetchLimitUpRadar = (params: LimitUpRadarParams = {}) =>

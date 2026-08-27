@@ -402,19 +402,32 @@ def sort_broken_stocks(rows: List[dict]) -> List[dict]:
     ))
 
 
-def sort_sectors(sectors: List[dict]) -> List[dict]:
+def sort_sectors(sectors: List[dict], by: str = "board_height") -> List[dict]:
     """
     板块排序（2026-08-25 按用户要求调整为**高度优先**）：
-      最高连板 DESC → 今日涨停数 DESC → 连板股数量 DESC → 最早首封时间 ASC → 总封单额 DESC
+      主键 DESC → 今日涨停数 DESC → 连板股数量 DESC → 最早首封时间 ASC → 总封单额 DESC
 
-    先看板块打出了多高的板，同样高度再比涨停只数。理由：连板高度是板块**情绪级别**
-    的直接体现——一个出了5板龙头的板块，即使只有5只涨停，也比10只清一色首板的板块
-    更值得先看；首板扎堆更可能是普涨或题材扩散，高板才代表有资金愿意接力。
-    （原来是"涨停数优先"，会把一堆首板齐发的板块排在有高位龙头的板块前面。）
+    主键两选一（2026-08-27 加的可切换，默认仍是第一种）：
+      · board_height（默认）——最高**连板**。看的是"现在还连着的高度"：一个出了
+        5板龙头的板块，即使只有5只涨停，也比10只清一色首板的板块更值得先看；
+        首板扎堆更可能是普涨或题材扩散，高板才代表有资金愿意接力。
+      · broken_streak_height ——最高**断板**（N天M板且N>M的累计板数）。看的是
+        "打过高板但断了"的辨识度：那些票当前连板可能只有1，却随时可能再起，
+        按连板排会被埋在一堆首板板块里。没有断板股的板块该键为 None，排最后。
 
-    刻意不做 0.4*涨停数+0.3*板高+... 这种加权总分：用户需要能一眼说清"为什么这个
-    板块排在前面"，加权分做不到这一点。
+    两个键回答的是不同的问题，所以做成切换而不是加权合并。**刻意不做
+    0.4*涨停数+0.3*板高+... 这种总分**：用户需要能一眼说清"为什么这个板块排在
+    前面"，加权分做不到这一点。次级键两种模式完全一致，都是涨停数优先。
     """
+    if by == "broken_streak_height":
+        return sorted(sectors, key=lambda s: (
+            -(s.get("broken_streak_height") or 0),
+            -s["today_limit_up_count"],
+            -s["continuation_count"],
+            s["earliest_limit_time"] or _LATE,
+            -(s["total_seal_amount"] or 0.0),
+            s["sector_name"],
+        ))
     return sorted(sectors, key=lambda s: (
         -s["board_height"],
         -s["today_limit_up_count"],
@@ -456,6 +469,7 @@ def build_radar(
     min_limit_up: int = DEFAULT_MIN_LIMIT_UP,
     min_board_height: int = DEFAULT_MIN_BOARD_HEIGHT,
     min_limit_up_alone: int = DEFAULT_MIN_LIMIT_UP_ALONE,
+    sector_sort: str = "board_height",
     max_sectors: int = 40,
 ) -> dict:
     """
@@ -572,7 +586,7 @@ def build_radar(
     ]
     hidden = total_with_limit_up - len(out_sectors)
 
-    out_sectors = sort_sectors(out_sectors)[:max_sectors]
+    out_sectors = sort_sectors(out_sectors, by=sector_sort)[:max_sectors]
 
     return {
         "trade_date": trade_date.isoformat(),
@@ -698,6 +712,23 @@ def _build_sector_card(
                     "turnover_rate": bd.turnover_rate,
                     "amount": bd.amount,
                     "amplitude": bd.amplitude,
+                    # 跟今日涨停同一套历史指标（2026-08-27补）。此前炸板行只有当日
+                    # 事实，看不出这只票的来头——一个 6天5板 的高位股炸板和一个从没
+                    # 涨停过的票冲高回落，对板块的含义天差地别，而那正是这一块要
+                    # 回答的问题。数据源跟今日涨停完全相同，不是另算一套。
+                    "limit_up_days_10d": _lu_count(_em, lu_hist.get(sid), 10, st.limit_up_days_10d),
+                    "limit_up_days_20d": _lu_count(_em, lu_hist.get(sid), 20, st.limit_up_days_20d),
+                    "limit_up_days_60d": _lu_count(_em, lu_hist.get(sid), 60, st.limit_up_days_60d),
+                    "board_count_60d": (_em.max_board_60d if _em and _em.max_board_60d is not None
+                                        else st.board_count_60d),
+                    "interval_chg_10d": _ic(_em, ic_extra, st.code, 10),
+                    "interval_chg_20d": _ic(_em, ic_extra, st.code, 20),
+                    "interval_chg_60d": _ic(_em, ic_extra, st.code, 60),
+                    # 炸板股当天触及过涨停，必然被涨跌停选股API返回、必然进候选池，
+                    # 所以本轮一定算过分——跟今日涨停同理，不是冻结旧值
+                    "scores_as_of_today": True,
+                    "leader_score": (_sc["ls"] if _sc else st.leader_score),
+                    "risk_score": (_sc["rs"] if _sc else st.risk_score),
                     "core_roles": recall.roles,
                     "core_reasons": recall.reasons,
                 })

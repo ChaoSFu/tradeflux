@@ -787,3 +787,39 @@ def test_多只断板股取最大(db):
             {"limit_stat_days": 20, "limit_stat_count": 9},
             {"limit_stat_days": 4, "limit_stat_count": 2}]
     assert broken_streak_height(rows) == 9
+
+
+# ── 板块排序主键可切换（2026-08-27）──────────────────────────────────────────
+
+def _S(name, bh, bsh, lu, cont=1):
+    return dict(sector_name=name, board_height=bh, broken_streak_height=bsh,
+                today_limit_up_count=lu, continuation_count=cont,
+                earliest_limit_time=None, total_seal_amount=1.0)
+
+
+def test_默认按最高连板排序():
+    from app.services.limit_up_radar_service import sort_sectors
+    got = [s["sector_name"] for s in sort_sectors([
+        _S("新零售", 6, 6, 4), _S("农林牧渔", 3, 6, 7),
+        _S("黄金概念", 6, None, 3), _S("光通信", 3, None, 6)])]
+    assert got == ["新零售", "黄金概念", "农林牧渔", "光通信"], \
+        "连板高度优先，同高度再比涨停只数"
+
+
+def test_切换后按最高断板排序():
+    """农林牧渔连板只有3、按连板排在后面，但它有断6板 —— 按断板排该到最前。"""
+    from app.services.limit_up_radar_service import sort_sectors
+    got = [s["sector_name"] for s in sort_sectors([
+        _S("新零售", 6, 6, 4), _S("农林牧渔", 3, 6, 7),
+        _S("黄金概念", 6, None, 3), _S("光通信", 3, None, 6)],
+        by="broken_streak_height")]
+    assert got == ["农林牧渔", "新零售", "光通信", "黄金概念"], \
+        "断板同为6时按涨停只数(7>4)；没有断板股的排最后，内部仍按涨停只数"
+
+
+def test_两种模式的次级键一致():
+    """次级键都是涨停数优先——切换的只是主键，不该顺带改变别的规则。"""
+    from app.services.limit_up_radar_service import sort_sectors
+    rows = [_S("A", 3, 3, 2), _S("B", 3, 3, 9)]
+    assert [s["sector_name"] for s in sort_sectors(rows)] == ["B", "A"]
+    assert [s["sector_name"] for s in sort_sectors(rows, by="broken_streak_height")] == ["B", "A"]
