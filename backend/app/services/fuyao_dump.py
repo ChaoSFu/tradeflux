@@ -128,7 +128,7 @@ _CACHE_DIR = Path(gettempdir()) / "tradeflux_fuyao_dump"
 # 栽过好几次（新浪盘中不发当日bar、腾讯盘中发未收盘的bar），所以判据一律取自内容
 # 本身。把每次的解决方式记下来，跑几天就能免费得到"各时段 dump 到底什么样"的
 # 实证画像，而不是现在拍脑袋。
-_LAST_ACCESS: dict = {"mode": None, "at": None}
+_LAST_ACCESS: dict = {"mode": None, "at": None, "attempts": 0, "errors": [], "seconds": 0.0}
 
 
 def dump_last_access() -> dict:
@@ -137,8 +137,8 @@ def dump_last_access() -> dict:
     return dict(_LAST_ACCESS)
 
 
-def _mark(mode: str) -> None:
-    _LAST_ACCESS.update(mode=mode, at=datetime.now(_SH_TZ).isoformat(timespec="seconds"))
+def _mark(mode: str, **kw) -> None:
+    _LAST_ACCESS.update(mode=mode, at=datetime.now(_SH_TZ).isoformat(timespec="seconds"), **kw)
 
 
 def _data_path(kind: str) -> Path:
@@ -244,12 +244,17 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
     """
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     data, meta = _data_path(kind), _read_meta(kind)
+    # 重试过程必须留痕：2026-08-26 生产上「拉取K线数据」从 12.1s 跳到 56.7s，
+    # 而候选数/分组/命中数一模一样——多出来的 44 秒极可能是 dump 下载被 S3 截断后
+    # 重试掉的，但当时重试是静默的，日志里查不出来。诊断不了的耗时等于没有诊断。
+    _t0 = time.time()
+    _errs: List[str] = []
 
     # ① 缓存已覆盖要的交易日 → 零请求
     if data.exists() and meta:
         cached_max = meta.get("max_trade_date")
         if require_date and cached_max and cached_max >= require_date.isoformat():
-            _mark("covered")
+            _mark("covered", attempts=0, errors=[], seconds=0.0)
             yield data
             return
 
@@ -265,7 +270,8 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
                 if (data.exists() and meta and size is not None
                         and meta.get("size") == size
                         and meta.get("path_date") == _path_date(url)):
-                    _mark("unchanged")
+                    _mark("unchanged", attempts=attempt + 1, errors=list(_errs),
+                          seconds=round(time.time() - _t0, 1))
                     yield data
                     return
                 # ③ 真下载。临时文件 + 原子替换，失败不毁旧缓存
@@ -283,13 +289,17 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
                     }, ensure_ascii=False), encoding="utf-8")
                 finally:
                     tmp.unlink(missing_ok=True)
-                _mark("downloaded")
+                _mark("downloaded", attempts=attempt + 1, errors=list(_errs),
+                      seconds=round(time.time() - _t0, 1))
                 yield data
                 return
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {str(e)[:120]}"
+            _errs.append(f"第{attempt + 1}次: {last_err}")
         if attempt < retries:
             time.sleep(1.5)
+    _mark("failed", attempts=retries + 1, errors=list(_errs),
+          seconds=round(time.time() - _t0, 1))
     raise FuyaoError(last_err or "下载失败")
 
 

@@ -1238,13 +1238,19 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 _ci = dump_cache_info() or {}
                 _MODE = {"covered": "复用缓存(已覆盖当日)", "unchanged": "复用缓存(上游未变)",
                          "downloaded": "重新下载"}
-                _how = _MODE.get(dump_last_access().get("mode"), "?")
+                _la = dump_last_access()
+                _how = _MODE.get(_la.get("mode"), "?")
                 _tail = (f"；其中 {len(dump_no_today)} 只 dump 无当日数据，当日bar走实时行情"
                          if dump_no_today else "")
                 log.info(f"  📦 fuyao dump({mb:.1f}MB，覆盖至 {_ci.get('max_trade_date','?')}，"
-                         f"{(_ci.get('fetched_at') or '')[11:19]} 取得，本次{_how})："
+                         f"{(_ci.get('fetched_at') or '')[11:19]} 取得，本次{_how}"
+                         f"，耗时{_la.get('seconds', 0)}s)："
                          f"历史缺口命中 {len(dump_hit)}/{len(db_group)} 只，"
                          f"省下同等数量的逐股请求{_tail}")
+                # 重试留痕：静默重试会变成查不出来的耗时。2026-08-26 生产上这一步
+                # 从 12.1s 跳到 56.7s，各项数字却一模一样，当时没法归因就是因为这个。
+                for _e in (_la.get("errors") or []):
+                    log.warning(f"  dump 下载重试：{_e}")
             except Exception as e:  # noqa: BLE001
                 log.warning(f"fuyao dump 不可用（{type(e).__name__}: {e}），"
                             f"本轮全部退回逐股K线接口")
