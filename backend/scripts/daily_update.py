@@ -127,7 +127,7 @@ from app.services.eastmoney_fetcher import (
 )
 from app.services.fuyao_dump import (
     get_api_key as get_fuyao_key, daily_k_dump, load_bars,
-    dump_cache_info, dump_last_access,
+    dump_cache_info, dump_last_access, thscode_suffix,
 )
 from app.services.screening_service import (
     StockWindowStats,
@@ -1941,12 +1941,14 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 from app.models.limit_up_detail import LimitUpDailyDetail
                 _recall = get_core_recall_details(db, target_date)
                 _rows = (
-                    db.query(LimitUpDailyDetail.stock_code, Stock.market)
+                    db.query(LimitUpDailyDetail.stock_code)
                     .join(Stock, Stock.id == LimitUpDailyDetail.stock_id)
                     .filter(LimitUpDailyDetail.trade_date == target_date)
                     .all()
                 )
-                _need = [(c, m or "SH") for c, m in _rows
+                # 后缀按代码前缀判，不能用 Stock.market——那个字段只有 SH/SZ 两个值，
+                # 北交所会被归成 SZ，fuyao 直接回 Unknown thscode（920895 实测）
+                _need = [(c, thscode_suffix(c)) for (c,) in _rows
                          if not (_recall.get(c) and _recall[c].interval_chg_60d is not None)]
                 if _need:
                     n_ic, ic_fail = backfill_interval_chg(db, target_date, _need)

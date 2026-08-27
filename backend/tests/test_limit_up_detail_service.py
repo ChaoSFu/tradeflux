@@ -334,3 +334,30 @@ def test_炸板排序按封板不坚决程度(db):
         {'code': 'D', 'board_count': 1, 'gap_to_limit_pct': -0.5, 'broken_times': 4},
     ]
     assert [r['code'] for r in sort_broken_stocks(rows)] == ['B', 'C', 'D', 'A']
+
+
+def test_北交所代码后缀必须是BJ(db):
+    """
+    2026-08-27 生产：920895 被拼成 920895.SZ，fuyao 回 code=1002 Unknown thscode。
+    起因是拿 Stock.market 当后缀，而那字段只有 SH/SZ——_ensure_stock 里
+    `"SH" if market == 1 else "SZ"`，北交所全被归成 SZ。
+    判定复用 eastmoney_fetcher._is_bj_code，全仓库一套。
+    """
+    from app.services.fuyao_dump import thscode_suffix as f
+    assert f("920895") == "BJ" and f("430139") == "BJ" and f("830799") == "BJ"
+    assert f("600984") == "SH" and f("688828") == "SH"
+    assert f("000001") == "SZ" and f("300333") == "SZ"
+
+
+def test_补全只数报本次而不是当天累计(db):
+    """盘中多跑几次会出现"18 只不在名单里，补到 20 只"这种自相矛盾的日志。"""
+    from app.services.limit_up_detail_service import backfill_interval_chg
+    from unittest.mock import patch
+    with patch("app.services.limit_up_detail_service.get_api_key", return_value="k"), \
+         patch("app.services.limit_up_detail_service.fetch_interval_returns",
+               return_value={10: 5.0, 20: 8.0, 60: 12.0}):
+        n1, _ = backfill_interval_chg(db, TODAY, [("600001", "SH")], max_workers=1, delay=0)
+        n2, _ = backfill_interval_chg(db, TODAY, [("600002", "SH")], max_workers=1, delay=0)
+        n3, _ = backfill_interval_chg(db, TODAY, [("600001", "SH")], max_workers=1, delay=0)
+    assert n1 == 1 and n2 == 1, "每次只报本次新补到的"
+    assert n3 == 0, "已经有的不该再计一次"

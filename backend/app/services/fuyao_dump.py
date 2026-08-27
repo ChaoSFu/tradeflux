@@ -64,7 +64,7 @@ from typing import Dict, Iterator, List, Optional
 
 import httpx
 
-from .eastmoney_fetcher import KLineBar, build_kline_bar, get_limit_pct
+from .eastmoney_fetcher import KLineBar, _is_bj_code, build_kline_bar, get_limit_pct
 
 FUYAO_BASE = "https://fuyao.aicubes.cn"
 DUMP_KIND_10D = "daily-k-10d"
@@ -367,6 +367,22 @@ def load_bars(path: Path, wanted: Dict[str, bool]) -> Dict[str, List[KLineBar]]:
 
 
 # ── 单只历史K线：补区间涨幅 ────────────────────────────────────────────────────
+
+def thscode_suffix(code: str) -> str:
+    """
+    6位代码 → fuyao 的交易所后缀。
+
+    2026-08-27 生产上 920895 被拼成 `920895.SZ`，fuyao 回 `code=1002 Unknown thscode`。
+    起因是调用方拿 Stock.market 当后缀，而那个字段只有 SH/SZ 两个值——_ensure_stock
+    里 `"SH" if market == 1 else "SZ"`，北交所全被归成了 SZ。
+
+    判定复用 eastmoney_fetcher._is_bj_code：北交所是什么代码这件事全仓库只该有
+    一套判定，涨跌停用的是它（±30%），这里再写一遍迟早对不上。
+    """
+    if _is_bj_code(code):
+        return "BJ"
+    return "SH" if code.startswith("6") else "SZ"
+
 
 def fetch_interval_returns(api_key: str, code: str, market_suffix: str,
                            windows=(10, 20, 60), timeout: int = 15,
