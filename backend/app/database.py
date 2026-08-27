@@ -50,6 +50,10 @@ def _apply_schema_patches():
         "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS amount FLOAT",
         "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS float_market_cap FLOAT",
         "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS amplitude FLOAT",
+        # StockDailySnapshot：OHLC（2026-08-27，此前只存 close_price，炸板/一字板重算不了）
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS open_price FLOAT",
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS high_price FLOAT",
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS low_price FLOAT",
         # StockDailySnapshot：当日观测是否为收盘后终值（见 model 注释里的生产事故）
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS is_settled BOOLEAN DEFAULT FALSE NOT NULL",
         # Sector 新增字段（板块筛选指标）

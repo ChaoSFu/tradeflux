@@ -136,6 +136,15 @@ class TestUpsertSnapshotSettled:
         assert snap.is_settled is True
 
 
+import contextlib
+
+
+@contextlib.contextmanager
+def _fake_dump(*a, **k):
+    """假的 dump 上下文：只负责给出一个路径，内容由 load_bars 的 monkeypatch 决定。"""
+    yield __import__("pathlib").Path("/tmp/_fake_dump.parquet")
+
+
 class _Log:
     """daily_update 里的 log 是主函数局部变量，测试注入一个哑实现。"""
     def info(self, *a, **k): pass
@@ -212,3 +221,88 @@ class TestSettleDroppedOut:
                                              handled=set(), fuyao_key=None, log=_Log())
         assert n == 0 and called == []
         assert db.query(StockDailySnapshot).one().close_price == 5.43
+
+
+# ── 全库历史快照补全（2026-08-27）────────────────────────────────────────────
+#
+# 治的是"掉出候选池放空一段时间 → 快照断档 → 回来时 dump 的10天接不上 → 65天全量拉"
+# 这条根因链。2026-08-27 盘中实测：dump 命中 138/142，回落的 4 只**全部**是 26~65 天
+# 缺口，正是这一类。
+
+def _mkbar(d, close, o=None, h=None, lo=None):
+    from app.services.eastmoney_fetcher import build_kline_bar
+    return build_kline_bar(dt=d, open_p=o or close, close_p=close,
+                           high_p=h or close, low_p=lo or close,
+                           pct=0.0, turnover=None, prev_close=close)
+
+
+class TestBackfillHistoryFromDump:
+    @staticmethod
+    def _stocks(db, n=3):
+        out = []
+        for i in range(n):
+            st = Stock(code=f"60000{i}", name=f"票{i}", market="SH")
+            db.add(st); out.append(st)
+        db.flush()
+        return out
+
+    def test_只补历史日绝不碰当日(self, db, monkeypatch):
+        """当日那一行永远归主流程写——这样板块统计（只读当日）一个数都不会变。"""
+        self._stocks(db, 1)
+        bars = [_mkbar(YESTERDAY, 10.0), _mkbar(TODAY, 11.0)]
+        monkeypatch.setattr(du, "load_bars", lambda *a, **k: {"600000": bars})
+        monkeypatch.setattr(du, "daily_k_dump", _fake_dump)
+        n = du._backfill_history_from_dump(db, TODAY, "key", _Log())
+        db.flush()
+        dates = [r.date for r in db.query(StockDailySnapshot).all()]
+        assert n == 1 and dates == [YESTERDAY], "TODAY 那一根不能写"
+
+    def test_已存在的行绝不覆盖(self, db, monkeypatch):
+        """主流程写的行带着选股API的权威涨跌停标记，dump 推算的不该盖掉它。"""
+        st = self._stocks(db, 1)[0]
+        db.add(StockDailySnapshot(stock_id=st.id, date=YESTERDAY, close_price=99.0,
+                                  is_limit_up=True, is_settled=True))
+        db.flush()
+        monkeypatch.setattr(du, "load_bars", lambda *a, **k: {"600000": [_mkbar(YESTERDAY, 10.0)]})
+        monkeypatch.setattr(du, "daily_k_dump", _fake_dump)
+        n = du._backfill_history_from_dump(db, TODAY, "key", _Log())
+        db.flush()
+        row = db.query(StockDailySnapshot).one()
+        assert n == 0 and row.close_price == 99.0 and row.is_limit_up is True
+
+    def test_补的是全库不只候选池(self, db, monkeypatch):
+        sts = self._stocks(db, 3)
+        monkeypatch.setattr(du, "load_bars", lambda path, wanted: {
+            c: [_mkbar(YESTERDAY, 10.0)] for c in wanted})
+        monkeypatch.setattr(du, "daily_k_dump", _fake_dump)
+        n = du._backfill_history_from_dump(db, TODAY, "key", _Log())
+        db.flush()
+        assert n == 3, "库里 3 只股票都该补上，不管在不在候选池"
+
+    def test_写入OHLC且换手率留None(self, db, monkeypatch):
+        """dump 有完整 OHLC —— 有了 high 才能重算炸板；换手率 dump 没有，写 None 不写 0。"""
+        self._stocks(db, 1)
+        monkeypatch.setattr(du, "load_bars", lambda *a, **k: {
+            "600000": [_mkbar(YESTERDAY, 10.0, o=9.5, h=10.5, lo=9.4)]})
+        monkeypatch.setattr(du, "daily_k_dump", _fake_dump)
+        du._backfill_history_from_dump(db, TODAY, "key", _Log())
+        db.flush()
+        r = db.query(StockDailySnapshot).one()
+        assert (r.open_price, r.high_price, r.low_price) == (9.5, 10.5, 9.4)
+        assert r.turnover_rate is None, "dump 不提供换手率，0 会被读成真实的0%"
+        assert r.is_settled is True, "dump 收盘后生成，历史日必然是终值"
+
+    def test_没配key直接跳过(self, db):
+        self._stocks(db, 1)
+        assert du._backfill_history_from_dump(db, TODAY, None, _Log()) == 0
+
+    def test_dump不可用不影响主流程(self, db, monkeypatch):
+        self._stocks(db, 1)
+        import contextlib
+
+        @contextlib.contextmanager
+        def _boom(*a, **k):
+            raise RuntimeError("下载失败")
+            yield
+        monkeypatch.setattr(du, "daily_k_dump", _boom)
+        assert du._backfill_history_from_dump(db, TODAY, "key", _Log()) == 0

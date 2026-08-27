@@ -268,20 +268,33 @@ def _snapshots_to_klinebars(snaps: list, code: str = "", is_st: bool = False) ->
             ld_price = round(prev_close * (1 - actual / 100), 2)
             is_lu = close >= lu_price - 0.005
             is_ld = close <= ld_price + 0.005
+        # OHLC：2026-08-27 起快照会落库真实值；NULL 是加列之前写的老行，退回 0.0。
+        # 有 high 就能重算炸板/一字板，没有就只能沿用当初落库的标志（老行为）。
+        o, h, lo = s.open_price, s.high_price, s.low_price
+        has_ohlc = h is not None and lo is not None and h > 0
+        is_bb, is_owu, is_owd = (bool(s.is_broken_board),
+                                 bool(s.is_one_word_limit_up),
+                                 bool(s.is_one_word_limit_down))
+        if has_ohlc and lp is not None and close > 0 and prev_close > 0:
+            actual = lp + 0.1
+            lu_price = round(prev_close * (1 + actual / 100), 2)
+            ld_price = round(prev_close * (1 - actual / 100), 2)
+            is_bb = (not is_lu) and h >= lu_price - 0.005
+            is_owu = is_lu and lo >= lu_price - 0.005
+            is_owd = is_ld and h <= ld_price + 0.005
         bars.append(KLineBar(
             date=s.date,
-            open_price=0.0,
+            open_price=o or 0.0,
             close_price=close,
-            high_price=0.0,
-            low_price=0.0,
+            high_price=h or 0.0,
+            low_price=lo or 0.0,
             pct_change=s.pct_change or 0.0,
             turnover_rate=s.turnover_rate,   # None 保持 None＝未知，不降级成0.0
             is_limit_up=is_lu,
             is_limit_down=is_ld,
-            is_broken_board=bool(s.is_broken_board),
-            # DB 重建无 OHLC，一字板沿用快照落库值（保留历史判定）
-            is_one_word_limit_up=bool(s.is_one_word_limit_up),
-            is_one_word_limit_down=bool(s.is_one_word_limit_down),
+            is_broken_board=is_bb,
+            is_one_word_limit_up=is_owu,
+            is_one_word_limit_down=is_owd,
         ))
         prev_close = close
     return bars
@@ -625,6 +638,93 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
     db.commit()
     log.info(f"  [掉出池补结算] 结算 {fixed} 只，拿不到数据清空 {cleared} 只")
     return fixed
+
+
+
+def _backfill_history_from_dump(db, target_date: date, fuyao_key, log) -> int:
+    """
+    用已下载的 dump 给**库里全部股票**补历史快照，零额外请求。
+
+    治的是"放空造成缺口"这个根因。现在只有候选池内的股票每天写快照（今天 146 只
+    /共 2417 只），一只票掉出池子就断档；等它回来，缺口往往 26~65 天，dump 的 10 天
+    接不上，只能 65 天全量拉。2026-08-27 盘中实测：dump 命中 138/142，回落的 4 只
+    **全部**是 26~65 天缺口——正是这一类。
+
+    补齐之后缺口永远不超过 1 天，dump 必定接得上；`<60条快照` 的 full_group 也会在
+    60 个交易日内自然消化，只剩真正的新股上市。
+
+    三条约束：
+    1. **只补 date < target_date 的历史日**，当日那一行永远归主流程写。这样对
+       `_refresh_sector_stats`（只读 date == target_date）零影响——板块涨停数、
+       情绪温度、建议仓位一个数都不会变。这是刻意的：口径变更不该搭这趟车。
+    2. **已存在的行绝不覆盖**，跟 full_group 自举同一条规矩。主流程写的行带着
+       选股API的权威涨跌停标记，dump 推算的不该盖掉它。
+    3. **只写 K 线原始字段**（OHLC/收盘/涨跌幅/涨跌停标志），不写连板数、涨停天数、
+       评分、阶段这些窗口统计——那些要完整窗口才算得准，这里没有。
+    """
+    if not fuyao_key:
+        return 0
+    stock_rows = db.query(Stock.id, Stock.code, Stock.is_st).all()
+    if not stock_rows:
+        return 0
+    wanted = {r[1]: bool(r[2]) for r in stock_rows}
+    sid_by_code = {r[1]: r[0] for r in stock_rows}
+
+    try:
+        with daily_k_dump(fuyao_key, require_date=target_date) as dump_path:
+            if not dump_path:
+                return 0
+            bars_map = load_bars(dump_path, wanted)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"历史快照补全跳过（dump 不可用：{type(e).__name__}）")
+        return 0
+    if not bars_map:
+        return 0
+
+    dates = sorted({b.date for bars in bars_map.values() for b in bars if b.date < target_date})
+    if not dates:
+        return 0
+    existing = {
+        (r[0], r[1])
+        for r in db.query(StockDailySnapshot.stock_id, StockDailySnapshot.date)
+        .filter(StockDailySnapshot.date >= dates[0],
+                StockDailySnapshot.date <= dates[-1]).all()
+    }
+
+    added = 0
+    for code, bars in bars_map.items():
+        sid = sid_by_code.get(code)
+        if not sid:
+            continue
+        for bar in bars:
+            if bar.date >= target_date or (bar.close_price or 0) <= 0:
+                continue
+            if (sid, bar.date) in existing:
+                continue
+            db.add(StockDailySnapshot(
+                stock_id=sid, date=bar.date,
+                close_price=round(bar.close_price, 4),
+                pct_change=round(bar.pct_change or 0.0, 4),
+                open_price=(round(bar.open_price, 4) if bar.open_price else None),
+                high_price=(round(bar.high_price, 4) if bar.high_price else None),
+                low_price=(round(bar.low_price, 4) if bar.low_price else None),
+                turnover_rate=None,          # dump 不提供换手率，None＝不知道，不写0
+                is_limit_up=bar.is_limit_up,
+                is_limit_down=bar.is_limit_down,
+                is_broken_board=bar.is_broken_board,
+                is_one_word_limit_up=bar.is_one_word_limit_up,
+                is_one_word_limit_down=bar.is_one_word_limit_down,
+                is_settled=True,             # dump 收盘后生成，历史日必然是终值
+            ))
+            existing.add((sid, bar.date))
+            added += 1
+            if added % 2000 == 0:
+                db.commit()
+    if added:
+        db.commit()
+        log.info(f"历史快照补全：{added} 条（{len(bars_map)} 只股票 × {len(dates)} 个交易日，"
+                 f"用已下载的 dump，零额外请求）")
+    return added
 
 
 def _refresh_sector_stats(db, target_date) -> None:
@@ -1649,6 +1749,11 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                         stock_id=sid, date=bar.date,
                         close_price=round(bar.close_price, 4),
                         pct_change=round(bar.pct_change or 0.0, 4),
+                        # OHLC：0 表示这根 bar 自己就没有（比如从快照重建来的），
+                        # 落 NULL 而不是 0.0——0.0 会被下游当成"最高价是0元"
+                        open_price=(round(bar.open_price, 4) if bar.open_price else None),
+                        high_price=(round(bar.high_price, 4) if bar.high_price else None),
+                        low_price=(round(bar.low_price, 4) if bar.low_price else None),
                         # None＝该数据源没有换手率，落 NULL 而不是假的0.0
                         turnover_rate=(round(bar.turnover_rate, 4)
                                        if bar.turnover_rate is not None else None),
@@ -1663,6 +1768,15 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             if backfilled:
                 db.commit()
                 log.info(f"历史快照自举：补录 {backfilled} 条（full_group {len(full_group)} 只，下次可走DB重建）")
+
+        # ── 第4.06步：全库历史快照补全（用已下载的 dump，零额外请求）────────
+        # 上面的自举只管 full_group 那几只，缺口的大头在"掉出池子放空一段时间"的
+        # 股票身上。见 _backfill_history_from_dump 的 docstring。
+        try:
+            _backfill_history_from_dump(db, target_date, _fuyao_key, log)
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"历史快照补全失败（不影响主流程）: {type(e).__name__}: {e}")
+            db.rollback()
 
         # ── 第4.1步：涨跌停对账 ──────────────────────────────────
         # 当日快照中仍标着涨跌停、但已不在选股 API 名单里的股票，强制清除标记。

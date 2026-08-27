@@ -67,6 +67,15 @@ class StockDailySnapshot(Base):
     pct_change = Column(Float, nullable=True)      # 当日涨跌幅 %
     turnover_rate = Column(Float, nullable=True)   # 换手率 %
 
+    # OHLC（2026-08-27新增）。此前快照只存 close_price，从快照重建 KLineBar 时
+    # open/high/low 一律填 0.0 —— 而**炸板判定要 high**（盘中最高价是否触及涨停价）、
+    # 一字板判定要 high/low。所以历史 bar 的这两个标志只能沿用当初落库的值，重算不了；
+    # 一旦当初落库时判错，就永久错下去，没有任何机制能纠正。
+    # NULL = 这一行是加列之前写的，重建时仍退回 0.0（老行为），不伪造 OHLC。
+    open_price = Column(Float, nullable=True)
+    high_price = Column(Float, nullable=True)
+    low_price = Column(Float, nullable=True)
+
     # 这一行的当日观测是不是**收盘之后**取的（2026-08-26新增）。
     # False = 盘中快照，close_price 是当时的现价而不是收盘价，随时会变。
     #
