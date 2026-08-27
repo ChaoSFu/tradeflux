@@ -573,9 +573,12 @@ const CORE_PICK = (r: LimitUpRadarCoreStock, k: CoreSortKey) => ({
  *
  * 列序按"两边都有的在前，只有今日涨停才有的在后"排（用户 2026-08-26 定）：
  *   1-13  股票/核心角色/今日/涨停次数×3/60日高板/区间涨幅×3/龙头分/风险分/说明 ← 三表共有
- *   14,15,18  板位/首封/炸板          ← 今日涨停 + 今日炸板有，核心锚为空
- *   16,17     终封/封单              ← 只有今日涨停有（炸板没封住，本来就没有）
- *   19-22     距涨停/振幅/换手/成交额  ← 只有今日炸板有
+ *   14-16 板位/首封/炸板          ← 今日涨停 + 今日炸板都有
+ *   17,18 终封/封单               ← 只有今日涨停有（炸板没封住，本来就没有）
+ *   19-22 距涨停/振幅/换手/成交额  ← 只有今日炸板有
+ * 共有的三列排最前，是为了让两张表的空白都尽量靠后：今日涨停的空白全在 19-22 的
+ * 尾部（看不见），今日炸板只剩 17/18 两列。全部列都给固定宽，不留自适应列——
+ * 留一个的话它会把整行剩余空间全吸走，那正是"换手到成交额之间空一大片"的成因。
  * 说明列（召回理由/涨停原因）**紧挨风险分**，不隔着一片空白——核心锚原来把它甩到
  * 第18列，中间空 5 列，读一行要横跨半个屏幕。现在核心锚的空白全在最右边，
  * 视觉上等于不存在。
@@ -592,28 +595,33 @@ const CORE_PICK = (r: LimitUpRadarCoreStock, k: CoreSortKey) => ({
 function RadarCols() {
   return (
     <colgroup>
-      <col className="w-[8rem]" />{/* 股票：名称4字48px + 代码6位42px + 间距 ≈ 100px */}
-      <col className="w-[6.4rem]" />{/* 核心角色：3个两字徽章 ≈ 116px */}
-      <col className="w-[4rem]" />{/* 今日 */}
-      <col className="w-[4rem]" />{/* 10日涨停：宽度由表头4字+排序箭头决定，不是数据 */}
-      <col className="w-[4rem]" />{/* 20日涨停 */}
-      <col className="w-[4rem]" />{/* 60日涨停 */}
-      <col className="w-[4rem]" />{/* 60日高板 */}
-      <col className="w-[4.2rem]" />{/* 10日涨幅：+120.3% 共7字符 */}
-      <col className="w-[4.2rem]" />{/* 20日涨幅 */}
-      <col className="w-[4.2rem]" />{/* 60日涨幅 */}
-      <col className="w-[3.4rem]" />{/* 龙头分 */}
-      <col className="w-[3.4rem]" />{/* 风险分 */}
-      <col className="w-[4.2rem]" />{/* 说明：截断到6字 ≈ 72px */}
-      <col className="w-[4.8rem]" />{/* 板位 —— 以下5列核心锚为空 */}
+      <col className="w-[7.4rem]" />{/* 股票：名称4字48px + 代码6位42px + 间距 ≈ 100px */}
+      <col className="w-[6rem]" />{/* 核心角色：3个两字徽章 ≈ 116px */}
+      <col className="w-[3.8rem]" />{/* 今日 */}
+      <col className="w-[3.8rem]" />{/* 10日涨停：宽度由表头4字+排序箭头决定，不是数据 */}
+      <col className="w-[3.8rem]" />{/* 20日涨停 */}
+      <col className="w-[3.8rem]" />{/* 60日涨停 */}
+      <col className="w-[3.8rem]" />{/* 60日高板 */}
+      <col className="w-[4rem]" />{/* 10日涨幅：+120.3% 共7字符 */}
+      <col className="w-[4rem]" />{/* 20日涨幅 */}
+      <col className="w-[4rem]" />{/* 60日涨幅 */}
+      <col className="w-[3.2rem]" />{/* 龙头分 */}
+      <col className="w-[3.2rem]" />{/* 风险分 */}
+      <col className="w-[3.8rem]" />{/* 说明：截断到6字 ≈ 72px */}
+      <col className="w-[4.4rem]" />{/* 板位 —— 14-16 今日涨停+今日炸板都有 */}
       <col className="w-[3.2rem]" />{/* 首封：10:00 */}
-      <col className="w-[3.2rem]" />{/* 终封 */}
-      <col className="w-[3.6rem]" />{/* 封单：0.61亿 */}
-      <col className="w-[3rem]" />{/* 炸板 */}
-      <col className="w-[3.8rem]" />{/* 距涨停 —— 以下4列只有今日炸板有 */}
+      <col className="w-[3rem]" />{/* 炸板：紧跟首封（2026-08-27用户提出）。原来夹在
+                                       终封/封单之后，今日炸板那张表就在首封和炸板
+                                       之间空了两列；挪过来之后空白只剩 17/18，而且
+                                       "首封→炸板几次→终封"读起来正好是一条时间线 */}
+      <col className="w-[3.2rem]" />{/* 终封 —— 17/18 只有今日涨停有 */}
+      <col className="w-[3.4rem]" />{/* 封单：0.61亿 */}
+      <col className="w-[3.6rem]" />{/* 距涨停 —— 19-22 只有今日炸板有 */}
       <col className="w-[3rem]" />{/* 振幅 */}
       <col className="w-[3rem]" />{/* 换手 */}
-      <col />{/* 成交额 */}
+      <col className="w-[3.8rem]" />{/* 成交额：给固定宽。原来是唯一的自适应列，
+                                        table-fixed 下会把整行剩余空间全吸走，
+                                        今日炸板的换手和成交额之间因此空一大片 */}
     </colgroup>
   )
 }
@@ -729,9 +737,9 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
             <th className="text-left font-normal py-1.5 pr-3" title="涨停原因（催化剂，非板块归属）">涨停原因</th>
             <SortTh col="board" label="板位" {...ctl} align="left" />
             <SortTh col="first" label="首封" {...ctl} title="首次封板时间" />
+            <SortTh col="broken" label="炸板" {...ctl} title="当日开板次数。首封→炸板几次→终封，正好是一条时间线" />
             <SortTh col="last" label="终封" {...ctl} title="最终封板时间；与首封不同说明中途开过板" />
             <SortTh col="seal" label="封单" {...ctl} title="封单额；— 表示东方财富未提供该字段，不是0" />
-            <SortTh col="broken" label="炸板" {...ctl} />
             <PadTh n={4} />{/* 19-22：距涨停/振幅/换手/成交额，只有今日炸板有 */}
           </tr>
         </thead>
@@ -769,14 +777,14 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
                 </td>
                 <td className="py-1.5 pr-2 text-right font-mono whitespace-nowrap">{fmtTime(r.first_limit_time)}</td>
                 <td className={cn('py-1.5 pr-2 text-right font-mono whitespace-nowrap',
+                                  r.broken_times ? 'text-warn' : 'text-text-muted')}>
+                  {r.broken_times == null ? '—' : r.broken_times === 0 ? '0' : `${r.broken_times}次`}
+                </td>
+                <td className={cn('py-1.5 pr-2 text-right font-mono whitespace-nowrap',
                                   reopened ? 'text-warn' : 'text-text-secondary')}>
                   {fmtTime(r.last_limit_time)}
                 </td>
                 <td className="py-1.5 pr-2 text-right font-mono whitespace-nowrap">{fmtSeal(r.seal_amount)}</td>
-                <td className={cn('py-1.5 pr-2 text-right font-mono whitespace-nowrap',
-                                  r.broken_times ? 'text-warn' : 'text-text-muted')}>
-                  {r.broken_times == null ? '—' : r.broken_times === 0 ? '0' : `${r.broken_times}次`}
-                </td>
                 <Pad n={4} />
               </tr>
             )
@@ -837,8 +845,8 @@ function BrokenTable({ rows, ctl }: { rows: LimitUpRadarBrokenStock[]; ctl: Sort
             <th className="text-left font-normal py-1.5 pr-3">召回理由</th>
             <SortTh col="board" label="板位" {...ctl} align="left" />
             <SortTh col="first" label="首封" {...ctl} title="首次触及涨停的时间。炸板池没有最终封板时间——它就是没封住" />
-            <PadTh n={2} />{/* 终封/封单：炸板没封住，本来就没有这两个 */}
             <SortTh col="broken" label="炸板" {...ctl} title="当日开板次数；反复开合说明多空分歧极大" />
+            <PadTh n={2} />{/* 终封/封单：炸板没封住，本来就没有这两个 */}
             <SortTh col="gap" label="距涨停" {...ctl}
                     title="收盘价相对当日涨停价的差距。-0.5% 是打了一下就走，-8% 是封了又塌——封板不坚决的程度全在这一列" />
             <SortTh col="amp" label="振幅" {...ctl} />
@@ -874,12 +882,12 @@ function BrokenTable({ rows, ctl }: { rows: LimitUpRadarBrokenStock[]; ctl: Sort
                 )}
               </td>
               <td className="py-1.5 pr-2 text-right font-mono whitespace-nowrap">{fmtTime(r.first_limit_time)}</td>
-              <Pad n={2} />
               <td className={cn('py-1.5 pr-2 text-right font-mono whitespace-nowrap',
                                 (r.broken_times ?? 0) >= 3 ? 'text-down font-bold'
                                   : r.broken_times ? 'text-warn' : 'text-text-muted')}>
                 {r.broken_times == null ? '—' : `${r.broken_times}次`}
               </td>
+              <Pad n={2} />
               <td className={cn('py-1.5 pr-2 text-right font-mono whitespace-nowrap',
                                 r.gap_to_limit_pct == null ? 'text-text-muted'
                                   : r.gap_to_limit_pct <= -5 ? 'text-down font-bold'
@@ -894,7 +902,7 @@ function BrokenTable({ rows, ctl }: { rows: LimitUpRadarBrokenStock[]; ctl: Sort
               <td className="py-1.5 pr-2 text-right font-mono text-text-secondary whitespace-nowrap">
                 {r.turnover_rate == null ? '—' : `${r.turnover_rate.toFixed(1)}%`}
               </td>
-              <td className="py-1.5 text-right font-mono text-text-secondary whitespace-nowrap">
+              <td className="py-1.5 pr-2 text-right font-mono text-text-secondary whitespace-nowrap">
                 {fmtSeal(r.amount)}
               </td>
             </tr>
