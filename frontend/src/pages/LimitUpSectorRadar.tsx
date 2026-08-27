@@ -48,6 +48,7 @@ const ROLE_LABEL: Record<W2SCoreRole, { text: string; full: string; variant: 'dr
  * 板块排序主键的展示名与说明。键名与次级键规则由后端 SECTOR_SORT_KEYS 定义，
  * 这里只做展示——排序逻辑不在前端重写一遍，否则两边迟早对不上。
  */
+const DEFAULT_SECTOR_SORT: SectorSortKey = 'board_height'
 const SECTOR_SORT_ORDER: SectorSortKey[] =
   ['board_height', 'broken_streak_height', 'continuation_count', 'today_limit_up_count']
 const SECTOR_SORT_LABEL: Record<SectorSortKey, { name: string; tip: string }> = {
@@ -191,12 +192,11 @@ export default function LimitUpSectorRadar() {
   const qc = useQueryClient()
   const [includeCore, setIncludeCore] = useState(true)
   const [primaryOnly, setPrimaryOnly] = useState(false)
-  // 板块排序主键，点按钮循环。每个键回答的是不同的问题，所以做成切换而不是
-  // 加权合并——加权总分说不清"为什么这个板块排在前面"。
+  // 板块排序主键，下拉选。每个键回答的是不同的问题，所以做成切换而不是加权合并
+  // ——加权总分说不清"为什么这个板块排在前面"。
   // 次级键各不相同（见 SECTOR_SORT_LABEL 的 tip），由后端 SECTOR_SORT_KEYS 定义，
   // 前端只负责传键名，不在这里再写一遍排序规则。
-  const [sectorSort, setSectorSort] = useState<SectorSortKey>('board_height')
-  const sortIdx = SECTOR_SORT_ORDER.indexOf(sectorSort)
+  const [sectorSort, setSectorSort] = useState<SectorSortKey>(DEFAULT_SECTOR_SORT)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [refreshErr, setRefreshErr] = useState<string | null>(null)
   const coreSort = useSort<CoreSortKey>()
@@ -288,19 +288,28 @@ export default function LimitUpSectorRadar() {
                      onChange={(e) => setPrimaryOnly(e.target.checked)} />
               仅主板块
             </label>
-            {/* 排序切换：按钮上直接写当前排的是什么，不用猜；悬停给出四个键各自
-                的含义和次级键。四态循环而不是下拉，是因为这四个选项本来就该被
-                依次扫一遍对照着看，点四下比开合下拉更快。 */}
-            <button
-              onClick={() => setSectorSort(
-                SECTOR_SORT_ORDER[(sortIdx + 1) % SECTOR_SORT_ORDER.length])}
-              title={'点击循环切换板块排序主键：\n'
-                     + SECTOR_SORT_ORDER.map((k) => `· ${SECTOR_SORT_LABEL[k].name} —— ${SECTOR_SORT_LABEL[k].tip}`).join('\n')}
-              className="text-xs px-2.5 py-1 rounded border border-bg-border text-text-secondary
-                         hover:text-text-primary hover:border-accent transition-colors whitespace-nowrap"
-            >
-              排序：{SECTOR_SORT_LABEL[sectorSort].name}
-            </button>
+            {/* 排序：下拉直选（2026-08-27 用户改的，原来是点击四态循环）。
+                沿用仓库里已有的 select 写法（见 LimitMovesDashboard 的日期选择），
+                不另造一套下拉。非默认值时边框和文字变强调色，一眼能看出"现在不是
+                默认排序"——否则切过之后过一会儿就忘了自己切过。 */}
+            <label className="flex items-center gap-1.5 text-xs text-text-secondary whitespace-nowrap">
+              排序
+              <select
+                value={sectorSort}
+                onChange={(e) => setSectorSort(e.target.value as SectorSortKey)}
+                title={SECTOR_SORT_LABEL[sectorSort].tip}
+                className={cn('bg-bg-card border rounded-lg px-2 py-1 text-xs focus:outline-none cursor-pointer',
+                  sectorSort === DEFAULT_SECTOR_SORT
+                    ? 'border-bg-border text-text-primary'
+                    : 'border-accent/50 text-accent')}
+              >
+                {SECTOR_SORT_ORDER.map((k) => (
+                  <option key={k} value={k} title={SECTOR_SORT_LABEL[k].tip}>
+                    {SECTOR_SORT_LABEL[k].name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button
               onClick={() => refresh.mutate()}
               disabled={refresh.isPending || busy}
