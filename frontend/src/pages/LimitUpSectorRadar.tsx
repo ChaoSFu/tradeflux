@@ -68,7 +68,7 @@ const coreVerdictTrustworthy = (s: LimitUpRadarSector) =>
 /** 涨停次数 10/20/60 三个独立单元格（拆开才能各自排序）。0 用暗色，避免一排0抢视线 */
 function LuCells({ a, b, c }: { a: number | null; b: number | null; c: number | null }) {
   const cell = (v: number | null, i: number) => (
-    <td key={i} className={cn('py-1.5 pr-3 text-right font-mono tabular-nums',
+    <td key={i} className={cn('py-1.5 pr-2 text-right font-mono tabular-nums',
                               v ? 'text-warn' : 'text-text-muted/50')}>
       {v ?? '—'}
     </td>
@@ -79,7 +79,7 @@ function LuCells({ a, b, c }: { a: number | null; b: number | null; c: number | 
 /** 区间涨幅 10/20/60 三个独立单元格。东财真实复合区间收益，跟活跃股池的近似算法不同 */
 function ChgCells({ a, b, c }: { a: number | null; b: number | null; c: number | null }) {
   const cell = (v: number | null, i: number) => (
-    <td key={i} className={cn('py-1.5 pr-3 text-right font-mono tabular-nums text-xs', pctClass(v))}>
+    <td key={i} className={cn('py-1.5 pr-2 text-right font-mono tabular-nums text-xs', pctClass(v))}>
       {v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`}
     </td>
   )
@@ -552,27 +552,32 @@ const CORE_PICK = (r: LimitUpRadarCoreStock, k: CoreSortKey) => ({
  * 核心角色排在股票之后：它跟股票一样是"这一行是谁"的身份信息，不是指标。
  * 全部列都给固定宽度，容器更宽时浏览器按比例均摊多余空间——两表规则相同，
  * 所以窗口怎么变都对齐。
+ *
+ * 宽度按 **12px 字号（text-xs）** 量的：1个汉字12px、等宽数字约7px。第一版是按
+ * 16px 估的，结果每列都宽出三成——股票列给了 13rem(208px) 而内容只有约 100px，
+ * 白扔一半，一路把后面的列挤出视野，用户要横向拖动才看得到板位/首封/封单
+ * （2026-08-27 反馈）。合计从 106rem 收到 81rem，少了约 400px。
  */
 function RadarCols() {
   return (
     <colgroup>
-      <col className="w-[13rem]" />{/* 股票 */}
-      <col className="w-[9rem]" />{/* 核心角色 */}
-      <col className="w-[5rem]" />{/* 今日 */}
-      <col className="w-[5rem]" />{/* 10日涨停 */}
-      <col className="w-[5rem]" />{/* 20日涨停 */}
-      <col className="w-[5rem]" />{/* 60日涨停 */}
-      <col className="w-[5rem]" />{/* 60日高板 */}
-      <col className="w-[5.5rem]" />{/* 10日涨幅 */}
-      <col className="w-[5.5rem]" />{/* 20日涨幅 */}
-      <col className="w-[5.5rem]" />{/* 60日涨幅 */}
-      <col className="w-[4.5rem]" />{/* 龙头分 */}
-      <col className="w-[4.5rem]" />{/* 风险分 */}
-      <col className="w-[9rem]" />{/* 说明（召回理由 / 涨停原因）*/}
-      <col className="w-[6.5rem]" />{/* 板位 —— 以下5列核心锚为空 */}
-      <col className="w-[4.5rem]" />{/* 首封 */}
-      <col className="w-[4.5rem]" />{/* 终封 */}
-      <col className="w-[5rem]" />{/* 封单 */}
+      <col className="w-[9rem]" />{/* 股票：名称4字48px + 代码6位42px + 间距 ≈ 100px */}
+      <col className="w-[7.5rem]" />{/* 核心角色：3个两字徽章 ≈ 116px */}
+      <col className="w-[4.2rem]" />{/* 今日 */}
+      <col className="w-[4.2rem]" />{/* 10日涨停：宽度由表头4字+排序箭头决定，不是数据 */}
+      <col className="w-[4.2rem]" />{/* 20日涨停 */}
+      <col className="w-[4.2rem]" />{/* 60日涨停 */}
+      <col className="w-[4.2rem]" />{/* 60日高板 */}
+      <col className="w-[4.4rem]" />{/* 10日涨幅：+120.3% 共7字符 */}
+      <col className="w-[4.4rem]" />{/* 20日涨幅 */}
+      <col className="w-[4.4rem]" />{/* 60日涨幅 */}
+      <col className="w-[3.6rem]" />{/* 龙头分 */}
+      <col className="w-[3.6rem]" />{/* 风险分 */}
+      <col className="w-[6.5rem]" />{/* 说明：截断到8字 ≈ 96px */}
+      <col className="w-[6.2rem]" />{/* 板位 —— 以下5列核心锚为空 */}
+      <col className="w-[3.4rem]" />{/* 首封：10:00 */}
+      <col className="w-[3.4rem]" />{/* 终封 */}
+      <col className="w-[3.8rem]" />{/* 封单：0.61亿 */}
       <col />{/* 炸板 */}
     </colgroup>
   )
@@ -637,11 +642,11 @@ function CoreTable({ rows, ctl }: { rows: LimitUpRadarCoreStock[]; ctl: SortCtl<
                 {r.is_broken_today && <Badge variant="down" className="ml-1.5">炸板</Badge>}
               </td>
               <td className="py-1.5 pr-3"><RoleTags roles={r.core_roles} reasons={r.core_reasons} /></td>
-              <td className={cn('py-1.5 pr-3 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
+              <td className={cn('py-1.5 pr-2 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
                 {fmtPct(r.pct_change)}
               </td>
               <LuCells a={r.limit_up_days_10d} b={r.limit_up_days_20d} c={r.limit_up_days_60d} />
-              <td className="py-1.5 pr-3 text-right font-mono text-dragon tabular-nums">{r.board_count_60d || '—'}</td>
+              <td className="py-1.5 pr-2 text-right font-mono text-dragon tabular-nums">{r.board_count_60d || '—'}</td>
               <ChgCells a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
               <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.leader_score} fresh={r.scores_as_of_today} tone="dragon" /></td>
               <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.risk_score} fresh={r.scores_as_of_today} tone="danger" /></td>
@@ -705,11 +710,11 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
                   </Link>
                 </td>
                 <td className="py-1.5 pr-3"><RoleTags roles={r.core_roles} reasons={r.core_reasons} /></td>
-                <td className={cn('py-1.5 pr-3 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
+                <td className={cn('py-1.5 pr-2 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
                   {fmtPct(r.pct_change)}
                 </td>
                 <LuCells a={r.limit_up_days_10d} b={r.limit_up_days_20d} c={r.limit_up_days_60d} />
-                <td className="py-1.5 pr-3 text-right font-mono text-dragon tabular-nums">{r.board_count_60d || '—'}</td>
+                <td className="py-1.5 pr-2 text-right font-mono text-dragon tabular-nums">{r.board_count_60d || '—'}</td>
                 <ChgCells a={r.interval_chg_10d} b={r.interval_chg_20d} c={r.interval_chg_60d} />
                 <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.leader_score} fresh={r.scores_as_of_today} tone="dragon" /></td>
                 <td className="py-1.5 pr-3 text-right"><ScoreCell v={r.risk_score} fresh={r.scores_as_of_today} tone="danger" /></td>
@@ -725,13 +730,13 @@ function TodayTable({ rows, ctl }: { rows: LimitUpRadarTodayStock[]; ctl: SortCt
                     </span>
                   )}
                 </td>
-                <td className="py-1.5 pr-3 text-right font-mono whitespace-nowrap">{fmtTime(r.first_limit_time)}</td>
-                <td className={cn('py-1.5 pr-3 text-right font-mono whitespace-nowrap',
+                <td className="py-1.5 pr-2 text-right font-mono whitespace-nowrap">{fmtTime(r.first_limit_time)}</td>
+                <td className={cn('py-1.5 pr-2 text-right font-mono whitespace-nowrap',
                                   reopened ? 'text-warn' : 'text-text-secondary')}>
                   {fmtTime(r.last_limit_time)}
                 </td>
-                <td className="py-1.5 pr-3 text-right font-mono whitespace-nowrap">{fmtSeal(r.seal_amount)}</td>
-                <td className={cn('py-1.5 pr-3 text-right font-mono whitespace-nowrap',
+                <td className="py-1.5 pr-2 text-right font-mono whitespace-nowrap">{fmtSeal(r.seal_amount)}</td>
+                <td className={cn('py-1.5 pr-2 text-right font-mono whitespace-nowrap',
                                   r.broken_times ? 'text-warn' : 'text-text-muted')}>
                   {r.broken_times == null ? '—' : r.broken_times === 0 ? '0' : `${r.broken_times}次`}
                 </td>
@@ -820,10 +825,10 @@ function BrokenTable({ rows, ctl }: { rows: LimitUpRadarBrokenStock[]; ctl: Sort
                   </span>
                 )}
               </td>
-              <td className={cn('py-1.5 pr-3 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
+              <td className={cn('py-1.5 pr-2 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
                 {fmtPct(r.pct_change)}
               </td>
-              <td className={cn('py-1.5 pr-3 text-right font-mono whitespace-nowrap',
+              <td className={cn('py-1.5 pr-2 text-right font-mono whitespace-nowrap',
                                 r.gap_to_limit_pct == null ? 'text-text-muted'
                                   : r.gap_to_limit_pct <= -5 ? 'text-down font-bold'
                                   : r.gap_to_limit_pct <= -2 ? 'text-warn' : 'text-text-secondary')}
@@ -831,19 +836,19 @@ function BrokenTable({ rows, ctl }: { rows: LimitUpRadarBrokenStock[]; ctl: Sort
                     ? `收盘 ${r.price} / 涨停价 ${r.limit_price}` : undefined}>
                 {fmtPct(r.gap_to_limit_pct)}
               </td>
-              <td className={cn('py-1.5 pr-3 text-right font-mono whitespace-nowrap',
+              <td className={cn('py-1.5 pr-2 text-right font-mono whitespace-nowrap',
                                 (r.broken_times ?? 0) >= 3 ? 'text-down font-bold'
                                   : r.broken_times ? 'text-warn' : 'text-text-muted')}>
                 {r.broken_times == null ? '—' : `${r.broken_times}次`}
               </td>
-              <td className="py-1.5 pr-3 text-right font-mono whitespace-nowrap">{fmtTime(r.first_limit_time)}</td>
-              <td className="py-1.5 pr-3 text-right font-mono text-text-secondary whitespace-nowrap">
+              <td className="py-1.5 pr-2 text-right font-mono whitespace-nowrap">{fmtTime(r.first_limit_time)}</td>
+              <td className="py-1.5 pr-2 text-right font-mono text-text-secondary whitespace-nowrap">
                 {r.amplitude == null ? '—' : `${r.amplitude.toFixed(1)}%`}
               </td>
-              <td className="py-1.5 pr-3 text-right font-mono text-text-secondary whitespace-nowrap">
+              <td className="py-1.5 pr-2 text-right font-mono text-text-secondary whitespace-nowrap">
                 {r.turnover_rate == null ? '—' : `${r.turnover_rate.toFixed(1)}%`}
               </td>
-              <td className="py-1.5 pr-3 text-right font-mono text-text-secondary whitespace-nowrap">
+              <td className="py-1.5 pr-2 text-right font-mono text-text-secondary whitespace-nowrap">
                 {fmtSeal(r.amount)}
               </td>
               <NoteCell text={r.core_reasons.join(' · ') || null} />
