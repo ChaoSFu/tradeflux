@@ -349,8 +349,13 @@ def test_北交所代码后缀必须是BJ(db):
     assert f("000001") == "SZ" and f("300333") == "SZ"
 
 
-def test_补全只数报本次而不是当天累计(db):
-    """盘中多跑几次会出现"18 只不在名单里，补到 20 只"这种自相矛盾的日志。"""
+def test_补全只数必须跟本次要补的只数对得上(db):
+    """
+    这个数 2026-08-27 一天之内报错了两次，方向相反：
+      一版返回当天累计 → "18 只不在名单里，补到 20 只"（多报，分子比分母大）
+      一版只计新增覆盖 → "18 只…补到 1 只"（少报，17 只刷新被读成失败）
+    分母是本次要补的只数，分子就必须是这批里成功的个数。
+    """
     from app.services.limit_up_detail_service import backfill_interval_chg
     from unittest.mock import patch
     with patch("app.services.limit_up_detail_service.get_api_key", return_value="k"), \
@@ -358,6 +363,11 @@ def test_补全只数报本次而不是当天累计(db):
                return_value={10: 5.0, 20: 8.0, 60: 12.0}):
         n1, _ = backfill_interval_chg(db, TODAY, [("600001", "SH")], max_workers=1, delay=0)
         n2, _ = backfill_interval_chg(db, TODAY, [("600002", "SH")], max_workers=1, delay=0)
+        # 第三次重补 600001：它已经有值了，但这批传进来 1 只、成功 1 只，就该报 1
         n3, _ = backfill_interval_chg(db, TODAY, [("600001", "SH")], max_workers=1, delay=0)
-    assert n1 == 1 and n2 == 1, "每次只报本次新补到的"
-    assert n3 == 0, "已经有的不该再计一次"
+        # 一次两只，其中一只已有值 → 仍然报 2（分母是 2，分子就得是 2）
+        n4, _ = backfill_interval_chg(db, TODAY, [("600001", "SH"), ("600003", "SH")],
+                                      max_workers=1, delay=0)
+    assert (n1, n2, n3, n4) == (1, 1, 1, 2)
+    from app.services.limit_up_detail_service import get_interval_chg
+    assert set(get_interval_chg(db, TODAY)) == {"600001", "600002", "600003"}

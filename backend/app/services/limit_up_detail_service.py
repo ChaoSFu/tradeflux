@@ -317,7 +317,7 @@ def backfill_interval_chg(db: Session, trade_date: date, codes_markets,
     这个任务不在关键路径上（补不到就显示 —），但 dump 在。万一哪天真见到 4001，
     先怀疑是不是按 key 跨端点共享配额，别只盯着这一处。
 
-    返回 (**本次**新补到的股票数, 失败明细)。**失败必须报出来**：第一版只返回一个数字，
+    返回 (**本次这批里成功拿到数据的只数**, 失败明细)。**失败必须报出来**：第一版只返回一个数字，
     生产上 22 只补到 21 只，日志说不清那 1 只是"请求失败"还是"上市不满60个交易日
     所以本来就没有"——查了腾讯才发现 603615 有 81 根完整历史，是请求挂了。
     分不清故障和事实，就等于没有监控。
@@ -330,9 +330,13 @@ def backfill_interval_chg(db: Session, trade_date: date, codes_markets,
 
     out: Dict[str, dict] = get_interval_chg(db, trade_date)
     failures: List[str] = []
-    added = 0          # **本次**新补到的只数。返回 len(out) 是错的——那是当天累计，
-                       # 盘中多跑几次就会出现"18 只不在名单里，补到 20 只"这种自相
-                       # 矛盾的日志（2026-08-27 生产实见）。数字要能对得上才有意义。
+    # 计的是**本次这批里成功拿到数据的只数**，跟传进来的 codes_markets 一一对应。
+    # 这个数被改错过两次（2026-08-27 同一天）：
+    #   一版返回 len(out)，而 out 是当天累计 → "18 只不在名单里，补到 20 只"，多报
+    #   一版只计"新增覆盖" → "18 只…补到 1 只"，把 17 只刷新读成失败，少报
+    # 两次都是同一个毛病：报出来的数跟句子里的另一个数对不上。分母是本次要补的
+    # 18 只，分子就必须是这 18 只里成功的个数，别的口径放这句话里都是误导。
+    succeeded = 0
 
     def _one(cm):
         code, suffix = cm
@@ -351,14 +355,13 @@ def backfill_interval_chg(db: Session, trade_date: date, codes_markets,
             # 这是本仓库反复踩的同一个坑
             got = {str(w): v for w, v in (res or {}).items() if v is not None}
             if got:
-                if code not in out:
-                    added += 1
                 out[code] = got
+                succeeded += 1
             else:
                 # 请求成功但一个窗口都算不出 = 上市太短，是事实不是故障
                 failures.append(f"{code}(历史不足)")
 
-    if not added:
+    if not succeeded:
         return 0, failures
     row = db.query(AppConfig).filter(AppConfig.key == interval_chg_key(trade_date)).first()
     if row:
@@ -367,7 +370,7 @@ def backfill_interval_chg(db: Session, trade_date: date, codes_markets,
         db.add(AppConfig(key=interval_chg_key(trade_date),
                          value=json.dumps(out, ensure_ascii=False)))
     db.commit()
-    return added, failures
+    return succeeded, failures
 
 
 def scores_key(trade_date: date) -> str:
