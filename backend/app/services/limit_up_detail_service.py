@@ -19,6 +19,7 @@ from ..models.stock import Stock
 from ..models.limit_up_detail import LimitUpDailyDetail, BrokenBoardDailyDetail
 from .eastmoney_fetcher import (
     CoreRecallDetail, StockBasicInfo, fetch_core_recall_details, fetch_klines_batch,
+    market_label,
 )
 from .limit_up_detail_fetcher import (
     SOURCE_NAME, BrokenBoardDetail, LimitUpDetail, fetch_limit_up_details,
@@ -114,7 +115,7 @@ def _ensure_stock(db: Session, code: str, name: Optional[str], market: Optional[
     stock = Stock(
         code=code,
         name=name or code,
-        market="SH" if market == 1 else "SZ",
+        market=market_label(code, market or 0),
     )
     db.add(stock)
     db.flush()

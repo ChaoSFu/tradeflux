@@ -546,3 +546,65 @@ def test_batch_still_splits_across_both_sources_when_sina_has_the_date():
     # 一个请求的成本换掉"盘中浪费半批"，划算。
     assert len(tencent_calls) == 4, "新浪能给当日bar时，两个源各担一半"
     assert set(sina_calls) - {stocks[0].code} == {s.code for s in stocks[1::2]}
+
+
+# ── 诊断信息与北交所标签（2026-08-27）──────────────────────────────────────────
+
+class TestJsonOrExplain:
+    """
+    裸 resp.json() 失败只给一句 `Expecting value: line 1 column 1 (char 0)`，
+    信息量是零。生产上五个指数每跑一次报五行这个，报了几周没人能查——
+    分不清是被拦(403)、空响应(限流的静默表现)、还是接口返回了别的格式。
+    """
+    class _R:
+        def __init__(self, code, body):
+            self.status_code, self.text = code, body
+            self.content = body.encode()
+        def json(self):
+            import json as _j
+            return _j.loads(self.text)
+
+    def _msg(self, code, body):
+        from app.services.eastmoney_fetcher import json_or_explain
+        try:
+            json_or_explain(self._R(code, body), "腾讯指数K线 sh000001 ")
+        except Exception as e:
+            return str(e)
+        return ""
+
+    def test_空响应说得出是空的(self):
+        m = self._msg(200, "")
+        assert "HTTP 200" in m and "0 字节" in m and "空" in m
+
+    def test_被拦时能看出状态码和页面内容(self):
+        m = self._msg(403, "<html><head><title>403 Forbidden</title>")
+        assert "HTTP 403" in m and "Forbidden" in m
+
+    def test_非JSON时带出body开头(self):
+        assert "var x = 1;" in self._msg(200, "var x = 1;")
+
+    def test_正常JSON照常返回(self):
+        from app.services.eastmoney_fetcher import json_or_explain
+        assert json_or_explain(self._R(200, '{"a": 1}')) == {"a": 1}
+
+
+class TestMarketLabel:
+    """
+    北交所（4/8/92 开头，东财 secid 用 market=0）原来被 `"SH" if market==1 else "SZ"`
+    统统标成 SZ。取数链路不受影响（三条路都先 _is_bj_code 按代码前缀短路），
+    咬人的是拿它去拼别的东西——920895 被拼成 920895.SZ 发给 fuyao 直接被拒。
+    """
+    def test_北交所三类前缀都标BJ(self):
+        from app.services.eastmoney_fetcher import market_label as m
+        assert m("920895", 0) == "BJ" and m("430139", 0) == "BJ" and m("830799", 0) == "BJ"
+
+    def test_沪深照旧(self):
+        from app.services.eastmoney_fetcher import market_label as m
+        assert m("600984", 1) == "SH" and m("688828", 1) == "SH"
+        assert m("000001", 0) == "SZ" and m("300333", 0) == "SZ"
+
+    def test_反向转东财market时BJ与深一致(self):
+        """现有 `1 if s.market == "SH" else 0` 对 BJ 恰好是对的——东财 secid 里
+        北交所本来就是 market=0，加了 BJ 这个值也不会打破它。"""
+        for label, expect in [("SH", 1), ("SZ", 0), ("BJ", 0)]:
+            assert (1 if label == "SH" else 0) == expect

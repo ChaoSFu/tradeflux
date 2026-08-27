@@ -123,7 +123,7 @@ from app.services.eastmoney_fetcher import (
     fetch_main_board_stocks, fetch_klines_batch, get_limit_pct, get_actual_limit_pct,
     fetch_strong_pool_codes, fetch_stock_bk_codes, fetch_limit_move_codes,
     fetch_turnover_top_stocks, fetch_stock_quotes_batch, kline_bar_from_quote,
-    bar_is_settled, probe_market_now, SH_TZ,
+    bar_is_settled, probe_market_now, market_label, SH_TZ,
 )
 from app.services.fuyao_dump import (
     get_api_key as get_fuyao_key, daily_k_dump, load_bars,
@@ -427,7 +427,7 @@ def _upsert_stock(
 
     # ── 元数据：来自选股API/列表接口，与K线新鲜度无关，始终更新 ──────────────
     stock.name = info.name
-    stock.market = "SH" if info.market == 1 else "SZ"
+    stock.market = market_label(info.code, info.market)
     stock.is_st = info.is_st
     stock.is_new_stock = stats.is_new_stock
     stock.in_strong_pool = in_pool

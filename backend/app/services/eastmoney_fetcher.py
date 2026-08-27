@@ -105,6 +105,47 @@ _HIGH_LIMIT_PREFIXES = ("688", "300", "301")
 _BJ_PREFIXES = ("4", "8", "92")
 
 
+def market_label(code: str, market: int) -> str:
+    """
+    东财的数字 market + 代码 → 存进 Stock.market 的字符串标签。
+
+    2026-08-27 加 BJ：原来各处都写死 `"SH" if market == 1 else "SZ"`，北交所
+    （4/8/92 开头，东财 secid 也用 market=0）因此全被标成了 SZ。
+
+    取数链路其实不受影响——腾讯/新浪/东财三条路都是先 `_is_bj_code(code)` 按代码
+    前缀判、再看 market，北交所短路走 bj 前缀，那个字段轮不到。真正咬人的是
+    **拿它去拼别的东西**：920895 被拼成 `920895.SZ` 发给 fuyao，直接 Unknown
+    thscode（见 fuyao_dump.thscode_suffix）；以及展示——前端拿到的交易所是错的。
+
+    判定复用 _is_bj_code，跟涨跌停(±30%)、K线前缀同一套。
+    """
+    if _is_bj_code(code):
+        return "BJ"
+    return "SH" if market == 1 else "SZ"
+
+
+def json_or_explain(resp, what: str = ""):
+    """
+    resp.json()，但解析失败时抛出**说得清是怎么回事**的错误。
+
+    裸 resp.json() 失败只会给你一句 `Expecting value: line 1 column 1 (char 0)`——
+    那句话的信息量是零：分不清 403、空响应、还是返回了 HTML 错误页。生产上五个
+    指数每跑一次就报五行这个，报了几周没人能查（2026-08-27 用户提出）。
+    带上 HTTP 状态码和 body 开头，一眼能分辨：
+      · HTTP 403/451 + HTML     → 被拦
+      · HTTP 200 + body 0 字节  → 空响应，多半是限流的静默表现
+      · HTTP 200 + 有内容但非JSON → 接口变了或返回了别的格式
+    """
+    try:
+        return resp.json()
+    except ValueError:
+        body = (resp.text or "")[:100].replace("\n", " ")
+        raise RuntimeError(
+            f"{what}HTTP {resp.status_code}，body {len(resp.content)} 字节"
+            + (f"：{body!r}" if body else "（空）")
+        ) from None
+
+
 def _is_bj_code(code: str) -> bool:
     return code.startswith(_BJ_PREFIXES)
 
@@ -728,7 +769,7 @@ def _fetch_kline_tencent(
             "param": f"{full_code},day,,,{days},qfq",
         })
         try:
-            data = resp.json()
+            data = json_or_explain(resp)
         except Exception as parse_err:  # noqa: BLE001
             # 生产上成片出现 JSONDecodeError，但本机复现不了（16只×30并发全绿），
             # 判断是服务器出口IP被限流。光看异常类型说明不了问题——把状态码和body
@@ -855,7 +896,10 @@ def _fetch_kline_group(
         try:
             bars = source_fn(stock.code, stock.market, days, stock.is_st, lp, 15)
         except Exception as e:  # noqa: BLE001
-            print(f"[fetcher] 个股 {stock.market}.{stock.code} {source_label}K线失败: {type(e).__name__}", flush=True)
+            # 只打异常类型名等于没打：ValueError 可能是空响应、可能是返回了HTML、
+            # 也可能是字段变了，三种的处理方式完全不同。把消息一起带上。
+            print(f"[fetcher] 个股 {stock.market}.{stock.code} {source_label}K线失败: "
+                  f"{type(e).__name__}: {str(e)[:120]}", flush=True)
             bars = []
         if delay_between > 0:
             time.sleep(delay_between)
@@ -1210,7 +1254,7 @@ def fetch_strong_pool_codes(
                 timeout=15,
             )
             resp.raise_for_status()
-            data = resp.json()
+            data = json_or_explain(resp)
         except Exception as e:
             print(f"[fetcher] 选股 API 第 {page_no} 页失败: {e}（本次视为不可用，回退DB）")
             complete = False
@@ -1410,7 +1454,7 @@ def fetch_turnover_top_stocks(keyword: str, page_size: int = 60) -> list[dict]:
         try:
             resp = httpx.post(STRONG_POOL_SEARCH_URL, headers=_SEARCH_HEADERS, json=body, timeout=15)
             resp.raise_for_status()
-            data = resp.json()
+            data = json_or_explain(resp)
         except Exception as e:  # noqa: BLE001
             print(f"[fetcher] 成交额选股 API 第 {page_no} 页失败: {e}（本次视为不可用）", flush=True)
             return []
@@ -1511,7 +1555,7 @@ def fetch_regulatory_unusual(is_his: str = "0", page_size: int = 500) -> list[di
             try:
                 resp = client.get(REGULATORY_UNUSUAL_URL, params=params)
                 resp.raise_for_status()
-                data = resp.json()
+                data = json_or_explain(resp)
             except Exception as e:
                 print(f"[fetcher] 重点监管名单第 {page_no} 页失败: {e}（本次视为不可用）")
                 complete = False
@@ -1561,7 +1605,7 @@ def fetch_watch_unusual_fluctuate(page_size: int = 500, timeout: int = 20) -> li
                 "client": "APP",
             })
             resp.raise_for_status()
-            data = resp.json()
+            data = json_or_explain(resp)
     except Exception as e:
         print(f"[fetcher] 严重异动预警接口失败: {e}")
         return []
@@ -1593,7 +1637,7 @@ def fetch_price_anomaly_list(page_size: int = 400, timeout: int = 15) -> tuple[l
                 "pageSize": page_size, "pageNo": 1, "sortKey": 0, "sortDir": 0,
             })
             resp.raise_for_status()
-            data = resp.json()
+            data = json_or_explain(resp)
     except Exception as e:
         print(f"[fetcher] 实时严重异动预测接口失败: {e}")
         return [], False
@@ -2246,11 +2290,11 @@ def _fetch_index_kline_tencent(secid: str, days: int = 70, timeout: int = 15) ->
     try:
         with httpx.Client(headers=TENCENT_HEADERS, timeout=timeout) as client:
             resp = client.get(TENCENT_KLINE_URL, params={"param": f"{full},day,,,{days},qfq"})
-            data = resp.json()
+            data = json_or_explain(resp, f"腾讯指数K线 {full} ")
         node = data.get("data", {}).get(full, {})
         raw = node.get("day") or node.get("qfqday") or []
     except Exception as e:
-        print(f"[fetcher] 指数 {secid} 腾讯兜底失败: {e}")
+        print(f"[fetcher] 指数 {secid} 腾讯兜底失败: {e}", flush=True)
         return []
 
     out: list[dict] = []
