@@ -749,3 +749,41 @@ def test_阈值取4而不是2或5():
     # 降高度门槛那条路会把 3只全首板 的噪音也放进来，所以不走
     assert _passes(_sec("零售概念", 3, 1), min_bh=2) is False
     assert _passes(_sec("零售概念", 3, 2), min_bh=2) is True
+
+
+# ── 断板最高板（2026-08-27 用户提出）──────────────────────────────────────────
+#
+# 神奇制药 600613 当前是首板，board_count=1，在"最高3板"的医药生物板块里毫不起眼；
+# 但东财 zttj 显示它是 11日7板——历史上打出过 7 个板，只是中间断了。这种票的市场
+# 辨识度跟一个真正的首板完全不是一回事，只看最高连板会把它埋在一堆首板里。
+
+def test_断板最高板取N大于M的累计板数():
+    from app.services.limit_up_radar_service import broken_streak_height
+    # 医药生物实盘：冀衡3日3板 / 千金2日2板 / 神奇11日7板 / 百花首板
+    rows = [{"limit_stat_days": 3, "limit_stat_count": 3},
+            {"limit_stat_days": 2, "limit_stat_count": 2},
+            {"limit_stat_days": 11, "limit_stat_count": 7},
+            {"limit_stat_days": 1, "limit_stat_count": 1}]
+    assert broken_streak_height(rows) == 7
+
+
+def test_全是连板时返回None不退化成连板的复制品():
+    """3日3板是连着的（M==N），算进来这一列就等于 board_height，没有信息量。"""
+    from app.services.limit_up_radar_service import broken_streak_height
+    assert broken_streak_height([{"limit_stat_days": 5, "limit_stat_count": 5}]) is None
+    assert broken_streak_height([{"limit_stat_days": 1, "limit_stat_count": 1}]) is None
+
+
+def test_缺字段与空列表都返回None():
+    from app.services.limit_up_radar_service import broken_streak_height
+    assert broken_streak_height([]) is None
+    assert broken_streak_height([{"limit_stat_days": None, "limit_stat_count": 7}]) is None
+    assert broken_streak_height([{}]) is None
+
+
+def test_多只断板股取最大(db):
+    from app.services.limit_up_radar_service import broken_streak_height
+    rows = [{"limit_stat_days": 11, "limit_stat_count": 7},
+            {"limit_stat_days": 20, "limit_stat_count": 9},
+            {"limit_stat_days": 4, "limit_stat_count": 2}]
+    assert broken_streak_height(rows) == 9

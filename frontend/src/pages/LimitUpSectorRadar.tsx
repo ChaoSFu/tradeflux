@@ -417,6 +417,14 @@ function SectorCard({ sector, open, onToggle, coreSort, todaySort, brokenSort }:
               <Badge variant="up">涨停 {sector.today_limit_up_count}</Badge>
               {sector.continuation_count > 0 && <Badge variant="dragon">连板 {sector.continuation_count}</Badge>}
               {sector.board_height > 0 && <Badge variant="dragon">最高 {sector.board_height}板</Badge>}
+              {/* 断板最高：打过高板但streak断了的票。跟"最高连板"是两种不同的强——
+                  神奇制药当前首板、在"最高3板"的板块里毫不起眼，但它历史上是 11日7板，
+                  市场辨识度跟一个真首板完全不是一回事，只看连板会把它埋掉。 */}
+              {sector.broken_streak_height != null && (
+                <span title="板块内断板股的最高累计板数（东财口径 N天M板，N>M 才算断板；3日3板是连着的不算）。这类票当前连板可能很低，但打过高板、市场辨识度还在">
+                  <Badge variant="warn">断板最高 {sector.broken_streak_height}板</Badge>
+                </span>
+              )}
             </div>
 
             <div className="flex items-center gap-x-4 gap-y-1 mt-1.5 text-xs text-text-secondary flex-wrap font-mono">

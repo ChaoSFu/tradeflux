@@ -77,6 +77,11 @@ class RadarSector(BaseModel):
     continuation_count: int = 0      # 连板股数（board_count>=2）
     first_board_count: int = 0
     board_height: int = 0
+    # 断板股的最高累计板数（东财 zttj 的 N天M板，且 N>M 才算断板）。None=板块内
+    # 没有断板股。跟 board_height 是两种不同的强：前者是当前还连着的高度，后者是
+    # "打过高板但断了"的市场辨识度——神奇制药当前首板、历史 11日7板，只看连板会
+    # 把它埋在一堆首板里
+    broken_streak_height: Optional[int] = None
     board_ladder: List[BoardLadderEntry] = []
 
     broken_count: int = 0

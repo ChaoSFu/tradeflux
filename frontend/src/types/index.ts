@@ -809,6 +809,8 @@ export interface LimitUpRadarSector {
   continuation_count: number
   first_board_count: number
   board_height: number
+  /** 断板股的最高累计板数（东财 N天M板，且 N>M 才算断板）。null=板块内没有断板股 */
+  broken_streak_height: number | null
   board_ladder: LimitUpBoardLadderEntry[]
   broken_count: number
   seal_rate: number | null

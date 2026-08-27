@@ -590,6 +590,24 @@ def build_radar(
     }
 
 
+def broken_streak_height(rows: List[dict]) -> Optional[int]:
+    """
+    板块内**断板股**的最高累计板数；没有断板股返回 None。
+
+    东财的 zttj={'days':N,'ct':M} 是"N天M板"。**N > M 才算断板**——3日3板是连着的
+    （M==N），11日7板才是中间断过（11>7）。不加这个条件的话，5连板的票也会以
+    "5日5板"被算进来，这一列就退化成 board_height 的复制品、没有信息量。
+
+    为什么值得单独展示（用户 2026-08-27 提出）：神奇制药当前是首板，board_count=1，
+    在"最高3板"的板块里毫不起眼——但它历史上打出过 11日7板。这种票的市场辨识度
+    和资金关注度，跟一个真正的首板完全不是一回事。只看最高连板会把它埋掉。
+    """
+    cs = [r["limit_stat_count"] for r in rows
+          if r.get("limit_stat_days") and r.get("limit_stat_count")
+          and r["limit_stat_days"] > r["limit_stat_count"]]
+    return max(cs) if cs else None
+
+
 def _build_sector_card(
     sector: Sector, sids: Set[int],
     detail_by_sid: Dict[int, LimitUpDailyDetail], broken_sids: Set[int],
@@ -755,6 +773,7 @@ def _build_sector_card(
         "continuation_count": continuation,
         "first_board_count": first_board,
         "board_height": max(boards) if boards else 0,
+        "broken_streak_height": broken_streak_height(today_rows),
         "board_ladder": [{"board": b, "count": c} for b, c in sorted(ladder.items(), reverse=True)],
         "broken_count": broken_in_sector,
         "broken_stocks": broken_rows,
