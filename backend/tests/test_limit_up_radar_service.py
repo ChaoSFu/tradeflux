@@ -797,6 +797,41 @@ def _S(name, bh, bsh, lu, cont=1):
                 earliest_limit_time=None, total_seal_amount=1.0)
 
 
+def test_四种排序键的次级规则各自正确():
+    """
+    用户 2026-08-27 定的规则：
+      · 连板个数排序：连板个数相同 → 涨停个数越多越靠前
+      · 涨停个数排序：涨停个数相同 → 最高连板越高越靠前
+    """
+    from app.services.limit_up_radar_service import sort_sectors
+    D = [_S("医药生物", 3, 7, 4, 2), _S("农林牧渔", 3, 6, 7, 1),
+         _S("新零售", 6, 6, 4, 1), _S("流感", 3, 7, 4, 2)]
+    n = lambda k: [x["sector_name"] for x in sort_sectors(D, k)]
+    assert n("board_height") == ["新零售", "农林牧渔", "医药生物", "流感"]
+    assert n("broken_streak_height") == ["医药生物", "流感", "农林牧渔", "新零售"]
+    # 连板2的两个在前（同为2则涨停4并列，按名字定序），连板1里涨停7的在前
+    assert n("continuation_count") == ["医药生物", "流感", "农林牧渔", "新零售"]
+    # 涨停7的最前；涨停同为4时，最高连板6的新零售压过最高3板的两个
+    assert n("today_limit_up_count") == ["农林牧渔", "新零售", "医药生物", "流感"]
+
+
+def test_未知排序键退回默认不抛错():
+    from app.services.limit_up_radar_service import sort_sectors
+    D = [_S("A", 3, 3, 2), _S("B", 6, 3, 1)]
+    assert [x["sector_name"] for x in sort_sectors(D, "不存在的键")] == ["B", "A"]
+
+
+def test_四种模式的尾部次级键完全一致():
+    """最早首封/封单额/板块名这段尾巴不是可以各模式各写一遍的东西——
+    写成四个 if 分支迟早不一致，所以抽成了 SECTOR_SORT_KEYS 表。"""
+    from app.services.limit_up_radar_service import SECTOR_SORT_KEYS, sort_sectors
+    import datetime as _dt
+    a = _S("甲", 3, 3, 3, 1); a["earliest_limit_time"] = _dt.time(9, 25)
+    b = _S("乙", 3, 3, 3, 1); b["earliest_limit_time"] = _dt.time(10, 30)
+    for k in SECTOR_SORT_KEYS:
+        assert [x["sector_name"] for x in sort_sectors([b, a], k)] == ["甲", "乙"], k
+
+
 def test_默认按最高连板排序():
     from app.services.limit_up_radar_service import sort_sectors
     got = [s["sector_name"] for s in sort_sectors([

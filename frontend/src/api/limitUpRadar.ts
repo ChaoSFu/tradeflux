@@ -5,9 +5,15 @@ export interface LimitUpRadarParams {
   date?: string
   include_core?: boolean
   group_mode?: 'all_watched_sectors' | 'primary'
-  /** 板块排序主键：最高连板(默认) / 最高断板 */
-  sector_sort?: 'board_height' | 'broken_streak_height'
+  /** 板块排序主键，次级键各不相同，见后端 SECTOR_SORT_KEYS */
+  sector_sort?: SectorSortKey
 }
+
+export type SectorSortKey =
+  | 'board_height'          // 最高连板（默认）
+  | 'broken_streak_height'  // 最高断板
+  | 'continuation_count'    // 连板个数
+  | 'today_limit_up_count'  // 涨停个数
 
 export const fetchLimitUpRadar = (params: LimitUpRadarParams = {}) =>
   client.get<LimitUpRadarResponse>('/limit-up-radar', { params }).then((r) => r.data)

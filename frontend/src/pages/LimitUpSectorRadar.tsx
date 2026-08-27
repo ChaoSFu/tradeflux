@@ -16,6 +16,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { RefreshCw, ChevronDown, ChevronUp, ChevronsUpDown, ChevronRight, AlertTriangle, Flame } from 'lucide-react'
 import { fetchLimitUpRadar, refreshLimitUpDetails, fetchRefreshStatus } from '@/api/limitUpRadar'
+import type { SectorSortKey } from '@/api/limitUpRadar'
 import { Badge } from '@/components/ui/badge'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
@@ -41,6 +42,19 @@ const ROLE_LABEL: Record<W2SCoreRole, { text: string; full: string; variant: 'dr
   CURRENT_CORE:    { text: '当前', full: '当前核心 —— 近10日仍在涨停', variant: 'accent' },
   RECENT_CORE:     { text: '近期', full: '近期核心 —— 近20日活跃或打出过高连板', variant: 'warn' },
   HISTORICAL_CORE: { text: '历史', full: '历史核心 —— 只有60日窗口才够得着，情绪锚', variant: 'muted' },
+}
+
+/**
+ * 板块排序主键的展示名与说明。键名与次级键规则由后端 SECTOR_SORT_KEYS 定义，
+ * 这里只做展示——排序逻辑不在前端重写一遍，否则两边迟早对不上。
+ */
+const SECTOR_SORT_ORDER: SectorSortKey[] =
+  ['board_height', 'broken_streak_height', 'continuation_count', 'today_limit_up_count']
+const SECTOR_SORT_LABEL: Record<SectorSortKey, { name: string; tip: string }> = {
+  board_height:         { name: '最高连板', tip: '现在还连着的高度，有资金正在接力；同高度看涨停只数' },
+  broken_streak_height: { name: '最高断板', tip: '打过高板但断了，当前连板可能只有1却随时可能再起；同高度看涨停只数' },
+  continuation_count:   { name: '连板个数', tip: '板块里还在连板的只数；同只数看涨停总数' },
+  today_limit_up_count: { name: '涨停个数', tip: '横向一致性，今天同时开火的票有多少；同只数看最高连板' },
 }
 
 const fmtTime = (t: string | null) => (t ? t.slice(0, 5) : '—')
@@ -177,11 +191,12 @@ export default function LimitUpSectorRadar() {
   const qc = useQueryClient()
   const [includeCore, setIncludeCore] = useState(true)
   const [primaryOnly, setPrimaryOnly] = useState(false)
-  // 板块排序主键。两个键回答的是不同的问题，所以做成切换而不是加权合并：
-  //   最高连板 = 现在还连着的高度（有资金正在接力）
-  //   最高断板 = 打过高板但断了的辨识度（当前连板可能只有1，却随时可能再起）
-  const [sectorSort, setSectorSort] =
-    useState<'board_height' | 'broken_streak_height'>('board_height')
+  // 板块排序主键，点按钮循环。每个键回答的是不同的问题，所以做成切换而不是
+  // 加权合并——加权总分说不清"为什么这个板块排在前面"。
+  // 次级键各不相同（见 SECTOR_SORT_LABEL 的 tip），由后端 SECTOR_SORT_KEYS 定义，
+  // 前端只负责传键名，不在这里再写一遍排序规则。
+  const [sectorSort, setSectorSort] = useState<SectorSortKey>('board_height')
+  const sortIdx = SECTOR_SORT_ORDER.indexOf(sectorSort)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [refreshErr, setRefreshErr] = useState<string | null>(null)
   const coreSort = useSort<CoreSortKey>()
@@ -273,18 +288,18 @@ export default function LimitUpSectorRadar() {
                      onChange={(e) => setPrimaryOnly(e.target.checked)} />
               仅主板块
             </label>
-            {/* 排序切换：两个键回答不同的问题，不是同一个指标的两种算法，所以做成
-                切换而不是加权合并。按钮上直接写当前排的是什么，不用猜。 */}
+            {/* 排序切换：按钮上直接写当前排的是什么，不用猜；悬停给出四个键各自
+                的含义和次级键。四态循环而不是下拉，是因为这四个选项本来就该被
+                依次扫一遍对照着看，点四下比开合下拉更快。 */}
             <button
               onClick={() => setSectorSort(
-                sectorSort === 'board_height' ? 'broken_streak_height' : 'board_height')}
-              title={'点击切换板块排序主键（次级键都是涨停数优先）：\n'
-                     + '· 最高连板 —— 现在还连着的高度，有资金正在接力\n'
-                     + '· 最高断板 —— 打过高板但断了，当前连板可能只有1，却随时可能再起'}
+                SECTOR_SORT_ORDER[(sortIdx + 1) % SECTOR_SORT_ORDER.length])}
+              title={'点击循环切换板块排序主键：\n'
+                     + SECTOR_SORT_ORDER.map((k) => `· ${SECTOR_SORT_LABEL[k].name} —— ${SECTOR_SORT_LABEL[k].tip}`).join('\n')}
               className="text-xs px-2.5 py-1 rounded border border-bg-border text-text-secondary
                          hover:text-text-primary hover:border-accent transition-colors whitespace-nowrap"
             >
-              排序：{sectorSort === 'board_height' ? '最高连板' : '最高断板'}
+              排序：{SECTOR_SORT_LABEL[sectorSort].name}
             </button>
             <button
               onClick={() => refresh.mutate()}

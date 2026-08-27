@@ -402,38 +402,41 @@ def sort_broken_stocks(rows: List[dict]) -> List[dict]:
     ))
 
 
-def sort_sectors(sectors: List[dict], by: str = "board_height") -> List[dict]:
-    """
-    板块排序（2026-08-25 按用户要求调整为**高度优先**）：
-      主键 DESC → 今日涨停数 DESC → 连板股数量 DESC → 最早首封时间 ASC → 总封单额 DESC
+# 板块排序：主键 + 两级次级键，全部数值 DESC。之后统一接
+#   最早首封时间 ASC → 总封单额 DESC → 板块名 ASC（保证任何情况下顺序稳定可复现）
+#
+# 写成表而不是四个 if 分支：分支各写一遍，次级键迟早会不一致——今天四种模式的
+# "最早首封/封单额/板块名"这段尾巴必须完全相同，那不是可以各写各的东西。
+#
+# 每个主键回答的是不同的问题，所以做成切换而不是加权合并。**刻意不做
+# 0.4*涨停数+0.3*板高+... 这种总分**：用户需要能一眼说清"为什么这个板块排在前面"，
+# 加权分做不到这一点。
+SECTOR_SORT_KEYS: Dict[str, tuple] = {
+    # 最高连板（默认）——"现在还连着的高度"。一个出了5板龙头的板块，即使只有5只
+    # 涨停，也比10只清一色首板的更值得先看：首板扎堆更可能是普涨或题材扩散，
+    # 高板才代表有资金愿意接力。
+    "board_height":         ("board_height", "today_limit_up_count", "continuation_count"),
+    # 最高断板——"打过高板但断了"的辨识度。那些票当前连板可能只有1，却随时可能
+    # 再起，按连板排会被埋在一堆首板板块里。没有断板股的板块该键为 None，排最后。
+    "broken_streak_height": ("broken_streak_height", "today_limit_up_count", "continuation_count"),
+    # 连板个数——板块里有多少只还在连板。同数量时涨停只数多的靠前（用户 2026-08-27）
+    "continuation_count":   ("continuation_count", "today_limit_up_count", "board_height"),
+    # 涨停个数——横向一致性。同数量时最高连板高的靠前（用户 2026-08-27）
+    "today_limit_up_count": ("today_limit_up_count", "board_height", "continuation_count"),
+}
+DEFAULT_SECTOR_SORT = "board_height"
 
-    主键两选一（2026-08-27 加的可切换，默认仍是第一种）：
-      · board_height（默认）——最高**连板**。看的是"现在还连着的高度"：一个出了
-        5板龙头的板块，即使只有5只涨停，也比10只清一色首板的板块更值得先看；
-        首板扎堆更可能是普涨或题材扩散，高板才代表有资金愿意接力。
-      · broken_streak_height ——最高**断板**（N天M板且N>M的累计板数）。看的是
-        "打过高板但断了"的辨识度：那些票当前连板可能只有1，却随时可能再起，
-        按连板排会被埋在一堆首板板块里。没有断板股的板块该键为 None，排最后。
 
-    两个键回答的是不同的问题，所以做成切换而不是加权合并。**刻意不做
-    0.4*涨停数+0.3*板高+... 这种总分**：用户需要能一眼说清"为什么这个板块排在
-    前面"，加权分做不到这一点。次级键两种模式完全一致，都是涨停数优先。
-    """
-    if by == "broken_streak_height":
-        return sorted(sectors, key=lambda s: (
-            -(s.get("broken_streak_height") or 0),
-            -s["today_limit_up_count"],
-            -s["continuation_count"],
-            s["earliest_limit_time"] or _LATE,
-            -(s["total_seal_amount"] or 0.0),
-            s["sector_name"],
-        ))
+def sort_sectors(sectors: List[dict], by: str = DEFAULT_SECTOR_SORT) -> List[dict]:
+    """按 SECTOR_SORT_KEYS 里的主键+次级键排序；未知的 by 退回默认，不抛错。"""
+    k1, k2, k3 = SECTOR_SORT_KEYS.get(by) or SECTOR_SORT_KEYS[DEFAULT_SECTOR_SORT]
     return sorted(sectors, key=lambda s: (
-        -s["board_height"],
-        -s["today_limit_up_count"],
-        -s["continuation_count"],
+        -(s.get(k1) or 0),
+        -(s.get(k2) or 0),
+        -(s.get(k3) or 0),
         s["earliest_limit_time"] or _LATE,
         -(s["total_seal_amount"] or 0.0),
+        s.get("sector_name") or "",
     ))
 
 

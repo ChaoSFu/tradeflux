@@ -58,8 +58,11 @@ def get_limit_up_radar(
                                   description='板块最低连板高度（与上面是AND关系）'),
     min_limit_up_alone: int = Query(radar.DEFAULT_MIN_LIMIT_UP_ALONE, ge=0, le=50,
                                     description='涨停只数单独达到该值即可入选（与上面那组是OR关系）；0=关闭'),
-    sector_sort: str = Query("board_height", pattern="^(board_height|broken_streak_height)$",
-                             description="板块排序主键：最高连板(默认) / 最高断板"),
+    sector_sort: str = Query(
+        radar.DEFAULT_SECTOR_SORT,
+        pattern="^(board_height|broken_streak_height|continuation_count|today_limit_up_count)$",
+        description="板块排序主键：最高连板(默认)/最高断板/连板个数/涨停个数，"
+                    "各自的次级键见 SECTOR_SORT_KEYS"),
     db: Session = Depends(get_db),
 ):
     """涨停板块雷达：按板块聚合当日涨停结构 + 板块核心锚。纯读库，不打外部接口。"""
