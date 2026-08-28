@@ -128,6 +128,7 @@ from app.services.eastmoney_fetcher import (
 from app.services.fuyao_dump import (
     get_api_key as get_fuyao_key, daily_k_dump, load_bars,
     dump_cache_info, dump_last_access, thscode_suffix,
+    reset_dump_availability, dump_unavailable_reason,
 )
 from app.services.screening_service import (
     StockWindowStats,
@@ -1038,6 +1039,9 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
     抛异常的硬失败由调用方捕获，不在此返回。
     """
     log = StepLogger(target_date)
+    # 清掉上一轮的 dump 熔断标记：本轮 dump 有三个调用点，第一个撞上网络不可达
+    # 之后另外两个直接跳过，不再对着同一个地址反复重连（2026-08-28 那次白等几分钟）
+    reset_dump_availability()
     db = SessionLocal()
     api_warnings: list[str] = []   # API 降级告警（供界面提示，数据可能不完整或过时）
 

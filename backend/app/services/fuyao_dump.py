@@ -98,7 +98,7 @@ def _download_url(api_key: str, kind: str, timeout: int = 30) -> Optional[str]:
     fuyao 的 HTTP 状态码恒为 200，业务结果看信封里的 `code` 字段——不能只看
     resp.status_code 就当成功。
     """
-    with httpx.Client(timeout=timeout) as c:
+    with httpx.Client(timeout=_timeouts(timeout)) as c:
         resp = c.get(f"{FUYAO_BASE}/api/dump/market-dumps/{kind}/download-url",
                      headers={"X-api-key": api_key})
     body = resp.json()
@@ -129,6 +129,35 @@ _CACHE_DIR = Path(gettempdir()) / "tradeflux_fuyao_dump"
 # 本身。把每次的解决方式记下来，跑几天就能免费得到"各时段 dump 到底什么样"的
 # 实证画像，而不是现在拍脑袋。
 _LAST_ACCESS: dict = {"mode": None, "at": None, "attempts": 0, "errors": [], "seconds": 0.0}
+
+# 连接阶段单独给一个短超时。总超时（timeout 参数）要照顾下载 1MB 的耗时，不能设小，
+# 但**连不上**和**下得慢**是两回事：2026-08-28 生产上 fuyao 整个不可达（IPv6 无路由
+# 立刻 errno 101，IPv4 连接超时 15 秒），用总超时去等连接，一次就要几十秒。
+_CONNECT_TIMEOUT = 6.0
+
+
+def _timeouts(total: float) -> "httpx.Timeout":
+    return httpx.Timeout(total, connect=_CONNECT_TIMEOUT)
+
+
+# 本轮 dump 是否已经确认不可用。**同一轮 daily_update 里 dump 有三个调用点**
+# （K线主步 / 全库历史补全 / 掉出池补结算），第一个失败之后另外两个还会各自再试一遍、
+# 每次内含 2 次重试——对着一个已知不通的地址反复重连，纯浪费。2026-08-28 fuyao 整个
+# 网络不可达那次，光这个就白等了几分钟，而那一跑本来就因为退回逐股拉取慢到 885 秒。
+#
+# 用模块级标记而不是把状态一路传参：三个调用点分布在两个模块、调用链很深，穿参数
+# 会污染一串签名；而这个标记的生命周期恰好就是"一轮更新"，由 run_daily_update
+# 开头 reset 一次，语义清楚。
+_RUN_UNAVAILABLE: dict = {"why": None}
+
+
+def reset_dump_availability() -> None:
+    """每轮 daily_update 开头调一次，清掉上一轮的熔断标记。"""
+    _RUN_UNAVAILABLE["why"] = None
+
+
+def dump_unavailable_reason() -> Optional[str]:
+    return _RUN_UNAVAILABLE["why"]
 
 
 def dump_last_access() -> dict:
@@ -181,7 +210,7 @@ def _remote_size(url: str, timeout: int = 20) -> Optional[int]:
     拿不到返回 None，调用方按"判断不了 ⇒ 重新下载"处理，不猜。
     """
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+        with httpx.Client(timeout=_timeouts(timeout), follow_redirects=True) as c:
             resp = c.get(url, headers={"Range": "bytes=0-0"})
         cr = resp.headers.get("content-range") or ""
         if "/" in cr:
@@ -204,7 +233,7 @@ def _download_once(url: str, dest: Path, timeout: int) -> int:
     """
     written = 0
     expected = None
-    with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+    with httpx.Client(timeout=_timeouts(timeout), follow_redirects=True) as c:
         with c.stream("GET", url) as resp:
             resp.raise_for_status()
             cl = resp.headers.get("content-length")
@@ -242,6 +271,8 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
 
     下载走临时文件 + 原子替换：一次失败的下载绝不能毁掉手上那份好的缓存。
     """
+    # 本轮已经确认不可用 → 直接抛，不再浪费时间去连（见 _RUN_UNAVAILABLE 注释）。
+    # 注意仍然先检查缓存：网络不通不代表手上那份缓存不能用。
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     data, meta = _data_path(kind), _read_meta(kind)
     # 重试过程必须留痕：2026-08-26 生产上「拉取K线数据」从 12.1s 跳到 56.7s，
@@ -257,6 +288,10 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
             _mark("covered", attempts=0, errors=[], seconds=0.0)
             yield data
             return
+
+    if _RUN_UNAVAILABLE["why"]:
+        _mark("skipped", attempts=0, errors=[], seconds=0.0)
+        raise FuyaoError(f"本轮已判定不可用，跳过（{_RUN_UNAVAILABLE['why']}）")
 
     last_err: Optional[str] = None
     for attempt in range(retries + 1):
@@ -300,6 +335,13 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
             time.sleep(1.5)
     _mark("failed", attempts=retries + 1, errors=list(_errs),
           seconds=round(time.time() - _t0, 1))
+    # 连接层失败（不可达/超时/DNS）才熔断整轮；业务错误（如 key 无效、dump 还没
+    # 生成）不熔断——那些是"这次拿不到"，不是"这条路不通"，下一个调用点换个
+    # kind 或换个时间点可能就好了。
+    if any(k in (last_err or "") for k in
+           ("ConnectError", "ConnectTimeout", "ReadTimeout", "Unreachable",
+            "unreachable", "NameResolution", "PoolTimeout")):
+        _RUN_UNAVAILABLE["why"] = last_err
     raise FuyaoError(last_err or "下载失败")
 
 
@@ -422,7 +464,7 @@ def fetch_interval_returns(api_key: str, code: str, market_suffix: str,
     last_err = ""
     for attempt in range(retries + 1):
         try:
-            with httpx.Client(timeout=timeout) as c:
+            with httpx.Client(timeout=_timeouts(timeout)) as c:
                 resp = c.get(f"{FUYAO_BASE}/api/a-share/prices/historical",
                              params=params, headers={"X-api-key": api_key})
             body = resp.json()

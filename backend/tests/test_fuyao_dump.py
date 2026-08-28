@@ -339,3 +339,72 @@ def test_接不上的缺口不算命中():
 def test_dump比库里还旧不算命中():
     """停牌股：库里已经有到 08-25，dump 末根 08-20，用了等于倒退。"""
     assert _hit(D(2026, 8, 6), D(2026, 8, 20), D(2026, 8, 25), D(2026, 8, 26)) is None
+
+
+# ── 一轮内的熔断（2026-08-28 生产事故）────────────────────────────────────────
+#
+# 那天 fuyao 整个网络不可达（IPv6 无路由立刻 errno 101，IPv4 连接超时 15 秒），
+# 而 dump 在一轮 daily_update 里有三个调用点（K线主步 / 全库历史补全 / 掉出池补结算）。
+# 第一个失败后另外两个还各自再试一遍、每次内含 2 次重试，对着一个已知不通的地址
+# 反复重连白等了几分钟——而那一跑本来就因为退回逐股拉取慢到 885 秒。
+
+def test_连接层失败会熔断整轮(_clean_cache, monkeypatch):
+    import httpx
+    fd = _clean_cache
+    fd.reset_dump_availability()
+    calls = []
+    monkeypatch.setattr(fd, "_download_url",
+                        lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(
+                            httpx.ConnectError("[Errno 101] Network is unreachable")))
+    monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
+
+    for _ in range(3):
+        with pytest.raises(fd.FuyaoError):
+            with fd.daily_k_dump("key", retries=2):
+                pass
+    assert len(calls) == 3, "只有第一个调用点该真的去连（3次重试），后两个直接跳过"
+    assert fd.dump_last_access()["mode"] == "skipped"
+    assert "unreachable" in (fd.dump_unavailable_reason() or "")
+
+
+def test_业务错误不熔断(_clean_cache, monkeypatch):
+    """
+    key 无效、dump 还没生成之类是"这次拿不到"，不是"这条路不通"——下一个调用点
+    换个 kind 或换个时间点可能就好了，不该被一棍子打死。只有连接层失败才熔断。
+    """
+    fd = _clean_cache
+    fd.reset_dump_availability()
+    calls = []
+    monkeypatch.setattr(fd, "_download_url",
+                        lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(
+                            RuntimeError("取下载链接失败 code=2003 Invalid or revoked API key")))
+    monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
+    for _ in range(2):
+        with pytest.raises(fd.FuyaoError):
+            with fd.daily_k_dump("key", retries=1):
+                pass
+    assert len(calls) == 4, "两个调用点各自试 2 次，业务错误不熔断"
+    assert fd.dump_unavailable_reason() is None
+
+
+def test_reset清掉上一轮的熔断(_clean_cache, monkeypatch):
+    import httpx
+    fd = _clean_cache
+    fd.reset_dump_availability()
+    monkeypatch.setattr(fd, "_download_url",
+                        lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("unreachable")))
+    monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
+    with pytest.raises(fd.FuyaoError):
+        with fd.daily_k_dump("key", retries=0):
+            pass
+    assert fd.dump_unavailable_reason() is not None
+    fd.reset_dump_availability()
+    assert fd.dump_unavailable_reason() is None, "下一轮必须重新试，网络可能已经恢复"
+
+
+def test_连接超时单独设短(_clean_cache):
+    """总超时要照顾下载1MB的耗时不能设小，但"连不上"和"下得慢"是两回事。"""
+    fd = _clean_cache
+    t = fd._timeouts(180.0)
+    assert t.connect == fd._CONNECT_TIMEOUT and t.connect < 10
+    assert t.read == 180.0
