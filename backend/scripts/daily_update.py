@@ -1368,6 +1368,11 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                          "skipped": "本轮已判不可用"}
                 _la = dump_last_access()
                 _how = _MODE.get(_la.get("mode"), "?")
+                if _dump_settled and _la.get("mode") in ("stale", "skipped"):
+                    api_warnings.append(
+                        f"收盘后未能取得当日 dump，用的是覆盖至 "
+                        f"{_ci.get('max_trade_date', '?')} 的旧缓存；"
+                        f"当日K线由实时行情补齐，下一次收盘后会自动再试")
                 _tail = (f"；其中 {len(dump_no_today)} 只 dump 无当日数据，当日bar走实时行情"
                          if dump_no_today else "")
                 log.info(f"  📦 fuyao dump({mb:.1f}MB，覆盖至 {_ci.get('max_trade_date','?')}，"
@@ -1382,6 +1387,15 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             except Exception as e:  # noqa: BLE001
                 log.warning(f"fuyao dump 不可用（{type(e).__name__}: {e}），"
                             f"本轮全部退回逐股K线接口")
+                if _dump_settled:
+                    # 盘后拿不到当日 dump 要在界面上看得见，不能只躺在日志里。
+                    # 调度器的"失败重试"对这种情况**不会触发**——dump 失败是被
+                    # except 接住、降级跑完的，整跑并没有抛异常（2026-08-28 用户
+                    # 问到这一点）。系统靠的是"每天盘后 need_through 都等于当天、
+                    # 缓存必然不够用"来自动重试，最坏多用一天逐股路径。
+                    api_warnings.append(
+                        f"收盘后未能取得当日 dump（{type(e).__name__}），"
+                        f"K线已退回逐股接口（慢约十倍）；下一次收盘后会自动再试")
         elif db_group:
             log.info("  未配置 FUYAO_API_KEY，K线走逐股接口（配置后可省下绝大部分请求）")
 
