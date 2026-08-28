@@ -288,9 +288,13 @@ def test_下载失败绝不能毁掉手上那份好缓存(_clean_cache, monkeypa
     monkeypatch.setattr(fd, "_download_once",
                         lambda url, dest, timeout: (_ for _ in ()).throw(fd.FuyaoError("下载不完整")))
     monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
-    with pytest.raises(fd.FuyaoError):
-        with fd.daily_k_dump("key", require_date=date(2026, 8, 27), retries=1):
-            pass
+    fd.reset_dump_availability()
+    # 2026-08-28 起：下载失败不再抛错，而是把手上这份旧的给出去（dump 只管历史
+    # 缺口，旧的照样能补）。原来这里断言抛 FuyaoError，那是改动前的行为。
+    # 本测试真正要守住的是"失败的下载绝不能毁掉好缓存"，那一条没变。
+    with fd.daily_k_dump("key", require_date=date(2026, 8, 27), retries=1) as p:
+        assert p.exists()
+    assert fd.dump_last_access()["mode"] == "stale"
     assert fd._data_path(fd.DUMP_KIND_10D).read_bytes() == good, "旧缓存必须原样保留"
 
 
@@ -408,3 +412,70 @@ def test_连接超时单独设短(_clean_cache):
     t = fd._timeouts(180.0)
     assert t.connect == fd._CONNECT_TIMEOUT and t.connect < 10
     assert t.read == 180.0
+
+
+# ── 下不到新的就用旧的（2026-08-28 用户提出）──────────────────────────────────
+#
+# 用户原话："fuyao 的接口只要一天成功一次就行吧？dump 成功了就行。为什么会卡住
+# 核心更新的流程？"——问到了根子上。
+#
+# 那天 fuyao 整网不可达，而缓存里明明有覆盖到 08-27 的 dump。当时的逻辑是
+# "下载失败 → 抛错"，把那份缓存一起扔了，223 只全部退回逐股拉取，K线步骤从
+# 5 秒变成 885 秒。而 **dump 只管历史缺口，当日那一根本来就走实时行情**——
+# 库里历史停在 08-27、缓存覆盖到 08-27，接得上，本该 218/218 命中。
+# 是把"拿不到最新的"错当成了"什么都没有"。
+
+def test_下载失败但有缓存则用旧的(_clean_cache, monkeypatch):
+    import httpx
+    from datetime import date as _d
+    fd = _clean_cache
+    fd.reset_dump_availability()
+    _seed_cache(fd, fd.DUMP_KIND_10D,
+                [("600984.SH", _d(2026, 8, 26), 4.6, 4.94, 4.5, 4.94),
+                 ("600984.SH", _d(2026, 8, 27), 4.9, 5.43, 4.6, 4.66)],
+                {"path_date": "20260827", "size": 1, "max_trade_date": "2026-08-27"})
+    monkeypatch.setattr(fd, "_download_url",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            httpx.ConnectError("[Errno 101] Network is unreachable")))
+    monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
+
+    # 要 08-28，缓存只到 08-27，且下不到新的 —— 仍然给出旧缓存
+    with fd.daily_k_dump("key", require_date=_d(2026, 8, 28), retries=2) as p:
+        assert fd.dump_max_date(p) == _d(2026, 8, 27)
+    assert fd.dump_last_access()["mode"] == "stale"
+
+
+def test_熔断后仍然用旧缓存而不是抛错(_clean_cache, monkeypatch):
+    """第二、三个调用点：既不再去连（熔断），也不该白白丢掉手上的缓存。"""
+    import httpx
+    from datetime import date as _d
+    fd = _clean_cache
+    fd.reset_dump_availability()
+    _seed_cache(fd, fd.DUMP_KIND_10D,
+                [("600984.SH", _d(2026, 8, 26), 4.6, 4.94, 4.5, 4.94),
+                 ("600984.SH", _d(2026, 8, 27), 4.9, 5.43, 4.6, 4.66)],
+                {"path_date": "20260827", "size": 1, "max_trade_date": "2026-08-27"})
+    calls = []
+    monkeypatch.setattr(fd, "_download_url",
+                        lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(
+                            httpx.ConnectError("unreachable")))
+    monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
+    for _ in range(3):
+        with fd.daily_k_dump("key", require_date=_d(2026, 8, 28), retries=2) as p:
+            assert p.exists()
+    assert len(calls) == 3, "只有第一个调用点真去连了3次，后两个熔断"
+    assert fd.dump_last_access()["mode"] == "stale"
+
+
+def test_没有缓存才抛错(_clean_cache, monkeypatch):
+    import httpx
+    from datetime import date as _d
+    fd = _clean_cache
+    fd.reset_dump_availability()
+    monkeypatch.setattr(fd, "_download_url",
+                        lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("unreachable")))
+    monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
+    with pytest.raises(fd.FuyaoError):
+        with fd.daily_k_dump("key", require_date=_d(2026, 8, 28), retries=0):
+            pass
+    assert fd.dump_last_access()["mode"] == "failed"

@@ -1341,7 +1341,11 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                         dump_no_today.add(info.code)
                 _ci = dump_cache_info() or {}
                 _MODE = {"covered": "复用缓存(已覆盖当日)", "unchanged": "复用缓存(上游未变)",
-                         "downloaded": "重新下载"}
+                         "downloaded": "重新下载",
+                         # 下不到新的、用手上旧的。必须在日志里说出来——用了过期
+                         # 数据而不声明，比不用更危险
+                         "stale": "⚠️下载失败，用的是旧缓存",
+                         "skipped": "本轮已判不可用"}
                 _la = dump_last_access()
                 _how = _MODE.get(_la.get("mode"), "?")
                 _tail = (f"；其中 {len(dump_no_today)} 只 dump 无当日数据，当日bar走实时行情"

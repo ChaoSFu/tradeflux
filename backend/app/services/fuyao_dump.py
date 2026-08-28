@@ -290,6 +290,12 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
             return
 
     if _RUN_UNAVAILABLE["why"]:
+        # 本轮已判定网络不通。有缓存就直接用旧的（理由同下面 stale 分支），
+        # 没有才抛——总之不再去连。
+        if data.exists() and meta:
+            _mark("stale", attempts=0, errors=[], seconds=0.0)
+            yield data
+            return
         _mark("skipped", attempts=0, errors=[], seconds=0.0)
         raise FuyaoError(f"本轮已判定不可用，跳过（{_RUN_UNAVAILABLE['why']}）")
 
@@ -333,8 +339,6 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
             _errs.append(f"第{attempt + 1}次: {last_err}")
         if attempt < retries:
             time.sleep(1.5)
-    _mark("failed", attempts=retries + 1, errors=list(_errs),
-          seconds=round(time.time() - _t0, 1))
     # 连接层失败（不可达/超时/DNS）才熔断整轮；业务错误（如 key 无效、dump 还没
     # 生成）不熔断——那些是"这次拿不到"，不是"这条路不通"，下一个调用点换个
     # kind 或换个时间点可能就好了。
@@ -342,6 +346,28 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
            ("ConnectError", "ConnectTimeout", "ReadTimeout", "Unreachable",
             "unreachable", "NameResolution", "PoolTimeout")):
         _RUN_UNAVAILABLE["why"] = last_err
+
+    # ── 下不到新的，就用手上这份旧的 ────────────────────────────────────────
+    # 2026-08-28 生产：fuyao 整网不可达，而缓存里明明有覆盖到 08-27 的 dump。
+    # 当时的逻辑是"下载失败 → 抛错"，把那份缓存一起扔了，于是 223 只全部退回
+    # 逐股拉取，K线步骤从 5 秒变成 885 秒。
+    #
+    # 但**dump 只管历史缺口，当日那一根本来就走实时行情**——库里历史停在 08-27、
+    # 缓存覆盖到 08-27，接得上，本该 218/218 命中。是我把"拿不到最新的"错当成了
+    # "什么都没有"。
+    #
+    # 这里不判断"旧到什么程度还能用"：那个判断已经在调用方了（dump 最早一根不能
+    # 晚于库里最后一根的次日、最后一根不能早于库里最后一根），接不上的股票会自己
+    # 退回逐股拉。在这里再设一道"超过N天就不给"的门槛，等于把同一个判断写两遍，
+    # 而且会误伤那些历史更旧、旧 dump 反而够用的股票。
+    if data.exists() and meta:
+        _mark("stale", attempts=retries + 1, errors=list(_errs),
+              seconds=round(time.time() - _t0, 1))
+        yield data
+        return
+
+    _mark("failed", attempts=retries + 1, errors=list(_errs),
+          seconds=round(time.time() - _t0, 1))
     raise FuyaoError(last_err or "下载失败")
 
 
