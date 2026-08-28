@@ -863,6 +863,24 @@ function WindvaneCards({ wv, marginRange, onMarginRangeChange, updownDate, onUpd
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
+            {/* 解读：全部由上面那张图的数算出来，每句话都能指回具体的柱子。
+                刻意不做"推力总分"那种加权数——它的大小完全由拍出来的权重决定，
+                改一下权重结论就变，既不能验证也没法辩论。这跟涨停板块雷达拒绝
+                加权排序是同一条原则。 */}
+            {wv?.thrust && (
+              <div className={cn('rounded-lg border px-3 py-2.5 space-y-1',
+                wv.thrust.diverged
+                  ? 'border-warn/40 bg-warn/5'      // 两端背离，最容易被单一指标盖掉
+                  : 'border-bg-border bg-bg-card/40')}>
+                <div className={cn('text-xs font-semibold',
+                  wv.thrust.diverged ? 'text-warn' : 'text-text-primary')}>
+                  {wv.thrust.headline}
+                </div>
+                {wv.thrust.lines.map((l, i) => (
+                  <div key={i} className="text-[11px] text-text-secondary leading-relaxed">{l}</div>
+                ))}
+              </div>
+            )}
             <p className="text-[10px] text-text-muted/80 leading-relaxed">
               自然涨停/跌停 = 剔除一字板后的数量，更能反映盘中真实做多/做空力量
             </p>

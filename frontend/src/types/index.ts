@@ -382,6 +382,16 @@ export interface WindvaneResponse {
     up_buckets: number[]
     down_buckets: number[]
   } | null
+  /** 涨跌统计的解读。全部由 updown 里已有的数算出，不引入新数据源 */
+  thrust: {
+    headline: string
+    lines: string[]
+    breadth: string
+    seal_side: string
+    natural_side: string
+    diverged: boolean
+    compression_pct: number | null
+  } | null
   turnover: {
     today: number
     prev: number

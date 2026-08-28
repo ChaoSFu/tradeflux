@@ -97,6 +97,20 @@ class UpDownData(BaseModel):
     down_buckets: List[int]   # 不含跌停，对称
 
 
+class ThrustRead(BaseModel):
+    """
+    涨跌统计的解读。**不引入任何新数据源**，全部由那张图上已有的 9 个数
+    （+ 上一交易日同样 9 个数）算出来，每句话都能指回图上的具体柱子。
+    """
+    headline: str                    # 一句话结论
+    lines: List[str] = []            # 支撑它的 2-3 句，每句自带数字
+    breadth: str = ""                # 普涨 / 普跌 / 分化
+    seal_side: str = ""              # 封板端：偏多 / 偏空 / 均衡
+    natural_side: str = ""           # 自然大波动端：偏多 / 偏空 / 均衡
+    diverged: bool = False           # 两端方向相反
+    compression_pct: Optional[float] = None   # 中枢占比（±1%以内 + 平盘）
+
+
 class TurnoverPoint(BaseModel):
     date: str
     amount: float             # 沪深两市成交额（元）
@@ -119,8 +133,126 @@ class WindvaneResponse(BaseModel):
     updated_at: str
     margin: Optional[MarginData] = None
     updown: Optional[UpDownData] = None
+    thrust: Optional[ThrustRead] = None
     turnover: Optional[TurnoverData] = None
     errors: List[str] = []
+
+
+
+# ── 涨跌统计的解读 ───────────────────────────────────────────────────────────
+#
+# 只用图上已有的 9 个数（+上一交易日同样 9 个），不引入任何新数据源。
+#
+# **刻意不做加权总分**（比如 0.5*N₀₋₁ + 2*N₁₋₅ + 5*N₅₊ + 8*N涨停 那种"推力分"）：
+# 那个数的大小完全由拍出来的权重决定，改一下权重结论就变，既不能验证也没法辩论。
+# 这跟涨停板块雷达拒绝加权排序是同一条原则——用户要能一眼说清"为什么得出这个结论"。
+#
+# 下面的阈值（1.5倍/3倍/1.2倍/45%）是**措辞门槛**不是计算权重：它们只决定用哪个
+# 词（普涨/分化/偏多…），不参与任何数值计算。图上的数字永远是原始值。
+#
+# 最核心的设计是**把封板端和自然大波动端拆开报**。2026-08-28 的真实数据就是证据：
+#     08-27  涨停 78:4    自然>5%  424:36   两端同向，普涨且情绪好
+#     08-28  涨停 82:2    自然>5%  127:136  **两端背离**
+# 涨停还在增（三天最高），但普通股票的赚钱效应塌了 70%、亏钱效应涨了 278%。
+# 合并成一个 TailImbalance 只会从 +0.85 掉到 +0.20，看着"还是正尾"，
+# 把"赚钱效应正在向涨停梯队收缩"这个真正可交易的结论盖掉了。
+# 单看涨跌家数更看不出来——那只是 3394→3013，−11%。
+
+_BREADTH_STRONG = 1.5      # 涨/跌家数比 ≥ 此值算普涨，≤ 倒数算普跌
+_SEAL_RATIO = 3.0          # 封板端一侧 ≥ 另一侧的此倍数才算偏向
+_NATURAL_RATIO = 1.2       # 自然大波动端同上（样本量小，门槛低一些）
+_TAIL_MIN = 20             # 两端合计不足此数时不下方向结论——样本太小会乱跳
+_COMPRESSION_HIGH = 0.45   # 中枢占比 ≥ 此值算波动压缩
+_COMPRESSION_LOW = 0.35    # ≤ 此值算波动扩散
+_MOVE_NOTABLE = 0.4        # 日间变化 ≥ ±40% 才值得单独说一句
+
+
+def _side(a: int, b: int, ratio: float, floor: int) -> str:
+    """一端的方向。样本太小就说"样本不足"，不硬判——小数字的比值没有意义。"""
+    if a + b < floor:
+        return "样本不足"
+    if a >= b * ratio:
+        return "偏多"
+    if b >= a * ratio:
+        return "偏空"
+    return "均衡"
+
+
+def _pct_move(now: int, prev: Optional[int]) -> Optional[float]:
+    if prev is None or prev <= 0:
+        return None
+    return (now - prev) / prev
+
+
+def analyze_thrust(cur, prev=None) -> Optional[ThrustRead]:
+    """
+    cur / prev 是 MarketBreadthDaily 行（prev 可为 None，此时不出变化那一句）。
+    返回 None 表示当日数据不全，不硬凑——缺数据就不给结论。
+    """
+    if cur is None or not cur.up_count or not cur.down_count:
+        return None
+    ub, db_ = cur.up_buckets or [0] * 10, cur.down_buckets or [0] * 10
+    up, down, flat = cur.up_count or 0, cur.down_count or 0, cur.flat_count or 0
+    lu, ld = cur.limit_up_count or 0, cur.limit_down_count or 0
+    up5, dn5 = sum(ub[5:]), sum(db_[5:])          # 自然涨/跌超5%，不含涨跌停
+    up01, dn01 = ub[0], db_[0]
+    total = up + down + flat
+    if total <= 0:
+        return None
+
+    compression = (up01 + dn01 + flat) / total
+    ratio = up / down if down else float("inf")
+    breadth = ("普涨" if ratio >= _BREADTH_STRONG
+               else "普跌" if ratio <= 1 / _BREADTH_STRONG else "分化")
+    seal = _side(lu, ld, _SEAL_RATIO, _TAIL_MIN)
+    natural = _side(up5, dn5, _NATURAL_RATIO, _TAIL_MIN)
+    diverged = ({seal, natural} == {"偏多", "偏空"}
+                or (seal in ("偏多", "偏空") and natural == "均衡" and up5 + dn5 >= _TAIL_MIN))
+
+    lines: List[str] = [
+        f"广度：上涨 {up} : 下跌 {down}（{ratio:.2f}:1，{breadth}）；"
+        f"{compression:.1%} 的股票在 ±1% 以内"
+        + ("，波动压缩" if compression >= _COMPRESSION_HIGH
+           else "，波动扩散" if compression <= _COMPRESSION_LOW else ""),
+        f"封板端：涨停 {lu} : 跌停 {ld}（{seal}）　|　"
+        f"自然大波动端：涨>5% {up5} : 跌>5% {dn5}（{natural}）",
+    ]
+
+    # 变化那一句：只挑真正动得大的说，不逐项罗列
+    if prev is not None:
+        pb, pdb = prev.up_buckets or [0] * 10, prev.down_buckets or [0] * 10
+        moves = [
+            ("涨停", lu, prev.limit_up_count),
+            ("自然涨>5%", up5, sum(pb[5:])),
+            ("自然跌>5%", dn5, sum(pdb[5:])),
+        ]
+        notable = []
+        for name, now, was in moves:
+            mv = _pct_move(now, was)
+            if mv is not None and abs(mv) >= _MOVE_NOTABLE:
+                notable.append(f"{name} {was}→{now}（{mv:+.0%}）")
+        if notable:
+            lines.append("较上一交易日：" + "，".join(notable))
+
+    # 结论：背离优先说，因为那是最容易被单一指标盖掉的情况
+    if diverged and seal == "偏多":
+        headline = "表面偏多，但赚钱效应正在向涨停梯队收缩"
+    elif diverged and seal == "偏空":
+        headline = "封板端已经转空，普通股票尚未跟上"
+    elif seal == "偏多" and natural == "偏多":
+        headline = f"{breadth}且两端同向偏多，赚钱效应扩散"
+    elif seal == "偏空" and natural == "偏空":
+        headline = f"{breadth}且两端同向偏空，亏钱效应扩散"
+    elif compression >= _COMPRESSION_HIGH:
+        headline = "中枢收敛，方向性不足"
+    else:
+        headline = f"{breadth}，两端未形成一致方向"
+
+    return ThrustRead(
+        headline=headline, lines=lines, breadth=breadth,
+        seal_side=seal, natural_side=natural, diverged=diverged,
+        compression_pct=round(compression * 100, 1),
+    )
 
 
 # ── Fetchers ─────────────────────────────────────────────────────────────────
@@ -577,13 +709,30 @@ def _read_windvane_from_db(db: Session, margin_range: str = "6m", updown_date: O
     else:
         errors.append("涨跌统计: 库内暂无数据")
 
+    # 解读：需要上一交易日同样的一行做对比。取"日期比当前行小的最近一行"，
+    # 不假设它是昨天——中间可能隔周末/长假，也可能有跑漏的日子。
+    thrust = None
+    if u_row is not None:
+        prev_row = (
+            db.query(MarketBreadthDaily)
+            .filter(MarketBreadthDaily.date < u_row.date,
+                    MarketBreadthDaily.up_count.isnot(None))
+            .order_by(MarketBreadthDaily.date.desc())
+            .first()
+        )
+        try:
+            thrust = analyze_thrust(u_row, prev_row)
+        except Exception as e:  # noqa: BLE001
+            # 解读挂了不能连累图本身——图是事实，解读是加工
+            errors.append(f"涨跌统计解读失败: {type(e).__name__}")
+
     latest_date = max(
         [str(m_rows[-1].date) if m_rows else "", str(t_rows[-1].date) if t_rows else "",
          str(u_row.date) if u_row else ""]
     )
     return WindvaneResponse(
         updated_at=latest_date or datetime.now().date().isoformat(),
-        margin=margin, updown=updown, turnover=turnover, errors=errors,
+        margin=margin, updown=updown, thrust=thrust, turnover=turnover, errors=errors,
     )
 
 
