@@ -210,7 +210,7 @@ def _seed_cache(fd, kind, rows, meta):
     fd._meta_path(kind).write_text(_j.dumps(meta), encoding="utf-8")
 
 
-def test_缓存已覆盖所需交易日则零请求(_clean_cache):
+def test_缓存已覆盖到need_through则零请求(_clean_cache):
     fd = _clean_cache
     _seed_cache(fd, fd.DUMP_KIND_10D,
                 [("600984.SH", date(2026, 8, 25), 4.6, 4.94, 4.5, 4.94),
@@ -218,9 +218,9 @@ def test_缓存已覆盖所需交易日则零请求(_clean_cache):
                 {"path_date": "20260826", "size": 999, "max_trade_date": "2026-08-26"})
     called = []
     fd._download_url = lambda *a, **k: called.append(1) or "http://x"
-    with fd.daily_k_dump("key", require_date=date(2026, 8, 26)) as p:
+    with fd.daily_k_dump("key", need_through=date(2026, 8, 26)) as p:
         assert p.exists()
-    assert called == [], "缓存已覆盖当日，一个请求都不该发"
+    assert called == [], "缓存已覆盖 need_through，一个请求都不该发"
     assert fd.dump_last_access()["mode"] == "covered"
 
 
@@ -236,7 +236,7 @@ def test_上游没变则复用缓存只花一个字节(_clean_cache, monkeypatch
     dl = []
     monkeypatch.setattr(fd, "_download_once", lambda *a, **k: dl.append(1))
     # 要 08-26 但缓存只到 08-25 —— 仍然复用，因为上游确实还没更新
-    with fd.daily_k_dump("key", require_date=date(2026, 8, 26)) as p:
+    with fd.daily_k_dump("key", need_through=date(2026, 8, 26)) as p:
         assert p.exists()
     assert dl == [], "生成日与大小都没变，不该重新下载"
     assert fd.dump_last_access()["mode"] == "unchanged"
@@ -263,7 +263,7 @@ def test_上游变了才重新下载并顶掉旧文件(_clean_cache, monkeypatch
         return 1077889
     monkeypatch.setattr(fd, "_download_once", _fake_dl)
 
-    with fd.daily_k_dump("key", require_date=date(2026, 8, 26)) as p:
+    with fd.daily_k_dump("key", need_through=date(2026, 8, 26)) as p:
         assert fd.dump_max_date(p) == date(2026, 8, 26)
     assert fd.dump_last_access()["mode"] == "downloaded"
     import json as _j
@@ -271,7 +271,7 @@ def test_上游变了才重新下载并顶掉旧文件(_clean_cache, monkeypatch
     # 第二次：缓存已覆盖 → 零请求
     calls = []
     monkeypatch.setattr(fd, "_download_url", lambda *a, **k: calls.append(1) or "http://x")
-    with fd.daily_k_dump("key", require_date=date(2026, 8, 26)):
+    with fd.daily_k_dump("key", need_through=date(2026, 8, 26)):
         pass
     assert calls == [] and fd.dump_last_access()["mode"] == "covered"
 
@@ -292,7 +292,7 @@ def test_下载失败绝不能毁掉手上那份好缓存(_clean_cache, monkeypa
     # 2026-08-28 起：下载失败不再抛错，而是把手上这份旧的给出去（dump 只管历史
     # 缺口，旧的照样能补）。原来这里断言抛 FuyaoError，那是改动前的行为。
     # 本测试真正要守住的是"失败的下载绝不能毁掉好缓存"，那一条没变。
-    with fd.daily_k_dump("key", require_date=date(2026, 8, 27), retries=1) as p:
+    with fd.daily_k_dump("key", need_through=date(2026, 8, 27), retries=1) as p:
         assert p.exists()
     assert fd.dump_last_access()["mode"] == "stale"
     assert fd._data_path(fd.DUMP_KIND_10D).read_bytes() == good, "旧缓存必须原样保留"
@@ -440,7 +440,7 @@ def test_下载失败但有缓存则用旧的(_clean_cache, monkeypatch):
     monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
 
     # 要 08-28，缓存只到 08-27，且下不到新的 —— 仍然给出旧缓存
-    with fd.daily_k_dump("key", require_date=_d(2026, 8, 28), retries=2) as p:
+    with fd.daily_k_dump("key", need_through=_d(2026, 8, 28), retries=2) as p:
         assert fd.dump_max_date(p) == _d(2026, 8, 27)
     assert fd.dump_last_access()["mode"] == "stale"
 
@@ -461,7 +461,7 @@ def test_熔断后仍然用旧缓存而不是抛错(_clean_cache, monkeypatch):
                             httpx.ConnectError("unreachable")))
     monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
     for _ in range(3):
-        with fd.daily_k_dump("key", require_date=_d(2026, 8, 28), retries=2) as p:
+        with fd.daily_k_dump("key", need_through=_d(2026, 8, 28), retries=2) as p:
             assert p.exists()
     assert len(calls) == 3, "只有第一个调用点真去连了3次，后两个熔断"
     assert fd.dump_last_access()["mode"] == "stale"
@@ -476,6 +476,52 @@ def test_没有缓存才抛错(_clean_cache, monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("unreachable")))
     monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
     with pytest.raises(fd.FuyaoError):
-        with fd.daily_k_dump("key", require_date=_d(2026, 8, 28), retries=0):
+        with fd.daily_k_dump("key", need_through=_d(2026, 8, 28), retries=0):
             pass
     assert fd.dump_last_access()["mode"] == "failed"
+
+
+# ── need_through 的语义：dump 只需覆盖到"最后一个已收盘的交易日"────────────────
+#
+# 用户 2026-08-27 定的策略原话：
+#   "前一天收盘后到当前收盘前，都是可以用一个缓存文件。能用缓存就必须用缓存，
+#    没法用缓存的时候就必须下载，下载不成功再走兜底逻辑。"
+#
+# 早先传的是 target_date（今天），盘中 dump 本来就不可能有今天，条件①永远不满足，
+# 于是每次盘中刷新都白白探一次网络——而缓存其实完全够用，因为 dump 只管历史缺口，
+# 当日那一根走实时行情。
+
+def test_盘中传上一交易日则命中缓存零请求(_clean_cache, monkeypatch):
+    from datetime import date as _d
+    fd = _clean_cache
+    fd.reset_dump_availability()
+    _seed_cache(fd, fd.DUMP_KIND_10D,
+                [("600984.SH", _d(2026, 8, 26), 4.6, 4.94, 4.5, 4.94),
+                 ("600984.SH", _d(2026, 8, 27), 4.9, 5.43, 4.6, 4.66)],
+                {"path_date": "20260827", "size": 1, "max_trade_date": "2026-08-27"})
+    called = []
+    monkeypatch.setattr(fd, "_download_url", lambda *a, **k: called.append(1) or "http://x")
+    # 08-28 盘中：need_through = 上一交易日 08-27，缓存正好覆盖
+    with fd.daily_k_dump("key", need_through=_d(2026, 8, 27)) as p:
+        assert p.exists()
+    assert called == [] and fd.dump_last_access()["mode"] == "covered"
+
+
+def test_盘后传当天则必须去拿新的(_clean_cache, monkeypatch):
+    """收盘之后 dump 该有今天了，缓存只到昨天就不算够用，必须去拿。"""
+    from datetime import date as _d
+    fd = _clean_cache
+    fd.reset_dump_availability()
+    _seed_cache(fd, fd.DUMP_KIND_10D,
+                [("600984.SH", _d(2026, 8, 26), 4.6, 4.94, 4.5, 4.94),
+                 ("600984.SH", _d(2026, 8, 27), 4.9, 5.43, 4.6, 4.66)],
+                {"path_date": "20260827", "size": 900000, "max_trade_date": "2026-08-27"})
+    called = []
+    # 上游那份还没重新生成（生成日和大小都跟缓存一致）→ 问过之后仍然复用缓存
+    monkeypatch.setattr(fd, "_download_url",
+                        lambda *a, **k: called.append(1) or "https://x/releases/20260827/f.parquet")
+    monkeypatch.setattr(fd, "_remote_size", lambda *a, **k: 900000)
+    with fd.daily_k_dump("key", need_through=_d(2026, 8, 28)) as p:
+        assert p.exists()
+    assert called == [1], "缓存不够用，至少要去问一次上游"
+    assert fd.dump_last_access()["mode"] == "unchanged"

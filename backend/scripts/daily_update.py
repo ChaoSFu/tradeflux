@@ -556,7 +556,7 @@ def _upsert_snapshot(
 
 def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
                                   handled: set, fuyao_key: Optional[str],
-                                  log) -> int:
+                                  log, need_through: Optional[date] = None) -> int:
     """
     结算「盘中进过候选池、收盘前又掉出去」的那些股票的当日快照。
 
@@ -605,7 +605,7 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
     bars_map: dict = {}
     if fuyao_key:
         try:
-            with daily_k_dump(fuyao_key, require_date=target_date) as dump_path:
+            with daily_k_dump(fuyao_key, need_through=need_through) as dump_path:
                 if dump_path:
                     bars_map = load_bars(dump_path, {i.code: i.is_st for i in infos})
         except Exception as e:  # noqa: BLE001
@@ -642,7 +642,8 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
 
 
 
-def _backfill_history_from_dump(db, target_date: date, fuyao_key, log) -> int:
+def _backfill_history_from_dump(db, target_date: date, fuyao_key, log,
+                                need_through: Optional[date] = None) -> int:
     """
     用已下载的 dump 给**库里全部股票**补历史快照，零额外请求。
 
@@ -672,7 +673,7 @@ def _backfill_history_from_dump(db, target_date: date, fuyao_key, log) -> int:
     sid_by_code = {r[1]: r[0] for r in stock_rows}
 
     try:
-        with daily_k_dump(fuyao_key, require_date=target_date) as dump_path:
+        with daily_k_dump(fuyao_key, need_through=need_through) as dump_path:
             if not dump_path:
                 return 0
             bars_map = load_bars(dump_path, wanted)
@@ -1291,6 +1292,25 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 只拉 2-3 天。生产日志里 "拉取近52天补齐/49天/65天" 几乎每次都触发，
         # payload 是应有的 20 倍，既是慢的主因，也是把限流打出来的主因。
         # 边界2 那个"连续停机多日不能只补1根"的初衷仍然保留，只是改成按股票各算。
+        # ── 市场时间探测（整轮只问一次，下面两处都用它）─────────────────────
+        # 提前到 dump 判定之前：要先知道"今天收盘了没有"，才能算出 dump 该覆盖到
+        # 哪一天。时间取自腾讯行情字段30（市场自己的时间戳），不用本机时钟。
+        market_now = probe_market_now()
+        if market_now is None:
+            market_now = datetime.now(SH_TZ)
+            log.warning(f"市场时间探测失败，退回本机时钟 {market_now:%H:%M:%S}（"
+                        f"若本机时区/时间不准，可能把盘中价误判为收盘价）")
+
+        # dump 需要覆盖到哪一天。**不是 target_date**——dump 只管历史缺口，当日
+        # 那一根走实时行情（用户 2026-08-27）：
+        #   · 今天已收盘 → dump 该有今天
+        #   · 尚未收盘   → 只需覆盖到上一个已收盘的交易日，也就是库里历史的最新日期
+        # 后者用 db_klines_map 现成的最大日期，不需要独立交易日历。
+        # 这条决定了"能用缓存就必须用缓存"：盘中缓存覆盖到昨天即可，零请求。
+        _hist_latest = max((b[-1].date for b in db_klines_map.values() if b), default=None)
+        _dump_settled = bar_is_settled(target_date, market_now)
+        _need_through = target_date if _dump_settled else (_hist_latest or target_date)
+
         # ── dump 优先：全市场日K一次下载，替代逐股拉取 ────────────────────────
         # 用户 2026-08-26 定的边界：一天一次、只更新库里已关注的股票、用完即删、
         # 新增股票仍走实时接口。这里对应的就是 db_group（库里有历史、只需补最近
@@ -1305,7 +1325,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         _fuyao_key = get_fuyao_key()
         if _fuyao_key and db_group:
             try:
-                with daily_k_dump(_fuyao_key, require_date=target_date) as dump_path:
+                with daily_k_dump(_fuyao_key, need_through=_need_through) as dump_path:
                     if dump_path:
                         wanted = {i.code: i.is_st for i in db_group}
                         dump_bars = load_bars(dump_path, wanted)
@@ -1539,11 +1559,10 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 时间取自腾讯行情字段30（市场自己的时间戳），不用本机时钟：既避免服务器
         # 时钟漂移，也天然处理半日市这种收盘时间不是15:00的日子。探测不到才退回
         # 本机 Asia/Shanghai 时钟——那是最后手段，会明确记进日志。
-        market_now = probe_market_now()
-        if market_now is None:
-            market_now = datetime.now(SH_TZ)
-            log.warning(f"市场时间探测失败，退回本机时钟 {market_now:%H:%M:%S}（"
-                        f"若本机时区/时间不准，可能把盘中价误判为收盘价）")
+        # market_now 在拉K线之前已经探过一次，这里直接复用（整轮只问一次市场时间）。
+        # 但 run_settled 要**用修正后的 target_date 重算**：非交易日跑的时候
+        # target_date 会被 max(所有股票末根日期) 往回修正到真实的最后交易日，
+        # 那一天其实早已收盘——用修正前的日期算会得出"未收盘"，把快照错标成盘中值。
         run_settled = bar_is_settled(target_date, market_now)
         log.info(f"市场时间 {market_now:%Y-%m-%d %H:%M:%S} → {target_date} "
                  f"{'已收盘，本次写入当日终值' if run_settled else '尚未收盘，本次写入盘中快照(is_settled=False)'}")
@@ -1725,6 +1744,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         _settle_dropped_out_snapshots(
             db, target_date, run_settled,
             handled={st.code for st in stats_list}, fuyao_key=_fuyao_key, log=log,
+            need_through=_need_through,
         )
 
         # ── 第4.05步：历史快照自举 ────────────────────────────────
@@ -1781,7 +1801,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 上面的自举只管 full_group 那几只，缺口的大头在"掉出池子放空一段时间"的
         # 股票身上。见 _backfill_history_from_dump 的 docstring。
         try:
-            _backfill_history_from_dump(db, target_date, _fuyao_key, log)
+            _backfill_history_from_dump(db, target_date, _fuyao_key, log, _need_through)
         except Exception as e:  # noqa: BLE001
             log.warning(f"历史快照补全失败（不影响主流程）: {type(e).__name__}: {e}")
             db.rollback()

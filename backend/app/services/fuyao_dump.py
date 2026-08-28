@@ -161,8 +161,15 @@ def dump_unavailable_reason() -> Optional[str]:
 
 
 def dump_last_access() -> dict:
-    """上次取 dump 的方式：covered=缓存已覆盖所需交易日；unchanged=上游没变；
-    downloaded=真下载了一次。给日志用。"""
+    """
+    上次取 dump 的方式，给日志用：
+      covered    缓存已覆盖到 need_through，零请求
+      unchanged  上游生成日和大小都没变，复用缓存（花了1字节探测）
+      downloaded 真下载了一次
+      stale      下载失败，用的是手上那份旧的
+      skipped    本轮已判定网络不可用且无缓存
+      failed     下载失败且没有任何缓存
+    """
     return dict(_LAST_ACCESS)
 
 
@@ -256,13 +263,23 @@ def _path_date(url: str) -> Optional[str]:
 
 @contextmanager
 def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
-                 require_date: Optional[date] = None,
+                 need_through: Optional[date] = None,
                  timeout: int = 180, retries: int = 2) -> Iterator[Optional[Path]]:
     """
     取 dump 文件路径，**带本地缓存**：一天只需要真正下载成功一次。
 
-    require_date 传入要用的交易日；缓存已经覆盖它就零请求直接复用。不传则每次都
-    去问一下上游有没有变（仍然可能命中缓存，只花 1 个字节）。
+    need_through = **dump 需要覆盖到哪一天**。缓存覆盖到了就零请求直接用，连 1 字节
+    的探测都不做；不传则每次都去问一下上游有没有变。
+
+    注意它**不是 target_date**（2026-08-27 用户纠正）：dump 只负责历史缺口，当日
+    那一根走实时行情，所以
+      · 盘中/盘前 → 传**上一个已收盘的交易日**
+      · 盘后     → 传当天
+    用户原话："前一天收盘后到当前收盘前，都是可以用一个缓存文件。能用缓存就必须
+    用缓存，没法用缓存的时候就必须下载，下载不成功再走兜底逻辑。"
+
+    早先这里传的是 target_date，那是错的：盘中 dump 本来就不可能有今天，条件①
+    永远不满足，于是**每次盘中刷新都白白去探一次网络**——而缓存其实完全够用。
 
     失败抛 FuyaoError，不返回 None——K线还有逐股接口那条完整的老路，调用方兜住即可。
     **但调用方那边的 except 分支必须真的能跑通**：2026-08-26 生产事故就是 except 里
@@ -281,10 +298,10 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
     _t0 = time.time()
     _errs: List[str] = []
 
-    # ① 缓存已覆盖要的交易日 → 零请求
+    # ① 缓存已覆盖到 need_through → 零请求，连 1 字节的探测都不做
     if data.exists() and meta:
         cached_max = meta.get("max_trade_date")
-        if require_date and cached_max and cached_max >= require_date.isoformat():
+        if need_through and cached_max and cached_max >= need_through.isoformat():
             _mark("covered", attempts=0, errors=[], seconds=0.0)
             yield data
             return
