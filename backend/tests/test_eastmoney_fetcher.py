@@ -608,3 +608,43 @@ class TestMarketLabel:
         北交所本来就是 market=0，加了 BJ 这个值也不会打破它。"""
         for label, expect in [("SH", 1), ("SZ", 0), ("BJ", 0)]:
             assert (1 if label == "SH" else 0) == expect
+
+
+class TestQuotePrefix:
+    """
+    2026-08-28 生产事故：920087（秋乐种业，北交所）连续三跑拿不到行情，
+    quote_missing=1，最后落到东财兜底吃了三次 502 Bad Gateway。
+
+    三家实测：腾讯 bj920087 正常、新浪 bj920087 正常、东财 0.920087 返回 302。
+    也就是说数据一直都在，是我们自己发错了请求——_fetch_quotes_sina 和
+    fetch_today_pct_sina 各写了一份 `prefix_map = {1: "sh", 0: "sz"}`，**没有 bj**，
+    北交所被拼成 sz920087，新浪回一个空串 `var hq_str_sz920087="";`
+    ——不报错、不抛异常，只是没数据，所以一直没人发现。
+
+    这是"同一个市场事实只能有一套判定函数"的第五次违反（前四次：build_kline_bar /
+    exact_limit_price / bar_is_settled / thscode_suffix）。
+    """
+    def test_北交所三类前缀都是bj(self):
+        from app.services.eastmoney_fetcher import quote_prefix as q
+        assert q("920087", 0) == "bj"   # 92 开头
+        assert q("430139", 0) == "bj"   # 4 开头
+        assert q("830799", 0) == "bj"   # 8 开头
+
+    def test_沪深照旧(self):
+        from app.services.eastmoney_fetcher import quote_prefix as q
+        assert q("600984", 1) == "sh" and q("688828", 1) == "sh"
+        assert q("000001", 0) == "sz" and q("300333", 0) == "sz"
+
+    def test_北交所不受传入market影响(self):
+        """Stock.market 历史上把北交所标成过 SH 也标成过 SZ，前缀不能跟着它走。"""
+        from app.services.eastmoney_fetcher import quote_prefix as q
+        assert q("920087", 0) == "bj" and q("920087", 1) == "bj"
+
+    def test_全仓库只剩这一处二分映射(self):
+        """再出现 {1: "sh", 0: "sz"} 这种写法，就是又开始各写各的了。"""
+        import pathlib, re
+        src = (pathlib.Path(__file__).resolve().parents[1]
+               / "app" / "services" / "eastmoney_fetcher.py").read_text(encoding="utf-8")
+        # 允许出现在 quote_prefix 自己的实现和 docstring 里，别处不该有
+        body = src[src.index("def market_label("):]
+        assert '{1: "sh", 0: "sz"}' not in body, "又冒出一份没有 bj 的二分映射"

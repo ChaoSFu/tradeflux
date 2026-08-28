@@ -105,6 +105,26 @@ _HIGH_LIMIT_PREFIXES = ("688", "300", "301")
 _BJ_PREFIXES = ("4", "8", "92")
 
 
+def quote_prefix(code: str, market: int) -> str:
+    """
+    腾讯/新浪行情与K线接口的交易所前缀：sh / sz / **bj**。
+
+    2026-08-28 生产事故：920087（秋乐种业，北交所）连续三跑拿不到行情。三家实测
+    腾讯 `bj920087` 正常、新浪 `bj920087` 正常、东财 `0.920087` 返回 302——可我们
+    偏偏一只都没拿到，最后落到东财兜底吃了三次 502。
+    根因是 _fetch_quotes_sina 和 fetch_today_pct_sina 各写了一份
+    `prefix_map = {1: "sh", 0: "sz"}`，**没有 bj 这一支**，北交所被拼成 `sz920087`，
+    新浪回一个空串 `var hq_str_sz920087="";`——不报错、不抛异常，只是没数据。
+
+    这是"同一个市场事实只能有一套判定函数"在本仓库的第五次违反（前四次：
+    build_kline_bar / exact_limit_price / bar_is_settled / thscode_suffix）。
+    文件里明明已经有 _is_bj_code 了，这两处却各自又写了一份二分映射。
+    """
+    if _is_bj_code(code):
+        return "bj"
+    return "sh" if market == 1 else "sz"
+
+
 def market_label(code: str, market: int) -> str:
     """
     东财的数字 market + 代码 → 存进 Stock.market 的字符串标签。
@@ -503,13 +523,13 @@ def _batch_sina_pct_change(
     涨跌幅 = (现价 - 昨收) / 昨收 * 100
     """
     pct_map: Dict[str, float] = {}
-    prefix_map = {1: "sh", 0: "sz"}
+    # 前缀统一走 quote_prefix（含北交所 bj），不要在这里再写一份二分映射
 
     # 分批请求
     batches = [code_list[i:i+batch_size] for i in range(0, len(code_list), batch_size)]
     with httpx.Client(headers=SINA_HEADERS, timeout=timeout) as client:
         for batch in batches:
-            sina_keys = [f"{prefix_map[mkt]}{code}" for code, mkt in batch]
+            sina_keys = [f"{quote_prefix(code, mkt)}{code}" for code, mkt in batch]
             try:
                 resp = client.get(SINA_HQ_URL + ",".join(sina_keys))
                 for line in resp.text.splitlines():
@@ -761,7 +781,7 @@ def _fetch_kline_tencent(
     code: str, market: int, days: int, is_st: bool, limit_pct: float, timeout: int
 ) -> List[KLineBar]:
     """腾讯财经历史 K 线（无换手率，从相邻收盘价计算涨跌幅）"""
-    prefix = "bj" if _is_bj_code(code) else ("sh" if market == 1 else "sz")
+    prefix = quote_prefix(code, market)
     full_code = f"{prefix}{code}"
 
     with httpx.Client(headers=TENCENT_HEADERS, timeout=timeout) as client:
@@ -828,7 +848,7 @@ def _fetch_kline_sina(
 ) -> List[KLineBar]:
     """新浪财经历史K线（无换手率），跟 _fetch_kline_tencent 同级的第三个数据源。"""
     import json as _json
-    prefix = "bj" if _is_bj_code(code) else ("sh" if market == 1 else "sz")
+    prefix = quote_prefix(code, market)
     url = (
         "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_=/CN_MarketDataService.getKLineData"
         f"?symbol={prefix}{code}&scale=240&ma=no&datalen={days}"
@@ -1889,7 +1909,7 @@ def _fetch_quotes_tencent(codes_markets: list[tuple[str, int]], timeout: int = 1
     with httpx.Client(headers=TENCENT_HEADERS, timeout=timeout) as client:
         for batch in batches:
             keys = [
-                f"{'bj' if _is_bj_code(code) else ('sh' if market == 1 else 'sz')}{code}"
+                f"{quote_prefix(code, market)}{code}"
                 for code, market in batch
             ]
             try:
@@ -1967,12 +1987,12 @@ def _fetch_quotes_sina(codes_markets: list[tuple[str, int]], timeout: int = 10) 
     result: Dict[str, StockQuote] = {}
     if not codes_markets:
         return result
-    prefix_map = {1: "sh", 0: "sz"}
+    # 前缀统一走 quote_prefix（含北交所 bj），不要在这里再写一份二分映射
     batch_size = 150  # 沿用 _batch_sina_pct_change 的既有批量大小
     batches = [codes_markets[i:i + batch_size] for i in range(0, len(codes_markets), batch_size)]
     with httpx.Client(headers=SINA_HEADERS, timeout=timeout) as client:
         for batch in batches:
-            keys = [f"{prefix_map.get(mkt, 'sz')}{code}" for code, mkt in batch]
+            keys = [f"{quote_prefix(code, mkt)}{code}" for code, mkt in batch]
             try:
                 resp = client.get(SINA_HQ_URL + ",".join(keys))
                 for line in resp.text.splitlines():
