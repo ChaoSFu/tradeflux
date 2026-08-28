@@ -128,7 +128,10 @@ _CACHE_DIR = Path(gettempdir()) / "tradeflux_fuyao_dump"
 # 栽过好几次（新浪盘中不发当日bar、腾讯盘中发未收盘的bar），所以判据一律取自内容
 # 本身。把每次的解决方式记下来，跑几天就能免费得到"各时段 dump 到底什么样"的
 # 实证画像，而不是现在拍脑袋。
-_LAST_ACCESS: dict = {"mode": None, "at": None, "attempts": 0, "errors": [], "seconds": 0.0}
+_LAST_ACCESS: dict = {"mode": None, "at": None, "attempts": 0, "errors": [], "seconds": 0.0,
+                      # mode=stale 时填：这份旧缓存覆盖到哪天、本该覆盖到哪天。
+                      # 调用方据此判断它还值不值得用，并在日志里说清楚旧了多少
+                      "stale_through": None, "need_through": None}
 
 # 连接阶段单独给一个短超时。总超时（timeout 参数）要照顾下载 1MB 的耗时，不能设小，
 # 但**连不上**和**下得慢**是两回事：2026-08-28 生产上 fuyao 整个不可达（IPv6 无路由
@@ -310,7 +313,9 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
         # 本轮已判定网络不通。有缓存就直接用旧的（理由同下面 stale 分支），
         # 没有才抛——总之不再去连。
         if data.exists() and meta:
-            _mark("stale", attempts=0, errors=[], seconds=0.0)
+            _mark("stale", attempts=0, errors=[], seconds=0.0,
+                  stale_through=meta.get("max_trade_date"),
+                  need_through=need_through.isoformat() if need_through else None)
             yield data
             return
         _mark("skipped", attempts=0, errors=[], seconds=0.0)
@@ -379,7 +384,9 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
     # 而且会误伤那些历史更旧、旧 dump 反而够用的股票。
     if data.exists() and meta:
         _mark("stale", attempts=retries + 1, errors=list(_errs),
-              seconds=round(time.time() - _t0, 1))
+              seconds=round(time.time() - _t0, 1),
+              stale_through=meta.get("max_trade_date"),
+              need_through=need_through.isoformat() if need_through else None)
         yield data
         return
 

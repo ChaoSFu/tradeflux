@@ -1326,12 +1326,29 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         if _fuyao_key and db_group:
             try:
                 with daily_k_dump(_fuyao_key, need_through=_need_through) as dump_path:
+                    dump_bars, mb = {}, 0.0
                     if dump_path:
-                        wanted = {i.code: i.is_st for i in db_group}
-                        dump_bars = load_bars(dump_path, wanted)
                         mb = dump_path.stat().st_size / 1048576
-                    else:
-                        dump_bars, mb = {}, 0.0
+                        # 用旧缓存之前先判它有没有可能帮上忙（2026-08-28 用户提出）。
+                        # 必要条件：至少有一只股票的历史末日 <= 缓存覆盖到的那天。
+                        # 反之（缓存比所有股票的历史都旧）它一根也接不上，解析 1MB
+                        # parquet 纯属白费，而且日志会显示"命中 0/218"——看起来像
+                        # 另一种故障，查起来绕远路。
+                        # 只做这个必要条件，不在这里重算"每只股票接不接得上"——
+                        # 那是下面循环的事，写两遍迟早不一致。
+                        _st = dump_last_access().get("stale_through")
+                        _usable = True
+                        if _st:
+                            _st_d = date.fromisoformat(_st)
+                            _usable = any((b[-1].date <= _st_d)
+                                          for b in db_klines_map.values() if b)
+                            if not _usable:
+                                log.warning(
+                                    f"旧 dump 只覆盖到 {_st}，比库里所有股票的历史都旧，"
+                                    f"一根也接不上——跳过解析，全部退回逐股K线接口")
+                        if _usable:
+                            wanted = {i.code: i.is_st for i in db_group}
+                            dump_bars = load_bars(dump_path, wanted)
                 for info in db_group:
                     bars = dump_bars.get(info.code) or []
                     hist = db_klines_map.get(info.code) or []
@@ -1375,6 +1392,13 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                         f"当日K线由实时行情补齐，下一次收盘后会自动再试")
                 _tail = (f"；其中 {len(dump_no_today)} 只 dump 无当日数据，当日bar走实时行情"
                          if dump_no_today else "")
+                # 用了旧缓存就要说清楚旧多少、够不够用——"命中 0/218"配上"用了旧缓存"
+                # 才是一句完整的话，只报其中一个都会把人带偏
+                if _la.get("mode") == "stale":
+                    _tail += (f"；旧缓存覆盖至 {_la.get('stale_through')}，"
+                              f"本需覆盖至 {_la.get('need_through')}")
+                    if not dump_hit:
+                        _tail += "，**一只都没接上**"
                 log.info(f"  📦 fuyao dump({mb:.1f}MB，覆盖至 {_ci.get('max_trade_date','?')}，"
                          f"{(_ci.get('fetched_at') or '')[11:19]} 取得，本次{_how}"
                          f"，耗时{_la.get('seconds', 0)}s)："

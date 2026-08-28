@@ -525,3 +525,76 @@ def test_盘后传当天则必须去拿新的(_clean_cache, monkeypatch):
         assert p.exists()
     assert called == [1], "缓存不够用，至少要去问一次上游"
     assert fd.dump_last_access()["mode"] == "unchanged"
+
+
+# ── 旧缓存够不够用（2026-08-28 用户提出）──────────────────────────────────────
+#
+# 用户："下载失败 → 用手上那份旧的，这个需要校验那份旧的够不够用。"
+#
+# 正确性上的校验一直都在调用方，而且是**逐股**判的（比全局判更准）：
+#   · K线主步：bars[0].date > hist[-1].date+1 → 中间有洞，跳过该股
+#             bars[-1].date < hist[-1].date  → 没推进，跳过该股
+#   · 掉出池补结算：要求 bars[-1].date == target_date 精确匹配
+#   · 全库历史补全：只写 date < target_date 且不存在的行
+# 所以陈旧的 dump 不会产生错数据，只会命中率低。
+#
+# 缺的是"用之前判一下值不值得用"和"用之后说清楚旧了多少"——否则日志显示
+# "命中 0/218" 看起来像另一种故障。下面钉住这两条判据本身。
+
+def _bridgeable(dump_first, dump_last, hist_last):
+    """复刻 K线主步的逐股命中判据。"""
+    from datetime import timedelta as _td
+    if dump_first > hist_last + _td(days=1):
+        return False          # 中间有洞
+    if dump_last < hist_last:
+        return False          # 没推进
+    return True
+
+
+class TestStaleUsability:
+    D = date
+
+    def test_旧一天的缓存仍然够用(self):
+        """08-28 盘后没下成，缓存到 08-27，库里历史也到 08-27 —— 正是自愈那条路。"""
+        assert _bridgeable(self.D(2026, 8, 13), self.D(2026, 8, 27), self.D(2026, 8, 27))
+
+    def test_缓存比库里历史还旧则不用(self):
+        """停牌股或前几天补过的股票：库里已经到 08-27，缓存只到 08-20，用了等于倒退。"""
+        assert not _bridgeable(self.D(2026, 8, 6), self.D(2026, 8, 20), self.D(2026, 8, 27))
+
+    def test_中间有洞则不用(self):
+        """库里历史停在 7 月，缓存只有近 10 个交易日 —— 接不上，必须逐股补。"""
+        assert not _bridgeable(self.D(2026, 8, 13), self.D(2026, 8, 27), self.D(2026, 7, 20))
+
+    def test_必要条件_缓存比所有股票历史都旧就别解析(self):
+        """
+        调用方在 load_bars 之前做的那个前置判断：只要没有任何一只股票的历史末日
+        <= 缓存覆盖日，这份缓存一根也接不上，解析 1MB parquet 纯属白费。
+        这是**必要条件**不是充分条件——具体每只接不接得上仍由上面的逐股判据决定，
+        不在两处各算一遍。
+        """
+        cache_max = self.D(2026, 8, 20)
+        hist_ends = [self.D(2026, 8, 27), self.D(2026, 8, 26), self.D(2026, 8, 28)]
+        assert not any(h <= cache_max for h in hist_ends), "全比缓存新 → 该跳过解析"
+        hist_ends.append(self.D(2026, 8, 18))
+        assert any(h <= cache_max for h in hist_ends), "有一只够得着 → 该解析"
+
+
+def test_stale访问会带出旧到什么程度(_clean_cache, monkeypatch):
+    """日志要能说出"旧缓存覆盖至X、本需覆盖至Y"，只报"命中0"会把人带偏。"""
+    import httpx
+    from datetime import date as _d
+    fd = _clean_cache
+    fd.reset_dump_availability()
+    _seed_cache(fd, fd.DUMP_KIND_10D,
+                [("600984.SH", _d(2026, 8, 26), 4.6, 4.94, 4.5, 4.94),
+                 ("600984.SH", _d(2026, 8, 27), 4.9, 5.43, 4.6, 4.66)],
+                {"path_date": "20260827", "size": 1, "max_trade_date": "2026-08-27"})
+    monkeypatch.setattr(fd, "_download_url",
+                        lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("unreachable")))
+    monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
+    with fd.daily_k_dump("key", need_through=_d(2026, 8, 28), retries=0):
+        pass
+    la = fd.dump_last_access()
+    assert la["mode"] == "stale"
+    assert la["stale_through"] == "2026-08-27" and la["need_through"] == "2026-08-28"
