@@ -953,6 +953,15 @@ class UpDownSeriesPoint(BaseModel):
     date: str
     up: int
     down: int
+    # 分档序列（2026-08-28新增）。**刻意不含 0~1% 和平盘**：那三档是中枢噪音，
+    # 用户要看的是"赚钱效应强不强"，±1% 以内的股票对这个问题没有贡献，
+    # 放进来只会让曲线被一堆一千多的数字压平。
+    limit_up: int = 0        # 涨停
+    up_gt5: int = 0          # 自然涨>5%（不含涨停）
+    up_1_5: int = 0          # 涨1~5%
+    down_1_5: int = 0        # 跌1~5%
+    down_gt5: int = 0        # 自然跌>5%（不含跌停）
+    limit_down: int = 0      # 跌停
 
 
 def get_updown_series(db: Session, days: int = 120) -> list[UpDownSeriesPoint]:
@@ -968,10 +977,16 @@ def get_updown_series(db: Session, days: int = 120) -> list[UpDownSeriesPoint]:
         .all()
     )
     rows.reverse()
-    return [
-        UpDownSeriesPoint(date=str(r.date), up=r.up_count or 0, down=r.down_count or 0)
-        for r in rows
-    ]
+    out = []
+    for r in rows:
+        ub, db_ = r.up_buckets or [0] * 10, r.down_buckets or [0] * 10
+        out.append(UpDownSeriesPoint(
+            date=str(r.date), up=r.up_count or 0, down=r.down_count or 0,
+            limit_up=r.limit_up_count or 0, limit_down=r.limit_down_count or 0,
+            up_gt5=sum(ub[5:]), up_1_5=sum(ub[1:5]),
+            down_1_5=sum(db_[1:5]), down_gt5=sum(db_[5:]),
+        ))
+    return out
 
 
 def get_updown_dates(db: Session) -> list[str]:

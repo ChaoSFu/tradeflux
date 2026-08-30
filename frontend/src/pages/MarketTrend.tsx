@@ -14,6 +14,8 @@ import {
 } from 'recharts'
 import { TrendingUp, TrendingDown, AlertTriangle, BookOpen, ChevronDown, ChevronUp } from 'lucide-react'
 import type { IndexTrendAnalysis, IndexSignal, WindvaneResponse, MarginRange } from '@/types'
+import type { UpDownSeriesPoint } from '@/api/marketTrend'
+import ThrustTrendChart from '@/components/marketTrend/ThrustTrendChart'
 
 // ── 金额格式化 ───────────────────────────────────────────────────────────────
 const wanyi = (v: number) => `${(v / 1e12).toFixed(2)}万亿`
@@ -186,7 +188,8 @@ export default function MarketTrend() {
     queryKey: ['updown-series'],
     queryFn: () => fetchUpDownSeries(120),
     staleTime: 60 * 60 * 1000,
-    enabled: overlay === 'updown',
+    // 原来只在主图叠加"涨跌统计"时才拉；现在涨跌统计卡片里的分档走势图无条件要用，
+    // 门控已无意义，去掉
   })
   // 三个叠加数据源按 MM/dd 建索引，跟主图 K 线的日期格式对齐（叠加数据各自有自己的
   // 覆盖窗口——两融受 marginRange 影响、成交额固定近60日、涨跌统计从开始同步那天起
@@ -566,6 +569,7 @@ export default function MarketTrend() {
           updownDate={updownDate}
           onUpdownDateChange={setUpdownDate}
           updownDates={updownDates}
+          updownSeries={updownSeries}
         />
       )}
 
@@ -631,13 +635,14 @@ const MARGIN_RANGE_LABEL: Record<MarginRange, string> = {
   '6m': '6个月', '1y': '1年', '3y': '3年', '5y': '5年', all: '全部',
 }
 
-function WindvaneCards({ wv, marginRange, onMarginRangeChange, updownDate, onUpdownDateChange, updownDates }: {
+function WindvaneCards({ wv, marginRange, onMarginRangeChange, updownDate, onUpdownDateChange, updownDates, updownSeries }: {
   wv: WindvaneResponse
   marginRange: MarginRange
   onMarginRangeChange: (r: MarginRange) => void
   updownDate?: string
   onUpdownDateChange: (d: string | undefined) => void
   updownDates?: string[]
+  updownSeries?: UpDownSeriesPoint[]
 }) {
   const m = wv.margin
   const u = wv.updown
@@ -881,6 +886,9 @@ function WindvaneCards({ wv, marginRange, onMarginRangeChange, updownDate, onUpd
                 ))}
               </div>
             )}
+            {/* 分档走势：上面的柱状图是今天这一根横截面，文字解读也只说今天；
+                这张图把同样六个分档拉成时间序列，回答"今天这个数在最近里算强还是弱" */}
+            <ThrustTrendChart data={updownSeries} />
             <p className="text-[10px] text-text-muted/80 leading-relaxed">
               自然涨停/跌停 = 剔除一字板后的数量，更能反映盘中真实做多/做空力量
             </p>

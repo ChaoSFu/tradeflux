@@ -24,6 +24,14 @@ export interface UpDownSeriesPoint {
   date: string
   up: number
   down: number
+  // 分档序列。**刻意不含 0~1% / 平盘 / -0~1%**：那三档是中枢噪音，对"赚钱效应
+  // 强不强"没有贡献，只会用一堆一千多的数字把别的曲线压平。
+  limit_up: number      // 涨停
+  up_gt5: number        // 涨>5%（不含涨停）
+  up_1_5: number        // 涨1~5%
+  down_1_5: number      // 跌1~5%
+  down_gt5: number      // 跌>5%（不含跌停）
+  limit_down: number    // 跌停
 }
 
 export const fetchUpDownSeries = (days = 120) =>
