@@ -571,11 +571,13 @@ function RoleTags({ roles, reasons }: { roles: W2SCoreRole[]; reasons: string[] 
   if (!roles.length) return null
   const full = roles.map((r) => ROLE_LABEL[r]?.full).filter(Boolean).join(' · ')
   return (
-    <span className="inline-flex items-center gap-1 flex-nowrap whitespace-nowrap overflow-hidden"
+    <span className="inline-flex items-center gap-0.5 flex-nowrap whitespace-nowrap overflow-hidden"
           title={[full, reasons.join(' · ')].filter(Boolean).join('\n')}>
       {roles.map((r) => {
         const cfg = ROLE_LABEL[r]
-        return cfg ? <Badge key={r} variant={cfg.variant}>{cfg.text}</Badge> : null
+        // px-1 而不是默认的 px-1.5：一只票最多挂 3 个徽章，每个省 4px 就是 12px，
+        // 在一张已经零富余的 22 列表格里，12px 是实打实的
+        return cfg ? <Badge key={r} variant={cfg.variant} className="px-1">{cfg.text}</Badge> : null
       })}
     </span>
   )
@@ -611,7 +613,13 @@ const CORE_PICK = (r: LimitUpRadarCoreStock, k: CoreSortKey) => ({
  * 全部列都给固定宽度，容器更宽时浏览器按比例均摊多余空间——两表规则相同，
  * 所以窗口怎么变都对齐。
  *
- * 宽度按 **12px 字号（text-xs）** 量的：1个汉字12px、等宽数字约7px。第一版是按
+ * 宽度**不是拍的，是在浏览器里逐列量出来的**：每列取"表头 scrollWidth 与所有单元格
+ * 内容 scrollWidth 的最大值"，那就是它真正需要的宽度。2026-08-28 实测：22 列合计需
+ * 1421px 而容器只有 1330px，**富余合计 0**——没有任何一列在浪费，是 22 列真的放不下。
+ * 所以取舍不是"哪列给宽了"，而是"要不要少一列"。已经先做了两件不损失信息的事：
+ * 核心锚里去掉重复的「炸板」徽章（今日炸板已单独成表），角色徽章 padding 收紧。
+ *
+ * 早先宽度按 **12px 字号（text-xs）** 估的：1个汉字12px、等宽数字约7px。第一版是按
  * 16px 估的，结果每列都宽出三成——股票列给了 13rem(208px) 而内容只有约 100px，
  * 白扔一半，一路把后面的列挤出视野，用户要横向拖动才看得到板位/首封/封单
  * （2026-08-27 反馈）。合计从 106rem 收到 81rem，少了约 400px。
@@ -619,20 +627,21 @@ const CORE_PICK = (r: LimitUpRadarCoreStock, k: CoreSortKey) => ({
 function RadarCols() {
   return (
     <colgroup>
-      <col className="w-[7.4rem]" />{/* 股票：名称4字48px + 代码6位42px + 间距 ≈ 100px */}
-      <col className="w-[6rem]" />{/* 核心角色：3个两字徽章 ≈ 116px */}
+      <col className="w-[6.2rem]" />{/* 股票：实测需 96px（去掉炸板徽章后）*/}
+      <col className="w-[6.9rem]" />{/* 核心角色：3个两字徽章实测需 109px（已收紧padding）*/}
       <col className="w-[3.8rem]" />{/* 今日 */}
-      <col className="w-[3.8rem]" />{/* 10日涨停：宽度由表头4字+排序箭头决定，不是数据 */}
-      <col className="w-[3.8rem]" />{/* 20日涨停 */}
-      <col className="w-[3.8rem]" />{/* 60日涨停 */}
-      <col className="w-[3.8rem]" />{/* 60日高板 */}
+      <col className="w-[3.9rem]" />{/* 10日涨停：宽度由表头4字+排序箭头决定，不是数据 */}
+      <col className="w-[4rem]" />{/* 20日涨停 */}
+      <col className="w-[4rem]" />{/* 60日涨停 */}
+      <col className="w-[4rem]" />{/* 60日高板 */}
       <col className="w-[4rem]" />{/* 10日涨幅：+120.3% 共7字符 */}
       <col className="w-[4rem]" />{/* 20日涨幅 */}
       <col className="w-[4rem]" />{/* 60日涨幅 */}
       <col className="w-[3.2rem]" />{/* 龙头分 */}
       <col className="w-[3.2rem]" />{/* 风险分 */}
-      <col className="w-[3.8rem]" />{/* 说明：截断到6字 ≈ 72px */}
-      <col className="w-[4.4rem]" />{/* 板位 —— 14-16 今日涨停+今日炸板都有 */}
+      <col className="w-[5.5rem]" />{/* 说明：实测需 86px（6字+省略号）。挤到 61px 只能显示4个字，
+                                        那就等于废掉这一列，宁可整表多 27px 横向滚动 */}
+      <col className="w-[5.2rem]" />{/* 板位：实测需 79px（"5板 6日3板"）—— 14-16 今日涨停+今日炸板都有 */}
       <col className="w-[3.2rem]" />{/* 首封：10:00 */}
       <col className="w-[3rem]" />{/* 炸板：紧跟首封（2026-08-27用户提出）。原来夹在
                                        终封/封单之后，今日炸板那张表就在首封和炸板
@@ -707,7 +716,9 @@ function CoreTable({ rows, ctl }: { rows: LimitUpRadarCoreStock[]; ctl: SortCtl<
                   <span className="font-medium">{r.name}</span>
                   <span className="ml-1.5 font-mono text-text-muted">{r.code}</span>
                 </Link>
-                {r.is_broken_today && <Badge variant="down" className="ml-1.5">炸板</Badge>}
+                {/* 原来这里有个「炸板」徽章。今日炸板已经是独立一张表（还带距涨停/
+                    振幅/换手等专属列），这里重复标记没有新信息，却把股票列的所需
+                    宽度从 96px 撑到 132px——22 列本来就放不下，这 36px 很贵。 */}
               </td>
               <td className="py-1.5 pr-3"><RoleTags roles={r.core_roles} reasons={r.core_reasons} /></td>
               <td className={cn('py-1.5 pr-2 text-right font-mono font-bold whitespace-nowrap', pctClass(r.pct_change))}>
