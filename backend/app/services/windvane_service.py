@@ -266,6 +266,11 @@ def _get_json(client: httpx.Client, url: str, params: dict) -> dict:
         return resp.json()
     except UnicodeDecodeError:
         return _json.loads(resp.content.decode("gbk", errors="replace"))
+    except ValueError:
+        # 不是编码问题而是根本不是 JSON（被拦/空响应/返回了错误页）。
+        # json_or_explain 会带上 HTTP 状态和 body 开头，而不是一句 Expecting value。
+        from .eastmoney_fetcher import json_or_explain
+        return json_or_explain(resp, f"{url.rsplit('/', 1)[-1]} ")
 
 
 def _fetch_margin_history_page(

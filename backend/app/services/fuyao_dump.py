@@ -64,7 +64,9 @@ from typing import Dict, Iterator, List, Optional
 
 import httpx
 
-from .eastmoney_fetcher import KLineBar, _is_bj_code, build_kline_bar, get_limit_pct
+from .eastmoney_fetcher import (
+    KLineBar, _is_bj_code, build_kline_bar, get_limit_pct, json_or_explain,
+)
 
 FUYAO_BASE = "https://fuyao.aicubes.cn"
 DUMP_KIND_10D = "daily-k-10d"
@@ -101,7 +103,7 @@ def _download_url(api_key: str, kind: str, timeout: int = 30) -> Optional[str]:
     with httpx.Client(timeout=_timeouts(timeout)) as c:
         resp = c.get(f"{FUYAO_BASE}/api/dump/market-dumps/{kind}/download-url",
                      headers={"X-api-key": api_key})
-    body = resp.json()
+    body = json_or_explain(resp, f"fuyao 下载链接({kind}) ")
     if body.get("code") != 0:
         raise RuntimeError(f"取下载链接失败 code={body.get('code')} {body.get('message')}")
     return (body.get("data") or {}).get("presigned_url")
@@ -517,7 +519,7 @@ def fetch_interval_returns(api_key: str, code: str, market_suffix: str,
             with httpx.Client(timeout=_timeouts(timeout)) as c:
                 resp = c.get(f"{FUYAO_BASE}/api/a-share/prices/historical",
                              params=params, headers={"X-api-key": api_key})
-            body = resp.json()
+            body = json_or_explain(resp, f"fuyao 历史K线 {code}.{market_suffix} ")
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {str(e)[:60]}"
         else:

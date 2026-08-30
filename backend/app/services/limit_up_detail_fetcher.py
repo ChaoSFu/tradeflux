@@ -42,6 +42,8 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
+from .eastmoney_fetcher import json_or_explain
+
 # 涨停/炸板池接口必须带 ut，这是东财前端公开使用的固定值（不带则 data 为空）
 _PUSH2EX_UT = "7eea3edcaed734bea9cbfc24409ed989"
 _ZT_POOL_URL = "https://push2ex.eastmoney.com/getTopicZTPool"
@@ -229,10 +231,13 @@ def clean_limit_content(raw: Optional[str]) -> Optional[str]:
 
 
 def _get_json(url: str, params: dict, timeout: int) -> dict:
+    """涨停池/炸板池/涨停原因共用。解析失败时带上 HTTP 状态和 body 开头——
+    这条路径 2026-08-28 在东财兜底上吃过 502 Bad Gateway，光看 `Expecting value`
+    查不出来是被拦了还是接口变了。"""
     with httpx.Client(headers=_HEADERS, follow_redirects=True, timeout=timeout) as client:
         resp = client.get(url, params=params)
         resp.raise_for_status()
-        return resp.json()
+        return json_or_explain(resp, f"东财 {url.rsplit('/', 1)[-1]} ")
 
 
 def fetch_limit_up_pool(trade_date: date, timeout: int = 20) -> List[LimitUpDetail]:

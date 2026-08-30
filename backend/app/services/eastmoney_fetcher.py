@@ -144,6 +144,18 @@ def market_label(code: str, market: int) -> str:
     return "SH" if market == 1 else "SZ"
 
 
+class ResponseNotJSON(ValueError):
+    """
+    响应解析不出 JSON。**刻意继承 ValueError**——被替换掉的 json.JSONDecodeError
+    本身就是 ValueError 的子类，全仓库有十几处 `except ValueError` / `except
+    (ValueError, IndexError)` 之类的窄捕获（见 :161 :285 :552 :726 …）。如果这里改抛
+    RuntimeError，那些地方就再也接不住，异常会从原本被兜住的位置漏出去——一个
+    "改善诊断"的提交把可恢复的解析失败升级成崩溃，正是本仓库 2026-08-26 那次
+    "兜底路径自己崩了"的翻版。继承 ValueError 就是纯增量：老的捕获照样生效，
+    错误消息变得能查。
+    """
+
+
 def json_or_explain(resp, what: str = ""):
     """
     resp.json()，但解析失败时抛出**说得清是怎么回事**的错误。
@@ -160,7 +172,7 @@ def json_or_explain(resp, what: str = ""):
         return resp.json()
     except ValueError:
         body = (resp.text or "")[:100].replace("\n", " ")
-        raise RuntimeError(
+        raise ResponseNotJSON(
             f"{what}HTTP {resp.status_code}，body {len(resp.content)} 字节"
             + (f"：{body!r}" if body else "（空）")
         ) from None
@@ -468,7 +480,7 @@ def _fetch_from_eastmoney(timeout: int = 10) -> List[StockBasicInfo]:
                     "fs": fs,
                     "fields": "f12,f13,f14,f3,f10",
                 })
-                data = resp.json().get("data") or {}
+                data = json_or_explain(resp, "东财全市场列表 ").get("data") or {}
                 items = data.get("diff") or []
                 if not items:
                     break
@@ -765,7 +777,7 @@ def _fetch_kline_eastmoney(
         "fqt": 1,
         "end": end_date,
     })
-    payload = resp.json()
+    payload = json_or_explain(resp, f"东财K线 {secid} ")
     data = payload.get("data") or {}
     klines_raw = data.get("klines") or []
     bars = [
@@ -1148,7 +1160,7 @@ def fetch_stock_bk_codes(code: str, client: "httpx.Client | None" = None) -> lis
             resp = client.get(url, headers=_F10_HEADERS, timeout=10)
         else:
             resp = httpx.get(url, headers=_F10_HEADERS, timeout=10)
-        data = resp.json()
+        data = json_or_explain(resp, f"东财F10板块 {code} ")
         bk_codes = []
         for item in data.get("ssbk", []):
             board_code = str(item.get("BOARD_CODE", "")).strip()
@@ -1698,7 +1710,7 @@ def _fetch_index_amount_eastmoney(secid: str, timeout: int = 15) -> Optional[flo
     try:
         client = _thread_warmed_client(timeout=timeout)
         resp = client.get(QUOTE_URL, params={"secid": secid, "fields": "f48", "invt": 2, "fltt": 1})
-        amt = (resp.json().get("data") or {}).get("f48")
+        amt = (json_or_explain(resp, f"东财指数成交额 {secid} ").get("data") or {}).get("f48")
         return float(amt) if amt is not None else None
     except Exception as e:  # noqa: BLE001
         print(f"[fetcher] 指数 {secid} 东财实时成交额补数失败: {type(e).__name__}: {e}", flush=True)
@@ -2078,7 +2090,11 @@ def _fetch_quotes_eastmoney(codes_markets: list[tuple[str, int]], timeout: int =
                         f"东财批次{batch_label}第{attempt + 1}次尝试失败（{len(batch)}只，未收到响应）: {type(e).__name__}: {e}",
                     )
                 if attempt == 2:
-                    print(f"[fetcher] 东财批量行情快照拉取失败（{len(batch)}只，重试3次均失败）: {type(e).__name__}: {e}", flush=True)
+                    # 详细诊断（HTTP状态/Content-Length/body前200字符）在上面写进了
+                    # w2s_radar 日志；控制台这行原来只打异常类型名，等于什么也没说
+                    print(f"[fetcher] 东财批量行情快照拉取失败（{len(batch)}只，重试3次均失败）: "
+                          f"{type(e).__name__}: {str(e)[:160]}"
+                          f"（详细诊断见 logs/w2s_radar_*.log 的 [QUOTE] 行）", flush=True)
                 else:
                     time.sleep(0.5 * (attempt + 1))
 
@@ -2229,7 +2245,7 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
             "fqt": 1,
             "end": end_date,
         })
-        payload = resp.json()
+        payload = json_or_explain(resp, f"东财指数K线 {secid} ")
         raw = (payload.get("data") or {}).get("klines") or []
     except Exception as e:  # noqa: BLE001
         print(f"[fetcher] 指数 {secid} 腾讯+新浪均不足，东财兜底也失败: {type(e).__name__}", flush=True)

@@ -648,3 +648,29 @@ class TestQuotePrefix:
         # 允许出现在 quote_prefix 自己的实现和 docstring 里，别处不该有
         body = src[src.index("def market_label("):]
         assert '{1: "sh", 0: "sz"}' not in body, "又冒出一份没有 bj 的二分映射"
+
+
+def test_解析失败的异常必须仍是ValueError子类():
+    """
+    被替换掉的 json.JSONDecodeError 本身是 ValueError 的子类，而全仓库有十几处
+    `except ValueError` / `except (ValueError, IndexError)` 的窄捕获。如果改抛
+    RuntimeError，那些地方就再也接不住，异常会从原本被兜住的位置漏出去——
+    一个"改善诊断"的提交把可恢复的解析失败升级成崩溃，正是 2026-08-26
+    "兜底路径自己崩了"的翻版。继承 ValueError 才是纯增量。
+    """
+    from app.services.eastmoney_fetcher import ResponseNotJSON, json_or_explain
+    assert issubclass(ResponseNotJSON, ValueError)
+
+    class _R:
+        status_code, text = 502, "<html>502 Bad Gateway</html>"
+        content = text.encode()
+        def json(self):
+            import json as _j
+            return _j.loads(self.text)
+
+    # 老代码里 `except ValueError` 的地方照样接得住
+    try:
+        json_or_explain(_R(), "东财涨停池 ")
+        raise AssertionError("该抛没抛")
+    except ValueError as e:
+        assert "HTTP 502" in str(e) and "Bad Gateway" in str(e)
