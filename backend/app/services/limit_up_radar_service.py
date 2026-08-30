@@ -98,11 +98,25 @@ def _trading_days(db: Session, trade_date: date, limit: int = 60) -> List[date]:
     """
     截至 trade_date 的最近 N 个交易日，倒序。
 
-    交易日历从 stock_daily_snapshots 里出现过的 distinct 日期反推——daily_update
-    每个交易日会写几百行快照，任何出现在这张表里的日期都是真实交易日。本仓库还
-    没有独立交易日历，这跟 daily_update 里 target_date/prev_trading_date 的推导
-    方式是同一套（见那边的注释）。
+    **优先用真正的交易日历**（fuyao，2026-08-28 接入）。此前是从
+    stock_daily_snapshots 里出现过的 distinct 日期反推的——那个推法的前提是
+    "我们那天跑过且写进去了"：漏跑一天、或者某天全市场拉取失败，那一天就会从
+    "交易日"里凭空消失，`近10个交易日`实际只覆盖 9 天，**而且不会报错**。
+    这正是滚动窗口最容易悄悄算错的地方。
+
+    交易日历拿不到时**退回原来的反推法**（下面这段），不让它变成新的单点——
+    它是"让判断更准"的增强，不是"没有它就跑不了"的依赖，跟 dump 的定位一样。
     """
+    try:
+        from .trading_calendar import get_trading_days, last_n_trading_days
+        cal = get_trading_days(db, need_through=trade_date)
+        if cal:
+            picked = last_n_trading_days(cal, trade_date, limit)
+            if picked:
+                return list(reversed(picked))
+    except Exception:  # noqa: BLE001
+        pass          # 任何问题都退回反推法，绝不因为日历挂了让雷达打不开
+
     rows = (
         db.query(StockDailySnapshot.date)
         .filter(StockDailySnapshot.date <= trade_date)
