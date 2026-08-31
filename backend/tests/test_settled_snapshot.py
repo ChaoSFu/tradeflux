@@ -186,6 +186,8 @@ class TestSettleDroppedOut:
     def test_拿不到数据则清空不保留盘中价(self, db, monkeypatch):
         self._seed(db)
         monkeypatch.setattr(du, "fetch_klines_batch", lambda *a, **k: {})
+        # 行情兜底也要断掉：加了那层之后不 mock 就会真的打网络，测试不再自洽
+        monkeypatch.setattr(du, "fetch_stock_quotes_batch", lambda *a, **k: {})
         du._settle_dropped_out_snapshots(db, TODAY, run_settled=True,
                                          handled=set(), fuyao_key=None, log=_Log())
         snap = db.query(StockDailySnapshot).one()
@@ -197,6 +199,7 @@ class TestSettleDroppedOut:
         called = []
         monkeypatch.setattr(du, "fetch_klines_batch",
                             lambda *a, **k: called.append(1) or {})
+        monkeypatch.setattr(du, "fetch_stock_quotes_batch", lambda *a, **k: {})
         n = du._settle_dropped_out_snapshots(db, TODAY, run_settled=True,
                                              handled={"600984"}, fuyao_key=None, log=_Log())
         assert n == 0 and called == [], "已在候选池里跑过的，不该再拉一次"
@@ -206,6 +209,7 @@ class TestSettleDroppedOut:
         called = []
         monkeypatch.setattr(du, "fetch_klines_batch",
                             lambda *a, **k: called.append(1) or {})
+        monkeypatch.setattr(du, "fetch_stock_quotes_batch", lambda *a, **k: {})
         du._settle_dropped_out_snapshots(db, TODAY, run_settled=True,
                                          handled=set(), fuyao_key=None, log=_Log())
         assert called == []
@@ -217,6 +221,7 @@ class TestSettleDroppedOut:
         called = []
         monkeypatch.setattr(du, "fetch_klines_batch",
                             lambda *a, **k: called.append(1) or {})
+        monkeypatch.setattr(du, "fetch_stock_quotes_batch", lambda *a, **k: {})
         n = du._settle_dropped_out_snapshots(db, TODAY, run_settled=False,
                                              handled=set(), fuyao_key=None, log=_Log())
         assert n == 0 and called == []
@@ -306,3 +311,54 @@ class TestBackfillHistoryFromDump:
             yield
         monkeypatch.setattr(du, "daily_k_dump", _boom)
         assert du._backfill_history_from_dump(db, TODAY, "key", _Log()) == 0
+
+
+class TestSettleDroppedOutQuoteFallback:
+    """
+    2026-08-31 收盘后实跑：主链路「行情兜底补回 231/231 只当日bar」，而补结算这条
+    「结算 0 只，拿不到数据清空 42 只」——同一个市场事实（当日收盘bar）两套获取
+    路径，补结算那条少了行情兜底这一层，于是 42 只股票的收盘价被整片清成 NULL，
+    而这些数据其实拿得到。这是本项目第 6 次踩「同一个事实两套函数」。
+    """
+
+    def test_K线接口没给当日bar时走行情兜底而不是清空(self, db, monkeypatch):
+        from app.services.eastmoney_fetcher import build_kline_bar, StockQuote
+        TestSettleDroppedOut._seed(db)
+        # dump 和逐股K线都没有当天（盘后 dump 只覆盖到上一交易日，这就是实跑的情形）
+        monkeypatch.setattr(du, "fetch_klines_batch", lambda *a, **k: {})
+
+        captured = {}
+
+        def _quotes(pairs):
+            captured["pairs"] = pairs
+            return {"600984": StockQuote(code="600984", name="建设机械", price=4.66,
+                                         pct_change=-5.67, prev_close=4.94, open=4.9,
+                                         high=5.43, low=4.6, turnover_rate=None,
+                                         trade_date=TODAY)}
+
+        monkeypatch.setattr(du, "fetch_stock_quotes_batch", _quotes)
+        n = du._settle_dropped_out_snapshots(db, TODAY, run_settled=True,
+                                             handled=set(), fuyao_key=None, log=_Log())
+        snap = db.query(StockDailySnapshot).one()
+        assert captured.get("pairs"), "K线拿不到就必须问行情，不能直接清空"
+        assert n == 1
+        assert snap.close_price == 4.66, "行情兜底拿到的收盘价必须写进去"
+        assert snap.pct_change == -5.67
+        assert snap.is_limit_up is False and snap.is_broken_board is True
+        assert snap.is_settled is True
+
+    def test_行情自身是过期的仍然清空(self, db, monkeypatch):
+        """兜底不是"有值就用"：行情日期不是当天，说明它给的是别的日子，必须拒绝。"""
+        from app.services.eastmoney_fetcher import StockQuote
+        TestSettleDroppedOut._seed(db)
+        monkeypatch.setattr(du, "fetch_klines_batch", lambda *a, **k: {})
+        monkeypatch.setattr(du, "fetch_stock_quotes_batch", lambda pairs: {
+            "600984": StockQuote(code="600984", name="建设机械", price=5.43,
+                                 pct_change=9.92, prev_close=4.94, open=4.9,
+                                 high=5.43, low=4.6, turnover_rate=None,
+                                 trade_date=YESTERDAY)})
+        du._settle_dropped_out_snapshots(db, TODAY, run_settled=True,
+                                         handled=set(), fuyao_key=None, log=_Log())
+        snap = db.query(StockDailySnapshot).one()
+        assert snap.close_price is None, "过期行情不能冒充当日收盘价，宁可缺失"
+        assert snap.is_settled is False

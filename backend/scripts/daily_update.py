@@ -648,6 +648,15 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
     if miss:
         bars_map.update(fetch_klines_batch(miss, days=3, max_workers=_KLINE_WORKERS,
                                            delay_between=0.0, require_date=target_date))
+    # 再走一遍主链路那层行情兜底。少了它，2026-08-31 收盘后这条路是 0/42——
+    # 全部清成 NULL，而主链路同一时刻拿到了 231/231。见 _repair_today_bar_from_quotes
+    still_miss = [i for i in infos
+                  if not any(b.date == target_date for b in (bars_map.get(i.code) or []))]
+    if still_miss:
+        rep, rej = _repair_today_bar_from_quotes(still_miss, bars_map, target_date, log, prefix="    ")
+        log.info(f"    [掉出池补结算] K线接口没给当日bar的 {len(still_miss)} 只，"
+                 f"行情兜底补回 {rep} 只"
+                 + (f"（另有 {rej} 只行情自身日期也不是{target_date}，已拒绝）" if rej else ""))
 
     fixed = cleared = 0
     for snap, stock in todo:
@@ -674,6 +683,48 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
     log.info(f"  [掉出池补结算] 结算 {fixed} 只，拿不到数据清空 {cleared} 只")
     return fixed
 
+
+
+def _repair_today_bar_from_quotes(infos, klines_map, target_date, log, prefix="  "):
+    """
+    用实时行情把缺失的**当日 bar** 补回 klines_map。返回 (补回数, 行情自身过期被拒数)。
+
+    抽成公共函数是被一个真 bug 逼出来的：2026-08-31 收盘后那次实跑，主链路
+    「行情兜底补回 231/231 只当日bar」，而 _settle_dropped_out_snapshots 那条路
+    「结算 0 只，拿不到数据清空 42 只」——同一个市场事实（当日收盘bar），两套
+    获取路径，补结算那条只调了 fetch_klines_batch、没有这一层行情兜底。dump 在
+    盘后还没出当天数据（覆盖到上一交易日），逐股K线接口当天也常常还没更新，于是
+    42 只股票的 close_price/pct_change/turnover_rate 被整片清成 NULL——而这些数据
+    其实拿得到，只是没用主链路那个问法去要。
+
+    这已经是本项目第 6 次踩「同一个市场事实有两套判定/获取函数」了，所以这次不是
+    在补结算里再抄一遍，而是让两边都调这一个。
+
+    kline_bar_from_quote 内部会校验行情自身的 trade_date 必须等于 target_date，
+    过期行情直接拒掉——绝不能把盘中价当收盘价写进去。
+    """
+    if not infos:
+        return 0, 0
+    try:
+        quotes = fetch_stock_quotes_batch([(i.code, i.market) for i in infos])
+    except Exception as e:  # noqa: BLE001
+        log.info(f"{prefix}⚠️  行情兜底整体失败（{type(e).__name__}: {e}），保持K线过期状态")
+        return 0, 0
+    repaired = rejected = 0
+    for info in infos:
+        q = quotes.get(info.code)
+        if not q:
+            continue
+        bar = kline_bar_from_quote(q, info.code, info.is_st, target_date)
+        if not bar:
+            if q.trade_date != target_date:
+                rejected += 1
+            continue
+        bars = [b for b in klines_map.get(info.code, []) if b.date != target_date]
+        bars.append(bar)
+        klines_map[info.code] = bars
+        repaired += 1
+    return repaired, rejected
 
 
 def _backfill_history_from_dump(db, target_date: date, fuyao_key, log,
@@ -1595,25 +1646,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         ]
         if stale_infos:
             log.info(f"  {len(stale_infos)} 只今日K线仍缺失，用实时行情定向补当日bar...")
-            try:
-                quotes = fetch_stock_quotes_batch([(i.code, i.market) for i in stale_infos])
-            except Exception as e:  # noqa: BLE001
-                quotes = {}
-                log.info(f"  ⚠️  行情兜底整体失败（{type(e).__name__}: {e}），保持K线过期状态")
-            repaired = rejected_stale_quote = 0
-            for info in stale_infos:
-                q = quotes.get(info.code)
-                if not q:
-                    continue
-                bar = kline_bar_from_quote(q, info.code, info.is_st, target_date)
-                if not bar:
-                    if q.trade_date != target_date:
-                        rejected_stale_quote += 1
-                    continue
-                bars = [b for b in klines_map.get(info.code, []) if b.date != target_date]
-                bars.append(bar)
-                klines_map[info.code] = bars
-                repaired += 1
+            repaired, rejected_stale_quote = _repair_today_bar_from_quotes(
+                stale_infos, klines_map, target_date, log)
             log.info(
                 f"  行情兜底补回 {repaired}/{len(stale_infos)} 只当日bar"
                 + (f"（另有 {rejected_stale_quote} 只行情自身日期也不是{target_date}，已拒绝）"
