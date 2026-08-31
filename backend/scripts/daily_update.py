@@ -42,6 +42,9 @@ class StepLogger:
         self.steps: list[dict] = []          # 已完成步骤
         self._step_start: Optional[float] = None
         self._current_name: str = ""
+        # 收尾任务分段计时（见 lap()）
+        self.laps: list[tuple[str, float]] = []
+        self._lap_mark: Optional[float] = None
 
         # 确保 logs/ 目录存在
         log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
@@ -76,6 +79,7 @@ class StepLogger:
         })
         suffix = f"  {detail}" if detail else ""
         self._log(f"  {status} 完成  耗时 {elapsed:.1f}s{suffix}")
+        self._lap_mark = time.time()   # 收尾分段从最后一个步骤结束处起算
 
     def error(self, msg: str):
         """标记当前步骤失败。"""
@@ -97,6 +101,20 @@ class StepLogger:
         """
         self._log(f"  ⚠️  {msg}")
 
+    def lap(self, name: str):
+        """
+        收尾任务分段计时：在每一段结束处调一次，记录距上一段（或最后一个步骤结束）
+        的耗时。
+
+        用 lap 而不是 `with log.tail(...)` 包住，是因为收尾这几块各自带 try/except，
+        包一层要把整块重新缩进——改动大、还容易改错；lap 只加一行，完全不碰控制流，
+        任何一段抛异常也只是那一段不计时，不会影响别的。
+        """
+        now = time.time()
+        base = self._lap_mark if self._lap_mark is not None else now
+        self.laps.append((name, now - base))
+        self._lap_mark = now
+
     def summary(self):
         """输出最终汇总表。"""
         total = time.time() - self.started_at.timestamp()
@@ -116,7 +134,14 @@ class StepLogger:
         tracked = sum(s["elapsed"] for s in self.steps)
         rest = total - tracked
         if rest > 1.0:
-            self._log(f"  {'收尾任务(雷达/趋势/概览等)':<20} {'—':^4} {f'{rest:.1f}s':>7}  未细分计时")
+            self._log(f"  {'收尾任务':<20} {'—':^4} {f'{rest:.1f}s':>7}  分段如下")
+            for name, el in sorted(self.laps, key=lambda x: -x[1]):
+                self._log(f"    └ {name:<18} {'':^4} {f'{el:.1f}s':>7}")
+            # lap 没盖住的零头（import、commit、日志本身）也要露出来，
+            # 否则分段合计对不上总数时又要重新猜一遍
+            unlapped = rest - sum(el for _, el in self.laps)
+            if unlapped > 0.5:
+                self._log(f"    └ {'其余(提交/杂项)':<18} {'':^4} {f'{unlapped:.1f}s':>7}")
         self._log(f"{'─'*60}")
         self._log(f"  总耗时: {total:.1f}s  完成于 {datetime.now().strftime('%H:%M:%S')}")
         self._log(f"{'='*60}\n")
@@ -1947,6 +1972,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         except Exception as e:
             log.info(f"[regulatory] 重点监管名单同步失败（不影响主流程）: {e}")
             db.rollback()
+        log.lap("重点监管名单")
 
         # ── 大盘趋势数据同步（独立步骤，失败不影响主流程）──────────────────
         # 指数日线（东财→腾讯→新浪兜底）+ 市场宽度（两融/涨跌统计/成交额）入库，
@@ -1965,6 +1991,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         except Exception as e:
             log.info(f"[market-trend] 大盘趋势数据同步失败（不影响主流程）: {e}")
             db.rollback()
+        log.lap("大盘趋势(指数+宽度)")
 
         # ── 成交额概览数据同步（独立步骤，失败不影响主流程）────────────────
         # 每天存一份成交额前列快照，供成交额概览页面按板块聚合赚钱效应、
@@ -1979,6 +2006,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         except Exception as e:
             log.info(f"[turnover] 成交额概览数据同步失败（不影响主流程）: {e}")
             db.rollback()
+        log.lap("成交额概览")
 
         # ── 涨停板块雷达：当日涨停/炸板明细归档（独立步骤，失败不影响主流程）──
         # 盘后跑到的是当天的最终封板状态（封单额/最终封板时间不会再变），作为正式
@@ -1999,6 +2027,9 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"涨停板块雷达：涨停明细 {lu_n} 只 / 炸板明细 {bb_n} 只 / 核心召回名单 {recall_n} 只")
             for w in lu_warnings:
                 log.info(f"  {w}")
+            # 必须在「区间涨幅补全」之前打点：那一块嵌在本 try 内部，
+            # 不先截断就会把上面两个 sync 的耗时算到它头上
+            log.lap("涨停雷达(明细+召回)")
 
             # ── 区间涨幅补全（收尾步骤，低并发）─────────────────────────────
             # 区间涨幅那三列此前只认东财核心召回接口的 INTERVAL_CHG，进不了那份
@@ -2041,6 +2072,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             except Exception as e:  # noqa: BLE001
                 log.info(f"  区间涨幅补全失败（不影响主流程）: {e}")
                 db.rollback()
+            log.lap("区间涨幅补全")
         except Exception as e:
             log.info(f"[limit-up-radar] 涨停明细归档失败（不影响主流程）: {e}")
             api_warnings.append("涨停明细归档失败，涨停板块雷达可能缺少当日数据")
@@ -2061,6 +2093,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         except Exception as e:
             log.info(f"[weak-to-strong-radar] 板块快照/候选池发现失败（不影响主流程）: {e}")
             db.rollback()
+        log.lap("弱转强(快照+候选池)")
 
         # ── 弱转强雷达：候选状态刷新（独立步骤，失败不影响主流程）──────────────
         # 候选发现只维护"名单"（新增/续期/失活），不会重算已有候选的 price/结构态/
@@ -2092,6 +2125,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         except Exception as e:
             log.info(f"[weak-to-strong-radar] 候选状态刷新失败（不影响主流程）: {e}")
             db.rollback()
+        log.lap("弱转强(状态刷新)")
 
         log.summary()
 
