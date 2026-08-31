@@ -108,6 +108,15 @@ class StepLogger:
             name = s["name"][:20]
             elapsed = f"{s['elapsed']:.1f}s"
             self._log(f"  {name:<20} {status:^4} {elapsed:>7}  {s['detail']}")
+        # 收尾任务（重点监管/大盘趋势/成交额概览/涨停雷达/区间涨幅/弱转强）都没被
+        # begin/end 包起来，不进 steps。2026-08-31 那次实跑表内合计 9.5s、总耗时
+        # 94.0s——**九成的时间在表外**，看表的人会以为日更只花了十秒。
+        # 与其挨个补 step（改动大、还容易漏），不如把差额显式列出来：说不清细分，
+        # 至少要说清"这里还有一段时间我没细分"，而不是让它凭空消失。
+        tracked = sum(s["elapsed"] for s in self.steps)
+        rest = total - tracked
+        if rest > 1.0:
+            self._log(f"  {'收尾任务(雷达/趋势/概览等)':<20} {'—':^4} {f'{rest:.1f}s':>7}  未细分计时")
         self._log(f"{'─'*60}")
         self._log(f"  总耗时: {total:.1f}s  完成于 {datetime.now().strftime('%H:%M:%S')}")
         self._log(f"{'='*60}\n")
@@ -1377,7 +1386,11 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                     if bars[-1].date != target_date:
                         dump_no_today.add(info.code)
                 _ci = dump_cache_info() or {}
-                _MODE = {"covered": "复用缓存(已覆盖当日)", "unchanged": "复用缓存(上游未变)",
+                # "covered" 指缓存覆盖到了**本次所需**的那天（need_through），盘中/盘前
+                # 是上一个已收盘交易日，盘后才是当天。原来写死"已覆盖当日"，于是盘中会
+                # 打出「覆盖至 2026-08-28 ... 已覆盖当日」这种同一行自相矛盾的日志
+                # （2026-08-31 14:16 的实跑），让人分不清是逻辑错了还是措辞错了。
+                _MODE = {"covered": f"复用缓存(已覆盖所需 {_need_through})", "unchanged": "复用缓存(上游未变)",
                          "downloaded": "重新下载",
                          # 下不到新的、用手上旧的。必须在日志里说出来——用了过期
                          # 数据而不声明，比不用更危险
