@@ -19,6 +19,7 @@ from app.models.sector import Sector, StockSectorRelation, SectorDailySnapshot
 from app.models.limit_up_detail import LimitUpDailyDetail, BrokenBoardDailyDetail
 from app.models.app_config import AppConfig
 from app.models.regulatory import RegulatoryStatusDaily
+from app.models.market_index import IndexDailySnapshot
 
 _TABLES = [
     Stock.__table__, StockDailySnapshot.__table__,
@@ -26,6 +27,7 @@ _TABLES = [
     LimitUpDailyDetail.__table__, BrokenBoardDailyDetail.__table__,
     AppConfig.__table__,
     RegulatoryStatusDaily.__table__,
+    IndexDailySnapshot.__table__,
 ]
 
 
