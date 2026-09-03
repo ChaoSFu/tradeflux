@@ -685,11 +685,20 @@ class TestBeijingExchangeCoverage:
     返回时才会进库，靠不住——而 920087 的 sina 前缀 bug 已经说明这块是老问题。
     """
 
-    def test_全市场列表包含北交所板块(self):
-        import inspect
+    def test_两条取列表的路径都排除北交所(self):
+        """
+        排除北交所是**刻意设计**（_should_include_stock 的 docstring 明写），实质
+        理由是口径不可混：北交所 30% 涨跌幅，3连板 = +120%，主板 3连板 = +33%。
+
+        这条测试盯的是**两条路径必须一致**。2026-09-03 我一度只给备用路径（东财
+        clist）加了北交所，主力路径（AkShare）仍然排除，结果两条路走出来的股票池
+        不一样——比原来更糟。
+        """
         from app.services import eastmoney_fetcher as ef
-        src = inspect.getsource(ef._fetch_from_eastmoney)
-        assert "m:0+t:81" in src, "全市场列表必须包含北交所，否则整个板块进不了库"
+        assert all("t:81" not in fs for fs, _m in ef.EM_MARKET_CONFIGS), \
+            "备用路径不能含北交所，否则与主力路径口径不一致"
+        assert ef._should_include_stock("920510", 0) is False
+        assert ef._should_include_stock("830799", 0) is False
 
     def test_北交所三种代码前缀的口径一致(self):
         """92/83/81 三种前缀都要走 30% 涨跌幅、bj 行情前缀、BJ 标签、.BJ 后缀。"""

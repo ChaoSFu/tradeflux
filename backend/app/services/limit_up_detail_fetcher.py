@@ -42,7 +42,7 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
-from .eastmoney_fetcher import json_or_explain
+from .eastmoney_fetcher import json_or_explain, _is_bj_code
 
 # 涨停/炸板池接口必须带 ut，这是东财前端公开使用的固定值（不带则 data 为空）
 _PUSH2EX_UT = "7eea3edcaed734bea9cbfc24409ed989"
@@ -367,7 +367,8 @@ _LADDER_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 
 
 def fetch_limit_up_ladder(trade_date, timeout: int = 15,
-                          exclude_delisted: bool = True) -> Optional[Dict[str, int]]:
+                          exclude_delisted: bool = True,
+                          exclude_bj: bool = True) -> Optional[Dict[str, int]]:
     """
     取某个交易日的权威连板天梯，返回 {股票代码: 连板数}（只含 2 板及以上）。
 
@@ -377,6 +378,12 @@ def fetch_limit_up_ladder(trade_date, timeout: int = 15,
     最高 5 板、我们 4 板，差的那只正是 920305「云创退」，一只 0.40 元的退市整理期
     股票在连板。退市整理期爆炒跟"市场投机高度"不是一个游戏（极小流通盘、纯博傻、
     首日无涨跌幅限制），算进天花板只会制造假的"高度突破"。
+
+    `exclude_bj=True`（默认）剔除北交所。同样是口径对齐：本仓库
+    `_should_include_stock` 明写「排除北交所」，实质理由是**连板数不可跨板比较**
+    ——北交所涨跌幅 30%，3 连板是 +120%，主板 10% 的 3 连板只有 +33%。东财天梯
+    2026-08-28 给 920895 记 2 板，那是 +69%，在主板口径下相当于五六个板。
+    混进同一个「最高连板」指标，曲线就失去可比性了。
 
     返回值三分，**"没有"和"不知道"绝不能混**（炸板池 fetch 失败返回 [] 曾经直接
     删掉 20 行数据，就是混了这两件事）：
@@ -418,6 +425,8 @@ def fetch_limit_up_ladder(trade_date, timeout: int = 15,
         if not code or not isinstance(n, int) or n < 2:
             continue
         if exclude_delisted and "退" in name:
+            continue
+        if exclude_bj and _is_bj_code(code):
             continue
         out[code] = n
     return out

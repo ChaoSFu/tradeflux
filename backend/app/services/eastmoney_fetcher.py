@@ -480,6 +480,18 @@ def kline_bar_from_quote(
 # 股票列表抓取（主力：东方财富；备用：AkShare/新浪）
 # ---------------------------------------------------------------------------
 
+# 东财 clist 的板块筛选（fs 参数）。提成模块常量是为了能直接测——写成函数内的
+# 局部变量时，测试只能对整个函数源码做字符串匹配，而 docstring 里提到的板块代码
+# 会让断言误判（2026-09-03 实际踩到）。
+EM_MARKET_CONFIGS: List[Tuple[str, int]] = [
+    ("m:1+t:2",  1),   # 沪主板
+    ("m:1+t:23", 1),   # 科创板
+    ("m:0+t:6",  0),   # 深主板
+    ("m:0+t:80", 0),   # 创业板
+    # 刻意不含北交所 m:0+t:81+s:2048，理由见 _fetch_from_eastmoney docstring
+]
+
+
 def _fetch_from_eastmoney(timeout: int = 10) -> List[StockBasicInfo]:
     """
     东方财富 clist 接口获取 A 股全市场列表（主板 + 科创板 + 创业板）。
@@ -490,25 +502,23 @@ def _fetch_from_eastmoney(timeout: int = 10) -> List[StockBasicInfo]:
       m:1+t:23         科创板（688）
       m:0+t:6          深主板
       m:0+t:80         创业板（300/301）
-      m:0+t:81+s:2048  北交所（4/8/92 开头，实测 352 只）
 
-    北交所是 2026-09-03 才补上的，此前**整个板块都不在全市场列表里**。发现过程：
-    拿东财连板天梯逐日对账，2026-08-28 报「920895 东财 2 板、我们库里没有这只
-    股票」；查下来 920510 丰光精密也一样。也就是说北交所的票只有被选股 API 恰好
-    返回时才会进库，靠不住。
+    **刻意不含北交所**（m:0+t:81+s:2048，实测 352 只）。这跟主力路径
+    `_fetch_from_akshare` / `_should_include_stock` 的口径保持一致——那边 docstring
+    明写「排除北交所」，而且 AkShare 是有 `stock_info_bj_name_code()` 的（340 只），
+    是主动没用，不是不知道。
 
-    market 一律给 0：东财 secid 对北交所也用 market=0（同深）；而腾讯/新浪那三条
-    取数路径都是先 `_is_bj_code(code)` 按代码前缀短路成 bj 前缀，这个数字轮不到。
-    涨跌幅 30% 那档由 get_limit_pct 按同一个 _is_bj_code 判，不需要额外处理。
+    2026-09-03 我一度在这里加上了北交所，理由是东财连板天梯对账报「920895 我们
+    没有」。**那个改动是错的**：它只改了备用路径，主力路径仍然排除，两条路走出来
+    的股票池不一样，比原来更糟。
+
+    维持排除的实质理由是**口径不可混**：北交所涨跌幅 30%，一个"3连板"是 +120%，
+    而主板 10% 的 3 连板是 +33%。破局雷达要回答"市场投机高度的天花板"，两种板
+    混进同一个「最高连板」指标会让曲线失去可比性——东财天梯 08-28 给 920895 记
+    2 板，那是 +69%，在主板口径下相当于五六个板。
     """
     results: List[StockBasicInfo] = []
-    market_configs: List[Tuple[str, int]] = [
-        ("m:1+t:2",  1),          # 沪主板
-        ("m:1+t:23", 1),          # 科创板
-        ("m:0+t:6",  0),          # 深主板
-        ("m:0+t:80", 0),          # 创业板
-        ("m:0+t:81+s:2048", 0),   # 北交所（见 docstring）
-    ]
+    market_configs = EM_MARKET_CONFIGS
 
     with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
         for fs, market_id in market_configs:
