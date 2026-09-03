@@ -17,6 +17,7 @@ import LimitMovesDashboard from '@/pages/LimitMovesDashboard'
 import TradeJournal from '@/pages/TradeJournal'
 import TurnoverOverview from '@/pages/TurnoverOverview'
 import WeakToStrongRadar from '@/pages/WeakToStrongRadar'
+import SpeculationRadar from '@/pages/SpeculationRadar'
 import LimitUpSectorRadar from '@/pages/LimitUpSectorRadar'
 import WeakToStrongRadarGuide from '@/pages/WeakToStrongRadarGuide'
 
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="pool-config" element={<PoolConfig />} />
           <Route path="sector-trend" element={<SectorTrend />} />
           <Route path="sector-emotion" element={<SectorEmotion />} />
+          <Route path="speculation-radar" element={<SpeculationRadar />} />
           <Route path="limit-up-radar" element={<LimitUpSectorRadar />} />
           <Route path="weak-to-strong-radar" element={<WeakToStrongRadar />} />
           <Route path="weak-to-strong-radar/guide" element={<WeakToStrongRadarGuide />} />

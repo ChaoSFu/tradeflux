@@ -36,3 +36,28 @@ export interface UpDownSeriesPoint {
 
 export const fetchUpDownSeries = (days = 120) =>
   client.get<UpDownSeriesPoint[]>('/market-trend/updown-series', { params: { days } }).then((r) => r.data)
+
+// ── 破局雷达 / Speculation Regime Radar ─────────────────────────────────────
+export interface HeightPoint {
+  date: string
+  height: number                 // 当日最高连板
+  frontier: number | null        // 近20日上沿；窗口不满时为 null（不知道，不是0）
+  is_breakout: boolean           // 当日高度 > 上沿
+  near_top_count: number         // 板数 >= 最高板-1 的只数（天花板附近孤不孤单）
+  multi_board_count: number      // 3板以上只数（中高位赚钱效应扩散程度）
+  limit_up_count: number         // 当日涨停总数（is_limit_up 口径）
+  ladder_count: number           // 梯队覆盖到的只数（board_count>0 口径）
+  ladder: Record<string, number> // {"1": 57, "2": 9, ..., "8+": 1}
+}
+
+export interface HeightSeriesResponse {
+  frontier_window: number
+  ladder_max: number
+  points: HeightPoint[]
+  warnings: string[]
+  scope_note: string
+}
+
+export const fetchHeightSeries = (days = 66) =>
+  client.get<HeightSeriesResponse>('/speculation-radar/height', { params: { days } })
+    .then((r) => r.data)

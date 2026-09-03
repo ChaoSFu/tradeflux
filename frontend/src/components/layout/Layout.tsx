@@ -6,6 +6,7 @@ import { MarketStateBar } from './MarketStateBar'
 const TITLES: Record<string, string> = {
   '/': '主页 Home',
   '/market-trend': '大盘趋势 Market Trend',
+  '/speculation-radar': '破局雷达 Speculation Regime Radar',
   '/strong': '强势股概览 Strong Overview',
   '/stocks': '活跃股池 Active Pool',
   '/watchlist': '重点监控 Regulatory Monitor',

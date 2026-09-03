@@ -20,6 +20,7 @@ import {
   Coins,
   Crosshair,
   Zap,
+  Mountain,
 } from 'lucide-react'
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
@@ -31,6 +32,7 @@ type NavEntry     = NavLinkItem | NavGroupItem
 const NAV: NavEntry[] = [
   { type: 'link', to: '/', label: '主页', icon: Home },
   { type: 'link', to: '/market-trend', label: '大盘趋势', icon: TrendingUp },
+  { type: 'link', to: '/speculation-radar', label: '破局雷达', icon: Mountain },
   { type: 'link', to: '/limit-up-radar', label: '涨停板块雷达', icon: Zap },
   { type: 'link', to: '/weak-to-strong-radar', label: '弱转强雷达', icon: Crosshair },
   { type: 'link', to: '/market-effects', label: '市场效应', icon: Gauge },
