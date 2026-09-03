@@ -48,6 +48,13 @@
                   对破局雷达是致命的，必须单独列出来修
   PENDING       最新那一两天重拉不到
                 → 数据源当天的日 K 还没发布，正常，不是问题
+  UNSETTLED     该交易日尚未收盘
+                → **整天跳过，不参与对账**。盘中快照记"当前涨停"是正确行为，
+                  收盘后才会被覆盖成终值；拿没定盘的一天去对账必然误报。
+                  2026-09-03 盘中跑就中招了：600892 大晟文化被判 CONTAMINATED
+                  （库记涨停=True、两源都说 False +9.35% 炸板），可那一刻它本来
+                  就还没定盘，两边说的是同一件事的不同时刻。
+                  收没收盘一律用 bar_is_settled + 市场时间判，不自己写第二套。
 
 ## 已知局限（必须写在这里，免得把结论用过头）
 
@@ -61,7 +68,7 @@ import argparse
 import os
 import sys
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -69,7 +76,7 @@ from app.database import SessionLocal
 from app.models.stock import Stock, StockDailySnapshot
 from app.services.eastmoney_fetcher import (
     StockBasicInfo, fetch_klines_batch, market_int, get_limit_pct,
-    _fetch_kline_tencent,
+    bar_is_settled, probe_market_now, SH_TZ, _fetch_kline_tencent,
 )
 
 # 收盘价差多少算"被重新缩放过"（除权），而不是"同一天的数对不上"。
@@ -128,6 +135,22 @@ def main():
             infos = infos[:args.limit_stocks]
             keep = {i.code for i in infos}
             rows = [r for r in rows if r[1] in keep]
+
+        # 尚未收盘的交易日整天剔除：盘中快照记"当前涨停"是对的，不是污染。
+        # 收没收盘用市场自己的时间判（比本机时钟可靠，也不用硬编码 15:00 和半日市）
+        market_now = probe_market_now()
+        if market_now is None:
+            market_now = datetime.now(SH_TZ)
+            print(f"市场时间探测失败，退回本机时钟 {market_now:%H:%M:%S}")
+        unsettled = {d for (d, *_r) in rows if not bar_is_settled(d, market_now)}
+        if unsettled:
+            skipped = [r for r in rows if r[0] in unsettled]
+            rows = [r for r in rows if r[0] not in unsettled]
+            print(f"跳过尚未收盘的交易日 {sorted(unsettled)}："
+                  f"{len(skipped)} 条不参与对账（盘中快照不算污染）")
+            if not rows:
+                print("剔除后没有可对账的记录")
+                return
 
         d0, d1 = rows[0][0], rows[-1][0]
         print(f"待核对：{len(rows)} 条记录 / {len(infos)} 只股票 / {d0} ~ {d1}")
