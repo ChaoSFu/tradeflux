@@ -30,8 +30,14 @@
   REPRICED      重拉的收盘价与库里差异明显
                 → 腾讯 K 线是 qfq 前复权，期间发生除权会把整段历史重新缩放，
                   绝对价对不上是必然的，不算污染。单独列出，人工确认
-  MISSING       重拉不到那一天的 bar（停牌 / 退市 / 超出拉取窗口）
-                → 是"不知道"，不是"不一致"。绝不能算进分母，也不能算作通过
+  SUSPENDED     历史日重拉不到 bar，但库里有记录且带连板数
+                → **停牌日被顺延了陈旧的 board_count**。2026-09-03 首跑就抓到：
+                  603221 爱丽家居 08-03/04/05 三天无 bar（停牌），库里却给 08-03
+                  记了 9 板——那天全市场真实最高只有 6 板，这个 9 是凭空的。
+                  一只停牌的高标会一直"撑住"高度曲线，制造"高度维持"的假信号，
+                  对破局雷达是致命的，必须单独列出来修
+  PENDING       最新那一两天重拉不到
+                → 数据源当天的日 K 还没发布，正常，不是问题
 
 ## 已知局限（必须写在这里，免得把结论用过头）
 
@@ -107,6 +113,11 @@ def main():
 
         # (code, date) -> KLineBar
         bar_at = {(c, b.date): b for c, bars in fetched.items() for b in bars}
+        # 数据源已经发布到哪一天。取全体股票 bar 日期的最大值——几百只一起取最大，
+        # 个别停牌不会带偏。晚于它的"拉不到"是尚未发布，不是停牌
+        latest_fetched = max((b.date for bars in fetched.values() for b in bars),
+                             default=date.min)
+        print(f"数据源已发布至 {latest_fetched}\n")
 
         # ── 逐条对账 ────────────────────────────────────────────────────────
         verdicts = []      # (date, code, name, kind, detail)
@@ -114,8 +125,14 @@ def main():
         for d, code, name, _mkt, _st, bc, db_close, db_lu in rows:
             bar = bar_at.get((code, d))
             if bar is None:
-                stat["MISSING"] += 1
-                verdicts.append((d, code, name, "MISSING", f"{bc}板，重拉无此日bar"))
+                # 分开：最新交易日拉不到是"还没发布"，历史日拉不到是"停牌却有记录"
+                if d >= latest_fetched:
+                    stat["PENDING"] += 1
+                    verdicts.append((d, code, name, "PENDING", f"{bc}板，当日K线尚未发布"))
+                else:
+                    stat["SUSPENDED"] += 1
+                    verdicts.append((d, code, name, "SUSPENDED",
+                                     f"{bc}板，该日无bar(停牌)，库里却记了连板数"))
                 continue
             if db_close and bar.close_price and \
                     abs(bar.close_price - db_close) / db_close > _REPRICE_TOL:
@@ -157,8 +174,9 @@ def main():
             gap = re_max[d] - db_max[d]
             if gap:
                 gap_days += 1
-            print(f"  {str(d):<12}{db_max[d]:>10}{re_max[d]:>12}{gap:>+6}"
-                  + ("   ← 不一致" if gap else ""))
+            flag = ("   ← 库里偏高（假高度）" if gap < 0 else
+                    "   ← 库里偏低（漏记）" if gap > 0 else "")
+            print(f"  {str(d):<12}{db_max[d]:>10}{re_max[d]:>12}{gap:>+6}{flag}")
         print("─" * 64)
 
         total = sum(stat.values())
@@ -167,7 +185,8 @@ def main():
         print(f"  一致            {stat['OK']:>5}")
         print(f"  污染(涨停判定不符) {stat['CONTAMINATED']:>5}")
         print(f"  除权嫌疑(价被缩放) {stat['REPRICED']:>5}   ← 不计入污染率，需人工确认")
-        print(f"  重拉不到         {stat['MISSING']:>5}   ← 是「不知道」，不计入分母")
+        print(f"  停牌日却有连板记录 {stat['SUSPENDED']:>5}   ← **假高度，必须修**")
+        print(f"  当日K线未发布     {stat['PENDING']:>5}   ← 正常，不是问题")
         if checkable:
             print(f"\n  污染率 = {stat['CONTAMINATED']}/{checkable} "
                   f"= {stat['CONTAMINATED'] / checkable * 100:.1f}%（分母只含真正可比的）")
