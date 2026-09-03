@@ -366,9 +366,17 @@ def fetch_limit_up_details(
 _LADDER_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 
 
-def fetch_limit_up_ladder(trade_date, timeout: int = 15) -> Optional[Dict[str, int]]:
+def fetch_limit_up_ladder(trade_date, timeout: int = 15,
+                          exclude_delisted: bool = True) -> Optional[Dict[str, int]]:
     """
     取某个交易日的权威连板天梯，返回 {股票代码: 连板数}（只含 2 板及以上）。
+
+    `exclude_delisted=True`（默认）剔除名称带「退」的退市整理期股票。**这是口径
+    对齐，不是数据清洗**：东财 filter 只写了 IS_ST="0"，退市股照收；而本仓库两个
+    选股 prompt 都写了「非退市股」。不剔就会一直报假差异——2026-07-17 实测东财
+    最高 5 板、我们 4 板，差的那只正是 920305「云创退」，一只 0.40 元的退市整理期
+    股票在连板。退市整理期爆炒跟"市场投机高度"不是一个游戏（极小流通盘、纯博傻、
+    首日无涨跌幅限制），算进天花板只会制造假的"高度突破"。
 
     返回值三分，**"没有"和"不知道"绝不能混**（炸板池 fetch 失败返回 [] 曾经直接
     删掉 20 行数据，就是混了这两件事）：
@@ -405,7 +413,11 @@ def fetch_limit_up_ladder(trade_date, timeout: int = 15) -> Optional[Dict[str, i
     out: Dict[str, int] = {}
     for r in rows:
         code = (r.get("SECURITY_CODE") or "").strip()
+        name = (r.get("SECURITY_NAME_ABBR") or "").strip()
         n = r.get("N_CLASS")
-        if code and isinstance(n, int) and n >= 2:
-            out[code] = n
+        if not code or not isinstance(n, int) or n < 2:
+            continue
+        if exclude_delisted and "退" in name:
+            continue
+        out[code] = n
     return out
