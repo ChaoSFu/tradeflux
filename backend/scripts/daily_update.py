@@ -1166,6 +1166,23 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # ── 第1步：确定候选股（通过东财选股 API）──────────────────
         log.begin("确定候选股")
 
+        # 强势池 prompt 收窄迁移（2026-09-03）。幂等，每次跑都调一次：
+        # 只覆盖认得出的旧默认值，用户真正自定义过的一个字都不动。
+        # 必须在读 prompt 之前——这一跑就要用新口径选股。
+        try:
+            from app.services.pool_config_service import migrate_strong_pool_keyword
+            _mig = migrate_strong_pool_keyword(db)
+            if _mig["action"] == "migrated":
+                log.info(f"强势池 prompt 已迁移到收窄口径（原值已存 "
+                         f"strong_pool_keyword_migrated_from，可回滚）")
+            elif _mig["action"] == "skipped":
+                # 认不出的自定义值必须报出来——静默跳过等于让用户以为新口径生效了
+                log.warning(f"检测到未知的自定义强势池 prompt，**未覆盖**，"
+                            f"收窄口径不会生效：{_mig['old']}")
+        except Exception as e:  # noqa: BLE001
+            log.info(f"强势池 prompt 迁移检查失败（不影响主流程）: {e}")
+            db.rollback()
+
         # 读取可编辑的选股 API prompt（界面可改；未设置则用默认常量）
         from app.services.pool_config_service import get_pool_keywords
         _kw = get_pool_keywords(db)
