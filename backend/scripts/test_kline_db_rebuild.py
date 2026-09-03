@@ -18,6 +18,7 @@ from app.database import SessionLocal, init_db
 from app.models.stock import Stock, StockDailySnapshot
 from app.services.eastmoney_fetcher import (
     StockBasicInfo, KLineBar, fetch_klines_batch,
+    market_int,
 )
 from app.services.screening_service import compute_window_stats
 from scripts.daily_update import (
@@ -83,7 +84,7 @@ def main():
             StockBasicInfo(
                 code=s.code,
                 name=s.name,
-                market=1 if s.market == "SH" else 0,
+                market=market_int(s.market, s.code),
                 is_st=s.is_st,
                 pct_change=0.0,
                 turnover_rate=0.0,

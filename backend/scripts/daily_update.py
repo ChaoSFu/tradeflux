@@ -157,7 +157,7 @@ from app.services.eastmoney_fetcher import (
     fetch_main_board_stocks, fetch_klines_batch, get_limit_pct, get_actual_limit_pct,
     fetch_strong_pool_codes, fetch_stock_bk_codes, fetch_limit_move_codes,
     fetch_turnover_top_stocks, fetch_stock_quotes_batch, kline_bar_from_quote,
-    bar_is_settled, probe_market_now, market_label, SH_TZ,
+    bar_is_settled, probe_market_now, market_label, market_int, SH_TZ,
 )
 from app.services.fuyao_dump import (
     get_api_key as get_fuyao_key, daily_k_dump, load_bars,
@@ -631,7 +631,7 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
              f"当日快照还是盘中值，补拉K线结算")
 
     infos = [StockBasicInfo(code=st.code, name=st.name,
-                            market=0 if st.market == "SH" else 1,
+                            market=market_int(st.market, st.code),
                             is_st=st.is_st, pct_change=0.0, turnover_rate=0.0)
              for _, st in todo]
 
@@ -1304,7 +1304,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 candidates.append(StockBasicInfo(
                     code=s.code,
                     name=s.name,
-                    market=1 if s.market == "SH" else 0,
+                    market=market_int(s.market, s.code),
                     is_st=s.is_st,
                     pct_change=0.0,
                     turnover_rate=0.0,

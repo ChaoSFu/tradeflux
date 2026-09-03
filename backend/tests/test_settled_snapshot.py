@@ -362,3 +362,45 @@ class TestSettleDroppedOutQuoteFallback:
         snap = db.query(StockDailySnapshot).one()
         assert snap.close_price is None, "过期行情不能冒充当日收盘价，宁可缺失"
         assert snap.is_settled is False
+
+
+class TestMarketIntNotInverted:
+    """
+    2026-09-02：全仓 8 处手写 `Stock.market 字符串 → 数字 market` 的映射，7 处写对，
+    只有 _settle_dropped_out_snapshots 写成 `0 if st.market == "SH" else 1`——反的。
+    SH 股被拼成 sz600xxx、SZ 股被拼成 sh00xxx，腾讯/新浪两边都取不到数，于是
+    2026-08-31 实跑「[掉出池补结算] 结算 0 只，拿不到数据清空 42 只」。
+
+    这个错最阴的地方：另外 7 处正确的拷贝，反而让人觉得这个映射不会出问题。
+    所以测试要盯住两件事——映射本身不能反，以及补结算真的用它。
+    """
+
+    def test_映射方向与行情前缀约定一致(self):
+        from app.services.eastmoney_fetcher import market_int, quote_prefix
+        # quote_prefix 的约定是 1=sh / 0=sz，market_int 必须跟它对得上，
+        # 否则拼出来的就是 sz600xxx 这种取不到数的地址
+        assert quote_prefix("600519", market_int("SH", "600519")) == "sh"
+        assert quote_prefix("000001", market_int("SZ", "000001")) == "sz"
+        assert quote_prefix("920087", market_int("BJ", "920087")) == "bj"
+
+    def test_与_market_label_互为逆函数(self):
+        from app.services.eastmoney_fetcher import market_int, market_label
+        for code, label in [("600519", "SH"), ("000001", "SZ"), ("920087", "BJ")]:
+            assert market_label(code, market_int(label, code)) == label
+
+    def test_补结算传给取数层的market没有反(self, db, monkeypatch):
+        """直接盯住出事的那条路：补结算构造 StockBasicInfo 时用的 market。"""
+        from app.services.eastmoney_fetcher import quote_prefix
+        TestSettleDroppedOut._seed(db)          # 600984，SH
+        seen = {}
+
+        def _klines(infos, **kw):
+            seen["prefix"] = quote_prefix(infos[0].code, infos[0].market)
+            return {}
+
+        monkeypatch.setattr(du, "fetch_klines_batch", _klines)
+        monkeypatch.setattr(du, "fetch_stock_quotes_batch", lambda *a, **k: {})
+        du._settle_dropped_out_snapshots(db, TODAY, run_settled=True,
+                                         handled=set(), fuyao_key=None, log=_Log())
+        assert seen.get("prefix") == "sh", (
+            f"600984 是沪市，应拼成 sh600984，实际拼成 {seen.get('prefix')}600984")

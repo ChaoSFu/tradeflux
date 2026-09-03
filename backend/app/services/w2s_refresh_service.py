@@ -21,7 +21,7 @@ from ..models.stock import Stock, StockDailySnapshot
 from ..models.sector import Sector
 from ..models.regulatory import RegulatoryUnusual
 from ..models.weak_to_strong_radar import WeakToStrongCandidate, WeakToStrongEvent, WeakToStrongSnapshot
-from .eastmoney_fetcher import fetch_stock_quotes_batch, get_actual_limit_pct
+from .eastmoney_fetcher import fetch_stock_quotes_batch, get_actual_limit_pct, market_int
 from . import w2s_config_service as cfg
 from . import w2s_sector_gate_service as sector_gate
 from . import w2s_leader_gate_service as leader_gate
@@ -34,7 +34,9 @@ AUCTION_CUTOFF_HOUR_MINUTE = (9, 25)  # 9:25 集合竞价结束
 
 
 def _market_code(market: str) -> int:
-    return 1 if (market or "").upper() == "SH" else 0
+    # 不传 code：BJ 股的 Stock.market 已经是 "BJ"，走 else 分支同样得 0，
+    # 且腾讯/新浪三条路都先按代码前缀短路成 bj，这个数字轮不到
+    return market_int(market)
 
 
 def _resolve_regulatory_risk(db: Session, code: str, today: date_cls) -> str:

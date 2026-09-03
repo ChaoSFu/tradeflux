@@ -19,7 +19,7 @@ from ..models.stock import Stock
 from ..models.limit_up_detail import LimitUpDailyDetail, BrokenBoardDailyDetail
 from .eastmoney_fetcher import (
     CoreRecallDetail, StockBasicInfo, fetch_core_recall_details, fetch_klines_batch,
-    market_label,
+    market_label, market_int,
 )
 from .limit_up_detail_fetcher import (
     SOURCE_NAME, BrokenBoardDetail, LimitUpDetail, fetch_limit_up_details,
@@ -442,7 +442,7 @@ def refresh_radar_scores(db: Session, trade_date: date, max_stocks: int = 200) -
 
     infos = [
         StockBasicInfo(
-            code=s.code, name=s.name, market=1 if s.market == "SH" else 0,
+            code=s.code, name=s.name, market=market_int(s.market, s.code),
             is_st=bool(s.is_st), pct_change=0.0, turnover_rate=0.0,
         )
         for s in targets

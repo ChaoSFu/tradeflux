@@ -125,6 +125,35 @@ def quote_prefix(code: str, market: int) -> str:
     return "sh" if market == 1 else "sz"
 
 
+def market_int(market: Optional[str], code: str = "") -> int:
+    """
+    `Stock.market` 的字符串标签 → 行情/K线接口用的数字 market（1=SH，0=SZ/BJ）。
+    `market_label` 的逆函数。
+
+    2026-09-02 抽出来，是因为它在生产上真的咬人了：全仓 **8 处** 手写这个映射，
+    7 处写的是 `1 if market == "SH" else 0`，只有 `_settle_dropped_out_snapshots`
+    写成了 `0 if st.market == "SH" else 1` —— **反的**。
+
+    后果：掉出候选池的股票补结算时，SH 股被拼成 `sz600xxx`、SZ 股被拼成 `sh00xxx`，
+    腾讯/新浪两边都取不到数，于是 2026-08-31 那次实跑
+    「[掉出池补结算] 结算 0 只，拿不到数据清空 42 只」——42 只股票的收盘价、涨跌幅、
+    换手率被整片清成 NULL。清空逻辑本身是对的（不能让盘中价冒充收盘价），错在压根
+    没问对地方就先清了。
+
+    北交所（4/8/92 开头）返回 0：东财 secid 也用 market=0，而腾讯/新浪那三条路都是
+    先 `_is_bj_code(code)` 短路走 bj 前缀，这个数字轮不到。传 code 只为让 BJ 这一支
+    显式可见，不传也不影响现有两市。
+
+    这是"同一个市场事实只能有一套判定函数"的第 6 次违反（前五次：build_kline_bar /
+    exact_limit_price / bar_is_settled / thscode_suffix / quote_prefix）。前几次都是
+    "两套算法算出不同结果"，这次更隐蔽——**8 份拷贝里只有 1 份是错的**，另外 7 处
+    正确的存在反而让人以为这个映射没问题。
+    """
+    if code and _is_bj_code(code):
+        return 0
+    return 1 if (market or "").upper() == "SH" else 0
+
+
 def market_label(code: str, market: int) -> str:
     """
     东财的数字 market + 代码 → 存进 Stock.market 的字符串标签。
