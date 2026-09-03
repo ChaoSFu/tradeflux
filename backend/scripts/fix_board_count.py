@@ -29,7 +29,11 @@
     我们的 board_count  ×  东财天梯  ×  腾讯K线重算连板
 
   · 东财与腾讯一致、跟我们不同  → 我们错，修
-  · 我们与腾讯一致、跟东财不同  → **东财漏记**，不动
+  · 我们与腾讯一致、跟东财不同  → 不动。**注意别一律叫"东财漏记"**：东财值
+                                   更低才是漏了一板，更高则是双方对某一天涨没涨停
+                                   判断不同（07-03 603559 中通国脉实测就是这种：
+                                   分歧点在 07-01，东财认为涨停、腾讯按精确涨停价
+                                   认为没有，跟 603065 那种擦边情形同类）
   · 三方两两不同 / 腾讯拿不到   → 无法裁决，如实报出，不动
 
 腾讯那一路的连板用真实 bar 序列重算：停牌那几天本来就没有 bar，不打断连板，这跟
@@ -138,9 +142,12 @@ def main():
         print(f"我们错（东财+腾讯一致）：{len(fixes)} 条 ← 待修")
         for d, code, name, old, new in fixes:
             print(f"    {d}  {code} {name:<8} {old} → {new}")
-        print(f"\n东财漏记（我们+腾讯一致）：{len(em_wrong)} 条 ← **不动**")
+        print(f"\n我们+腾讯一致、东财不同：{len(em_wrong)} 条 ← **不动**")
         for d, code, name, mine, em_n in em_wrong:
-            print(f"    {d}  {code} {name:<8} 我们{mine}板/腾讯{mine}板，东财{em_n}板")
+            # 东财更低 = 它漏了一板；东财更高 = 双方对某天涨没涨停判断不同，
+            # 不是漏记。一律写"漏记"会把后一种性质说错
+            why = "东财漏了一板" if em_n < mine else "东财多算一板（对某日涨停判定不同）"
+            print(f"    {d}  {code} {name:<8} 我们{mine}板/腾讯{mine}板，东财{em_n}板 —— {why}")
         if undecided:
             print(f"\n无法裁决：{len(undecided)} 条 ← **不动**")
             for d, code, name, mine, em_n, why in undecided:
