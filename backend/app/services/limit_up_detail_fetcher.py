@@ -341,3 +341,71 @@ def fetch_limit_up_details(
             # 这是该接口的固有覆盖缺口，不是故障，只记录不告警
             warnings.append(f"{missing}/{len(details)} 只涨停股东财未提供涨停原因（该接口本身覆盖不全）")
     return details, broken, warnings
+
+
+# ─── 东财「连板天梯」（权威梯队，2026-09-03 接入）───────────────────────────
+#
+# 端点与 _REASON_URL 同一个 datacenter，reportName 不同：
+#   reportName=RPT_INTSELECTION_MONITORHIS
+#   filter=(TRADE_DATE='YYYY-MM-DD')(@N_CLASS<>"NULL")(IS_ST="0")
+#   N_CLASS = 连板数
+#
+# **TRADE_DATE 是入参，任意历史日期都能取**——这一点决定了它的价值。
+# 实测 2026-06-02 / 07-09 / 08-06 / 09-01 全部 code=0，pages=1，与东财 APP
+# 「涨停专题 → 连板天梯」页面显示逐档一致。
+#
+# 为什么需要它：此前市场高度是**从我们自己的候选池快照反推**的，而
+# verify_board_history 只能拿重拉的 K 线跟库里已标记的高板对账——那是**自指的**，
+# 只能证伪"我们说有、实际没有"，抓不到"实际有、我们没记"。2026-08-06 就是活证据：
+# 校验报"0 分歧"，而东财天梯是 10 板、我们只有 5 板，整段行情的最高点漏掉了。
+# 这个接口是独立的外部标准，补的正是那个方向。
+#
+# 口径注意：
+#   · 只返回 **2 板及以上**，不含首板。跟我们自己算的 "1" 档正好互补，不重叠
+#   · IS_ST="0" 已在服务端排除 ST，跟本仓库选股 prompt 的「非ST」口径一致
+_LADDER_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
+
+
+def fetch_limit_up_ladder(trade_date, timeout: int = 15) -> Optional[Dict[str, int]]:
+    """
+    取某个交易日的权威连板天梯，返回 {股票代码: 连板数}（只含 2 板及以上）。
+
+    返回值三分，**"没有"和"不知道"绝不能混**（炸板池 fetch 失败返回 [] 曾经直接
+    删掉 20 行数据，就是混了这两件事）：
+
+      {code: n, ...}  那天的梯队
+      {}              那天确实没有 2 板及以上（东财 code=9201「返回数据为空」）
+      None            请求失败 / 响应异常 —— 不知道
+
+    9201 这个码是实测出来的：未来日期和周末都返回 `code=9201, success=false`，
+    而正常交易日是 `code=0`。所以东财自己就把"空"和"错"分开了，我们只要别把它们
+    重新揉回去。传周末进来会得到 {}（那天确实没有连板股），调用方自己保证只问
+    交易日。
+    """
+    d = trade_date.isoformat() if hasattr(trade_date, "isoformat") else str(trade_date)
+    params = {
+        "source": "SECURITIES", "client": "APP",
+        "reportName": "RPT_INTSELECTION_MONITORHIS",
+        "columns": "SECUCODE,SECURITY_CODE,SECURITY_NAME_ABBR,N_CLASS",
+        "filter": f"(TRADE_DATE='{d}')(@N_CLASS<>\"NULL\")(IS_ST=\"0\")",
+    }
+    try:
+        with httpx.Client(timeout=timeout, headers=_HEADERS) as c:
+            resp = c.get(_LADDER_URL, params=params)
+        body = json_or_explain(resp, f"东财连板天梯 {d} ")
+    except Exception:  # noqa: BLE001
+        return None
+    code = body.get("code")
+    if code == 9201:
+        return {}          # 东财明说"返回数据为空"：那天确实没有 2 板及以上
+    if code != 0:
+        return None        # 其它异常码 = 不知道
+    res = body.get("result") or {}
+    rows = res.get("data") or []
+    out: Dict[str, int] = {}
+    for r in rows:
+        code = (r.get("SECURITY_CODE") or "").strip()
+        n = r.get("N_CLASS")
+        if code and isinstance(n, int) and n >= 2:
+            out[code] = n
+    return out
