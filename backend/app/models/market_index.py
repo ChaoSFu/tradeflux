@@ -30,6 +30,46 @@ class IndexDailySnapshot(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class SectorIndexDaily(Base):
+    """
+    **板块指数日线**（相对强度 RS_sector 的基准，2026-09-03 新增）。
+
+    ## 为什么不塞进 SectorDailySnapshot
+
+    那张表存的是板块**统计**（涨停数、板高、情绪分、风险分），2026-08-21 才开始写，
+    只有几天历史。而板块指数能一次性回填 300 根（实测 BK0832 工业互联网
+    2025-06-16 ~ 2026-09-03）。往里灌 300 天历史，就会造出一大批
+    `phase=0 / limit_up_count=0 / board_height=0` 的行——那是**用 0 表达"不知道"**，
+    本仓库为这个模式栽过太多次（换手率恒为0、盘中价冒充收盘价、连板缺失当成1板）。
+
+    板块的**行情**和板块的**统计**是两类事实，分开存，各自语义干净。
+    表结构刻意镜像 IndexDailySnapshot，RS 那边的锚点对齐逻辑可以直接复用。
+
+    ## 数据来源
+
+    东财 push2his，secid = "90." + Sector.code（`BK0832` → `90.BK0832`）。
+    **不能走 fetch_index_kline()**：那个函数是腾讯优先的（为那 5 个固定指数定的，
+    因为 push2his 长期被限流），而腾讯根本没有 BK 板块码，会静默落到兜底再报错。
+    """
+    __tablename__ = "sector_index_daily"
+    __table_args__ = (
+        UniqueConstraint("sector_code", "date", name="uq_sector_index_date"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    sector_code = Column(String(20), nullable=False, index=True)   # BK0832，对应 sectors.code
+    date = Column(Date, nullable=False, index=True)
+    close = Column(Float, nullable=True)
+    pct_change = Column(Float, nullable=True)   # 当日涨跌幅 %
+    open = Column(Float, nullable=True)
+    high = Column(Float, nullable=True)
+    low = Column(Float, nullable=True)
+    volume = Column(Float, nullable=True)
+    amount = Column(Float, nullable=True)       # 成交额（元）
+
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class MarketBreadthDaily(Base):
     """
     大盘市场宽度/资金每日快照（大盘趋势页「市场资金与盘面」数据源）。

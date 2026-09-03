@@ -83,3 +83,34 @@ class TestRSMarket:
         _seed_index(db, "000001", [100.0] * 10 + [110.0])
         b = MarketBenchmark(db, windows=(10,))
         assert compute_rs_market(b, "920510", _stock_closes([100.0] * 10 + [130.0]))[10] is None
+
+
+class TestRSSector:
+    """
+    板块相对强度。跟 RS_market 同口径，但锚点以**板块指数**的交易日为准——
+    板块序列是从限流严重的 push2his 回填来的，可能有缺口，拿大盘交易日历去索引
+    会取不到值，那样的 None 表达的是"索引错了"而不是"板块那天没数据"。
+    """
+    def test_跑赢板块为正(self):
+        from app.services.relative_strength_service import compute_rs_sector
+        sec = _stock_closes([100.0] * 10 + [110.0])     # 板块 +10%
+        stk = _stock_closes([100.0] * 10 + [125.0])     # 个股 +25%
+        assert compute_rs_sector(sec, stk, windows=(10,))[10] == 15.0
+
+    def test_板块历史不够长返回None(self):
+        from app.services.relative_strength_service import compute_rs_sector
+        sec = _stock_closes([100.0, 101.0, 102.0])
+        stk = _stock_closes([100.0, 110.0, 121.0])
+        assert compute_rs_sector(sec, stk, windows=(10,))[10] is None
+
+    def test_个股在板块锚点日缺数据返回None(self):
+        from app.services.relative_strength_service import compute_rs_sector
+        sec = _stock_closes([100.0] * 10 + [110.0])
+        stk = _stock_closes([100.0] * 10 + [125.0])
+        del stk[D0]
+        assert compute_rs_sector(sec, stk, windows=(10,))[10] is None
+
+    def test_没有板块数据时不假装有(self):
+        from app.services.relative_strength_service import compute_rs_sector
+        stk = _stock_closes([100.0] * 10 + [125.0])
+        assert compute_rs_sector({}, stk, windows=(10,))[10] is None

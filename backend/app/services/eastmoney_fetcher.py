@@ -2362,6 +2362,58 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
     return em_out if len(em_out) > len(out) else out
 
 
+def fetch_sector_kline(sector_code: str, days: int = 300,
+                       timeout: int = 15) -> list[dict]:
+    """
+    板块指数日线。`sector_code` 是 `BK0832` 这种码（对应 sectors.code）。
+    返回与 fetch_index_kline 同结构的 dict 列表，按日期升序；失败返回空列表。
+
+    **刻意不复用 fetch_index_kline()**：那个函数是**腾讯优先**的——那个优先级是为
+    那 5 个固定指数定的（它们此前确认被 push2his 针对性限流），而腾讯根本没有 BK
+    板块码。实测 `fetch_index_kline("90.BK0832")` 会先走腾讯拿到畸形数据，再在兜底
+    里抛 `'list' object has no attribute 'get'`——**不是"板块拉不到"，是走错了路**。
+
+    板块只有东财这一个源，所以直连 push2his，不做多源兜底。失败就是失败，
+    返回空列表让调用方如实记录，不用别的板块或别的日期顶替。
+
+    实测 BK0832 工业互联网可取 300 根（2025-06-16 ~ 2026-09-03），够 RS_sector 用。
+    """
+    raw: list = []
+    try:
+        client = _thread_warmed_client(timeout=timeout)
+        resp = client.get(KLINE_URL, params={
+            "secid": f"90.{sector_code}",
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+            "lmt": days, "klt": 101, "fqt": 1,
+            "end": date.today().strftime("%Y%m%d"),
+        })
+        payload = json_or_explain(resp, f"东财板块K线 {sector_code} ")
+        raw = (payload.get("data") or {}).get("klines") or []
+    except Exception as e:  # noqa: BLE001
+        print(f"[fetcher] 板块K线 {sector_code} 失败: {type(e).__name__}: {str(e)[:80]}",
+              flush=True)
+        return []
+
+    out: list[dict] = []
+    for line in raw:
+        parts = line.split(",")
+        if len(parts) < 9:
+            continue
+        try:
+            out.append({
+                "date": parts[0],
+                "open": float(parts[1]), "close": float(parts[2]),
+                "high": float(parts[3]), "low": float(parts[4]),
+                "volume": float(parts[5]),      # 手（东财板块口径，同板块内可比）
+                "amount": float(parts[6]),      # 元
+                "pct_change": float(parts[8]),
+            })
+        except (ValueError, IndexError):
+            continue
+    return out
+
+
 def _fetch_index_kline_sina(secid: str, days: int = 320, timeout: int = 15) -> list[dict]:
     """
     指数日线新浪兜底源（东财被指纹封锁、腾讯无北证指数历史时使用）。

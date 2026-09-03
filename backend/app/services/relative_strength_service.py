@@ -130,3 +130,38 @@ def compute_rs_market(
             continue
         out[w] = round(mine - base, 2)
     return out
+
+
+# ─── 板块相对强度 ─────────────────────────────────────────────────────────────
+
+def compute_rs_sector(
+    sector_closes: Dict[date, float], stock_closes: Dict[date, float],
+    windows: Sequence[int] = DEFAULT_WINDOWS,
+) -> Dict[int, Optional[float]]:
+    """
+    个股相对**其主板块**的强度。跟 RS_market 同一套口径与纪律：
+
+      · 复合收益，不是日涨幅相加
+      · 锚点日期两边必须是同一天，对不齐就 None
+      · 缺数据一律 None，不用邻近日期或别的板块顶替
+
+    跟 RS_market 的一处关键差别：**锚点以板块指数的交易日为准**，而不是大盘指数。
+    板块指数是从 push2his 回填来的，可能有缺口（限流打断过），拿大盘的交易日历去
+    索引板块序列会取不到值——那样得到的 None 表达的是"我们索引错了"，不是
+    "板块那天没数据"，两者混在一起就分不清故障和事实了。
+    """
+    out: Dict[int, Optional[float]] = {w: None for w in windows}
+    if not sector_closes or not stock_closes:
+        return out
+    dates = sorted(sector_closes)
+    latest = dates[-1]
+    for w in windows:
+        if len(dates) < w + 1:
+            continue          # 板块历史不够长，这个窗口没有基准
+        anchor = dates[-1 - w]
+        base = _interval_return(sector_closes, anchor, latest)
+        mine = _interval_return(stock_closes, anchor, latest)
+        if base is None or mine is None:
+            continue
+        out[w] = round(mine - base, 2)
+    return out
