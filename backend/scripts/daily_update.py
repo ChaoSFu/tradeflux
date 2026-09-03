@@ -323,8 +323,27 @@ def _snapshots_to_klinebars(snaps: list, code: str = "", is_st: bool = False) ->
             actual = lp + 0.1
             lu_price = round(own_prev * (1 + actual / 100), 2)
             ld_price = round(own_prev * (1 - actual / 100), 2)
-            is_lu = close >= lu_price - 0.005
-            is_ld = close <= ld_price + 0.005
+            # **只单向修正：False → True，绝不 True → False**（2026-09-03）。
+            #
+            # 这段重算的声明目的是"修正旧逻辑的浮点取整**漏判**"——漏判就是
+            # "该 True 却存了 False"。所以它只该补，不该删。
+            #
+            # 双向改的后果实测出现过两次，每次都是把**正确的 True 改成错的 False**：
+            #   603989 06-16  存 True（+10.01% 真涨停）→ 重算 False → 连板 4→3
+            #   603773 08-04  存 True（+9.99%  真涨停）→ 重算 False → 连板 4→3
+            #
+            # 根子在于反推的前收不可能精确：pct_change 只存两位小数（9.99，真实
+            # 9.9938），反推前收带 ~0.002 误差，round 到分一放大就跨过 0.005 容差
+            #   71.43/1.0999 = 64.9422 → round(64.9422×1.10, 2) = 71.44
+            #   而真实前收 64.94    → round(64.94  ×1.10, 2) = 71.43 = 收盘价
+            # 边界上差一分钱，判定就翻。而**存储值是当时用真前收算的，比这个准**。
+            #
+            # 用前一根 bar 的收盘价当前收更糟（快照有缺口时直接取到几天前的价），
+            # 那是这个 bug 的上一版形态。两种反推都不可靠，所以：能补则补，不动已有。
+            if close >= lu_price - 0.005:
+                is_lu = True
+            if close <= ld_price + 0.005:
+                is_ld = True
         # OHLC：2026-08-27 起快照会落库真实值；NULL 是加列之前写的老行，退回 0.0。
         # 有 high 就能重算炸板/一字板，没有就只能沿用当初落库的标志（老行为）。
         o, h, lo = s.open_price, s.high_price, s.low_price
@@ -338,9 +357,12 @@ def _snapshots_to_klinebars(snaps: list, code: str = "", is_st: bool = False) ->
             actual = lp + 0.1
             lu_price = round(own_prev * (1 + actual / 100), 2)
             ld_price = round(own_prev * (1 - actual / 100), 2)
-            is_bb = (not is_lu) and h >= lu_price - 0.005
-            is_owu = is_lu and lo >= lu_price - 0.005
-            is_owd = is_ld and h <= ld_price + 0.005
+            # 炸板同理只单向补：涨停判定既然只补不删，炸板也不能反过来把
+            # 已知的炸板抹掉。一字板需要 is_lu 成立，跟着上面的结果走
+            if (not is_lu) and h >= lu_price - 0.005:
+                is_bb = True
+            is_owu = is_owu or (is_lu and lo >= lu_price - 0.005)
+            is_owd = is_owd or (is_ld and h <= ld_price + 0.005)
         bars.append(KLineBar(
             date=s.date,
             open_price=o or 0.0,

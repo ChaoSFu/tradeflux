@@ -106,3 +106,45 @@ class TestPrevCloseFromOwnRow:
         b = bars[-1]
         assert b.is_limit_up is False and b.is_broken_board is True, \
             "最高价触及涨停价、收盘没封住 = 炸板"
+
+
+class TestOneDirectionalCorrection:
+    """
+    重算只能**单向**修正：False → True，绝不 True → False（2026-09-03 第二次修）。
+
+    第一次修（前收从本行 pct 反推）解决了"缺口处取到错误前收"，但引入了新问题：
+    pct_change 只存两位小数，反推的前收带 ~0.002 误差，round 到分再放大就跨过
+    0.005 容差——
+
+        603773 08-04  收71.43  存 pct=9.99（真实 9.9938）
+          反推前收 71.43/1.0999 = 64.9422 → round(64.9422×1.10, 2) = 71.44
+          真实前收 64.94              → round(64.94  ×1.10, 2) = 71.43 = 收盘价
+          边界差一分钱，判定就翻
+
+    两种反推（前一根 bar / 本行 pct）都不可能精确，而**存储值是当时用真前收算的，
+    比任何事后反推都准**。这段代码的声明目的又只是"修正浮点取整**漏判**"——
+    漏判 = 该 True 却存了 False。所以：能补则补，不动已有。
+    """
+
+    def test_边界上不把正确的True改成False(self):
+        """603773 沃格光电的真实形态：四天连板，第一天在容差边界上。"""
+        snaps = [
+            _Snap(date(2026, 8, 4), 71.43, 9.99, is_lu=True),
+            _Snap(date(2026, 8, 5), 78.57, 10.00, is_lu=True),
+            _Snap(date(2026, 8, 6), 86.43, 10.00, is_lu=True),
+            _Snap(date(2026, 8, 7), 95.07, 10.00, is_lu=True),
+        ]
+        bars = du._snapshots_to_klinebars(snaps, "603773", False)
+        assert bars[0].is_limit_up is True, \
+            "反推前收算出 71.44 > 收盘 71.43，但存储值 True 是对的，不能被翻掉"
+        assert _streak(bars) == 4
+
+    def test_跌停同样只单向补(self):
+        snaps = [_Snap(date(2026, 8, 4), 9.0, -10.0, is_ld=True)]
+        assert du._snapshots_to_klinebars(snaps, "600001", False)[0].is_limit_down is True
+
+    def test_炸板标志不会被抹掉(self):
+        """涨停判定只补不删，炸板也不能反过来把已知的炸板改回 False。"""
+        snaps = [_Snap(date(2026, 8, 4), 70.00, 5.00, o=69.0, h=71.43, lo=68.0)]
+        snaps[0].is_broken_board = True
+        assert du._snapshots_to_klinebars(snaps, "603773", False)[0].is_broken_board is True
