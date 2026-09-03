@@ -83,7 +83,9 @@ def _fetch_boards_by_fs(fs_code: str, label: str, client: "httpx.Client | None" 
             "pn": str(page), "pz": "100", "po": "1", "np": "1",
             "fltt": "2", "invt": "2", "fid": "f3",
             "fs": fs_code,
-            "fields": "f12,f14,f3,f8,f20,f6,f109,f110,f160,f165",
+            # f2 = 板块指数点位（2026-09-03 加）。RS_sector 的每日增量靠它，
+            # 零新增请求——这个 clist 调用每天本来就在打
+            "fields": "f12,f14,f2,f3,f8,f20,f6,f109,f110,f160,f165",
         }
         # 最多重试 3 次，每次间隔递增。超时给10s而不是30s——握手真挂了没必要
         # 傻等30秒才报错，3次重试全部超时的极端情况下 30s×3=90s 比 10s×3=30s
@@ -183,6 +185,36 @@ def _upsert_board(db, board: dict, sector_type: str) -> tuple["Sector | None", b
     return sector, is_new
 
 
+def _upsert_sector_index_bar(db, board: dict, code: str, trade_date, settled: bool) -> bool:
+    """
+    把板块当日点位（f2）落进 SectorIndexDaily，供 RS_sector 用。零新增请求。
+
+    **盘中不写**：f2 盘中给的是当时的点位，不是收盘点位。写进去就等于让盘中值
+    冒充当日收盘——本仓库为这个模式栽过（股票快照的"盘中价就地转正成收盘价"，
+    600984 被记成涨停而实际收盘炸板）。这里从一开始就不给它机会。
+
+    历史那 300 根靠 sector_index_service.backfill_sector_index() 从 push2his 一次性
+    回填；这个函数只负责往后每天接一根。
+    """
+    from app.models.market_index import SectorIndexDaily
+
+    if not settled:
+        return False
+    close = board.get("f2")
+    if not close or close <= 0:
+        return False
+    row = (db.query(SectorIndexDaily)
+             .filter(SectorIndexDaily.sector_code == code,
+                     SectorIndexDaily.date == trade_date).first())
+    if row is None:
+        row = SectorIndexDaily(sector_code=code, date=trade_date)
+        db.add(row)
+    row.close = round(float(close), 4)
+    pct = board.get("f3")
+    row.pct_change = round(float(pct), 4) if pct is not None else None
+    return True
+
+
 def sync_board_metadata(db, update_stock_count: bool = True) -> tuple[int, int]:
     """
     第1步：同步全量板块元数据。
@@ -202,7 +234,18 @@ def sync_board_metadata(db, update_stock_count: bool = True) -> tuple[int, int]:
                 all_boards.append((b, sector_type))
             time.sleep(0.5)
 
-    new_count = updated_count = 0
+    # 收没收盘用市场自己的时间判（比本机时钟可靠，也不用硬编码15:00和半日市）。
+    # 只问一次，下面几百个板块共用。探测失败退回本机时钟并明说。
+    from datetime import datetime as _dt
+    from app.services.eastmoney_fetcher import bar_is_settled, probe_market_now, SH_TZ
+    _now = probe_market_now()
+    if _now is None:
+        _now = _dt.now(SH_TZ)
+        print(f"  市场时间探测失败，退回本机时钟 {_now:%H:%M:%S}（板块当日点位可能被跳过）")
+    _today = _now.date()
+    _settled = bar_is_settled(_today, _now)
+
+    new_count = updated_count = bar_count = 0
     for board, sector_type in all_boards:
         name = board.get("f14") or ""
         if not name or any(kw in name for kw in DYNAMIC_BOARD_KEYWORDS):
@@ -214,9 +257,16 @@ def sync_board_metadata(db, update_stock_count: bool = True) -> tuple[int, int]:
             new_count += 1
         else:
             updated_count += 1
+        if _upsert_sector_index_bar(db, board, sector.code, _today, _settled):
+            bar_count += 1
 
     db.commit()
     print(f"  板块元数据同步完成: 新增 {new_count} 个，更新 {updated_count} 个")
+    if _settled:
+        print(f"  板块指数当日点位: {bar_count} 个（RS_sector 基准，零新增请求）")
+    else:
+        print(f"  尚未收盘，跳过板块指数当日点位——盘中的 f2 不是收盘点位，"
+              f"写进去就是让盘中值冒充收盘")
 
     if not update_stock_count:
         return new_count, updated_count
