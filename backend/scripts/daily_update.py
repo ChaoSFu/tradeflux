@@ -1997,12 +1997,23 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 注：「即将进入监管」预警改用东财实时接口，无需本地指数偏离值管道。
         # 须在 log.summary() 之前执行——summary() 会关闭日志文件。
         try:
-            from app.services.regulatory_service import sync_regulatory_unusual
+            from app.services.regulatory_service import (
+                sync_regulatory_unusual, snapshot_regulatory_status,
+            )
             reg = sync_regulatory_unusual(db)
             if reg.get("ok"):
                 log.info(f"重点监管名单同步完成：{reg.get('count')} 条")
             else:
                 api_warnings.append("重点监管名单 API 调用失败，已保留旧名单")
+            # 每日状态快照：名单同步是「上游镜像」（每次 DELETE 重建，昨天的被物理
+            # 删除），这里补一条时间序列，破局雷达才能算出进入/解除/延长这些事件。
+            # 必须在 sync 之后跑——它读的就是刚同步进来的名单。
+            snap = snapshot_regulatory_status(db, target_date)
+            log.info(
+                f"监管状态快照：{snap['total']} 只（新增{snap['added']}，"
+                f"更新{snap['updated']}，移出{snap['removed']}）"
+                + (f"，{snap['dupes']} 只同时命中多个状态桶已去重" if snap['dupes'] else "")
+            )
         except Exception as e:
             log.info(f"[regulatory] 重点监管名单同步失败（不影响主流程）: {e}")
             db.rollback()

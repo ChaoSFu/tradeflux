@@ -8,7 +8,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from ..models.regulatory import RegulatoryUnusual
+from ..models.regulatory import RegulatoryUnusual, RegulatoryStatusDaily
 from ..models.stock import Stock
 from ..schemas.regulatory import RegulatoryItem, RegulatoryWatchlistResponse
 from ..services.eastmoney_fetcher import fetch_regulatory_unusual
@@ -186,3 +186,84 @@ def get_regulatory_watchlist(db: Session) -> RegulatoryWatchlistResponse:
         recently_released=recently_released,
         approaching=approaching,
     )
+
+
+# ─── 每日监管状态快照 ─────────────────────────────────────────────────────────
+
+def snapshot_regulatory_status(db: Session, trade_date: date) -> dict:
+    """
+    把「今天谁处于什么监管状态」落一行进 RegulatoryStatusDaily。返回统计 dict。
+
+    **刻意复用 get_regulatory_watchlist() 的判定结果**，而不是在这里重新算一遍
+    monitoring / ending_soon / released。页面看到的状态和落库的状态必须是同一个，
+    否则日后对着历史曲线复盘时，会发现某天页面显示"即将解除"、库里记的却是
+    "监管中"——那时候已经分不清是当时口径不同还是有人改过阈值了。
+    这是本仓库"同一个市场事实只能有一套判定函数"的直接应用。
+
+    幂等：(date, security_code) 唯一，同一天重复跑覆盖而不是追加。daily_update
+    一天跑 2~3 次，盘中那次写的是当时状态，盘后那次覆盖成终值。
+
+    失败不抛：监管快照缺一天，破局雷达那条时间线断一格并如实显示；让它把整个
+    daily_update 拖垮的代价大得多。
+    """
+    wl = get_regulatory_watchlist(db)
+
+    rows: list[dict] = []
+    for items, status in ((wl.monitoring, "MONITORING"),
+                          (wl.ending_soon, "ENDING_SOON"),
+                          (wl.recently_released, "RELEASED")):
+        for it in items:
+            rows.append(dict(
+                security_code=it.security_code, security_name=it.security_name,
+                status=status, reason_type=it.reason_type, direction=it.direction,
+                predict_start=it.predict_start, predict_end=it.predict_end,
+                days_remaining=it.days_remaining,
+                approach=None, target_rate=None, window=None, full_window=None,
+            ))
+    for it in wl.approaching:
+        rows.append(dict(
+            security_code=it.security_code, security_name=it.security_name,
+            status="APPROACHING", reason_type=it.rule_label, direction=it.direction,
+            predict_start=None, predict_end=None, days_remaining=None,
+            approach=it.approach, target_rate=it.target_rate,
+            window=it.window, full_window=it.full_window,
+        ))
+
+    # 同一只股票理论上只会落在一个桶里（active 与 released 互斥、approaching 已
+    # exclude 掉 active）。但"理论上"不等于"实际上"——真撞了就保留先到的那条并
+    # 计数报出来，绝不让 UniqueConstraint 在 commit 时把整个步骤炸掉。
+    seen: set[str] = set()
+    dupes = 0
+    uniq = []
+    for r in rows:
+        if r["security_code"] in seen:
+            dupes += 1
+            continue
+        seen.add(r["security_code"])
+        uniq.append(r)
+
+    existing = {
+        r.security_code: r
+        for r in db.query(RegulatoryStatusDaily)
+        .filter(RegulatoryStatusDaily.date == trade_date).all()
+    }
+    added = updated = 0
+    for r in uniq:
+        cur = existing.get(r["security_code"])
+        if cur is None:
+            db.add(RegulatoryStatusDaily(date=trade_date, **r))
+            added += 1
+        else:
+            for k, v in r.items():
+                setattr(cur, k, v)
+            updated += 1
+    # 当天已不在任何名单里的旧行要删掉——留着就等于说"它今天还在监管中"
+    stale = [c for c in existing if c not in seen]
+    if stale:
+        (db.query(RegulatoryStatusDaily)
+           .filter(RegulatoryStatusDaily.date == trade_date,
+                   RegulatoryStatusDaily.security_code.in_(stale))
+           .delete(synchronize_session=False))
+    db.commit()
+    return {"added": added, "updated": updated, "removed": len(stale),
+            "dupes": dupes, "total": len(uniq)}
