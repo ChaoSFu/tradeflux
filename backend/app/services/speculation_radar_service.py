@@ -43,6 +43,17 @@
 图上并标注出来，也不能悄悄删掉一批真实高板——后者会让高度曲线系统性偏低，而
 那正是这张图要回答的问题本身。
 
+## 梯队按 board_count 取，不按 is_limit_up
+
+有连板数就意味着那天涨停了，这是定义。而 `is_limit_up` 这个布尔字段**已知会漏记**
+——verify_board_history 实测有 5 例 `is_limit_up=False` 但两个数据源都确认是真涨停
+（成因大概率是 2026-09-02 之前补结算的 market_int 反向映射，SH 股被拼成 sz600xxx
+一条都取不到数）。按它过滤会把这些真高板整个丢掉，而这张图恰恰最怕漏掉高板。
+
+代价是「涨停总数」和「梯队总数」可能对不上：涨停但没算出连板数的股票（dump 回填
+行不写 board_count）计入前者、不计入后者。差值本身是有用的信息——它就是当天梯队
+数据的覆盖率，所以两个数都给出来，不去凑成一致。
+
 ## 口径（页面必须写明，否则会被当成全市场高度）
 
 两个选股 prompt 都写了「非ST」，所以这里的市场高度**不含 ST 股**。ST 是 5% 板，
@@ -70,7 +81,9 @@ class HeightPoint:
     is_breakout: bool           # 当日高度 > 上沿 → 首次突破
     near_top_count: int         # F_t 板数 >= H_t - 1 的只数
     multi_board_count: int      # M_t 3 板以上只数
-    limit_up_count: int         # 当日涨停总数（分母，看高度时要知道基数）
+    limit_up_count: int         # 当日涨停总数（is_limit_up 口径）
+    ladder_count: int           # 梯队覆盖到的只数（board_count>0 口径）
+                                # 与 limit_up_count 的差 = 当天梯队数据的覆盖缺口
     ladder: Dict[str, int] = field(default_factory=dict)   # {"1": 48, "2": 14, ...}
 
 
@@ -119,9 +132,14 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
 
     只读 StockDailySnapshot，零外部请求。board_count 实测可回溯到 2026-06-02。
     """
+    # 先按「有涨停 **或** 有连板数」取候选日期，再在下面筛掉没有连板数据的那些。
+    # 不能一步到位只查 board_count>0——那样"有涨停但没连板数据"的日子从没进过
+    # 候选集，后面也就无从统计"缺了几天"，页面会显示一条看似连续、实则中间缺段
+    # 的曲线，而看的人毫不知情。
     all_days = [r[0] for r in (
         db.query(StockDailySnapshot.date)
-        .filter(StockDailySnapshot.is_limit_up.is_(True))
+        .filter((StockDailySnapshot.board_count > 0)
+                | StockDailySnapshot.is_limit_up.is_(True))
         .distinct().order_by(StockDailySnapshot.date.desc()).limit(days + FRONTIER_WINDOW).all()
     )]
     if not all_days:
@@ -132,16 +150,18 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
         db.query(StockDailySnapshot.date, Stock.code,
                  StockDailySnapshot.board_count, StockDailySnapshot.is_limit_up)
         .join(Stock, Stock.id == StockDailySnapshot.stock_id)
-        .filter(StockDailySnapshot.date >= all_days[0],
-                StockDailySnapshot.is_limit_up.is_(True))
+        .filter(StockDailySnapshot.date >= all_days[0])
+        .filter((StockDailySnapshot.board_count > 0)
+                | StockDailySnapshot.is_limit_up.is_(True))
         .all()
     )
     by_date: Dict[date, Dict[str, int]] = {d: {} for d in all_days}
     lu_count: Dict[date, int] = {d: 0 for d in all_days}
-    for d, code, bc, _lu in rows:
+    for d, code, bc, lu in rows:
         if d not in by_date:
             continue
-        lu_count[d] += 1
+        if lu:
+            lu_count[d] += 1
         # **board_count 缺失就是不知道，不能按 1 板算**。dump 回填的历史行只写
         # K线原始字段（含涨跌停标志），不写连板数，那些行的 board_count 是 0。
         # 第一版写的是 `bc if bc and bc > 0 else 1`——把"不知道"当成了"1板"，
@@ -151,18 +171,31 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
         if bc and bc > 0:
             by_date[d][code] = bc
 
-    # 完全没有连板数据的交易日（只有涨跌停标志的回填行）整天剔除：它不是
-    # "那天最高0板"，是"那天我们不知道"。留着会把上沿基线拉到地板上
+    # 过滤前的起点先存下来：下面统计"缺了哪几天"必须从这里扫起，
+    # 用过滤后的 all_days[0] 会把缺失的日子全排除在查询范围外（写第一版时就是
+    # 这么错的，warnings 恒为空）
+    scan_from = all_days[0]
     usable = [d for d in all_days if by_date.get(d)]
-    dropped_days = len(all_days) - len(usable)
     all_days = usable
     if not all_days:
         return [], ["加载到的交易日都没有连板数据，无法计算市场高度"]
 
     by_date, warns = _drop_carried_forward(by_date, all_days)
-    if dropped_days:
-        warns.insert(0, f"{dropped_days} 个交易日没有任何连板数据（历史回填行不写 "
-                        f"board_count），整天不参与计算，也不作为上沿基线")
+
+    # 有涨停、但一条连板数都没有的交易日，在上面按 board_count>0 取 all_days 时
+    # 就已经不见了。**"少了多少天"这个事实必须留下来**——否则页面上看到的是一条
+    # 连续曲线，实际中间缺了一段，而看的人完全不知道。
+    lu_days = {r[0] for r in (
+        db.query(StockDailySnapshot.date)
+        .filter(StockDailySnapshot.date >= scan_from,
+                StockDailySnapshot.is_limit_up.is_(True))
+        .distinct().all()
+    )}
+    missing = sorted(lu_days - set(all_days))
+    if missing:
+        warns.insert(0, f"{len(missing)} 个交易日有涨停但没有任何连板数据"
+                        f"（历史回填行不写 board_count），不在曲线上："
+                        f"{missing[0]}~{missing[-1]}")
 
     out: List[HeightPoint] = []
     for i, d in enumerate(all_days):
@@ -189,6 +222,7 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
             near_top_count=sum(1 for v in counts.values() if height and v >= height - 1),
             multi_board_count=sum(1 for v in counts.values() if v >= 3),
             limit_up_count=lu_count.get(d, 0),
+            ladder_count=len(counts),
             ladder=ladder,
         ))
     # 前 FRONTIER_WINDOW 天只是用来给后面的日子当上沿基线，本身没有上沿，不展示

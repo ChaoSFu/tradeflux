@@ -21,6 +21,7 @@ class HeightPointOut(BaseModel):
     near_top_count: int
     multi_board_count: int
     limit_up_count: int
+    ladder_count: int
     ladder: Dict[str, int]
 
 

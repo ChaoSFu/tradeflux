@@ -128,4 +128,6 @@ class TestHeightFrontier:
         pts, warns = compute_height_series(db, days=10)
         assert [p.date for p in pts] == [str(D0 + timedelta(days=2))], \
             "前两天没有连板数据，整天不该出现在序列里"
-        assert any("没有任何连板数据" in w for w in warns)
+        # 缺了几天必须说出来：不然页面上是一条连续曲线，实际中间缺一段却无人知晓
+        assert any("有涨停但没有任何连板数据" in w for w in warns), \
+            f"缺失的天数要如实报出，实际 warnings: {warns}"
