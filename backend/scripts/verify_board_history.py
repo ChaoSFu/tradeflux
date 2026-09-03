@@ -25,8 +25,18 @@
 
 ## 三类分歧要分开，不能混成一个"污染率"
 
-  CONTAMINATED  重拉的收盘价与库里一致，但涨停判定不一致
-                → 库里那个 is_limit_up 是盘中写的，真污染
+  CONTAMINATED  重拉与**第二个源**都说库里错了
+                → 库里那个 is_limit_up 确实不对
+  SOURCE_CONFLICT 两个数据源自己就对不上
+                → 2026-09-03 首跑吃过这个亏：脚本报 603065 宿迁联盛 06-11
+                  "+8.04%，非涨停"，判定库里污染；直接问腾讯却是"收12.36 前收11.24
+                  = +9.96%"，涨停，跟库里一致。两个源对同一天同一只股票差了 1.9 个
+                  百分点，而涨停判定完全押在这个数上。
+                  fetch_klines_batch 把股票轮流分给腾讯/新浪两组，**分组取决于列表
+                  顺序**，所以记录集一变、取数源就变，同一天的结论会翻转——两次运行
+                  报出来的"污染"明细居然不一样，就是这么来的。
+                  单次重拉分不清"库里错"还是"这个源错"。有分歧就必须问第二个源，
+                  两个源自己打架时如实报冲突，不能算成库里的污染
   REPRICED      重拉的收盘价与库里差异明显
                 → 腾讯 K 线是 qfq 前复权，期间发生除权会把整段历史重新缩放，
                   绝对价对不上是必然的，不算污染。单独列出，人工确认
@@ -58,12 +68,28 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.database import SessionLocal
 from app.models.stock import Stock, StockDailySnapshot
 from app.services.eastmoney_fetcher import (
-    StockBasicInfo, fetch_klines_batch, market_int,
+    StockBasicInfo, fetch_klines_batch, market_int, get_limit_pct,
+    _fetch_kline_tencent,
 )
 
 # 收盘价差多少算"被重新缩放过"（除权），而不是"同一天的数对不上"。
 # 用相对差：低价股 0.01 元的取整差不该被判成除权。
 _REPRICE_TOL = 0.02      # 2%
+
+# 裁决用的第二意见缓存：同一只股票只问一次腾讯，别为它每条分歧都打一次网络
+_SECOND_CACHE: dict = {}
+
+
+def _second_opinion(code: str, market: int, is_st: bool, d: date):
+    """点名问腾讯要这一天的 bar，用于裁决批量重拉与库里的分歧。拿不到返回 None。"""
+    if code not in _SECOND_CACHE:
+        try:
+            bars = _fetch_kline_tencent(code, market, 120, is_st,
+                                        get_limit_pct(code, is_st), 15)
+        except Exception:  # noqa: BLE001
+            bars = []
+        _SECOND_CACHE[code] = {b.date: b for b in bars}
+    return _SECOND_CACHE[code].get(d)
 
 
 def main():
@@ -141,12 +167,29 @@ def main():
                                  f"{bc}板，库{db_close:.2f} vs 重拉{bar.close_price:.2f}"))
                 continue
             if bool(db_lu) != bool(bar.is_limit_up):
-                stat["CONTAMINATED"] += 1
-                verdicts.append((d, code, name, "CONTAMINATED",
-                                 f"{bc}板，库记涨停={bool(db_lu)}，"
-                                 f"重拉涨停={bar.is_limit_up} 收{bar.close_price:.2f} "
-                                 f"({bar.pct_change:+.2f}%)"
-                                 + ("，炸板" if bar.is_broken_board else "")))
+                # 有分歧就问第二个源来裁决，绝不凭一次重拉就判库里污染（见上面
+                # SOURCE_CONFLICT 的说明）。这里直接点名腾讯，不能走 fetch_kline
+                # 那条带兜底的链——裁决需要的是"某个**指定**源怎么说"，而不是
+                # "任意一个能用的源怎么说"，后者可能又抽到刚才那个有问题的源。
+                second = _second_opinion(code, market_int(_mkt, code), bool(_st), d)
+                if second is None:
+                    stat["SOURCE_CONFLICT"] += 1
+                    verdicts.append((d, code, name, "SOURCE_CONFLICT",
+                                     f"{bc}板，第二个源也拿不到该日bar，无法裁决"))
+                elif bool(second.is_limit_up) == bool(db_lu):
+                    stat["SOURCE_CONFLICT"] += 1
+                    verdicts.append((d, code, name, "SOURCE_CONFLICT",
+                                     f"{bc}板，库记涨停={bool(db_lu)}；"
+                                     f"批量源说{bar.is_limit_up}({bar.pct_change:+.2f}%)，"
+                                     f"腾讯说{second.is_limit_up}({second.pct_change:+.2f}%)"
+                                     f" → 两源打架，库里与腾讯一致"))
+                else:
+                    stat["CONTAMINATED"] += 1
+                    verdicts.append((d, code, name, "CONTAMINATED",
+                                     f"{bc}板，库记涨停={bool(db_lu)}，两源都说"
+                                     f"{second.is_limit_up} 收{second.close_price:.2f} "
+                                     f"({second.pct_change:+.2f}%)"
+                                     + ("，炸板" if second.is_broken_board else "")))
                 continue
             stat["OK"] += 1
 
@@ -183,7 +226,8 @@ def main():
         checkable = stat["OK"] + stat["CONTAMINATED"]
         print(f"\n对账结果（共 {total} 条）")
         print(f"  一致            {stat['OK']:>5}")
-        print(f"  污染(涨停判定不符) {stat['CONTAMINATED']:>5}")
+        print(f"  污染(两源都说库里错) {stat['CONTAMINATED']:>5}")
+        print(f"  两源打架(无法裁决)  {stat['SOURCE_CONFLICT']:>5}   ← 不算污染，见 docstring")
         print(f"  除权嫌疑(价被缩放) {stat['REPRICED']:>5}   ← 不计入污染率，需人工确认")
         print(f"  停牌日却有连板记录 {stat['SUSPENDED']:>5}   ← **假高度，必须修**")
         print(f"  当日K线未发布     {stat['PENDING']:>5}   ← 正常，不是问题")
