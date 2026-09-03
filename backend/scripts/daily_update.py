@@ -286,21 +286,43 @@ def _snapshots_to_klinebars(snaps: list, code: str = "", is_st: bool = False) ->
     close_price 为 None（老快照迁移前无此字段）时降级为 0.0，
     此时 MA60/MA30 计算结果为 0，阶段判定回退为 "normal"（可接受的保守策略）。
 
-    涨跌停标志：当 code 提供且相邻收盘价可用时，按收盘价 + 0.005 容差重新判定，
-    自动修正历史快照里旧逻辑（浮点取整漏判）落库的 is_limit_up/down；
-    否则降级用存储值。这样每次 DB 重建都会重算正确的涨停天数/连板等指标。
+    涨跌停标志：按收盘价 + 0.005 容差重新判定，自动修正历史快照里旧逻辑
+    （浮点取整漏判）落库的 is_limit_up/down；判不出来时才降级用存储值。
+
+    **前收必须从这一行自己的 close 和 pct_change 反推，不能取前一根 bar 的收盘价**
+    （2026-09-03 修）。快照只在股票进候选池那天才写，序列里有缺口是常态（实测覆盖率
+    94.3%），拿缺口另一侧的收盘价当前收，算出来的涨停价必然是错的，而这段重算还会
+    **覆盖掉本来正确的存储值**——它本是来修错的，却在缺口处制造新的错。
+
+    实测案例 603989 艾华集团：06-12、06-15 无快照行，于是 06-16（真实 +10.01%，
+    快照存的 is_limit_up=t 是对的）被重算成 False，连板链从 06-17 才起算，
+    board_count_60d 由 4 变成 3。后果是它被踢出收窄后的强势池——而东财天梯和腾讯
+    K 线都确认那天是涨停。
+
+    close 与 pct_change 来自同一行、同一个数据源，天然自洽，跟前后有没有缺口无关：
+        prev_close = close / (1 + pct/100)
+    验算：34.3 / 1.1001 = 31.179 → 涨停价 round(31.179×1.10, 2) = 34.30
+          → 34.3 >= 34.295 → True ✓
+
+    影响面不止强势池：board_count_60d 同时喂着涨停板块雷达的核心召回、破局雷达的
+    高度曲线，limit_up_days_60d/20d/10d 也按同一个窗口数。任何快照有缺口的股票
+    都会被系统性低估。
     """
     snaps = sorted(snaps, key=lambda s: s.date)
     lp = get_limit_pct(code, is_st) if code else None
     bars: List[KLineBar] = []
-    prev_close = 0.0
     for s in snaps:
         close = s.close_price or 0.0
         is_lu, is_ld = bool(s.is_limit_up), bool(s.is_limit_down)
-        if lp is not None and close > 0 and prev_close > 0:
+        # 这一行自己的前收（见 docstring）。pct 缺失时给 0.0 —— 后面的
+        # `own_prev > 0` 会挡住，保留存储值而不是拿一个假前收去翻转它
+        own_prev = (close / (1 + s.pct_change / 100.0)
+                    if close > 0 and s.pct_change is not None
+                    and abs(1 + s.pct_change / 100.0) > 1e-9 else 0.0)
+        if lp is not None and close > 0 and own_prev > 0:
             actual = lp + 0.1
-            lu_price = round(prev_close * (1 + actual / 100), 2)
-            ld_price = round(prev_close * (1 - actual / 100), 2)
+            lu_price = round(own_prev * (1 + actual / 100), 2)
+            ld_price = round(own_prev * (1 - actual / 100), 2)
             is_lu = close >= lu_price - 0.005
             is_ld = close <= ld_price + 0.005
         # OHLC：2026-08-27 起快照会落库真实值；NULL 是加列之前写的老行，退回 0.0。
@@ -310,10 +332,12 @@ def _snapshots_to_klinebars(snaps: list, code: str = "", is_st: bool = False) ->
         is_bb, is_owu, is_owd = (bool(s.is_broken_board),
                                  bool(s.is_one_word_limit_up),
                                  bool(s.is_one_word_limit_down))
-        if has_ohlc and lp is not None and close > 0 and prev_close > 0:
+        # 炸板/一字板用同一个自洽前收，不能再回头用前一根 bar 的收盘价——
+        # 缺口处那个值是错的，涨停判定已经因它翻过一次
+        if has_ohlc and lp is not None and close > 0 and own_prev > 0:
             actual = lp + 0.1
-            lu_price = round(prev_close * (1 + actual / 100), 2)
-            ld_price = round(prev_close * (1 - actual / 100), 2)
+            lu_price = round(own_prev * (1 + actual / 100), 2)
+            ld_price = round(own_prev * (1 - actual / 100), 2)
             is_bb = (not is_lu) and h >= lu_price - 0.005
             is_owu = is_lu and lo >= lu_price - 0.005
             is_owd = is_ld and h <= ld_price + 0.005
@@ -331,7 +355,6 @@ def _snapshots_to_klinebars(snaps: list, code: str = "", is_st: bool = False) ->
             is_one_word_limit_up=is_owu,
             is_one_word_limit_down=is_owd,
         ))
-        prev_close = close
     return bars
 
 
