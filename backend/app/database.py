@@ -51,6 +51,11 @@ def _apply_schema_patches():
         "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS float_market_cap FLOAT",
         "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS amplitude FLOAT",
         # StockDailySnapshot：OHLC（2026-08-27，此前只存 close_price，炸板/一字板重算不了）
+        # 成交量/成交额/量的来源口径（2026-09-03）。来源必须一起存：dump 未复权、
+        # 腾讯 qfq，复权会同时调整价和量，不记来源就看不出一段序列里混了两种口径
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS volume DOUBLE PRECISION",
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS amount DOUBLE PRECISION",
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS volume_source VARCHAR(10)",
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS open_price FLOAT",
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS high_price FLOAT",
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS low_price FLOAT",

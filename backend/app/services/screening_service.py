@@ -99,6 +99,19 @@ class StockWindowStats:
     consecutive_declines: int  # 从今日起连续下跌天数
     phase: str                 # "broken"（破位）| "weakening"（走弱）| "normal"
 
+    # ── 2026-09-03 新增（高标龙头生命周期用）─────────────────────────────────
+    # 带默认值的字段必须排在无默认字段之后，否则 dataclass 直接 TypeError。
+    # 短周期均线：0.0 = 窗口不足，不是"均线是0元"。下游一律 `if maN > 0` 判断，
+    # 跟既有的 ma30/ma60 同一条规矩。
+    ma5: float = 0.0
+    ma10: float = 0.0
+    ma20: float = 0.0
+    # 成交量（股）/ 成交额（元）/ 量的来源口径。None = 该源没给，不是 0。
+    # 来源要一路带到快照：dump 未复权、腾讯 qfq，复权会同时调整价和量。
+    today_volume: Optional[float] = None
+    today_amount: Optional[float] = None
+    today_volume_source: Optional[str] = None
+
 
 def compute_window_stats(
     code: str,
@@ -178,6 +191,12 @@ def compute_window_stats(
     recent_30 = bars[-30:] if n >= 30 else bars
     ma60 = sum(b.close_price for b in recent_60) / len(recent_60) if recent_60 else 0.0
     ma30 = sum(b.close_price for b in recent_30) / len(recent_30) if recent_30 else 0.0
+    # 短周期均线（2026-09-03 补，高标龙头生命周期要用）。跟 ma30/ma60 同一份 bars，
+    # **窗口不足就给 0.0 而不是"有多少算多少"**——跟上面两条保持一致的口径。
+    # 0.0 在下游一律当"没有"处理（`if ma5 > 0` 是既有写法），不会被当成 0 元均线。
+    ma5 = sum(b.close_price for b in bars[-5:]) / 5 if len(bars) >= 5 else 0.0
+    ma10 = sum(b.close_price for b in bars[-10:]) / 10 if len(bars) >= 10 else 0.0
+    ma20 = sum(b.close_price for b in bars[-20:]) / 20 if len(bars) >= 20 else 0.0
 
     # 从今日起连续下跌天数（向历史倒推，遇到非负涨幅即停止）
     consecutive_declines = 0
@@ -279,6 +298,9 @@ def compute_window_stats(
         today_close_price=today.close_price,
         today_pct_change=today.pct_change,
         today_turnover=today.turnover_rate,
+        today_volume=today.volume,
+        today_amount=today.amount,
+        today_volume_source=today.volume_source,
         today_is_limit_up=today.is_limit_up,
         today_is_limit_down=today.is_limit_down,
         today_is_broken_board=today.is_broken_board,
@@ -300,6 +322,7 @@ def compute_window_stats(
         is_new_stock=is_new,
         ma60=round(ma60, 3),
         ma30=round(ma30, 3),
+        ma5=round(ma5, 3), ma10=round(ma10, 3), ma20=round(ma20, 3),
         consecutive_declines=consecutive_declines,
         phase=phase,
     )

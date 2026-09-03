@@ -550,6 +550,18 @@ def _upsert_snapshot(
         snap.turnover_rate = None
     if turnover_fresh:
         snap.turnover_rate = stats.today_turnover
+    # 成交量/成交额跟 close_price **同一个新鲜度判定**，不另起一套：量和价来自
+    # 同一根 bar，价不可信时量也不可信。上面那段"盘中价就地转正成收盘价"的事故
+    # 就是因为价和其它字段用了不同的新鲜度条件，这里不重蹈。
+    if close_pct_fresh and stats.today_volume is not None:
+        snap.volume = stats.today_volume
+        snap.amount = stats.today_amount
+        snap.volume_source = stats.today_volume_source
+    elif settled and not snap.is_settled and snap.volume is not None:
+        # 跟 close_price 一起清：留着盘中的半日成交量当全天量，比缺失更有害
+        snap.volume = None
+        snap.amount = None
+        snap.volume_source = None
     # 涨跌停标志：选股API给了权威值就用权威值（跟K线新不新鲜无关，它是独立来源）；
     # 没有权威值时才用K线反推，而K线反推的前提是这根bar确实是今天的。
     if is_limit_up is not None:
@@ -796,6 +808,9 @@ def _backfill_history_from_dump(db, target_date: date, fuyao_key, log,
                 high_price=(round(bar.high_price, 4) if bar.high_price else None),
                 low_price=(round(bar.low_price, 4) if bar.low_price else None),
                 turnover_rate=None,          # dump 不提供换手率，None＝不知道，不写0
+                # 成交量/成交额：dump 的 parquet 本来就有，2026-09-03 才接住。
+                # 来源标记必须一起写——dump 未复权、腾讯 qfq，复权会同时调整价和量
+                volume=bar.volume, amount=bar.amount, volume_source=bar.volume_source,
                 is_limit_up=bar.is_limit_up,
                 is_limit_down=bar.is_limit_down,
                 is_broken_board=bar.is_broken_board,
@@ -1895,6 +1910,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                         # None＝该数据源没有换手率，落 NULL 而不是假的0.0
                         turnover_rate=(round(bar.turnover_rate, 4)
                                        if bar.turnover_rate is not None else None),
+                        volume=bar.volume, amount=bar.amount,
+                        volume_source=bar.volume_source,
                         is_limit_up=bar.is_limit_up,
                         is_limit_down=bar.is_limit_down,
                         is_broken_board=bar.is_broken_board,

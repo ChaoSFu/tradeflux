@@ -248,6 +248,20 @@ class KLineBar:
     is_one_word_limit_up: bool = False    # 一字板涨停（全天最低价未跌破涨停价）
     is_one_word_limit_down: bool = False  # 一字板跌停（全天最高价未涨破跌停价）
 
+    # 成交量（股）/ 成交额（元）。2026-09-03 接入——**数据一直都在，只是没接住**：
+    # fuyao dump 的 parquet 本来就有 volume/turnover 两列，load_bars 只是 read_table
+    # 时没选；腾讯 K 线每行的 row[5] 同样被解析器直接丢掉。零新增请求。
+    #
+    # **两个源的量不可混入同一序列**：dump 是未复权，腾讯是 qfq 前复权，而复权会
+    # 同时调整价和量。这跟收盘价的两口径问题是同一件事，用同样的纪律——
+    # volume_source 记下这根 bar 的量来自哪条路，下游要比较时先看口径。
+    #
+    # None 表示"这个源没给"，不是 0。turnover_rate 那一版就是用 0.0 顶替"不知道"，
+    # 结果全市场换手率长期恒为 0、情绪分里的因子事实上死掉很久却没人发现。
+    volume: Optional[float] = None        # 成交量（股）
+    amount: Optional[float] = None        # 成交额（元）
+    volume_source: Optional[str] = None   # "dump"(未复权) | "tencent"(qfq) | None
+
 
 def _should_include_stock(code: str, market: int) -> bool:
     """判断是否在抓取范围内（主板 + 科创板 + 创业板，排除北交所）"""
@@ -359,6 +373,8 @@ def build_kline_bar(
     *, dt: date, open_p: float, close_p: float, high_p: float, low_p: float,
     pct: float, turnover: Optional[float], is_st: bool = False, limit_pct: float = 9.90,
     prev_close: float | None = None,
+    volume: Optional[float] = None, amount: Optional[float] = None,
+    volume_source: Optional[str] = None,
 ) -> KLineBar:
     """
     由一组 OHLC + 涨跌幅 + 换手率构造一根 KLineBar，含涨跌停/炸板/一字板判定。
@@ -419,6 +435,7 @@ def build_kline_bar(
         is_broken_board=is_broken,
         is_one_word_limit_up=is_one_word_up,
         is_one_word_limit_down=is_one_word_down,
+        volume=volume, amount=amount, volume_source=volume_source,
     )
 
 
@@ -797,6 +814,16 @@ def _parse_tencent_klines(
             pct = (close_p - prev_close) / prev_close * 100 if prev_close > 0 else 0.0
             pct = round(pct, 2)
 
+        # 成交量：腾讯 K 线每行第 6 个字段，单位是**手**，×100 换成股。
+        # 单位这件事在本仓库咬过人：StockQuote 的 volume 曾经混了"手"和"股"两种
+        # 口径（腾讯手/新浪股），导致新浪来源的候选 VWAP 系统性缩小 100 倍。
+        # 所以这里跟那个 dataclass 定的规矩一致：**KLineBar.volume 永远是股**。
+        # 腾讯不给成交额，amount 保持 None——不拿 volume×close 估算，那是编数据。
+        try:
+            _vol = float(row[5]) * 100 if len(row) > 5 and row[5] not in (None, "") else None
+        except (ValueError, TypeError):
+            _vol = None
+
         # prev_close 显式传 0.0（不是 None）：第一根没有前置bar，pct 是我们自己填的
         # 0.0 而不是真实涨跌幅，交给 build_kline_bar 反推会得出 prev_close=close 的
         # 假前收。传 0.0 表示"确实拿不到前收"，走保守的百分比阈值分支，跟改造前
@@ -805,6 +832,10 @@ def _parse_tencent_klines(
             dt=dt, open_p=open_p, close_p=close_p, high_p=high_p, low_p=low_p,
             pct=pct, turnover=None, is_st=is_st, limit_pct=limit_pct,
             prev_close=prev_close,
+            # 这条路是 qfq 前复权，量跟价一起被调整过——打上来源标记，
+            # 别跟 dump（未复权）的量放进同一个序列比较
+            volume=_vol, amount=None,
+            volume_source="tencent" if _vol is not None else None,
         ))
     return bars
 
@@ -896,7 +927,16 @@ def _parse_sina_klines(rows: list[dict], is_st: bool = False, limit_pct: float =
         this_prev_close = 0.0 if i == 0 else prev_close
         pct = round((close_p - this_prev_close) / this_prev_close * 100, 2) if this_prev_close > 0 else 0.0
 
+        # 新浪的 volume 单位是**股**，不像腾讯那样要 ×100。两个源单位不同正是
+        # 本仓库那次 VWAP 缩小 100 倍事故的成因，这里按 KLineBar 的规矩统一成股。
+        try:
+            _vol = float(row["volume"]) if row.get("volume") not in (None, "") else None
+        except (KeyError, ValueError, TypeError):
+            _vol = None
+
         bars.append(build_kline_bar(
+            volume=_vol, amount=None,
+            volume_source="sina" if _vol is not None else None,
             dt=dt, open_p=open_p, close_p=close_p, high_p=high_p, low_p=low_p,
             pct=pct, turnover=None, is_st=is_st, limit_pct=limit_pct,
             prev_close=this_prev_close,   # 0.0 = 确实拿不到前收，不要反推

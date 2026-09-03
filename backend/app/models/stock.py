@@ -66,6 +66,18 @@ class StockDailySnapshot(Base):
     close_price = Column(Float, nullable=True)     # 当日收盘价（用于历史 KLine 重建，计算 MA60/MA30）
     pct_change = Column(Float, nullable=True)      # 当日涨跌幅 %
     turnover_rate = Column(Float, nullable=True)   # 换手率 %
+    # 成交量（股）/ 成交额（元），2026-09-03 接入。数据一直在 fuyao dump 的 parquet
+    # 里（volume/turnover 两列），只是 load_bars 此前没读。零新增请求。
+    #
+    # volume_source 必须一起存：dump 未复权、腾讯是 qfq 前复权，而**复权会同时调整
+    # 价和量**。不记来源的话，一段序列里混了两种口径也看不出来，量比、量能衰减
+    # 这类比较会静默出错。跟收盘价的两口径问题同一条纪律。
+    #
+    # None = 该来源没给这个数，不是 0。turnover_rate 那一版就是用 0.0 顶替"不知道"，
+    # 结果全市场换手率长期恒为 0，情绪分里的因子事实上死掉很久却没人发现。
+    volume = Column(Float, nullable=True)          # 成交量（股）
+    amount = Column(Float, nullable=True)          # 成交额（元）
+    volume_source = Column(String(10), nullable=True)  # "dump" | "tencent" | "sina"
 
     # OHLC（2026-08-27新增）。此前快照只存 close_price，从快照重建 KLineBar 时
     # open/high/low 一律填 0.0 —— 而**炸板判定要 high**（盘中最高价是否触及涨停价）、

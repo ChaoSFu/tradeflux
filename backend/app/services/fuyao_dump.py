@@ -421,22 +421,47 @@ def load_bars(path: Path, wanted: Dict[str, bool]) -> Dict[str, List[KLineBar]]:
 
     走 build_kline_bar 是刻意的：涨停/炸板/一字板的判定全仓库只能有一套，
     不能因为"这根bar是从dump来的"得出跟腾讯那条路不同的涨停结论。
+
+    成交量/成交额（2026-09-03 接入）：**parquet 里本来就有这两列**，此前
+    read_table 只选了 6 列把它们漏掉了。docs/DATA_SOURCES.md 早就记着完整列表
+    （thscode/currency/interval/adjusted/date_ms/OHLC/volume/turnover），同一份
+    文档里还写着一句自己的教训——"后来为了补字段差点去接一个新接口，dump 原始
+    响应才发现现成的就够"。所以这次是零新增请求。
+
+    `turnover` 是**成交额**不是换手率（同一份文档明确写了 dump「没有换手率」，
+    别被字面意思带偏）。dump 是未复权，量价都未经调整，跟腾讯那条 qfq 路的量
+    不可混用，用 volume_source 区分。
+
+    两列都做**存在性容错**：上游哪天不给了就静默退回只读 6 列，而不是让整个
+    dump 解析失败——dump 是加速手段不是依赖，这条纪律不能因为多接两列就破掉。
     """
     import pyarrow.parquet as pq
 
-    t = pq.read_table(path, columns=["thscode", "date_ms", "open_price",
-                                     "high_price", "low_price", "close_price"])
+    _BASE = ["thscode", "date_ms", "open_price", "high_price", "low_price", "close_price"]
+    try:
+        _have = set(pq.read_schema(path).names)
+    except Exception:  # noqa: BLE001
+        _have = set()
+    _vcol = "volume" if "volume" in _have else None
+    _acol = "turnover" if "turnover" in _have else None
+    t = pq.read_table(path, columns=_BASE + [c for c in (_vcol, _acol) if c])
+
+    def _col(name):
+        return t.column(name).to_pylist() if name else [None] * t.num_rows
+
     rows: Dict[str, List[tuple]] = {}
-    for ths, ms, o, h, lo, cl in zip(t.column("thscode").to_pylist(),
-                                     t.column("date_ms").to_pylist(),
-                                     t.column("open_price").to_pylist(),
-                                     t.column("high_price").to_pylist(),
-                                     t.column("low_price").to_pylist(),
-                                     t.column("close_price").to_pylist()):
+    for ths, ms, o, h, lo, cl, vol, amt in zip(
+            t.column("thscode").to_pylist(),
+            t.column("date_ms").to_pylist(),
+            t.column("open_price").to_pylist(),
+            t.column("high_price").to_pylist(),
+            t.column("low_price").to_pylist(),
+            t.column("close_price").to_pylist(),
+            _col(_vcol), _col(_acol)):
         code = ths.split(".")[0]
         if code not in wanted or cl is None or cl <= 0:
             continue
-        rows.setdefault(code, []).append((_ms_to_date(ms), o, h, lo, cl))
+        rows.setdefault(code, []).append((_ms_to_date(ms), o, h, lo, cl, vol, amt))
 
     out: Dict[str, List[KLineBar]] = {}
     for code, raw in rows.items():
@@ -445,7 +470,7 @@ def load_bars(path: Path, wanted: Dict[str, bool]) -> Dict[str, List[KLineBar]]:
         limit_pct = get_limit_pct(code, is_st)
         bars: List[KLineBar] = []
         for i in range(1, len(raw)):          # 从第2根起，第1根没有前收
-            d, o, h, lo, cl = raw[i]
+            d, o, h, lo, cl, vol, amt = raw[i]
             prev_close = raw[i - 1][4]
             if not prev_close or prev_close <= 0:
                 continue
@@ -454,6 +479,8 @@ def load_bars(path: Path, wanted: Dict[str, bool]) -> Dict[str, List[KLineBar]]:
                 pct=(cl / prev_close - 1) * 100,
                 turnover=None,                # dump 不提供换手率，见模块 docstring
                 is_st=is_st, limit_pct=limit_pct, prev_close=prev_close,
+                volume=vol, amount=amt,
+                volume_source="dump" if vol is not None else None,
             ))
         if bars:
             out[code] = bars
