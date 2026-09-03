@@ -22,22 +22,36 @@ verify_board_history.py 是**自指的**：它只对库里已经标记 board_cou
 
 ## 三类差异分开报，不揉成一个准确率
 
-  MISS      东财有、我们没有        → **漏记**，最危险，会低估市场高度
-  EXTRA     我们有、东财没有        → 多记
-  MISMATCH  都有但板数不同          → 连板链算错
+  MISS_STOCK   东财有，而我们**库里根本没有这只股票** → 股票池覆盖缺失
+  MISS_RECORD  股票在库里，但那天没有连板记录          → 当日漏记
+  EXTRA        我们有、东财没有                        → 多记
+  MISMATCH     都有但板数不同                          → 连板链算错
+
+MISS 拆成两种是因为成因和修法完全不同：前者要去补股票池（北交所 920305 连走
+5 板我们一条记录都没有），后者是当日采集或连板计算的问题。混在一起报，看到
+一个"漏记 N 条"根本不知道该去修哪儿。
+
+## 两个必须排除的伪影
+
+  · **尚未收盘的交易日整天跳过**。东财天梯当天盘中还没发布，会把我们所有记录
+    都算成 EXTRA（2026-09-03 首跑就冒出 9 条假 EXTRA）。收没收盘用 bar_is_settled
+    判，跟主链路同一套函数。
+  · **ST 股要从我们这边剔掉**。东财 filter 里写死 IS_ST="0"，我们不剔就会把
+    *ST威领 这类记成 EXTRA——那是口径差异，不是数据错误。
 """
 import argparse
 import os
 import sys
 import time
 from collections import Counter, defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import SessionLocal
 from app.models.stock import Stock, StockDailySnapshot
 from app.services.limit_up_detail_fetcher import fetch_limit_up_ladder
+from app.services.eastmoney_fetcher import bar_is_settled, probe_market_now, SH_TZ
 
 MIN_BOARD = 2      # 东财只给 2 板及以上，比这个低没得比
 
@@ -55,18 +69,32 @@ def main():
         since = date.today() - timedelta(days=args.days)
         rows = (
             db.query(StockDailySnapshot.date, Stock.code, Stock.name,
-                     StockDailySnapshot.board_count)
+                     StockDailySnapshot.board_count, Stock.is_st)
             .join(Stock, Stock.id == StockDailySnapshot.stock_id)
             .filter(StockDailySnapshot.date >= since,
                     StockDailySnapshot.board_count >= MIN_BOARD)
             .all()
         )
+        # 我们库里有哪些股票——用来区分"池子里没这只票"和"有票但那天没记"
+        known = {c for (c,) in db.query(Stock.code).all()}
         ours: dict = defaultdict(dict)
         names: dict = {}
-        for d, code, name, bc in rows:
+        n_st = 0
+        for d, code, name, bc, is_st in rows:
+            # 东财 filter 写死 IS_ST="0"，我们不剔 ST 就会凭空多出一批假 EXTRA
+            if is_st or "ST" in (name or "").upper():
+                n_st += 1
+                continue
             ours[d][code] = bc
             names[code] = name
-        days = sorted(ours)
+        if n_st:
+            print(f"（剔除 {n_st} 条 ST 记录以对齐东财 IS_ST=\"0\" 口径）")
+        # 未收盘的当天整天跳过：东财天梯盘中还没发布，会把我们所有记录算成 EXTRA
+        market_now = probe_market_now() or datetime.now(SH_TZ)
+        days = [d for d in sorted(ours) if bar_is_settled(d, market_now)]
+        skipped = [d for d in sorted(ours) if not bar_is_settled(d, market_now)]
+        if skipped:
+            print(f"跳过尚未收盘的交易日 {skipped}（东财天梯当天未发布，比了必然全是假差异）")
         if not days:
             print("库里没有可比的连板记录")
             return
@@ -84,15 +112,21 @@ def main():
                 continue
             mine = ours[d]
             miss = {c: n for c, n in em.items() if c not in mine}
+            miss_stock = {c: n for c, n in miss.items() if c not in known}
+            miss_record = {c: n for c, n in miss.items() if c in known}
             extra = {c: n for c, n in mine.items() if c not in em}
             mism = {c: (mine[c], em[c]) for c in set(mine) & set(em) if mine[c] != em[c]}
-            stat["MISS"] += len(miss); stat["EXTRA"] += len(extra)
+            stat["MISS_STOCK"] += len(miss_stock)
+            stat["MISS_RECORD"] += len(miss_record)
+            stat["EXTRA"] += len(extra)
             stat["MISMATCH"] += len(mism); stat["OK"] += len(set(mine) & set(em)) - len(mism)
             em_h = max(em.values(), default=0)
             my_h = max(mine.values(), default=0)
             per_day.append((d, my_h, em_h, len(mine), len(em), len(miss), len(extra), len(mism)))
-            for c, n in sorted(miss.items()):
-                details.append((d, c, names.get(c, em and "?"), "MISS", f"东财 {n}板，我们没有"))
+            for c, n in sorted(miss_stock.items()):
+                details.append((d, c, "—", "MISS_STOCK", f"东财 {n}板，**库里没有这只股票**"))
+            for c, n in sorted(miss_record.items()):
+                details.append((d, c, names.get(c), "MISS_RECORD", f"东财 {n}板，我们当日无记录"))
             for c, n in sorted(extra.items()):
                 details.append((d, c, names.get(c), "EXTRA", f"我们 {n}板，东财没有"))
             for c, (a, b) in sorted(mism.items()):
@@ -110,10 +144,11 @@ def main():
         bad_h = sum(1 for _d, mh, eh, *_r in per_day if mh != eh)
         total = sum(stat.values())
         print(f"\n对账结果（{len(per_day)} 个交易日，{total} 个股票日）")
-        print(f"  一致        {stat['OK']:>5}")
-        print(f"  漏记 MISS   {stat['MISS']:>5}   ← 东财有我们没有，**会低估市场高度**")
-        print(f"  多记 EXTRA  {stat['EXTRA']:>5}")
-        print(f"  板数不符    {stat['MISMATCH']:>5}")
+        print(f"  一致              {stat['OK']:>5}")
+        print(f"  股票池缺失 MISS_STOCK  {stat['MISS_STOCK']:>5}   ← 库里没这只票，要补池子")
+        print(f"  当日漏记 MISS_RECORD   {stat['MISS_RECORD']:>5}   ← 有票但那天没记")
+        print(f"  多记 EXTRA        {stat['EXTRA']:>5}")
+        print(f"  板数不符 MISMATCH  {stat['MISMATCH']:>5}   ← 连板链算错")
         print(f"\n  最高板不符的交易日：{bad_h}/{len(per_day)}")
         if unknown_days:
             print(f"  东财未返回（不知道，不计入分母）：{len(unknown_days)} 天 {unknown_days}")
