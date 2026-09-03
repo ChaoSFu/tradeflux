@@ -96,3 +96,36 @@ class TestHeightFrontier:
     def test_没有数据时不假装有(self, db):
         pts, warns = compute_height_series(db, days=10)
         assert pts == [] and warns
+
+    def test_上一日无记录时保留而不是剔除(self, db):
+        """
+        生产首测 19 条警告里有 12 条是这种：今天 2 板，昨天查不到涨停记录。
+        那是「我们没有昨天那条记录」（不在候选池 / is_limit_up 漏记），是"不知道"
+        不是"错"。剔除等于静默删掉真实高板，会让高度曲线系统性偏低——而那正是
+        这张图要回答的问题本身。
+        """
+        _seed(db, {0: {"600009": 1}, 1: {"600001": 3, "600009": 2}})
+        pts, warns = compute_height_series(db, days=10)
+        assert pts[-1].height == 3, "上一日没记录不能成为剔除理由"
+        joined = " ".join(warns)
+        assert "600001" in joined and "保留" in joined, "保留了也要说出来，不能默默放过"
+
+    def test_连板数缺失的整天不参与计算也不当上沿基线(self, db):
+        """
+        dump 回填的历史行只写涨跌停标志、不写 board_count。第一版把缺失按 1 板算，
+        于是那些天全成了"最高1板"，早期上沿被拉到地板上，06-03/04/05/08 连续四天
+        被标成"突破"。缺失就是不知道，不能拿一个数字顶替。
+        """
+        ids = {}
+        for off, (code, bc) in enumerate([("600001", 0), ("600001", 0), ("600002", 2)]):
+            if code not in ids:
+                st = Stock(code=code, name=f"股{code}", market="SH")
+                db.add(st); db.flush(); ids[code] = st.id
+            db.add(StockDailySnapshot(
+                stock_id=ids[code], date=D0 + timedelta(days=off),
+                close_price=10.0, pct_change=10.0, is_limit_up=True, board_count=bc))
+        db.flush()
+        pts, warns = compute_height_series(db, days=10)
+        assert [p.date for p in pts] == [str(D0 + timedelta(days=2))], \
+            "前两天没有连板数据，整天不该出现在序列里"
+        assert any("没有任何连板数据" in w for w in warns)

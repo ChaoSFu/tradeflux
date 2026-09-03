@@ -29,11 +29,19 @@
     真连板每天恰好 +1。今天 N 板，上一个交易日必然是 N-1 板。
 
 爱丽家居 07-31 是 9 板、08-03 还是 9 板——同一个数字连续两天，真连板不可能这样。
-不满足这条的记录不参与聚合，并在 warnings 里如实报出来，而不是悄悄丢掉。
+但这条不变量**只能用来抓"同一个数字连续两天"这一种形态**。生产首测打出 19 条
+警告，逐条看下来它把三种完全不同的情况揉成了一种：
 
-允许的两种情形：
-  · bc == 上一交易日 bc + 1  —— 连板延续
-  · bc == 1                  —— 新首板（前面断了或第一次涨停）
+  · 同一数字连续两天（000811 2板←2板、603580 3板←3板）→ 真·陈旧值顺延，剔除
+  · 上一日为 0（12/19 条）→ **我们没有昨天那条记录**。可能是那天它不在候选池，
+    也可能是 is_limit_up 漏记（verify_board_history 实测有 5 例）。这是"不知道"
+    不是"错"，剔除等于静默删掉真实的高板——07-17 002677 3板就这么被误删了，
+    而 verify 脚本恰恰说 07-17 库里偏低漏记，我把漏记做得更严重了
+  · 数字下降（002354 2板←3板）→ 另一类异常，成因不明，先如实报出来不动它
+
+所以只对第一种下手，另外两种记进 notes 但**保留数据**。宁可让一条可疑记录留在
+图上并标注出来，也不能悄悄删掉一批真实高板——后者会让高度曲线系统性偏低，而
+那正是这张图要回答的问题本身。
 
 ## 口径（页面必须写明，否则会被当成全市场高度）
 
@@ -70,32 +78,36 @@ def _drop_carried_forward(
     by_date: Dict[date, Dict[str, int]], days: List[date],
 ) -> tuple[Dict[date, Dict[str, int]], List[str]]:
     """
-    剔除"连板数没有按 +1 递增"的记录——停牌日顺延陈旧值的指纹。见模块 docstring。
-
-    返回 (清洗后的 by_date, 警告列表)。**被剔除的必须报出来**，不能悄悄丢：
-    分不清"这天真没有高板"和"这天的高板被我们剔掉了"，等于没有监控。
+    只剔除"连板数与上一交易日完全相同"的记录——停牌顺延陈旧值的确切指纹。
+    其余异常如实记录但保留数据。理由见模块 docstring。
     """
     warns: List[str] = []
     prev_day: Optional[date] = None
     cleaned: Dict[date, Dict[str, int]] = {}
     for d in days:
         cur = by_date.get(d, {})
-        keep: Dict[str, int] = {}
         if prev_day is None:
-            # 序列第一天没有上一交易日，这条不变量根本无从应用。**边界处"不知道"
-            # 不等于"有问题"**——不能因为缺上下文就把它当成陈旧值指控掉。
-            # 这天本来也只用作后面日子的上沿基线，不会单独展示。
+            # 序列第一天没有上一交易日，这条不变量无从应用。边界处"不知道"不等于
+            # "有问题"，不能因为缺上下文就指控它
             cleaned[d] = dict(cur)
             prev_day = d
             continue
         prev = by_date.get(prev_day, {})
+        keep: Dict[str, int] = {}
         for code, bc in cur.items():
-            if bc <= 1 or prev.get(code, 0) + 1 == bc:
-                keep[code] = bc
-            else:
-                warns.append(
-                    f"{d} {code} {bc}板：上一交易日为 {prev.get(code, 0)}板，"
-                    f"连板数未按+1递增（疑似停牌顺延陈旧值），已剔除")
+            pv = prev.get(code)
+            if bc >= 2 and pv is not None and pv == bc:
+                # 唯一确定的错：真连板每天恰好+1，同一个数字连续两天不可能
+                warns.append(f"{d} {code} {bc}板：与上一交易日同为 {pv} 板，"
+                             f"连板数未递增（停牌顺延陈旧值），已剔除")
+                continue
+            keep[code] = bc
+            if bc >= 2 and pv is None:
+                warns.append(f"{d} {code} {bc}板：上一交易日无涨停记录，"
+                             f"无法验证连板链（可能漏记或当日不在候选池）——保留")
+            elif bc >= 2 and pv is not None and pv + 1 != bc:
+                warns.append(f"{d} {code} {bc}板：上一交易日为 {pv} 板，"
+                             f"未按+1递增（成因不明）——保留")
         cleaned[d] = keep
         prev_day = d
     return cleaned, warns
@@ -130,10 +142,27 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
         if d not in by_date:
             continue
         lu_count[d] += 1
-        # board_count 缺失（历史回填行不写这个字段）按首板计，不猜
-        by_date[d][code] = bc if bc and bc > 0 else 1
+        # **board_count 缺失就是不知道，不能按 1 板算**。dump 回填的历史行只写
+        # K线原始字段（含涨跌停标志），不写连板数，那些行的 board_count 是 0。
+        # 第一版写的是 `bc if bc and bc > 0 else 1`——把"不知道"当成了"1板"，
+        # 于是 06-02 之前那些只有涨跌停标志的日子全被算成"最高1板"，早期上沿
+        # 恒为 1~2，06-03/04/05/08 连续四天被标成"突破"。
+        # 这是本仓库反复踩的"用一个数字表达不知道"，这次犯在自己手上。
+        if bc and bc > 0:
+            by_date[d][code] = bc
+
+    # 完全没有连板数据的交易日（只有涨跌停标志的回填行）整天剔除：它不是
+    # "那天最高0板"，是"那天我们不知道"。留着会把上沿基线拉到地板上
+    usable = [d for d in all_days if by_date.get(d)]
+    dropped_days = len(all_days) - len(usable)
+    all_days = usable
+    if not all_days:
+        return [], ["加载到的交易日都没有连板数据，无法计算市场高度"]
 
     by_date, warns = _drop_carried_forward(by_date, all_days)
+    if dropped_days:
+        warns.insert(0, f"{dropped_days} 个交易日没有任何连板数据（历史回填行不写 "
+                        f"board_count），整天不参与计算，也不作为上沿基线")
 
     out: List[HeightPoint] = []
     for i, d in enumerate(all_days):
