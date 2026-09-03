@@ -2091,6 +2091,21 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 log.info(f"  {w}")
             # 必须在「区间涨幅补全」之前打点：那一块嵌在本 try 内部，
             # 不先截断就会把上面两个 sync 的耗时算到它头上
+            # 用当日涨停/炸板明细里的流通市值反推流通股本（零新增请求）。
+            # 必须在明细归档之后——它读的就是刚写进去的那张表。
+            # **刻意不接进情绪分/龙头分**：流通股本只有进过涨停池的股票才有，
+            # 接进打分就变成"曾经涨停过"成为打分优势，跟 kline_bar_from_quote
+            # 当年避开的是同一个坑（见 turnover_rate_service docstring）。
+            try:
+                from app.services.turnover_rate_service import refresh_float_shares
+                _fs = refresh_float_shares(db, target_date)
+                if _fs["updated"]:
+                    log.info(f"  流通股本刷新：{_fs['updated']}/{_fs['seen']} 只"
+                             f"（供换手率推算，未接入打分）")
+            except Exception as e:  # noqa: BLE001
+                log.info(f"  流通股本刷新失败（不影响主流程）: {e}")
+                db.rollback()
+
             log.lap("涨停雷达(明细+召回)")
 
             # ── 区间涨幅补全（收尾步骤，低并发）─────────────────────────────

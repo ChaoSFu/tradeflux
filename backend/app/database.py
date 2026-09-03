@@ -53,6 +53,8 @@ def _apply_schema_patches():
         # StockDailySnapshot：OHLC（2026-08-27，此前只存 close_price，炸板/一字板重算不了）
         # 成交量/成交额/量的来源口径（2026-09-03）。来源必须一起存：dump 未复权、
         # 腾讯 qfq，复权会同时调整价和量，不记来源就看不出一段序列里混了两种口径
+        "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS float_shares DOUBLE PRECISION",
+        "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS float_shares_date DATE",
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS volume DOUBLE PRECISION",
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS amount DOUBLE PRECISION",
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS volume_source VARCHAR(10)",

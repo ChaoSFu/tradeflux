@@ -15,6 +15,13 @@ class Stock(Base):
     is_new_stock = Column(Boolean, default=False, nullable=False)
     ipo_date = Column(Date, nullable=True)
     in_strong_pool = Column(Boolean, default=False, nullable=False)
+    # 流通股本（股）与它的观测日。2026-09-03 加，用来推算换手率：
+    #     换手率% = 成交量(股) / 流通股本 × 100
+    # 来源是 LimitUpDailyDetail.float_market_cap（涨停池/炸板池的 ltsz 字段）÷ 当日收盘价，
+    # **零新增请求**。观测日必须一起存：流通股本会因除权、解禁跳变，拿三个月前的值算
+    # 今天的换手率可能差 20% 以上，而这种错不会报警——存了日期至少能看出它有多旧。
+    float_shares = Column(Float, nullable=True)
+    float_shares_date = Column(Date, nullable=True)
 
     # Current state — updated via nightly recalculation
     phase = Column(String(30), nullable=True)
