@@ -143,13 +143,19 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
         for bc in counts.values():
             key = str(min(bc, LADDER_MAX)) + ("+" if bc > LADDER_MAX else "")
             ladder[key] = ladder.get(key, 0) + 1
-        # 上沿只看**之前**那些天，含当日就永远不可能"突破"自己
+        # 上沿只看**之前**那些天，含当日就永远不可能"突破"自己。
+        # **窗口不满 FRONTIER_WINDOW 天就没有上沿**——这不是保守，是不知道：
+        # 用 2 天算出来的"20日上沿"必然低得离谱，于是最早那些天全被标成"突破"。
+        # 生产首测就是这么翻车的：06-03/04/05/08 连续四天 is_breakout=true，
+        # 那不是行情，是滚动窗口还没攒够数据的伪影。宁可线短一截、开头不给结论，
+        # 也不能拿一个假上沿去判"天花板被打破了"——这张图的全部意义就在这个判定上。
         win = all_days[max(0, i - FRONTIER_WINDOW):i]
-        frontier = max((max(by_date.get(w, {}).values(), default=0) for w in win),
-                       default=0) if win else None
+        frontier = (max((max(by_date.get(w, {}).values(), default=0) for w in win),
+                        default=0)
+                    if len(win) >= FRONTIER_WINDOW else None)
         out.append(HeightPoint(
             date=str(d), height=height,
-            frontier=frontier if frontier else None,
+            frontier=frontier or None,
             is_breakout=bool(frontier and height > frontier),
             near_top_count=sum(1 for v in counts.values() if height and v >= height - 1),
             multi_board_count=sum(1 for v in counts.values() if v >= 3),

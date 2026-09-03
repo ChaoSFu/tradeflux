@@ -41,8 +41,9 @@ class TestHeightFrontier:
         assert p.near_top_count == 3, "2板和1板都算「天花板附近」(>=H-1)"
         assert p.multi_board_count == 0
 
-    def test_上沿不含当日否则永远突破不了自己(self, db):
-        # 连续三天：1板 → 2板 → 3板
+    def test_上沿不含当日否则永远突破不了自己(self, db, monkeypatch):
+        import app.services.speculation_radar_service as srs
+        monkeypatch.setattr(srs, "FRONTIER_WINDOW", 2)   # 窗口调小才够攒满
         _seed(db, {0: {"600001": 1}, 1: {"600001": 2}, 2: {"600001": 3}})
         pts, _ = compute_height_series(db, days=10)
         last = pts[-1]
@@ -50,7 +51,20 @@ class TestHeightFrontier:
         assert last.frontier == 2, "上沿必须只看之前那些天"
         assert last.is_breakout is True
 
-    def test_没超过上沿就不算突破(self, db):
+    def test_窗口不满就没有上沿也不判突破(self, db):
+        """
+        生产首测翻车点：库里只有 66 天，却想加载 20 天当基线——根本没有那 20 天。
+        于是最早几天用 1~2 天算出个假上沿，06-03/04/05/08 连续四天全标"突破"。
+        那不是行情，是滚动窗口没攒够的伪影，跟涨跌统计那张图的虚线是同一类错。
+        """
+        _seed(db, {0: {"600001": 1}, 1: {"600001": 2}, 2: {"600001": 3}})
+        pts, _ = compute_height_series(db, days=10)
+        assert all(p.frontier is None for p in pts), "只有3天，凑不满20日窗口"
+        assert not any(p.is_breakout for p in pts), "没有上沿就不能判突破"
+
+    def test_没超过上沿就不算突破(self, db, monkeypatch):
+        import app.services.speculation_radar_service as srs
+        monkeypatch.setattr(srs, "FRONTIER_WINDOW", 2)
         _seed(db, {0: {"600001": 1}, 1: {"600001": 2}, 2: {"600002": 1}})
         pts, _ = compute_height_series(db, days=10)
         assert pts[-1].height == 1 and pts[-1].frontier == 2
