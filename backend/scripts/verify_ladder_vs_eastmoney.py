@@ -36,6 +36,12 @@ MISS 拆成两种是因为成因和修法完全不同：前者要去补股票池
   · **尚未收盘的交易日整天跳过**。东财天梯当天盘中还没发布，会把我们所有记录
     都算成 EXTRA（2026-09-03 首跑就冒出 9 条假 EXTRA）。收没收盘用 bar_is_settled
     判，跟主链路同一套函数。
+  · **收盘了也不等于东财已发布**。2026-09-03 收盘后再跑，东财仍返回 code=9201
+    「数据为空」，10 条记录又全被判成 EXTRA。天梯的发布有滞后（跟 fuyao dump 要
+    等到 17:00 同理）。所以规则改成：东财返回空字典、而我们那天**有**连板记录时，
+    判为「疑似未发布」跳过——一个交易日全市场连一只 2 板都没有是极罕见的，
+    "空"和"还没出"在这种情况下分不开，就不要假装分得开。
+    真要判定"那天确实没有连板股"，得等隔天再跑。
   · **ST 股要从我们这边剔掉**。东财 filter 里写死 IS_ST="0"，我们不剔就会把
     *ST威领 这类记成 EXTRA——那是口径差异，不是数据错误。
 """
@@ -104,6 +110,7 @@ def main():
         per_day = []
         details = []
         unknown_days = []
+        unpublished = []
         for d in days:
             em = fetch_limit_up_ladder(d)
             time.sleep(args.sleep)
@@ -111,6 +118,10 @@ def main():
                 unknown_days.append(d)
                 continue
             mine = ours[d]
+            if not em and mine:
+                # 东财说空、我们却有一堆连板 → 几乎肯定是它还没发布，不是真没有
+                unpublished.append((d, len(mine)))
+                continue
             miss = {c: n for c, n in em.items() if c not in mine}
             miss_stock = {c: n for c, n in miss.items() if c not in known}
             miss_record = {c: n for c, n in miss.items() if c in known}
@@ -152,6 +163,9 @@ def main():
         print(f"\n  最高板不符的交易日：{bad_h}/{len(per_day)}")
         if unknown_days:
             print(f"  东财未返回（不知道，不计入分母）：{len(unknown_days)} 天 {unknown_days}")
+        if unpublished:
+            print("  东财疑似未发布（返回空但我们有连板记录，已跳过）："
+                  + "，".join(f"{d} 我们{n}只" for d, n in unpublished))
 
         if details and (args.verbose or len(details) <= 40):
             print(f"\n明细（{len(details)} 条）")
