@@ -674,3 +674,36 @@ def test_解析失败的异常必须仍是ValueError子类():
         raise AssertionError("该抛没抛")
     except ValueError as e:
         assert "HTTP 502" in str(e) and "Bad Gateway" in str(e)
+
+
+class TestBeijingExchangeCoverage:
+    """
+    北交所整个板块此前不在全市场列表里（2026-09-03 补）。
+
+    发现过程：拿东财连板天梯逐日对账，08-28 报「920895 东财 2 板、我们库里没有
+    这只股票」，查下来 920510 丰光精密也一样。北交所的票此前只有被选股 API 恰好
+    返回时才会进库，靠不住——而 920087 的 sina 前缀 bug 已经说明这块是老问题。
+    """
+
+    def test_全市场列表包含北交所板块(self):
+        import inspect
+        from app.services import eastmoney_fetcher as ef
+        src = inspect.getsource(ef._fetch_from_eastmoney)
+        assert "m:0+t:81" in src, "全市场列表必须包含北交所，否则整个板块进不了库"
+
+    def test_北交所三种代码前缀的口径一致(self):
+        """92/83/81 三种前缀都要走 30% 涨跌幅、bj 行情前缀、BJ 标签、.BJ 后缀。"""
+        from app.services.eastmoney_fetcher import (
+            get_limit_pct, quote_prefix, market_label, market_int,
+        )
+        from app.services.fuyao_dump import thscode_suffix
+        for code in ("920510", "920895", "830799", "831010", "430047"):
+            assert get_limit_pct(code, False) == 29.9, f"{code} 应走30%档"
+            assert quote_prefix(code, market_int("BJ", code)) == "bj"
+            assert market_label(code, market_int("BJ", code)) == "BJ"
+            assert thscode_suffix(code) == "BJ"
+
+    def test_北交所的market数字给0(self):
+        """东财 secid 对北交所用 market=0（同深）；腾讯/新浪那三条路按代码前缀短路。"""
+        from app.services.eastmoney_fetcher import market_int
+        assert market_int("BJ", "920510") == 0
