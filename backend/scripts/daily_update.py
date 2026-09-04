@@ -1986,6 +1986,11 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             )
             log.info(
                 f"高标龙头周期快照：{_lc['written']} 只"
+                # 连板段顶到 bar 序列开头 = board_count_60d 只是下界。先量频率，
+                # 高到一定程度再考虑加列表达；现在只记录，不假装它不存在
+                + (f"，{sum(1 for st in stats_list if st.board_count_60d_truncated)}"
+                   " 只连板段顶到数据边界(板数为下界)"
+                   if any(st.board_count_60d_truncated for st in stats_list) else "")
                 + (f"，{_lc['no_cycle']} 只当前识别不出≥4连板周期" if _lc["no_cycle"] else "")
                 + (f"，{_lc['skipped']} 只无K线跳过" if _lc["skipped"] else "")
                 # 当日 bar 不是今天的，那些股票的当日字段一律留空——必须报出来，

@@ -23,7 +23,7 @@ import threading
 from contextlib import contextmanager
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from dataclasses import dataclass, field
-from typing import List, Dict, Set, Tuple, Optional, Callable
+from typing import List, Dict, Sequence, Set, Tuple, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 HEADERS = {
@@ -367,6 +367,66 @@ def exact_limit_price(prev_close: float, actual_limit_pct: float, is_up: bool) -
     prev_d = Decimal(str(prev_close))
     factor = Decimal("1") + Decimal(str(signed)) / Decimal("100")
     return float((prev_d * factor).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def board_streaks(bars: Sequence["KLineBar"], *, down: bool = False) -> List[tuple]:
+    """
+    把 bar 序列切成连板段：[(起始下标, 结束下标, 段内连板数), ...]。
+
+    2026-09-04 从 leader_cycle_service 抽上来共用。抽之前 screening_service 手写了
+    一遍自己的计数循环，两套实现对同一批 bar 得出不同的连板数——见
+    max_board_in_window 的 docstring。这是本仓库第 8 次撞上"同一个市场事实两套判定
+    函数"，前七次是涨跌停判定、涨跌停价、结算判定、THS后缀、行情前缀、市场编号、
+    RS板块。规律很稳定：只要允许存在第二个实现，它迟早会跟第一个分叉。
+    """
+    hit = (lambda b: b.is_limit_down) if down else (lambda b: b.is_limit_up)
+    out, start, run = [], None, 0
+    for i, b in enumerate(bars):
+        if hit(b):
+            if start is None:
+                start = i
+            run += 1
+        elif start is not None:
+            out.append((start, i - 1, run))
+            start, run = None, 0
+    if start is not None:
+        out.append((start, len(bars) - 1, run))
+    return out
+
+
+def max_board_in_window(
+    bars: Sequence["KLineBar"], window: int = 60, *, down: bool = False,
+) -> tuple:
+    """
+    近 window 根 bar 内的最高连板数，返回 (板数, 是否可能被数据边界截断)。
+
+    **连板段横跨窗口边界时算整段，不算被切剩的那截。** 这是 2026-09-04 实测出来的
+    错：603065 宿迁联盛 06-03~06-12 连 6 板，到 09-04 时这段的起点在 63 个交易日前、
+    终点在 60 个交易日内。旧实现 `bars[-60:]` 从中间把这段切开，数出 2 板，于是
+    "近60日最高连板"报了 2——而这个数不描述任何真实的东西：它既不是这只票的连板
+    高度（6），也不是任何一段真实的连板（被切出来的残段不是一段更短的连板）。
+
+    同期 identify_leader_cycle 扫的是全段，报 6 板。同一批 bar、同一个 is_limit_up
+    字段，两个数字。这也解释了强势池那批"口径不符"：东财报 >=4、我们报 <4，不是
+    对方口径松，是我们在窗口边界上把段切碎了。
+
+    连板段是一个**原子事件**，它要么发生过要么没有，不存在"发生了 2/6"。所以只要
+    段与窗口有交集就算整段。代价是段起点最多比窗口早一个段长，这远好过系统性低估。
+
+    第二个返回值：被计入的段顶到了 bars[0]，说明更早的涨停可能压根没拉进来，这个
+    数**只是下界**。跟 peak_board_confident 一样，宁可说"可能偏低"也不给假的确信。
+    """
+    if not bars:
+        return 0, False
+    lo = max(0, len(bars) - window)
+    best, truncated = 0, False
+    for start, end, run in board_streaks(bars, down=down):
+        if end < lo:                 # 整段都在窗口之前，不算
+            continue
+        best = max(best, run)
+        if start == 0:               # 顶到数据边界，更早的涨停没拉到
+            truncated = True
+    return best, truncated
 
 
 def build_kline_bar(

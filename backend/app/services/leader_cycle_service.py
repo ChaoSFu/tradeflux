@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Dict, List, Optional, Sequence
 
-from ..services.eastmoney_fetcher import KLineBar
+from ..services.eastmoney_fetcher import KLineBar, board_streaks
 
 # 「打开过市场高度」的门槛。跟收窄后的强势池 prompt 一致：近60个交易日最高连板 >= 4
 MIN_PEAK_BOARD = 4
@@ -70,22 +70,6 @@ class LeaderCycle:
     peak_board_confident: bool = True    # 只由 missing_days 决定，跟停牌无关
 
 
-def _streaks(bars: Sequence[KLineBar]) -> List[tuple]:
-    """把 bar 序列切成连板段：[(起始下标, 结束下标, 段内最高连板), ...]。"""
-    out, start, run = [], None, 0
-    for i, b in enumerate(bars):
-        if b.is_limit_up:
-            if start is None:
-                start = i
-            run += 1
-        elif start is not None:
-            out.append((start, i - 1, run))
-            start, run = None, 0
-    if start is not None:
-        out.append((start, len(bars) - 1, run))
-    return out
-
-
 def identify_leader_cycle(
     bars: Sequence[KLineBar],
     trading_days: Optional[Sequence[date]] = None,
@@ -111,7 +95,7 @@ def identify_leader_cycle(
     bars = sorted(bars, key=lambda b: b.date)
     if not bars:
         return None
-    segs = [s for s in _streaks(bars) if s[2] >= min_peak]
+    segs = [s for s in board_streaks(bars) if s[2] >= min_peak]
     if not segs:
         return None
 

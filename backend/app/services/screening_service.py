@@ -13,7 +13,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from ..models.screening import ScreeningCriteria
-from .eastmoney_fetcher import KLineBar, exact_limit_price
+from .eastmoney_fetcher import KLineBar, exact_limit_price, max_board_in_window
 
 
 def derive_limit_close_price(prev_close: float, actual_limit_pct: float, is_up: bool) -> tuple[float, float]:
@@ -113,6 +113,9 @@ class StockWindowStats:
     # 这只股票一共有多少根 bar。有它就能自己判断哪几条均线该有值，
     # 不用再靠一个笼统的 ma_window_complete 布尔
     bar_count: int = 0
+    # 近60日最高连板那一段顶到了 bar 序列开头 → 更早的涨停没拉进来，board_count_60d
+    # 只是**下界**。跟 peak_board_confident 同一条纪律：宁可说"可能偏低"
+    board_count_60d_truncated: bool = False
     # 成交量（股）/ 成交额（元）/ 量的来源口径。None = 该源没给，不是 0。
     # 来源要一路带到快照：dump 未复权、腾讯 qfq，复权会同时调整价和量。
     today_volume: Optional[float] = None
@@ -148,26 +151,21 @@ def compute_window_stats(
     limit_up_days_20 = sum(1 for b in recent_20 if b.is_limit_up)
     limit_up_days_10 = sum(1 for b in recent_10 if b.is_limit_up)
 
-    # 近 60 日最高连板数 & 当前连续涨停数
-    max_board = 0
+    # 近 60 日最高连板 / 连跌停。**用共用的 max_board_in_window，不再手写循环**：
+    # 手写那版把横跨窗口边界的连板段从中间切开、报残段（603065 的 6 板报成 2 板），
+    # 详见 max_board_in_window 的 docstring
+    max_board, board_truncated = max_board_in_window(bars, 60)
+    max_down_board, _ = max_board_in_window(bars, 60, down=True)
+
+    # 当前连续涨停数：从最后一根往回数。它按定义结束于最后一根，不存在被窗口
+    # 左边界切开的问题（除非连了 60 板以上，那不可能）
     cur_board = 0
-    for b in recent_60:
+    for b in reversed(bars):
         if b.is_limit_up:
             cur_board += 1
-            max_board = max(max_board, cur_board)
         else:
-            cur_board = 0
+            break
     board_count_current = cur_board
-
-    # 近 60 日最高连跌停数
-    max_down_board = 0
-    cur_down = 0
-    for b in recent_60:
-        if b.is_limit_down:
-            cur_down += 1
-            max_down_board = max(max_down_board, cur_down)
-        else:
-            cur_down = 0
 
     # 当前连续跌停数（从最近一日往历史倒推，遇到非跌停即停止）
     cur_limit_down = 0
@@ -318,6 +316,7 @@ def compute_window_stats(
         board_count_current=board_count_current,
         limit_down_count_current=limit_down_count_current,
         board_count_60d=max_board,
+        board_count_60d_truncated=board_truncated,
         board_down_count_60d=max_down_board,
         limit_up_days_60d=limit_up_days_60,
         limit_up_days_20d=limit_up_days_20,
