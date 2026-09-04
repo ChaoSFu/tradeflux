@@ -150,12 +150,13 @@ class TestTurnoverWiring:
     """
     def test_有流通股本时算出换手率(self, db):
         st = _seed_stock(db)
-        st.float_shares = 1.0e8          # 1亿流通股
-        st.float_shares_date = date(2026, 8, 7)
-        db.flush()
         bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
         bars[-1].volume = 1.0e7          # 1000万股成交 → 10%
-        build_snapshots(db, date(2026, 8, 7), {st.code: bars})
+        st.float_shares = 1.0e8          # 1亿流通股
+        st.float_shares_date = bars[-1].date   # 观测日不能在 trade_date 之后
+        db.flush()
+        # trade_date 必须等于最后一根 bar 的日期，否则按数据契约当日字段一律留空
+        build_snapshots(db, bars[-1].date, {st.code: bars})
         assert db.query(LeaderCycleSnapshot).one().turnover_rate == 10.0
 
     def test_没有流通股本时是None不是0(self, db):
@@ -175,3 +176,70 @@ class TestTurnoverWiring:
         bars[-1].volume = 1.0e7
         build_snapshots(db, date(2026, 8, 7), {st.code: bars})
         assert db.query(LeaderCycleSnapshot).one().turnover_rate is None
+
+
+class TestFreshnessContract:
+    """
+    2026-09-04 加的数据契约：**今天那根 bar 必须真的是今天的**。
+
+    如果上游最终没补回来，bars[-1] 还是昨天的，直接写下去就成了"昨天的值挂着
+    今天的日期"——这轮反复修的正是这类错（盘中价冒充收盘价、停牌日顺延陈旧连板数）。
+    这一层要守自己的数据契约，不能完全相信调用方已经修好了当日 bar。
+    """
+
+    def test_bar不是今天时当日字段留空(self, db):
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        bars[-1].volume = 1.0e7
+        st.float_shares, st.float_shares_date = 1.0e8, bars[-1].date
+        db.flush()
+        # 最后一根是 bars[-1].date，却按后一天落快照
+        r = build_snapshots(db, bars[-1].date + timedelta(days=3), {st.code: bars})
+        row = db.query(LeaderCycleSnapshot).one()
+        assert row.data_fresh is False and row.latest_bar_date == bars[-1].date
+        assert row.latest_close is None and row.volume is None \
+            and row.turnover_rate is None, "宁可缺失，也不要让昨天的值挂今天的日期"
+        assert r["stale"] == 1, "不新鲜的只数要报出来，不能静默"
+
+    def test_周期事实仍然写入(self, db):
+        """周期本身（峰值、断板日、回撤）是历史事实，不随当日新鲜度失效。"""
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        build_snapshots(db, bars[-1].date + timedelta(days=3), {st.code: bars})
+        row = db.query(LeaderCycleSnapshot).one()
+        assert row.peak_board_count == 4 and row.peak_price == 14.64
+
+
+class TestSuspensionNotGap:
+    """
+    停牌 ≠ 数据缺口。爱丽家居 08-03~05 停牌三天，数据其实 100% 完整，
+    旧实现却会判成 missing_days=3、peak_board_confident=False——
+    **因为股票没交易而怀疑自己的数据**。
+    """
+
+    def test_已知停牌不算数据缺口(self, db):
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64])
+        susp = date(2026, 8, 10)
+        later = build_kline_bar(dt=date(2026, 8, 11), open_p=14.0, close_p=14.0,
+                                high_p=14.0, low_p=14.0, pct=0.0, turnover=None,
+                                limit_pct=9.90, prev_close=14.64)
+        days = [b.date for b in bars] + [susp, later.date]
+        build_snapshots(db, later.date, {st.code: bars + [later]},
+                        trading_days=days, suspended_map={st.code: [susp]})
+        row = db.query(LeaderCycleSnapshot).one()
+        assert row.absent_days == 1 and row.suspended_days == 1
+        assert row.missing_days == 0 and row.peak_board_confident is True
+
+    def test_不知道是否停牌时保守判为缺口(self, db):
+        """没有停牌证据就不能假设它停牌了——宁可标"可能偏低"。"""
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64])
+        gap = date(2026, 8, 10)
+        later = build_kline_bar(dt=date(2026, 8, 11), open_p=14.0, close_p=14.0,
+                                high_p=14.0, low_p=14.0, pct=0.0, turnover=None,
+                                limit_pct=9.90, prev_close=14.64)
+        days = [b.date for b in bars] + [gap, later.date]
+        build_snapshots(db, later.date, {st.code: bars + [later]}, trading_days=days)
+        row = db.query(LeaderCycleSnapshot).one()
+        assert row.missing_days == 1 and row.peak_board_confident is False

@@ -85,9 +85,25 @@ def sync_regulatory_unusual(db: Session) -> dict:
     return {"count": count, "ok": True}
 
 
-def get_regulatory_watchlist(db: Session) -> RegulatoryWatchlistResponse:
-    """当前监管名单 → 监管中 / 即将解除，join 本地快照补强势指标。"""
-    today = date.today()
+def get_regulatory_watchlist(db: Session,
+                            as_of: Optional[date] = None) -> RegulatoryWatchlistResponse:
+    """
+    监管名单 → 监管中 / 即将解除 / 近期解除 / 即将进入，join 本地快照补强势指标。
+
+    `as_of` 是**以哪一天的视角**判定状态，不传 = 今天。加它是因为
+    `snapshot_regulatory_status(db, trade_date)` 会给指定交易日落快照，而这里原来
+    写死 `date.today()`——用 `--date 2026-08-31` 补跑时，会写出
+
+        date = 2026-08-31，status = 按 2026-09-04 算出来的
+
+    这种「历史行 + 当前时间语义」的组合，会静默污染整条监管时间序列，而那条序列
+    正是为「进入/解除/延长」这些事件准备的。
+
+    **注意 approaching 无法按历史日期重建**：它来自东财的实时严重异动预测，
+    没有历史版本。传了 as_of 且不是今天时，approaching 一律返回空——
+    宁可缺失，也不能拿今天的逼近名单冒充过去某天的。
+    """
+    today = as_of or date.today()
     recent_floor = today - timedelta(days=RECENTLY_RELEASED_DAYS)
     # IS_HIS=0/1 两套都要（IS_HIS=1 才是最新活跃监管），合并后按监控期判定状态
     records = db.query(RegulatoryUnusual).all()
@@ -177,7 +193,11 @@ def get_regulatory_watchlist(db: Session) -> RegulatoryWatchlistResponse:
     # 仅排除「当前监管中」的代码（已在里面，谈不上"进入"）；
     # 「近期解除」的票若重新逼近(o=2) 应保留为风险预警，故不排除。
     exclude_codes = {r.security_code for r in active}
-    approaching = get_approaching_regulation(db, exclude_codes=exclude_codes)
+    # approaching 只有"当前"这一个版本（东财实时严重异动预测，无历史）。
+    # 按历史日期重建时一律给空——拿今天的逼近名单冒充过去某天，是这轮反复修的
+    # 那类错误的又一个变体：**用一个具体的值表达"我们不知道"**。
+    approaching = (get_approaching_regulation(db, exclude_codes=exclude_codes)
+                   if (as_of is None or as_of == date.today()) else [])
 
     return RegulatoryWatchlistResponse(
         as_of=today,
@@ -206,7 +226,8 @@ def snapshot_regulatory_status(db: Session, trade_date: date) -> dict:
     失败不抛：监管快照缺一天，破局雷达那条时间线断一格并如实显示；让它把整个
     daily_update 拖垮的代价大得多。
     """
-    wl = get_regulatory_watchlist(db)
+    # 必须传 trade_date：不传就会用今天的视角去判定历史那天的状态
+    wl = get_regulatory_watchlist(db, as_of=trade_date)
 
     rows: list[dict] = []
     for items, status in ((wl.monitoring, "MONITORING"),

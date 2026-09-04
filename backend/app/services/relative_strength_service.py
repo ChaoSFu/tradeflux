@@ -165,3 +165,42 @@ def compute_rs_sector(
             continue
         out[w] = round(mine - base, 2)
     return out
+
+
+def compute_rs_sector_from_vendor(
+    sector_interval_returns: Dict[int, Optional[float]],
+    stock_closes: Dict[date, float],
+    anchors: Dict[int, Optional[date]],
+    latest: Optional[date],
+) -> Dict[int, Optional[float]]:
+    """
+    RS_sector 的**第二种口径**：板块那一边用东财服务端算好的区间涨幅
+    （`Sector.pct_change_5d/10d/20d/60d`，即 f109/f110/f160/f165），
+    个股那一边仍用收盘价序列算复合收益。
+
+    ## 为什么会有两种口径
+
+    `compute_rs_sector()` 是正规做法——两边都从各自的收盘序列算，锚点同一天。
+    但它需要板块指数的历史序列，而那份数据要从 push2his 回填，该域名限流很凶，
+    目前拿不到（见 docs/DATA_SOURCES.md 1.11）。
+
+    在只有当日板块行情的情况下，东财算好的区间涨幅是唯一可用的板块基准。
+    它跟正规口径**不完全等价**：锚点由大盘指数的交易日决定，而东财那个区间涨幅
+    用的是它自己的窗口，两者在停牌、指数成分调整时会有偏差。
+
+    ## 所以必须让调用方知道用的是哪一种
+
+    2026-09-04 之前，这段逻辑是**内联写在 leader_cycle_snapshot_service 里**的，
+    而 `compute_rs_sector()` 零调用者——两个不同定义的东西都叫 rs_sector，
+    看数的人无从分辨。这正是本仓库反复栽的「同一个市场事实两套函数」，
+    而且是在刚写完那条纪律之后自己犯的。
+
+    现在两种口径都放在这个模块里，落库时一并记 `rs_sector_source`
+    （`"vendor"` / `"index"`），跟 `volume_source` 是同一个做法。
+    """
+    out: Dict[int, Optional[float]] = {}
+    for w, base in sector_interval_returns.items():
+        anchor = anchors.get(w)
+        mine = _interval_return(stock_closes, anchor, latest) if anchor and latest else None
+        out[w] = round(mine - base, 2) if (base is not None and mine is not None) else None
+    return out

@@ -71,6 +71,10 @@ class LeaderCycleSnapshot(Base):
     rs_sector_10 = Column(Float, nullable=True)
     rs_sector_20 = Column(Float, nullable=True)
     rs_sector_60 = Column(Float, nullable=True)
+    # RS_sector 用的是哪种口径。"index"=两边都从收盘序列算（正规）；
+    # "vendor"=板块那边用东财服务端算好的区间涨幅（板块指数历史拿不到时的替代）。
+    # 两者不等价，不记来源就是让两个不同定义共用一个字段名——跟 volume_source 同理
+    rs_sector_source = Column(String(10), nullable=True)
 
     # ── 量能（2026-09-03 刚接入，来源口径见 StockDailySnapshot.volume_source）──
     volume = Column(Float, nullable=True)
@@ -78,7 +82,15 @@ class LeaderCycleSnapshot(Base):
     turnover_rate = Column(Float, nullable=True)
 
     # ── 数据可信度 ──────────────────────────────────────────────────────────
-    missing_days = Column(Integer, nullable=True)         # 周期区间内缺几个交易日
+    market_sessions = Column(Integer, nullable=True)     # 周期区间内的交易日数
+    absent_days = Column(Integer, nullable=True)         # 其中该股没有 bar 的（停牌+缺口）
+    suspended_days = Column(Integer, nullable=True)      # 其中已确认停牌的
+    missing_days = Column(Integer, nullable=True)        # 真正的数据缺口 = absent - suspended
+    # 这一行的当日事实取自哪一根 bar。**必须存**：如果今天那根最终没补回来，
+    # bars[-1] 还是昨天的，latest_close/volume 就会变成"昨天的值挂着今天的日期"
+    # ——正是这轮反复修的那类错。不等于 date 时，当日字段一律不写。
+    latest_bar_date = Column(Date, nullable=True)
+    data_fresh = Column(Boolean, nullable=True)          # latest_bar_date == date
     peak_board_confident = Column(Boolean, nullable=True)
 
     created_at = Column(DateTime, server_default=func.now())

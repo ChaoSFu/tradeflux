@@ -58,8 +58,16 @@ class LeaderCycle:
     peak_drawdown: Optional[float]       # 现价相对 peak_price 的回撤 %
 
     # ── 数据可信度（见模块 docstring）────────────────────────────────────────
-    missing_days: int = 0                # 周期区间内缺了几个交易日的 bar
-    peak_board_confident: bool = True    # 缺口会让连板数偏低，此时置 False
+    # 周期区间内「市场开市但这只股票没有 bar」的天数。**这里面混着两件事**：
+    #   · 停牌 —— 那天它本来就不该有 bar，数据是完整的
+    #   · 数据缺口 —— 该有却没有，连板数会偏低
+    # 只有后者影响可信度。调用方传 suspended_days 才能把两者分开；不传时保守地
+    # 全算成缺口（宁可标"可能偏低"，也不要给一个虚假的确信）
+    market_sessions: int = 0             # 周期区间内的交易日数
+    absent_days: int = 0                 # 其中该股没有 bar 的天数（停牌 + 缺口）
+    suspended_days: int = 0              # 其中已确认是停牌的
+    missing_days: int = 0                # absent - suspended，真正的数据缺口
+    peak_board_confident: bool = True    # 只由 missing_days 决定，跟停牌无关
 
 
 def _streaks(bars: Sequence[KLineBar]) -> List[tuple]:
@@ -82,6 +90,7 @@ def identify_leader_cycle(
     bars: Sequence[KLineBar],
     trading_days: Optional[Sequence[date]] = None,
     min_peak: int = MIN_PEAK_BOARD,
+    suspended_days: Optional[Sequence[date]] = None,
 ) -> Optional[LeaderCycle]:
     """
     从 bar 序列识别**最近一次** >= min_peak 的连板周期。没有则返回 None。
@@ -92,6 +101,12 @@ def identify_leader_cycle(
 
     `trading_days` 是该区间应有的交易日序列（来自 trading_calendar）。传了才能算出
     缺口——不传就默认无缺口，但那是"没检查"不是"没缺口"，调用方要清楚这个区别。
+
+    `suspended_days` 是**已确认停牌**的日子。不传的话，停牌会被当成数据缺口
+    ——这正是本仓库反复栽的那类错的又一个变体：**「那天没交易」和「那天我们漏了」
+    是两件事**。爱丽家居 08-03~08-05 停牌三天，数据其实 100% 完整，却会被判成
+    missing_days=3、peak_board_confident=False。
+    停牌的硬证据是"权威源那天也没有这只股票的 bar"，只有调用方拿得到，所以由它传入。
     """
     bars = sorted(bars, key=lambda b: b.date)
     if not bars:
@@ -117,11 +132,14 @@ def identify_leader_cycle(
     drawdown = round((latest / peak_price - 1) * 100, 2) if peak_price > 0 else None
 
     # 缺口：周期起点到最新这段，应有多少交易日、实际有多少根 bar
-    missing = 0
+    sessions = absent = suspended = missing = 0
     if trading_days:
         expect = {d for d in trading_days if cycle_start <= d <= bars[-1].date}
         have = {b.date for b in bars if cycle_start <= b.date <= bars[-1].date}
-        missing = len(expect - have)
+        gone = expect - have
+        susp = {d for d in (suspended_days or []) if d in gone}
+        sessions, absent, suspended = len(expect), len(gone), len(susp)
+        missing = absent - suspended      # 停牌不算缺口
 
     return LeaderCycle(
         peak_board_count=peak,
@@ -134,8 +152,11 @@ def identify_leader_cycle(
         post_break_low=round(post_low, 4) if post_low is not None else None,
         latest_close=round(latest, 4),
         peak_drawdown=drawdown,
+        market_sessions=sessions,
+        absent_days=absent,
+        suspended_days=suspended,
         missing_days=missing,
-        # 周期区间内缺任何一个交易日，连板数就可能偏低——计数循环分不清
-        # "那天没涨停"和"那天我们没记录"
+        # 只看真正的数据缺口。停牌那几天本来就没有 bar，数据是完整的——
+        # 把它算进"不可信"，等于因为股票没交易而怀疑自己的数据
         peak_board_confident=(missing == 0),
     )

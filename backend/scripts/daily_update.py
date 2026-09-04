@@ -1984,6 +1984,10 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 f"高标龙头周期快照：{_lc['written']} 只"
                 + (f"，{_lc['no_cycle']} 只当前识别不出≥4连板周期" if _lc["no_cycle"] else "")
                 + (f"，{_lc['skipped']} 只无K线跳过" if _lc["skipped"] else "")
+                # 当日 bar 不是今天的，那些股票的当日字段一律留空——必须报出来，
+                # 静默留空跟"今天真的没量"看起来一模一样
+                + (f"，⚠️{_lc['stale']} 只当日K线不是{target_date}，当日字段已留空"
+                   if _lc.get("stale") else "")
             )
         except Exception as e:  # noqa: BLE001
             log.info(f"[leader-cycle] 生命周期快照失败（不影响主流程）: {e}")

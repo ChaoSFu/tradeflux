@@ -38,9 +38,13 @@ def _approaching(code, name, approach, target):
 
 
 def _patch(monkeypatch, *, monitoring=(), ending=(), released=(), approaching=()):
-    monkeypatch.setattr(rs, "get_regulatory_watchlist", lambda db: RegulatoryWatchlistResponse(
-        as_of=D2, monitoring=list(monitoring), ending_soon=list(ending),
-        recently_released=list(released), approaching=list(approaching)))
+    # 签名带 as_of 了（2026-09-04 修时间穿越）：snapshot_regulatory_status 必须按
+    # trade_date 的视角判定，而不是 date.today()
+    monkeypatch.setattr(rs, "get_regulatory_watchlist",
+                        lambda db, as_of=None: RegulatoryWatchlistResponse(
+                            as_of=as_of or D2, monitoring=list(monitoring),
+                            ending_soon=list(ending), recently_released=list(released),
+                            approaching=list(approaching)))
 
 
 class TestSnapshotRegulatoryStatus:
@@ -104,3 +108,42 @@ class TestSnapshotRegulatoryStatus:
         st = rs.snapshot_regulatory_status(db, D2)
         assert st["dupes"] == 1 and st["total"] == 1
         assert db.query(RegulatoryStatusDaily).one().status == "MONITORING"
+
+
+class TestAsOfSemantics:
+    """
+    2026-09-04 修的时间穿越：snapshot_regulatory_status(db, trade_date) 内部调
+    get_regulatory_watchlist(db)，而后者写死 date.today()。用 `--date 2026-08-31`
+    补跑时会写出「date=08-31，status 按 09-04 算」——历史行配当前时间语义，
+    会静默污染整条监管时间序列，而那条序列正是为「进入/解除/延长」准备的。
+    """
+
+    def test_按trade_date的视角判定而不是今天(self, db, monkeypatch):
+        seen = {}
+
+        def _wl(db, as_of=None):
+            seen["as_of"] = as_of
+            return RegulatoryWatchlistResponse(
+                as_of=as_of or D1, monitoring=[], ending_soon=[],
+                recently_released=[], approaching=[])
+
+        monkeypatch.setattr(rs, "get_regulatory_watchlist", _wl)
+        rs.snapshot_regulatory_status(db, D1)
+        assert seen["as_of"] == D1, "必须把 trade_date 传下去，不能用 date.today()"
+
+    def test_按历史日期重建时approaching一律为空(self, db, monkeypatch):
+        """
+        approaching 来自东财实时严重异动预测，**没有历史版本**。
+        拿今天的逼近名单冒充过去某天，是"用一个具体值表达不知道"的又一个变体。
+        """
+        from app.services import deviation_service as ds
+        called = []
+
+        def _appr(db, exclude_codes=None):
+            called.append(1)
+            return []
+
+        monkeypatch.setattr(ds, "get_approaching_regulation", _appr)
+        wl = rs.get_regulatory_watchlist(db, as_of=date(2020, 1, 2))
+        assert wl.approaching == [] and called == [], \
+            "历史日期不该去问实时接口，更不该把结果当成那天的事实"
