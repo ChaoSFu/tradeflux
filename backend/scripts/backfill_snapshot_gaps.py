@@ -58,6 +58,61 @@ from app.services.trading_calendar import get_trading_days
 _PCT_TOLERANCE = 0.5
 
 
+def _fix_mixed(db, pool, codes, lo, hi, tdays):
+    """
+    把口径混了的股票**整只窗口重拉成单一口径**（腾讯前复权），覆盖已有行。
+
+    这**违反**了 _backfill_history_from_dump 那条"绝不覆盖已有行"的约束——那条
+    约束预设的是已有行可信。这里已有行本身就是两种复权价格拼的，均线跨着两种
+    口径算，而均线正是生命周期状态机的输入。一条内部一致的序列，比一条"每一行
+    单独看都权威、拼起来却是错的"序列有用。
+
+    两个代价，都得说明白：
+    1. 覆盖掉原有行里来自选股 API 的权威涨跌停标记，改由价格重算。
+    2. **除权当日的涨跌停判定会错**：前复权价格在除权日两侧不同尺度，那一天的
+       日涨幅算不准。除权日之外，qfq 的相邻两日比值等于真实涨幅（复权因子相同，
+       约掉了），所以只影响每次分红的那一天。
+    """
+    from app.models.stock import StockDailySnapshot as S
+    by_code = {st.code: st for st in pool}
+    targets = [by_code[c] for c in codes if c in by_code]
+    if not targets:
+        return
+    print(f"\n重拉 {len(targets)} 只成单一口径（腾讯前复权，覆盖窗口内已有行）...")
+    infos = [StockBasicInfo(code=st.code, name=st.name,
+                            market=market_int(st.market, st.code),
+                            is_st=st.is_st, pct_change=0.0, turnover_rate=0.0)
+             for st in targets]
+    span = len([d for d in tdays if lo <= d <= hi]) + 30
+    klines = fetch_klines_batch(infos, days=span, max_workers=6)
+
+    rewritten = kept = 0
+    for st in targets:
+        bars = [b for b in (klines.get(st.code) or []) if lo <= b.date <= hi
+                and (b.close_price or 0) > 0]
+        if not bars:
+            # 拉不到就**别删**——删了等于用"没数据"换掉"口径可疑的数据"，更糟
+            print(f"  {st.code} 拉不到 K 线，保持原样（仍是混口径，不可信）")
+            kept += 1
+            continue
+        db.query(S).filter(S.stock_id == st.id, S.date >= lo, S.date <= hi).delete(
+            synchronize_session=False)
+        for b in bars:
+            db.add(S(stock_id=st.id, date=b.date, is_settled=True,
+                     open_price=b.open_price, high_price=b.high_price,
+                     low_price=b.low_price, close_price=b.close_price,
+                     pct_change=b.pct_change, is_limit_up=b.is_limit_up,
+                     is_limit_down=b.is_limit_down,
+                     is_broken_board=b.is_broken_board,
+                     volume=b.volume, amount=b.amount,
+                     volume_source=b.volume_source))
+        rewritten += 1
+        db.flush()
+    db.commit()
+    print(f"重写 {rewritten} 只" + (f"，{kept} 只拉不到保持原样" if kept else ""))
+    print("下一步：重跑 --verify-only 确认分歧清零，再回填 LeaderCycleSnapshot")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -65,6 +120,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="只报缺多少，不写库")
     ap.add_argument("--verify-only", action="store_true",
                     help="只跑复权口径校验，不拉数据不写库")
+    ap.add_argument("--fix-mixed", action="store_true",
+                    help="把校验查出口径混了的股票，整只窗口重拉成单一口径（覆盖）")
     args = ap.parse_args()
 
     db = SessionLocal()
@@ -183,7 +240,11 @@ def main():
             elif seam == 0:
                 print("   → 一处都不在接缝上，**不是复权问题**，另查")
             else:
-                print("   → 接缝内外都有，两种原因混在一起，逐只看")
+                print("   → 接缝内外都有。注意 `?` 只表示 volume_source 为 NULL"
+                      "（那列 09-03 才加），**不代表两行同源**，所以"
+                      "\"不在接缝上\" 这个判断本身不可靠")
+            if args.fix_mixed:
+                _fix_mixed(db, pool, sorted({x[0] for x in suspect}), lo, hi, tdays)
             print("   处置：这些股票的窗口内发生过分红除权，dump(未复权) 和"
                   "腾讯(前复权) 的价格不能拼。要么整只重拉成同一口径，要么把"
                   "这几只标注为不可信，**不要当没看见**。")
