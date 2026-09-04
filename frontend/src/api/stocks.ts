@@ -53,6 +53,10 @@ export const fetchStockSnapshots = (code: string, days = 30) =>
   client.get<StockSnapshot[]>(`/stocks/${code}/snapshots`, { params: { days } }).then((r) => r.data)
 
 // ── 高标龙头生命周期（事实层，2026-09-04）────────────────────────────────────
+export type LifecycleState =
+  | 'STREAKING' | 'BROKEN' | 'REPAIRING' | 'CROSS_SUCCESS'
+  | 'CROSS_WEAKENING' | 'CROSS_FAILED' | 'FADED' | 'UNKNOWN'
+
 export interface LeaderCycleItem {
   code: string
   name: string | null
@@ -85,6 +89,19 @@ export interface LeaderCycleItem {
   new_post_break_low_today: boolean | null
   volume_ratio_5d: number | null
   amount_ratio_5d: number | null
+  // ── Price Lifecycle v1（后端 replay 出来的派生状态，不落库）──────────
+  lifecycle_state: LifecycleState | null
+  previous_lifecycle_state: LifecycleState | null
+  state_since_date: string | null
+  transitioned_today: boolean
+  lifecycle_formula_version: string | null
+  transition_reason_codes: string[]
+  transition_reasons: string[]
+  evaluation_status: string | null
+  // CROSS_WEAKENING 要能跟 CROSS_FAILED 分开：前者曾经成功过，后者没有
+  ever_cross_success: boolean
+  first_cross_success_date: string | null
+
   bar_count: number | null
   // data_fresh = 那根 bar 是不是今天的；bar_settled = 那根 bar 是不是收盘终值。
   // 盘中两者不同步，必须分开——腾讯盘中就发当日 bar
