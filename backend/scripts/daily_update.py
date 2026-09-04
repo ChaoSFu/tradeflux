@@ -1733,6 +1733,11 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 权威来源交叉验证的字段（收盘价/涨幅/涨跌停），窗口统计算出来的连板数、
         # 涨停天数、10/20/60日涨幅、龙头分/风险分/情绪分/阶段全都还是基于旧bar的，
         # 而且它们在 compute_window_stats() 里一次性算完，比任何字段级补丁都更早。
+        try:
+            from app.services.trading_calendar import get_trading_days as _gtd
+            _cal = _gtd(db, need_through=target_date, log=log)
+        except Exception:  # noqa: BLE001
+            _cal = None      # 拿不到日历就退回旧行为，但那只在序列无空洞时才对
         #
         # 与其在下游修字段，不如在上游把那一根真的补回来：拿实时行情快照构造一根
         # 当日 bar 塞进窗口，后面所有指标自动全部算对。请求量极小（只补缺的那几只，
@@ -1826,6 +1831,9 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 new_stock_months=criteria.new_stock_months,
                 listing_date=getattr(info, "listing_date", None),
                 is_sector_leader=info.code in leader_code_set,
+                # 连板计数必须知道交易日历，否则缺行会把不相邻的涨停日
+                # 挤到一起数成连板（603065 被数成 6 板，真实 2 板）
+                trading_days=_cal,
             )
             if stats:
                 stats_list.append(stats)

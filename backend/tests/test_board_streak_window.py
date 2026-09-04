@@ -97,3 +97,61 @@ class TestBoardStreaks:
 
     def test_序列以涨停结尾时最后一段也要收口(self):
         assert board_streaks(_series("..UU")) == [(2, 3, 2)]
+
+
+class TestGapBreaksStreak:
+    """
+    2026-09-04 生产实测，同一个错的第三次现形：**数组下标相邻 ≠ 交易日相邻**。
+
+    603065 宿迁联盛被数成 6 连板，补齐快照空洞之后真实序列是
+
+        06-03 涨停  06-04 +3.46%  06-05 涨停  06-08 -1.05%
+        06-09 涨停  06-10 涨停    06-11 +8.04%  06-12 涨停
+
+    最长连板是 **2**。数成 6，是因为那几个**非涨停日在库里没有行**——它们一
+    消失，五个涨停日在数组里就挨在了一起。
+
+    方向必须保守：宁可少算连板，也不要凭空造出一段不存在的连板。后者会把股票
+    错误地送进高标池，还会抬高"市场投机高度"这个指标本身。
+    """
+
+    def _cal(self, n=20):
+        return [D0 + timedelta(days=i) for i in range(n)]
+
+    def _bars_on(self, offsets, ups):
+        """在指定的日期偏移上造 bar；ups 里的偏移是涨停。"""
+        return [_bar(i, up=(i in ups)) for i in offsets]
+
+    def test_中间缺交易日就断开连板段(self):
+        # 第 0、2 天涨停，第 1 天没有行 —— 不能算成 2 连板
+        bars = self._bars_on([0, 2], ups={0, 2})
+        segs = board_streaks(bars, calendar=self._cal())
+        assert [s[2] for s in segs] == [1, 1], "中间那天不知道涨没涨停，不能算连续"
+
+    def test_没有缺口时照常连成一段(self):
+        bars = self._bars_on([0, 1, 2], ups={0, 1, 2})
+        assert board_streaks(bars, calendar=self._cal()) == [(0, 2, 3)]
+
+    def test_复刻宿迁联盛(self):
+        """五个涨停日散落在八个交易日里，最长连板是 2 不是 5。"""
+        ups = {0, 2, 4, 5, 7}
+        bars = self._bars_on(sorted(ups), ups=ups)   # 只有涨停日有行（原始状态）
+        assert max(s[2] for s in board_streaks(bars)) == 5, \
+            "不给日历时按数组相邻数，正是这个错误产生 6 板的机制"
+        assert max(s[2] for s in board_streaks(bars, calendar=self._cal())) == 2, \
+            "给了日历，只有第 4、5 天是真正相邻的，那一对才算 2 板"
+        # 补齐非涨停日之后结果不变 —— 这才是"日历判定"该有的性质：
+        # 连板数只取决于真实的交易日相邻关系，跟库里缺不缺行无关
+        full = self._bars_on(list(range(8)), ups=ups)
+        assert max(s[2] for s in board_streaks(full, calendar=self._cal())) == 2
+
+    def test_窗口内最高连板也跟着修正(self):
+        ups = {0, 2, 4, 5, 7}
+        full = self._bars_on(list(range(8)), ups=ups)
+        got, _ = max_board_in_window(full, 60, calendar=self._cal())
+        assert got == 2
+
+    def test_不传日历退回旧行为(self):
+        """旧行为只在确知序列无空洞时才对，但不能让缺参数直接报错。"""
+        bars = self._bars_on([0, 2], ups={0, 2})
+        assert [s[2] for s in board_streaks(bars)] == [2]

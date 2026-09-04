@@ -138,7 +138,9 @@ def main():
             stats_map = {}
             for code, bars in klines_map.items():
                 st = by_code[code]
-                stat = compute_window_stats(code, st.name, st.is_st, bars)
+                stat = compute_window_stats(
+                    code, st.name, st.is_st, bars,
+                    trading_days=[x for x in tdays if x <= d])
                 if stat is not None:
                     stats_map[code] = stat
             r = build_snapshots(

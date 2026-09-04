@@ -388,9 +388,31 @@ def exact_limit_price(prev_close: float, actual_limit_pct: float, is_up: bool) -
     return float((prev_d * factor).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-def board_streaks(bars: Sequence["KLineBar"], *, down: bool = False) -> List[tuple]:
+def board_streaks(bars: Sequence["KLineBar"], *, down: bool = False,
+                  calendar: Optional[Sequence[date]] = None) -> List[tuple]:
     """
     把 bar 序列切成连板段：[(起始下标, 结束下标, 段内连板数), ...]。
+
+    ## calendar 不是可选的装饰，是正确性的前提
+
+    2026-09-04 实测：603065 宿迁联盛 06-03~06-12 被数成 **6 连板**，而补齐快照
+    空洞之后真实序列是
+
+        06-03 涨停  06-04 +3.46%  06-05 涨停  06-08 -1.05%
+        06-09 涨停  06-10 涨停    06-11 +8.04%  06-12 涨停
+
+    最长连板是 **2**。之所以数成 6，是因为那几个**非涨停日在库里没有行**——
+    它们一消失，五个涨停日在数组里就挨在了一起。
+
+    传入 calendar（交易日历）之后，相邻两根 bar 在日历上不相邻就断开连板段：
+    中间那天可能涨停也可能没涨停，**我们不知道**，而"不知道"不能算作连续。
+    这个方向是保守的：宁可少算连板，也不要凭空造出一段不存在的连板——后者会
+    把股票错误地送进高标池，还会抬高"市场投机高度"这个指标本身。
+
+    不传 calendar 时退回旧行为（按数组相邻），但那**只在确知序列无空洞时才对**。
+
+    这是"数组下标相邻 ≠ 交易日相邻"在本仓库的第三次现形（前两次：状态机的
+    「连续两个 observation」、快照空洞脚本的复权校验）。见 DATA_SOURCES 坑 16。
 
     2026-09-04 从 leader_cycle_service 抽上来共用。抽之前 screening_service 手写了
     一遍自己的计数循环，两套实现对同一批 bar 得出不同的连板数——见
@@ -399,8 +421,21 @@ def board_streaks(bars: Sequence["KLineBar"], *, down: bool = False) -> List[tup
     RS板块。规律很稳定：只要允许存在第二个实现，它迟早会跟第一个分叉。
     """
     hit = (lambda b: b.is_limit_down) if down else (lambda b: b.is_limit_up)
+    pos = {d: i for i, d in enumerate(calendar)} if calendar else None
+
+    def _adjacent(a, b) -> bool:
+        """a、b 两根 bar 是不是相邻交易日。没有日历就只能假设是（旧行为）。"""
+        if pos is None:
+            return True
+        ia, ib = pos.get(a.date), pos.get(b.date)
+        return ia is not None and ib is not None and ib - ia == 1
+
     out, start, run = [], None, 0
     for i, b in enumerate(bars):
+        # 跟上一根不相邻 → 中间有我们看不见的交易日，连板段必须在这里断开
+        if start is not None and not _adjacent(bars[i - 1], b):
+            out.append((start, i - 1, run))
+            start, run = None, 0
         if hit(b):
             if start is None:
                 start = i
@@ -415,6 +450,7 @@ def board_streaks(bars: Sequence["KLineBar"], *, down: bool = False) -> List[tup
 
 def max_board_in_window(
     bars: Sequence["KLineBar"], window: int = 60, *, down: bool = False,
+    calendar: Optional[Sequence[date]] = None,
 ) -> tuple:
     """
     近 window 根 bar 内的最高连板数，返回 (板数, 是否可能被数据边界截断)。
@@ -439,7 +475,7 @@ def max_board_in_window(
         return 0, False
     lo = max(0, len(bars) - window)
     best, truncated = 0, False
-    for start, end, run in board_streaks(bars, down=down):
+    for start, end, run in board_streaks(bars, down=down, calendar=calendar):
         if end < lo:                 # 整段都在窗口之前，不算
             continue
         best = max(best, run)

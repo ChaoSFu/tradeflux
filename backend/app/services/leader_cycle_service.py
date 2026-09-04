@@ -95,7 +95,10 @@ def identify_leader_cycle(
     bars = sorted(bars, key=lambda b: b.date)
     if not bars:
         return None
-    segs = [s for s in board_streaks(bars) if s[2] >= min_peak]
+    # **必须把交易日历传下去**：缺行会让非涨停日消失，把不相邻的涨停日
+    # 在数组里挤到一起数成一段连板（603065 就被数成 6 板，真实是 2 板）
+    segs = [s for s in board_streaks(bars, calendar=trading_days)
+            if s[2] >= min_peak]
     if not segs:
         return None
 

@@ -132,6 +132,7 @@ def compute_window_stats(
     new_stock_months: int = 12,
     listing_date: Optional[date] = None,
     is_sector_leader: bool = False,
+    trading_days: Optional[List[date]] = None,
 ) -> Optional[StockWindowStats]:
     """
     从 K 线序列计算所有窗口统计指标。
@@ -155,8 +156,12 @@ def compute_window_stats(
     # 近 60 日最高连板 / 连跌停。**用共用的 max_board_in_window，不再手写循环**：
     # 手写那版把横跨窗口边界的连板段从中间切开、报残段（603065 的 6 板报成 2 板），
     # 详见 max_board_in_window 的 docstring
-    max_board, board_truncated = max_board_in_window(bars, 60)
-    max_down_board, _ = max_board_in_window(bars, 60, down=True)
+    # trading_days 传进来才判得出"相邻两根 bar 是不是相邻交易日"。缺行会让
+    # 非涨停日消失、把不相邻的涨停日挤到一起数成连板——603065 就这么被数成
+    # 6 板，真实是 2 板（2026-09-04 补齐空洞后实测）
+    max_board, board_truncated = max_board_in_window(bars, 60, calendar=trading_days)
+    max_down_board, _ = max_board_in_window(bars, 60, down=True,
+                                            calendar=trading_days)
 
     # 当前连续涨停数：从最后一根往回数。它按定义结束于最后一根，不存在被窗口
     # 左边界切开的问题（除非连了 60 板以上，那不可能）
