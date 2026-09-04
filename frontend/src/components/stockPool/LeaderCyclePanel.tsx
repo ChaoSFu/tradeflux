@@ -28,7 +28,7 @@
  * 列出「识别不出周期」的那几只——这轮排查里 14 只口径不符查出 11 只是我们自己
  * 算错的，静默消失就永远发现不了。
  */
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Info, TrendingUp } from 'lucide-react'
 import { fetchLeaderCycle, type LeaderCycleItem, type LifecycleState } from '@/api/stocks'
@@ -36,6 +36,12 @@ import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 
 type Group = 'core' | 'waiting' | 'dropped' | 'all' | 'unbucketed'
+/**
+ * NO_CYCLE 是**前端专有**的展示状态：后端把这些股票放在 unresolved 里，它们
+ * 根本没有快照，也就没有 lifecycle_state。单独给个标签而不是混进 UNKNOWN——
+ * 「识别不出 ≥4 连板周期」和「今天的价格事实不足以判断」是两回事。
+ */
+type Bucketable = LifecycleState | 'NO_CYCLE'
 const NUM = 'font-mono tabular-nums'
 
 /**
@@ -46,14 +52,37 @@ const NUM = 'font-mono tabular-nums'
  * 是这个页面最不能容忍的失败：不可见比判断错更糟，判断错还能被看见并纠正。
  * 所以下面三个桶之外还有一个 unbucketed 兜底——它平时是 0，一旦非 0 就会亮出来。
  */
-const BUCKET: Record<Group, LifecycleState[]> = {
+const BUCKET: Record<Group, Bucketable[]> = {
   core:    ['REPAIRING', 'CROSS_SUCCESS'],
-  waiting: ['STREAKING', 'BROKEN'],
+  // UNKNOWN / NO_CYCLE 也归这里。它们是**合法状态**，不是"没预料到的状态"——
+  // 放进 unbucketed 会让那个红色兜底 tab 长期亮着，警报天天响就等于没有警报。
+  // 归到"待观察"也符合语义：既没被剔除，今天也不可行动，等事实补齐
+  waiting: ['STREAKING', 'BROKEN', 'UNKNOWN', 'NO_CYCLE'],
   dropped: ['CROSS_WEAKENING', 'CROSS_FAILED', 'FADED'],
   all:     [],          // 不过滤
   unbucketed: [],       // 动态：不属于上面任何一桶的
 }
 const BUCKETED = new Set<string>([...BUCKET.core, ...BUCKET.waiting, ...BUCKET.dropped])
+
+const COLS = ['股票', '状态', '主板块', '本轮', '60日', 'D+', '峰值回撤',
+  '现价/MA5', '现价/MA10', '距阶段高', '距周期顶',
+  'RS市场20', 'ΔRS 1日', 'ΔRS 3日', 'RS板块20', '量比5日', '换手']
+
+/**
+ * 表格内的排序 / 分段顺序：**按生命周期推进的方向**排。
+ *
+ * 一个 tab 里状态混着排，扫一眼看不出各有几只——「已剔除」里走弱、失败、结束
+ * 交替出现时尤其明显。分段之后，每一段的规模一眼可见，而规模本身就是信息：
+ * 46 只里有多少是刚走弱（还值得回头看）、多少已经周期结束（可以不看了）。
+ */
+const STATE_ORDER: Bucketable[] = [
+  'STREAKING', 'BROKEN', 'REPAIRING', 'CROSS_SUCCESS',
+  'CROSS_WEAKENING', 'CROSS_FAILED', 'FADED', 'UNKNOWN', 'NO_CYCLE',
+]
+const orderOf = (st: string | null) => {
+  const i = STATE_ORDER.indexOf((st ?? 'UNKNOWN') as Bucketable)
+  return i < 0 ? STATE_ORDER.length : i     // 认不出的排最后，但不丢
+}
 
 /** 每个状态的交易含义。写在这里而不是让人猜——状态名本身不自解释 */
 const STATE_META: Record<string, { label: string; hint: string; tone: string }> = {
@@ -72,12 +101,16 @@ const STATE_META: Record<string, { label: string; hint: string; tone: string }> 
   FADED:           { label: '周期结束', tone: 'text-text-muted',
                      hint: '当前这段周期生命周期结束，默认弱化' },
   UNKNOWN:         { label: '数据不足', tone: 'text-text-muted',
-                     hint: '今天的事实不足以判断——不拿"破位/失败"顶替"不知道"' },
+                     hint: '今天的价格事实不足以判断——不拿"破位/失败"顶替"不知道"' },
+  NO_CYCLE:        { label: '无周期',   tone: 'text-warn',
+                     hint: '仍在东财召回的强势池里，但本地重算不出 ≥4 连板周期。'
+                         + '可能是对方口径不同，也可能是我们算错了——列在这里而不是'
+                         + '从池子里删掉，因为静默消失就永远查不出来' },
 }
 
 const TAB_HINT: Record<Group, string> = {
   core: '第一次转强（修复中）+ 已完成二波结构（穿越成功）。这里只是观察名单，买点由人确认',
-  waiting: '还没进场：仍在连板中，或刚断板、结构未演化',
+  waiting: '还没进场：仍在连板中、刚断板结构未演化，或今天判不出来',
   dropped: '已从核心池剔除：成功后走弱 / 修复失败 / 周期结束',
   all: '整个强势池，一只不落',
   unbucketed: '归不了类的股票。这一栏非 0 就是 bug——但宁可让它显眼，也不能让股票消失',
@@ -166,7 +199,7 @@ export default function LeaderCyclePanel() {
     const pseudo = (data?.unresolved ?? []).map((u) => ({
       ...EMPTY_ITEM, code: u.code, name: u.name,
       board_count_60d: u.board_count_60d,
-      lifecycle_state: 'UNKNOWN' as LifecycleState,
+      lifecycle_state: 'NO_CYCLE' as LifecycleState,
       transition_reasons: [u.reason],
       transition_reason_codes: ['NO_CYCLE'],
       evaluation_status: 'INSUFFICIENT',
@@ -181,6 +214,8 @@ export default function LeaderCyclePanel() {
       const st = r.lifecycle_state ?? 'UNKNOWN'
       const g = (['core', 'waiting', 'dropped'] as Group[])
         .find((k) => (BUCKET[k] as string[]).includes(st))
+      // 落到 unbucketed 只有一种可能：出现了这里没列的新状态。那是 bug，
+      // 而不是"数据不足"——后者是合法状态，已经归进待观察了
       c[g ?? 'unbucketed'] += 1
     })
     return c
@@ -193,9 +228,11 @@ export default function LeaderCyclePanel() {
         ? all.filter((r) => !BUCKETED.has(r.lifecycle_state ?? 'UNKNOWN'))
         : all.filter((r) => (BUCKET[group] as string[])
             .includes(r.lifecycle_state ?? 'UNKNOWN'))
-    // 今天刚变的排最前——转强和转弱都是当天才需要动脑子的事
+    // 先按状态分段（段内顺序见 STATE_ORDER），段内今天刚变的在前——
+    // 转强和转弱都是当天才需要动脑子的事
     return [...picked].sort((a, b) =>
-      Number(b.transitioned_today) - Number(a.transitioned_today)
+      orderOf(a.lifecycle_state) - orderOf(b.lifecycle_state)
+      || Number(b.transitioned_today) - Number(a.transitioned_today)
       || (a.days_since_break ?? 1e6) - (b.days_since_break ?? 1e6))
   }, [all, group])
 
@@ -317,16 +354,44 @@ export default function LeaderCyclePanel() {
           <table className="w-full text-xs" style={{ minWidth: 1380 }}>
             <thead>
               <tr className="text-[10px] text-text-muted uppercase tracking-wider">
-                {['股票', '状态', '主板块', '本轮', '60日', 'D+', '峰值回撤',
-                  '现价/MA5', '现价/MA10', '距阶段高', '距周期顶',
-                  'RS市场20', 'ΔRS 1日', 'ΔRS 3日', 'RS板块20',
-                  '量比5日', '换手'].map((h) => (
+                {COLS.map((h) => (
                   <th key={h} className="px-3 py-2 text-left font-medium whitespace-nowrap
                                          border-b border-bg-border">{h}</th>
                 ))}
               </tr>
             </thead>
-            <tbody>{rows.map((r) => <Row key={r.code} r={r} />)}</tbody>
+            <tbody>
+              {rows.map((r, i) => {
+                const st = r.lifecycle_state ?? 'UNKNOWN'
+                const head = i === 0 || st !== (rows[i - 1].lifecycle_state ?? 'UNKNOWN')
+                const m = STATE_META[st]
+                const n = rows.filter(
+                  (x) => (x.lifecycle_state ?? 'UNKNOWN') === st).length
+                return (
+                  <Fragment key={r.code}>
+                    {head && (
+                      <tr className="bg-bg-elevated/50">
+                        <td colSpan={COLS.length}
+                            className="px-3 py-1.5 border-y border-bg-border">
+                          <span className={cn('text-[11px] font-medium', m?.tone)}>
+                            {m?.label ?? st}
+                          </span>
+                          <span className={cn('ml-1.5 text-[11px] text-text-muted', NUM)}>
+                            {n}
+                          </span>
+                          {m?.hint && (
+                            <span className="ml-2 text-[10px] text-text-muted/80">
+                              {m.hint}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    <Row r={r} />
+                  </Fragment>
+                )
+              })}
+            </tbody>
           </table>
         </div>
       )}
