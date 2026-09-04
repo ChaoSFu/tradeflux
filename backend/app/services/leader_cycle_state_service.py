@@ -70,6 +70,20 @@ BELOW_MA5_OBS = 2
 BELOW_MA20_OBS = 2
 BELOW_MA30_OBS = 2
 
+# BROKEN 最多能待几个交易日（含断板当日）。**它是过渡态，不是停留态。**
+#
+# 2026-09-04 实测暴露的：002742 冀衡医药 08-31 断板，到 09-04 已经 D+4、连续
+# 四天创断板后新低、从峰值回撤 31%，却仍然挂在「刚断板」里。因为从 BROKEN
+# 出发原来只有一条路（→REPAIRING），没修复就无限期停在原地，只能等 Hard Fade
+# ——而 Hard Fade 在刚拉完一波的票上必然滞后：均线还没翻过来，MA10 高于 MA20，
+# 空头排列那条入口根本不成立。
+#
+# 所以给它设上限：D+0、D+1 之内允许观望（那时结构确实还没演化，实测 5 只
+# BROKEN 里有 4 只正处在这个阶段），到 D+2 必须表态——满足修复条件就 REPAIRING，
+# 否则 CROSS_FAILED。「修复失败」在语义上包含「从来没修复起来过」，所以复用这个
+# 状态而不新增一个，分组已经够多了。
+MAX_BROKEN_DAYS = 2
+
 # ── 生命周期状态 ───────────────────────────────────────────────────────────
 STREAKING = "STREAKING"                # 仍在连板中
 BROKEN = "BROKEN"                      # 刚断板，结构还没演化
@@ -110,6 +124,7 @@ REASON_TEXT = {
     "DATA_STALE": "最新 bar 不是当日，价格事实已过期",
     "MA_MISSING": "判定所需均线缺失（历史不足），不拿 None 当跌破",
     "HISTORY_GAP": "缺少足够的历史 observation，无法证明连续性",
+    "BROKEN_TIMEOUT": f"断板已满 {MAX_BROKEN_DAYS} 个交易日仍未修复",
     "HOLD": "无满足条件的转移，维持原状态",
     "NO_CYCLE": "本地重算不出 ≥4 连板周期（与东财召回口径存在已知差异）",
 }
@@ -334,6 +349,16 @@ def _advance(prev_state: str, obs, calendar=None) -> tuple:
         if (cur.days_since_break is not None and cur.days_since_break >= 1
                 and above_ma5 and ma5_up is True):
             return REPAIRING, ["RECLAIM_MA5", "MA5_TURN_UP"]
+        # BROKEN 是**过渡态不是停留态**：D+0/D+1 允许观望，到 D+2 必须表态。
+        # 没修复就是没修复——一只 D+4、连创新低、回撤 31% 的票不该还叫「刚断板」。
+        # CROSS_FAILED 不是终点：后面站回 MA5 且 MA5 上行照样回到 REPAIRING，
+        # 所以判失败的代价只是标签，不是把它踢出观察范围
+        if (prev_state == BROKEN and cur.days_since_break is not None
+                and cur.days_since_break >= MAX_BROKEN_DAYS):
+            codes = ["BROKEN_TIMEOUT"]
+            if cur.new_post_break_low_today is True:
+                codes.append("BREAK_POST_LOW")
+            return CROSS_FAILED, codes
         return prev_state, ["HOLD"]
 
     return prev_state, ["HOLD"]

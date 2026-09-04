@@ -415,3 +415,100 @@ class TestCycleIdentity:
         s = _replay(rows)
         assert s.state == STREAKING
         assert s.ever_cross_success is True, "同一段周期内，成功过的记录不该被清掉"
+
+
+class TestBrokenIsTransient:
+    """
+    **BROKEN 是过渡态，不是停留态。**
+
+    2026-09-04 生产实测：002742 冀衡医药 08-31 断板，到 09-04 已经 D+4、连续四天
+    创断板后新低、从峰值回撤 31%，却仍然挂在「刚断板」里。原因是从 BROKEN 出发
+    只有一条路（→REPAIRING），没修复就无限期停在原地，只能等 Hard Fade——而
+    Hard Fade 在刚拉完一波的票上必然滞后：均线还没翻过来，MA10 高于 MA20
+    （实测 MA10=5.10、MA20=4.72），空头排列那条入口根本不成立。
+
+    D+0/D+1 允许观望是有依据的：实测 5 只 BROKEN 里 4 只正处在这个阶段，对它们
+    「刚断板」是准确描述。只有 D+2 之后还没表态的才名不副实。
+    """
+
+    def _broken_at(self, day, close, ma5, dsb, **kw):
+        """
+        没修复（收盘在 MA5 之下）但也不到硬衰竭（收盘仍在 MA20/MA30 之上）。
+        这正是 002742 的真实形态：刚拉完一波，长均线还在下面很远，
+        Hard Fade 那两条入口都够不着——所以才需要"超期"这条路。
+        """
+        kw.setdefault("ma10", ma5 + 0.5)
+        kw.setdefault("ma20", close - 1)    # 收盘在 MA20 上方，排除 Hard Fade
+        kw.setdefault("ma30", close - 2)
+        return Row(day, close, ma5=ma5, days_since_break=dsb, **kw)
+
+    def test_断板当日和次日仍是刚断板(self):
+        rows = [Row(0, 18.0, ma5=18.5, ma10=19.5, ma20=20.5, ma30=21.5,
+                    days_since_break=0)]
+        assert _replay(rows).state == BROKEN
+        rows.append(self._broken_at(1, 17.0, 18.0, 1, new_low=True))
+        assert _replay(rows).state == BROKEN, "D+1 还在观望期内"
+
+    def test_到D2仍未修复就判修复失败(self):
+        rows = [Row(0, 18.0, ma5=18.5, ma10=19.5, ma20=20.5, ma30=21.5,
+                    days_since_break=0)]
+        rows.append(self._broken_at(1, 17.0, 18.0, 1, new_low=True))
+        rows.append(self._broken_at(2, 16.0, 17.5, 2, new_low=True))
+        s = _replay(rows)
+        assert s.state == CROSS_FAILED
+        assert "BROKEN_TIMEOUT" in s.reason_codes
+        assert "BREAK_POST_LOW" in s.reason_codes, "创了新低就一并说明"
+
+    def test_D2当天修复了就走修复中不走失败(self):
+        """修复判定优先——超期只是"没修复"的兜底，不是惩罚。"""
+        rows = [Row(0, 18.0, ma5=18.5, ma10=19.5, ma20=20.5, ma30=21.5,
+                    days_since_break=0)]
+        rows.append(self._broken_at(1, 17.0, 18.0, 1))
+        rows.append(_healthy(2, 19.5, 18.6, days_since_break=2))
+        assert _replay(rows).state == REPAIRING
+
+    def test_判了失败之后仍然可以修复(self):
+        """CROSS_FAILED 不是终点，标签变了不等于被踢出观察范围。"""
+        rows = [Row(0, 18.0, ma5=18.5, ma10=19.5, ma20=20.5, ma30=21.5,
+                    days_since_break=0)]
+        rows.append(self._broken_at(1, 17.0, 18.0, 1, new_low=True))
+        rows.append(self._broken_at(2, 16.0, 17.5, 2, new_low=True))
+        assert _replay(rows).state == CROSS_FAILED
+        rows.append(_healthy(3, 19.0, 17.8, days_since_break=3))
+        assert _replay(rows).state == REPAIRING
+
+    def test_硬衰竭仍然优先于超期(self):
+        """两个都成立时给 FADED——它是更强的结论，不该被超期这条盖住。"""
+        rows = [Row(0, 18.0, ma5=18.5, ma10=19.5, ma20=20.5, ma30=21.5,
+                    days_since_break=0)]
+        for i in (1, 2):
+            rows.append(Row(i, 12.0, ma5=16.0, ma10=17.0, ma20=18.0, ma30=19.0,
+                            days_since_break=i))
+        assert _replay(rows).state == FADED
+
+    def test_没有D加天数时不超期(self):
+        """days_since_break 缺失是"不知道"，不能当成"已经很久了"。"""
+        rows = [Row(0, 18.0, ma5=18.5, ma10=19.5, ma20=20.5, ma30=21.5,
+                    days_since_break=0)]
+        rows.append(self._broken_at(1, 17.0, 18.0, None))
+        assert _replay(rows).state == BROKEN
+
+    def test_复刻冀衡医药(self):
+        """
+        08-31 断板 5.62，之后 5.59 / 5.03 / 4.53 / 4.28 一路创新低，
+        均线 MA5 5.01 > MA20 4.72 所以不构成空头排列，Hard Fade 不触发。
+        旧规则下它到 D+4 还是 BROKEN；现在 D+2 就该判失败。
+        """
+        rows = [Row(0, 5.62, ma5=5.47, ma10=4.86, ma20=4.51, ma30=4.14,
+                    days_since_break=0)]
+        for i, (close, ma5, ma10, ma20, ma30) in enumerate(
+                [(5.59, 5.65, 4.99, 4.61, 4.22), (5.03, 5.63, 5.06, 4.67, 4.28),
+                 (4.53, 5.40, 5.08, 4.71, 4.32), (4.28, 5.01, 5.10, 4.72, 4.35)],
+                start=1):
+            rows.append(Row(i, close, ma5=ma5, ma10=ma10, ma20=ma20, ma30=ma30,
+                            days_since_break=i, new_high=False, new_low=True))
+        assert _replay(rows[:2]).state == BROKEN, "D+1 还在观望期"
+        s = _replay(rows[:3])
+        assert s.state == CROSS_FAILED and s.state_since_date == rows[2].date, \
+            "D+2 就该表态，而不是拖到 D+4 还叫「刚断板」"
+        assert _replay(rows).state == CROSS_FAILED

@@ -93,11 +93,14 @@ const STATE_META: Record<string, { label: string; hint: string; tone: string }> 
   CROSS_WEAKENING: { label: '成功后走弱', tone: 'text-warn',
                      hint: '曾经穿越成功，但趋势已恶化——明确退出核心机会池' },
   BROKEN:          { label: '刚断板',   tone: 'text-text-secondary',
-                     hint: '第一段连板结束，结构还没演化' },
+                     hint: '第一段连板结束，结构还没演化。**最多 2 个交易日**'
+                         + '（D+0/D+1），之后必须表态：修复中，或修复失败' },
   STREAKING:       { label: '连板中',   tone: 'text-up',
                      hint: '尚未断板' },
   CROSS_FAILED:    { label: '修复失败', tone: 'text-down',
-                     hint: '本次修复失败（创断板后新低，或连续收在 MA5 下）' },
+                     hint: '本次修复失败：创断板后新低、连续收在 MA5 下，'
+                         + '或断板满 2 个交易日仍未修复。不是终点——重新站回 MA5'
+                         + '且 MA5 上行仍会回到修复中' },
   FADED:           { label: '周期结束', tone: 'text-text-muted',
                      hint: '当前这段周期生命周期结束，默认弱化' },
   UNKNOWN:         { label: '数据不足', tone: 'text-text-muted',
