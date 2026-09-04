@@ -357,3 +357,61 @@ class TestEngineContract:
         assert s.reason_codes and all(isinstance(c, str) for c in s.reason_codes)
         assert s.reasons and s.reasons[0] != s.reason_codes[0], "code 要能翻成人话"
         assert s.formula_version == FORMULA_VERSION
+
+
+class TestCycleIdentity:
+    """
+    2026-09-04 生产轨迹抓到的：cycle identity 第一版用 (start, peak)，而**连板还在
+    进行时峰值日每天都在往后走**，于是整段连板期天天 NEW_CYCLE 重置。
+
+    003040 的实际输出：
+        08-26  STREAKING  STILL_STREAKING
+        08-27  STREAKING  NEW_CYCLE、STILL_STREAKING   ← 连板途中凭空重置
+
+    起始日才是稳定标识——它是这段连板的第一个涨停日。峰值日在周期走完之前不是
+    常量，拿它当身份的一部分，是把"进行中的量"当"标识"用。
+    """
+
+    def test_连板途中峰值日推进不算新周期(self):
+        rows = [
+            Row(0, 15.0, ma5=13.0, ma10=12.0, ma20=11.0, ma30=10.0,
+                break_date=None, days_since_break=None,
+                cycle_start=D0, cycle_peak=D0),
+            Row(1, 16.5, ma5=14.0, ma10=12.5, ma20=11.5, ma30=10.5,
+                break_date=None, days_since_break=None,
+                cycle_start=D0, cycle_peak=D0 + timedelta(days=1)),
+            Row(2, 18.0, ma5=15.0, ma10=13.0, ma20=12.0, ma30=11.0,
+                break_date=None, days_since_break=None,
+                cycle_start=D0, cycle_peak=D0 + timedelta(days=2)),
+        ]
+        s = _replay(rows)
+        assert s.state == STREAKING
+        assert "NEW_CYCLE" not in s.reason_codes, \
+            "同一段连板，峰值日每天往后走是正常的，不是新周期"
+
+    def test_起始日变了才是新周期(self):
+        old = _to_success() + [
+            Row(3, 14.0, ma5=19.0, ma10=18.0, ma20=17.0, ma30=16.0, days_since_break=3),
+            Row(4, 13.0, ma5=18.0, ma10=17.5, ma20=17.0, ma30=16.0, days_since_break=4),
+        ]
+        assert _replay(old).state == FADED
+        new_start = date(2026, 7, 1)
+        rows = old + [Row(30, 30.0, ma5=25.0, ma10=22.0, ma20=20.0, ma30=18.0,
+                          break_date=None, days_since_break=None,
+                          cycle_start=new_start, cycle_peak=new_start)]
+        s = _replay(rows, cal=[D0 + timedelta(days=i) for i in range(45)])
+        assert s.state == STREAKING and "NEW_CYCLE" in s.reason_codes
+
+    def test_连板期不会反复清掉曾经成功的记录(self):
+        """
+        每天 reset 顺带会把 ever_cross_success 清掉。虽然 STREAKING 在成功之前，
+        影响有限，但"每天清一次记忆"本身就不该发生。
+        """
+        rows = _to_success() + [
+            Row(10, 30.0, ma5=25.0, ma10=22.0, ma20=20.0, ma30=18.0,
+                break_date=None, days_since_break=None,
+                cycle_start=D0, cycle_peak=D0 + timedelta(days=10)),
+        ]
+        s = _replay(rows)
+        assert s.state == STREAKING
+        assert s.ever_cross_success is True, "同一段周期内，成功过的记录不该被清掉"

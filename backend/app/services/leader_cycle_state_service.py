@@ -155,12 +155,16 @@ def _cycle_id(row):
     """
     cycle identity。状态属于**一段 LeaderCycle**，不是股票的永久身份。
 
-    用 (cycle_start_date, cycle_peak_date) 而不只是 start：同一个 start 下峰值日
-    可能因为数据修复而变，但那不该 reset；真正的新周期两者都会变。这里两个都取，
-    任一变化即认为进入新周期——宁可多 reset 一次，也不要把上一轮的 FADED 继承给
-    一段全新的连板。
+    **只用 cycle_start_date。** 第一版还带上了 cycle_peak_date，"宁可多 reset 一次"
+    ——错的：连板还在进行时，峰值日就是最后一根板，**每天都在往后走**，于是整段
+    连板期天天判定为新周期。003040 的轨迹里 08-27 那行原因写着
+    `NEW_CYCLE、STILL_STREAKING`，就是这么来的。
+
+    起始日才是一段周期的稳定标识：它是这段连板的第一个涨停日，不同周期必然不同。
+    峰值日在周期走完之前根本不是常量，拿它当身份的一部分是把"进行中的量"当成
+    "标识"用了。
     """
-    return (row.cycle_start_date, row.cycle_peak_date)
+    return row.cycle_start_date
 
 
 def _adjacent(d1: date, d2: date, calendar: Optional[Sequence[date]]) -> Optional[bool]:
