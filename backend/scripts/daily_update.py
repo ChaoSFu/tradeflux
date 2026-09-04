@@ -1983,6 +1983,10 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 db, target_date, klines_map,
                 trading_days=_tdays,
                 stats_map={st.code: st for st in stats_list},
+                # 收盘了没有——用上面已经算好的 run_settled，**不另起一套判定**。
+                # 在此之前这个信息压根没传到快照层：盘中跑出来的盘中价标着
+                # data_fresh=True 躺在表里，事后无从分辨是终值还是 11 点的现价
+                settled=run_settled,
             )
             log.info(
                 f"高标龙头周期快照：{_lc['written']} 只"

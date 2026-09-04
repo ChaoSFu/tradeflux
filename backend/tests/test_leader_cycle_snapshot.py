@@ -318,3 +318,106 @@ class TestChangeVelocity:
         assert row.new_post_break_high_today is None
         assert row.volume_ratio_5d is None
         assert row.dist_to_post_break_high is None
+
+
+class TestSettlementAndNewLow:
+    """
+    2026-09-04 补的两个事实，都是 Price Lifecycle 状态机的硬前提。
+
+    结算标记这条是断链修复：daily_update 早就算了 run_settled，却没往下传。于是
+    盘中跑出来的**盘中价**标着 data_fresh=True 躺在快照表里——data_fresh 只回答
+    "那根 bar 是不是今天的"，回答不了"今天收盘了没有"，腾讯盘中就发当日 bar，
+    两者盘中同时为真。晚上再跑一次会覆盖掉，但只要那晚没跑成，那天就永久留着
+    一行盘中快照，且事后无从分辨。
+    """
+
+    def _row(self, db):
+        return db.query(LeaderCycleSnapshot).order_by(
+            LeaderCycleSnapshot.date.desc()).first()
+
+    def _cycle_bars(self, tail):
+        """4 连板起一个周期，再接 tail 里的收盘价。"""
+        return _bars([10.0, 11.0, 12.1, 13.31, 14.64] + list(tail))
+
+    def test_盘中跑标未结算(self, db):
+        st = _seed_stock(db)
+        bars = self._cycle_bars([14.0])
+        build_snapshots(db, bars[-1].date, {st.code: bars},
+                        trading_days=[b.date for b in bars], settled=False)
+        row = self._row(db)
+        assert row.data_fresh is True, "bar 确实是今天的"
+        assert row.bar_settled is False, "但它是盘中价，不是终值——两件事"
+
+    def test_收盘后跑标已结算(self, db):
+        st = _seed_stock(db)
+        bars = self._cycle_bars([14.0])
+        build_snapshots(db, bars[-1].date, {st.code: bars},
+                        trading_days=[b.date for b in bars], settled=True)
+        assert self._row(db).bar_settled is True
+
+    def test_调用方没说就留空不能当成没结算(self, db):
+        """
+        None = 不知道，False = 确定没收盘。状态机对这两者反应不同（前者拒绝推进
+        并给 UNKNOWN，后者同样不推进但原因不一样），混在一起就说不清了。
+        """
+        st = _seed_stock(db)
+        bars = self._cycle_bars([14.0])
+        build_snapshots(db, bars[-1].date, {st.code: bars},
+                        trading_days=[b.date for b in bars])
+        assert self._row(db).bar_settled is None
+
+    def test_历史日的bar必然已结算(self, db):
+        """最后一根 bar 早于 trade_date → 那天早收盘了，跟今天收没收盘无关。"""
+        st = _seed_stock(db)
+        bars = self._cycle_bars([14.0])
+        later = bars[-1].date + timedelta(days=3)
+        build_snapshots(db, later, {st.code: bars},
+                        trading_days=[b.date for b in bars] + [later], settled=False)
+        row = self._row(db)
+        assert row.data_fresh is False and row.bar_settled is True
+
+    def test_创断板后新低(self, db):
+        """14.0 → 13.0：断板后第二根跌破第一根的收盘。"""
+        st = _seed_stock(db)
+        bars = self._cycle_bars([14.0, 13.0])
+        build_snapshots(db, bars[-1].date, {st.code: bars},
+                        trading_days=[b.date for b in bars], settled=True)
+        row = self._row(db)
+        assert row.new_post_break_low_today is True
+        assert row.new_post_break_high_today is False
+
+    def test_没创新低时是False不是None(self, db):
+        st = _seed_stock(db)
+        bars = self._cycle_bars([14.0, 14.2])
+        build_snapshots(db, bars[-1].date, {st.code: bars},
+                        trading_days=[b.date for b in bars], settled=True)
+        row = self._row(db)
+        assert row.new_post_break_low_today is False, "比过了，没创——这是 False"
+        assert row.new_post_break_high_today is True
+
+    def test_断板当天没有可比历史给空值而不是False(self, db):
+        """
+        断板当天 post-break 一根 bar 都还没有。写 False 等于宣称"比较过了，没创
+        新低"，而其实根本没得比。这条同样修了既有的 new_post_break_high_today。
+        """
+        st = _seed_stock(db)
+        bars = self._cycle_bars([14.0])          # 最后一根就是断板日
+        build_snapshots(db, bars[-1].date, {st.code: bars},
+                        trading_days=[b.date for b in bars], settled=True)
+        row = self._row(db)
+        assert row.days_since_break == 0
+        assert row.new_post_break_low_today is None
+        assert row.new_post_break_high_today is None
+
+    def test_新低判定不含当日否则永远不成立(self, db):
+        """
+        含当日就是拿今天跟"含今天的最小值"比，`px < min(...)` 恒为假。
+        既有的 post_break_low 字段正是含当日的，所以不能拿它做这个判定。
+        """
+        st = _seed_stock(db)
+        bars = self._cycle_bars([14.0, 13.0, 12.0])
+        build_snapshots(db, bars[-1].date, {st.code: bars},
+                        trading_days=[b.date for b in bars], settled=True)
+        row = self._row(db)
+        assert row.post_break_low == 12.0, "这个字段含当日，是周期区间的真实低点"
+        assert row.new_post_break_low_today is True, "判定必须排除当日"

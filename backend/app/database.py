@@ -68,6 +68,8 @@ def _apply_schema_patches():
         "ALTER TABLE leader_cycle_snapshots ADD COLUMN IF NOT EXISTS volume_ratio_5d DOUBLE PRECISION",
         "ALTER TABLE leader_cycle_snapshots ADD COLUMN IF NOT EXISTS amount_ratio_5d DOUBLE PRECISION",
         "ALTER TABLE leader_cycle_snapshots ADD COLUMN IF NOT EXISTS bar_count INTEGER",
+        "ALTER TABLE leader_cycle_snapshots ADD COLUMN IF NOT EXISTS new_post_break_low_today BOOLEAN",
+        "ALTER TABLE leader_cycle_snapshots ADD COLUMN IF NOT EXISTS bar_settled BOOLEAN",
         "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS float_shares DOUBLE PRECISION",
         "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS float_shares_date DATE",
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS volume DOUBLE PRECISION",

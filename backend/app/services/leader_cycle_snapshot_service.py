@@ -53,10 +53,16 @@ def build_snapshots(db: Session, trade_date: date,
                     klines_map: Dict[str, list],
                     trading_days: Optional[List[date]] = None,
                     stats_map: Optional[Dict[str, object]] = None,
-                    suspended_map: Optional[Dict[str, List[date]]] = None) -> dict:
+                    suspended_map: Optional[Dict[str, List[date]]] = None,
+                    settled: Optional[bool] = None) -> dict:
     """
     `klines_map` 是 daily_update 已经拿到的 {code: [KLineBar]}，直接复用，
     **不重新拉任何数据**。`stats_map` 是 {code: StockWindowStats}（含均线）。
+
+    `settled` = trade_date 当天**收盘了没有**。由调用方从既有的
+    `bar_is_settled(target_date, market_now)` 传进来——**不在这里重新定义一套**。
+    传 None 表示调用方没说，那就如实记 None，不能默认成 False：
+    "不知道有没有收盘"和"确定没收盘"是两件事，后者会让状态机拒绝推进。
     """
     pool = db.query(Stock).filter(Stock.in_strong_pool.is_(True)).all()
     if not pool:
@@ -149,6 +155,9 @@ def build_snapshots(db: Session, trade_date: date,
         row.peak_board_confident = cyc.peak_board_confident
         row.latest_bar_date = last.date
         row.data_fresh = fresh
+        # 那根 bar 是不是终值。历史日的 bar 必然已收盘；当日那根要看调用方给的
+        # settled。两者都不成立时如实留 None，不拿 False 顶替"不知道"
+        row.bar_settled = True if last.date < trade_date else settled
         # 当日事实只在那根 bar 确实是今天时才写。不新鲜就留空——
         # 宁可缺失，也不要让昨天的收盘价挂着今天的日期
         row.latest_close = cyc.latest_close if fresh else None
@@ -190,9 +199,14 @@ def build_snapshots(db: Session, trade_date: date,
         # post_break_high 含今天，直接比会恒等，所以要排除最后一根
         _after_excl_today = [b.close_price for b in bars
                              if cyc.break_date and cyc.break_date <= b.date < last.date]
-        row.new_post_break_high_today = (
-            bool(px and _after_excl_today and px > max(_after_excl_today))
-            if fresh and cyc.break_date else None)
+        # 三态：没有可比的历史（断板当天，post-break 还没有任何一根 bar）→ None。
+        # 写 False 等于宣称"比较过了，没创新高"，而其实根本没得比
+        if fresh and cyc.break_date and px and _after_excl_today:
+            row.new_post_break_high_today = px > max(_after_excl_today)
+            row.new_post_break_low_today = px < min(_after_excl_today)
+        else:
+            row.new_post_break_high_today = None
+            row.new_post_break_low_today = None
         _vols = [b.volume for b in bars[-(_VOL_WINDOW + 1):-1]]
         _amts = [b.amount for b in bars[-(_VOL_WINDOW + 1):-1]]
         row.volume_ratio_5d = _ratio(last.volume if fresh else None, _vols)

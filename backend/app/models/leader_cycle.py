@@ -60,8 +60,8 @@ class LeaderCycleSnapshot(Base):
     ma10 = Column(Float, nullable=True)
     ma20 = Column(Float, nullable=True)
     ma30 = Column(Float, nullable=True)
-    # 窗口不足时上面几个是 0.0（沿用 screening_service 的既有口径），这个标志
-    # 让下游能区分"均线是0元"和"窗口没攒够"——后者不该参与任何判定
+    # 窗口不足时上面几个是 **None**（2026-09-04 起；此前是 0.0，那时 0 和"没算出来"
+    # 混在一起）。bar_count 才是判断"哪几条均线该有值"的依据，这个布尔只是个粗看
     # 实际参与均线计算的 bar 根数。一个布尔分不清"MA5有效但MA30无效"，
     # 而这正是 2026-09-04 把均线改成 Optional 之后下游要判断的东西
     bar_count = Column(Integer, nullable=True)
@@ -90,7 +90,11 @@ class LeaderCycleSnapshot(Base):
     # cycle_peak 是原周期顶——两个都要，前者是近的坎，后者是远的坎
     dist_to_post_break_high = Column(Float, nullable=True)
     dist_to_cycle_peak = Column(Float, nullable=True)
-    new_post_break_high_today = Column(Boolean, nullable=True)   # 今天创断板后新高
+    # 今天创断板后新高 / 新低。三态：True=创了，False=比过没创，**None=没有可比的
+    # 历史**（断板当天，post-break 还没有任何一根 bar）。断板当天写 False 等于宣称
+    # "比较过了，没创新低"，而其实根本没得比
+    new_post_break_high_today = Column(Boolean, nullable=True)
+    new_post_break_low_today = Column(Boolean, nullable=True)
     # 修复有没有量能配合。None = 前 5 根里有 bar 没有量（不补零、不用均值顶替）
     volume_ratio_5d = Column(Float, nullable=True)
     amount_ratio_5d = Column(Float, nullable=True)
@@ -109,6 +113,13 @@ class LeaderCycleSnapshot(Base):
     # bars[-1] 还是昨天的，latest_close/volume 就会变成"昨天的值挂着今天的日期"
     # ——正是这轮反复修的那类错。不等于 date 时，当日字段一律不写。
     latest_bar_date = Column(Date, nullable=True)
+    # 这一行的价格事实来自的那根 bar，**是不是收盘终值**。
+    # data_fresh 只回答"那根 bar 是不是今天的"，回答不了"今天收盘了没有"——腾讯
+    # 盘中就发当日 bar，两者盘中同时为真。2026-09-04 之前这一层根本收不到结算
+    # 信息：daily_update 算了 run_settled 却没往下传，于是盘中跑出来的盘中价，
+    # 标着 data_fresh=True 躺在表里，事后无从分辨。
+    # None = 调用方没告诉我们（不是 False —— "不知道"不能当"没结算"）
+    bar_settled = Column(Boolean, nullable=True)
     data_fresh = Column(Boolean, nullable=True)          # latest_bar_date == date
     peak_board_confident = Column(Boolean, nullable=True)
 

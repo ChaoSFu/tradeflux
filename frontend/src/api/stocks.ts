@@ -80,10 +80,17 @@ export interface LeaderCycleItem {
   rs_sector_20_delta_1d: number | null
   dist_to_post_break_high: number | null   // 离断板后阶段高点还有几 %
   dist_to_cycle_peak: number | null        // 离原周期顶还有几 %
+  // 三态：true=创了 / false=比过没创 / null=没有可比的历史（断板当天）
   new_post_break_high_today: boolean | null
+  new_post_break_low_today: boolean | null
   volume_ratio_5d: number | null
   amount_ratio_5d: number | null
   bar_count: number | null
+  // data_fresh = 那根 bar 是不是今天的；bar_settled = 那根 bar 是不是收盘终值。
+  // 盘中两者不同步，必须分开——腾讯盘中就发当日 bar
+  data_fresh: boolean | null
+  bar_settled: boolean | null
+  latest_bar_date: string | null
   missing_days: number | null
   peak_board_confident: boolean | null
 }

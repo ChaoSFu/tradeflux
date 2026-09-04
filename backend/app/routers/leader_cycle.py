@@ -56,11 +56,18 @@ class LeaderCycleItem(BaseModel):
     rs_sector_20_delta_1d: Optional[float] = None
     dist_to_post_break_high: Optional[float] = None   # 离断板后阶段高点还有几 %
     dist_to_cycle_peak: Optional[float] = None        # 离原周期顶还有几 %
+    # 三态：True=创了 / False=比过没创 / None=没有可比的历史（断板当天）
     new_post_break_high_today: Optional[bool] = None
+    new_post_break_low_today: Optional[bool] = None
     volume_ratio_5d: Optional[float] = None
     amount_ratio_5d: Optional[float] = None
 
     bar_count: Optional[int] = None      # 参与均线计算的 bar 根数
+    # data_fresh = 那根 bar 是不是今天的；bar_settled = 那根 bar 是不是收盘终值。
+    # 盘中两者会同时为真/假不同步，必须分开给——状态机只在两者都为真时才推进
+    data_fresh: Optional[bool] = None
+    bar_settled: Optional[bool] = None
+    latest_bar_date: Optional[date] = None
     missing_days: Optional[int] = None
     peak_board_confident: Optional[bool] = None
 
@@ -136,6 +143,8 @@ def get_leader_cycle(
                 "rs_market_20_delta_1d", "rs_market_20_delta_3d",
                 "rs_sector_20_delta_1d", "dist_to_post_break_high",
                 "dist_to_cycle_peak", "new_post_break_high_today",
+                "new_post_break_low_today", "data_fresh", "bar_settled",
+                "latest_bar_date",
                 "volume_ratio_5d", "amount_ratio_5d",
                 "bar_count", "missing_days", "peak_board_confident")},
         ))
@@ -172,6 +181,7 @@ def get_leader_cycle(
         "turnover_rate": sum(1 for i in items if i.turnover_rate is not None),
         "volume": sum(1 for i in items if i.volume is not None),
         "rs_delta": sum(1 for i in items if i.rs_market_20_delta_1d is not None),
+        "settled": sum(1 for i in items if i.bar_settled and i.data_fresh),
     }
     return LeaderCycleResponse(
         trade_date=trade_date, running=running, broken=broken,
