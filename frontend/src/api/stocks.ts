@@ -51,3 +51,40 @@ export const fetchStock = (code: string) =>
 
 export const fetchStockSnapshots = (code: string, days = 30) =>
   client.get<StockSnapshot[]>(`/stocks/${code}/snapshots`, { params: { days } }).then((r) => r.data)
+
+// ── 高标龙头生命周期（事实层，2026-09-04）────────────────────────────────────
+export interface LeaderCycleItem {
+  code: string
+  name: string | null
+  sector_name: string | null
+  peak_board_count: number | null   // 本轮周期最高连板
+  board_count_60d: number | null    // 60日最高（历史辨识度，跟本轮分开看）
+  cycle_start_date: string | null
+  cycle_peak_date: string | null
+  break_date: string | null         // null = 仍在连板中
+  days_since_break: number | null
+  peak_price: number | null
+  post_break_high: number | null
+  post_break_low: number | null
+  latest_close: number | null
+  peak_drawdown: number | null
+  ma5: number | null; ma10: number | null; ma20: number | null; ma30: number | null
+  ma_window_complete: boolean | null
+  rs_market_10: number | null; rs_market_20: number | null; rs_market_60: number | null
+  rs_sector_10: number | null; rs_sector_20: number | null; rs_sector_60: number | null
+  volume: number | null; amount: number | null; turnover_rate: number | null
+  missing_days: number | null
+  peak_board_confident: boolean | null
+}
+
+export interface LeaderCycleResponse {
+  trade_date: string | null
+  running: LeaderCycleItem[]
+  broken: LeaderCycleItem[]
+  coverage: Record<string, number>
+  scope_note: string
+}
+
+export const fetchLeaderCycle = (tradeDate?: string) =>
+  client.get<LeaderCycleResponse>('/leader-cycle',
+    { params: tradeDate ? { trade_date: tradeDate } : {} }).then((r) => r.data)

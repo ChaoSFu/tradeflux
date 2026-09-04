@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .database import init_db
-from .routers import stocks, sectors, reviews, market_state, screening, admin, auth, watchlist, market_index, trade_journal, market_effects, turnover, weak_to_strong_radar, limit_up_radar, speculation_radar
+from .routers import stocks, sectors, reviews, market_state, screening, admin, auth, watchlist, market_index, trade_journal, market_effects, turnover, weak_to_strong_radar, limit_up_radar, speculation_radar, leader_cycle
 
 
 _scheduler = None  # 全局暴露，供 admin router 查询状态
@@ -62,6 +62,7 @@ app.include_router(turnover.router, prefix=settings.API_PREFIX)
 app.include_router(weak_to_strong_radar.router, prefix=settings.API_PREFIX)
 app.include_router(limit_up_radar.router, prefix=settings.API_PREFIX)
 app.include_router(speculation_radar.router, prefix=settings.API_PREFIX)
+app.include_router(leader_cycle.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/health")
