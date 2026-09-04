@@ -66,7 +66,7 @@ def build_snapshots(db: Session, trade_date: date,
     """
     pool = db.query(Stock).filter(Stock.in_strong_pool.is_(True)).all()
     if not pool:
-        return {"written": 0, "skipped": 0, "no_cycle": 0}
+        return {"written": 0, "skipped": 0, "no_cycle": 0, "stale": 0, "cleaned": 0}
 
     bench = MarketBenchmark(db, as_of=trade_date, windows=DEFAULT_WINDOWS)
 
@@ -86,7 +86,7 @@ def build_snapshots(db: Session, trade_date: date,
               .filter(LeaderCycleSnapshot.date < trade_date)
               .order_by(LeaderCycleSnapshot.date.desc()).limit(4000).all()):
         prior.setdefault(r.stock_id, []).append(r)   # 已按日期降序
-    written = no_cycle = skipped = stale = 0
+    written = no_cycle = skipped = stale = cleaned = 0
 
     for st in pool:
         bars = klines_map.get(st.code) or []
@@ -102,6 +102,17 @@ def build_snapshots(db: Session, trade_date: date,
             # 在池里但当前 60 日窗口内识别不出 >=4 连板周期。**这是事实不是错误**
             # ——东财召回口径与本地重算存在已知差异（2026-09-03 实测 61 只里 3 只）。
             # 不建行，而不是建一行字段全空的：缺行表达"没有周期"，比一行 NULL 清楚。
+            #
+            # 但"不建行"不够——**同一天重跑时，上一次建的行必须删掉**。这次不写，
+            # 不代表上次写的那行会消失：本函数是 upsert，只覆盖不清理。
+            # 2026-09-04 实测：回填口径从 ~98 根 bar 收窄到 65 根后，有几天的周期
+            # 不再成立，于是 4 行旧结论留在表里，字段还是上一版口径算出来的。
+            # 状态机拿它当有效 observation，还可能因为 cycle identity 对不上而
+            # 误触发一次 NEW_CYCLE 重置。
+            stale_row = existing.pop(st.id, None)
+            if stale_row is not None:
+                db.delete(stale_row)
+                cleaned += 1
             no_cycle += 1
             continue
 
@@ -227,4 +238,4 @@ def build_snapshots(db: Session, trade_date: date,
 
     db.commit()
     return {"written": written, "skipped": skipped, "no_cycle": no_cycle,
-            "stale": stale}
+            "stale": stale, "cleaned": cleaned}

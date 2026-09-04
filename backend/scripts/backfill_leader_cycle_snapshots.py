@@ -152,6 +152,7 @@ def main():
             total_nocycle += r["no_cycle"]
             print(f"  {d}  写入 {r['written']} 只"
                   + (f"，{r['no_cycle']} 只无周期" if r["no_cycle"] else "")
+                  + (f"，清理 {r['cleaned']} 行旧结论" if r.get("cleaned") else "")
                   + (f"，{r['skipped']} 只跳过" if r["skipped"] else ""))
 
         # 均线覆盖率必须打出来。上次回填漏传 stats_map，1639 行的均线全是 None，

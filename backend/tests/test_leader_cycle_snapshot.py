@@ -421,3 +421,40 @@ class TestSettlementAndNewLow:
         row = self._row(db)
         assert row.post_break_low == 12.0, "这个字段含当日，是周期区间的真实低点"
         assert row.new_post_break_low_today is True, "判定必须排除当日"
+
+
+class TestStaleRowCleanup:
+    """
+    同一天重跑、这次识别不出周期了 → **上一次建的那行必须删掉**。
+
+    2026-09-04 实测出来的：回填口径从 ~98 根 bar 收窄到 65 根之后，有几天的连板
+    周期不再成立，于是 4 行旧结论留在表里，字段还是上一版口径算出来的。本函数是
+    upsert，只覆盖不清理，"这次不写"不代表"上次那行会消失"。
+
+    留着的后果不只是脏数据：状态机会把它当成一个有效 observation，还可能因为
+    cycle identity 对不上而误触发一次 NEW_CYCLE 重置。
+    """
+
+    def test_周期不再成立时删掉旧行(self, db):
+        st = _seed_stock(db)
+        d = date(2026, 8, 7)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        build_snapshots(db, d, {st.code: bars}, settled=True)
+        assert db.query(LeaderCycleSnapshot).count() == 1
+
+        # 同一天重跑，这次的 bar 序列里没有 4 连板了（模拟窗口收窄）
+        flat = _bars([10.0, 10.1, 10.2, 10.3, 10.4, 10.5])
+        r = build_snapshots(db, d, {st.code: flat}, settled=True)
+        assert r["no_cycle"] == 1 and r["cleaned"] == 1
+        assert db.query(LeaderCycleSnapshot).count() == 0, \
+            "旧结论必须删掉——不写新行不等于旧行会消失"
+
+    def test_只清当天不碰别的日子(self, db):
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        build_snapshots(db, date(2026, 8, 6), {st.code: bars}, settled=True)
+        build_snapshots(db, date(2026, 8, 7), {st.code: bars}, settled=True)
+        flat = _bars([10.0, 10.1, 10.2, 10.3, 10.4, 10.5])
+        build_snapshots(db, date(2026, 8, 7), {st.code: flat}, settled=True)
+        left = db.query(LeaderCycleSnapshot).all()
+        assert [r.date for r in left] == [date(2026, 8, 6)]

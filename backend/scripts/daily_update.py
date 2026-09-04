@@ -1996,6 +1996,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                    " 只连板段顶到数据边界(板数为下界)"
                    if any(st.board_count_60d_truncated for st in stats_list) else "")
                 + (f"，{_lc['no_cycle']} 只当前识别不出≥4连板周期" if _lc["no_cycle"] else "")
+                + (f"，清理 {_lc['cleaned']} 行已失效的旧结论" if _lc.get("cleaned") else "")
                 + (f"，{_lc['skipped']} 只无K线跳过" if _lc["skipped"] else "")
                 # 当日 bar 不是今天的，那些股票的当日字段一律留空——必须报出来，
                 # 静默留空跟"今天真的没量"看起来一模一样
