@@ -27,8 +27,26 @@ from ..services.relative_strength_service import (
     MarketBenchmark, compute_rs_market, compute_rs_sector_from_vendor, DEFAULT_WINDOWS,
 )
 
-# 均线窗口够不够：ma30 要 30 根，留一根余量
+# 均线窗口够不够：ma30 要 30 根
 _MA_MIN_BARS = 30
+# 量比的回看根数
+_VOL_WINDOW = 5
+
+
+def _ratio(cur: Optional[float], hist: list) -> Optional[float]:
+    """
+    当前值 ÷ 前 N 根的均值。**任一根缺值就返回 None**，不补零也不跳过——
+    用 4 根的均值冒充"5日均量"，跟 ma60 拿 15 根算是同一类错。
+    """
+    if cur is None or len(hist) < _VOL_WINDOW or any(v is None for v in hist):
+        return None
+    avg = sum(hist) / len(hist)
+    return round(cur / avg, 3) if avg > 0 else None
+
+
+def _delta(cur: Optional[float], prev: Optional[float]) -> Optional[float]:
+    """两天之差。缺任一端就是 None——不知道昨天，就算不出"变化"。"""
+    return round(cur - prev, 2) if (cur is not None and prev is not None) else None
 
 
 def build_snapshots(db: Session, trade_date: date,
@@ -55,6 +73,13 @@ def build_snapshots(db: Session, trade_date: date,
         r.stock_id: r for r in db.query(LeaderCycleSnapshot)
         .filter(LeaderCycleSnapshot.date == trade_date).all()
     }
+    # 前几天的快照，用来算「变化速度」。一次查完，不在循环里逐只查库。
+    # 只取 trade_date 之前的——用当天或之后的行算"昨天"就是 look-ahead
+    prior: Dict[int, list] = {}
+    for r in (db.query(LeaderCycleSnapshot)
+              .filter(LeaderCycleSnapshot.date < trade_date)
+              .order_by(LeaderCycleSnapshot.date.desc()).limit(4000).all()):
+        prior.setdefault(r.stock_id, []).append(r)   # 已按日期降序
     written = no_cycle = skipped = stale = 0
 
     for st in pool:
@@ -130,8 +155,12 @@ def build_snapshots(db: Session, trade_date: date,
         if stats is not None:
             row.ma5, row.ma10 = stats.ma5, stats.ma10
             row.ma20, row.ma30 = stats.ma20, stats.ma30
-        # 窗口不满时上面几个是 0.0，这个标志让下游能区分"均线是0"和"没攒够"
-        row.ma_window_complete = len(bars) >= _MA_MIN_BARS
+            row.bar_count = stats.bar_count
+        else:
+            row.bar_count = len(bars)
+        # 均线现在窗口不足直接是 None（2026-09-04 改），这个布尔保留是为了
+        # 一眼看出"这只票历史够不够做趋势判定"，但真正的依据是各条均线本身有没有值
+        row.ma_window_complete = (row.bar_count or 0) >= _MA_MIN_BARS
         row.rs_market_10, row.rs_market_20, row.rs_market_60 = (
             rs_m.get(10), rs_m.get(20), rs_m.get(60))
         row.rs_sector_10, row.rs_sector_20, row.rs_sector_60 = (
@@ -140,6 +169,35 @@ def build_snapshots(db: Session, trade_date: date,
         # 不记来源就等于让两个不同的东西共用一个字段名
         row.rs_sector_source = ("vendor" if any(v is not None for v in rs_s.values())
                                 else None)
+        # ── 变化速度（全部由相邻快照 / bar 序列相减，仍是事实不是判定）──────
+        hist = prior.get(st.id, [])
+        d1 = hist[0] if hist else None                       # 上一个有快照的交易日
+        d3 = hist[2] if len(hist) >= 3 else None
+        row.rs_market_20_delta_1d = _delta(rs_m.get(20),
+                                           d1.rs_market_20 if d1 else None)
+        row.rs_market_20_delta_3d = _delta(rs_m.get(20),
+                                           d3.rs_market_20 if d3 else None)
+        row.rs_sector_20_delta_1d = _delta(rs_s.get(20),
+                                           d1.rs_sector_20 if d1 else None)
+        px = cyc.latest_close if fresh else None
+        row.dist_to_post_break_high = (
+            round((cyc.post_break_high / px - 1) * 100, 2)
+            if px and cyc.post_break_high and px > 0 else None)
+        row.dist_to_cycle_peak = (
+            round((cyc.peak_price / px - 1) * 100, 2)
+            if px and cyc.peak_price and px > 0 else None)
+        # 今天是不是断板后新高：拿今天的收盘跟**断板到昨天**的最高比。
+        # post_break_high 含今天，直接比会恒等，所以要排除最后一根
+        _after_excl_today = [b.close_price for b in bars
+                             if cyc.break_date and cyc.break_date <= b.date < last.date]
+        row.new_post_break_high_today = (
+            bool(px and _after_excl_today and px > max(_after_excl_today))
+            if fresh and cyc.break_date else None)
+        _vols = [b.volume for b in bars[-(_VOL_WINDOW + 1):-1]]
+        _amts = [b.amount for b in bars[-(_VOL_WINDOW + 1):-1]]
+        row.volume_ratio_5d = _ratio(last.volume if fresh else None, _vols)
+        row.amount_ratio_5d = _ratio(last.amount if fresh else None, _amts)
+
         row.volume, row.amount = (last.volume, last.amount) if fresh else (None, None)
         # 换手率：K线源一律不提供（腾讯/新浪/dump 都不给），必须自己算——
         # 成交量 ÷ 流通股本。首版这里直接写了 last.turnover_rate，于是 60 只全是

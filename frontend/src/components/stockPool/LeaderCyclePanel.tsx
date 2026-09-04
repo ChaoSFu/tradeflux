@@ -12,10 +12,17 @@
  *              和"那天我们没记录"）
  *   RS 空白    锚点日没有收盘价 / 无对应基准 → 不用邻近日期近似顶替
  *   换手空白   没有流通股本观测，或观测超 45 天（除权、解禁会让它台阶式跳变）
+ *   ΔRS 空白   没有昨天那行快照 → 算不出变化。**不写 0**：0 的意思是"没变化"
+ *   量比空白   前 5 根里有 bar 缺量 → 不拿 4 根冒充 5 日均量
+ *
+ * 覆盖率的分母是**整个强势池**，不是"已识别出周期的那些"。用后者当分母是幸存者
+ * 偏差：解析不出周期的股票直接从分母里消失，覆盖率看起来比实际好。所以底部专门
+ * 列出「识别不出周期」的那几只——这轮排查里 14 只口径不符查出 11 只是我们自己
+ * 算错的，静默消失就永远发现不了。
  */
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Info } from 'lucide-react'
+import { AlertTriangle, Info, TrendingUp } from 'lucide-react'
 import { fetchLeaderCycle, type LeaderCycleItem } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
@@ -57,7 +64,8 @@ export default function LeaderCyclePanel() {
   const rows = useMemo(
     () => (group === 'broken' ? data?.broken : data?.running) ?? [], [data, group])
   const cov = data?.coverage ?? {}
-  const total = cov.total ?? 0
+  const total = cov.total ?? 0          // = 整个强势池，不是已识别出周期的数量
+  const unresolved = data?.unresolved ?? []
 
   return (
     <div className="space-y-3">
@@ -78,6 +86,7 @@ export default function LeaderCyclePanel() {
             <span className="text-text-muted">数据覆盖</span>
             {([['连板数可信', cov.peak_board_confident], ['均线完整', cov.ma_window_complete],
                ['成交量', cov.volume], ['相对强度', cov.rs_market],
+               ['RS变化', cov.rs_delta],
                ['换手率', cov.turnover_rate]] as const).map(([label, n]) => {
               const pct = total ? Math.round(((n ?? 0) / total) * 100) : 0
               return (
@@ -88,6 +97,33 @@ export default function LeaderCyclePanel() {
                 </span>
               )
             })}
+            <span className="text-text-muted/70">
+              分母 = 强势池 {cov.pool_total ?? total} 只（含识别不出周期的
+              <span className={NUM}> {cov.cycle_unresolved ?? 0} </span>只）
+            </span>
+          </div>
+        )}
+        {unresolved.length > 0 && (
+          <div className="text-[11px] pt-1 border-t border-bg-border space-y-1">
+            <div className="flex items-center gap-1 text-warn">
+              <AlertTriangle className="w-3 h-3" />
+              <span>本地识别不出 ≥4 连板周期（{unresolved.length} 只）</span>
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-1">
+              {unresolved.map((u) => (
+                <span key={u.code} className="text-text-secondary" title={u.reason}>
+                  {u.name || u.code}
+                  <span className={cn('ml-1 text-text-muted', NUM)}>
+                    {u.code} · 60日{u.board_count_60d ?? '?'}板
+                  </span>
+                </span>
+              ))}
+            </div>
+            <div className="text-text-muted/70">
+              它们仍在东财召回的强势池里，但我们自己重算的连板数没到 4——
+              可能是对方口径不同，也可能是我们算错了。<span className="text-text-primary">
+              放在这里而不是从分母里删掉</span>，是因为静默消失就永远查不出来。
+            </div>
           </div>
         )}
       </div>
@@ -112,11 +148,13 @@ export default function LeaderCyclePanel() {
         <div className="card p-8 text-center text-text-muted text-sm">该分组暂无股票</div>
       ) : (
         <div className="card overflow-x-auto">
-          <table className="w-full text-xs" style={{ minWidth: 980 }}>
+          <table className="w-full text-xs" style={{ minWidth: 1280 }}>
             <thead>
               <tr className="text-[10px] text-text-muted uppercase tracking-wider">
                 {['股票', '主板块', '本轮', '60日', 'D+', '峰值回撤',
-                  '现价/MA5', '现价/MA10', 'RS市场20', 'RS板块20', '换手'].map((h) => (
+                  '现价/MA5', '现价/MA10', '距阶段高', '距周期顶',
+                  'RS市场20', 'ΔRS 1日', 'ΔRS 3日', 'RS板块20',
+                  '量比5日', '换手'].map((h) => (
                   <th key={h} className="px-3 py-2 text-left font-medium whitespace-nowrap
                                          border-b border-bg-border">{h}</th>
                 ))}
@@ -159,8 +197,20 @@ function Row({ r }: { r: LeaderCycleItem }) {
       <td className="px-3 py-2"><Val v={r.peak_drawdown} suffix="%" signed /></td>
       <td className="px-3 py-2"><MaPos close={r.latest_close} ma={r.ma5} /></td>
       <td className="px-3 py-2"><MaPos close={r.latest_close} ma={r.ma10} /></td>
+      <td className="px-3 py-2">
+        <Val v={r.dist_to_post_break_high} suffix="%" />
+        {r.new_post_break_high_today && (
+          <span title="今日收盘创断板后新高" className="ml-1 inline-flex align-middle text-up">
+            <TrendingUp className="w-3 h-3" />
+          </span>
+        )}
+      </td>
+      <td className="px-3 py-2"><Val v={r.dist_to_cycle_peak} suffix="%" /></td>
       <td className="px-3 py-2"><Val v={r.rs_market_20} signed /></td>
+      <td className="px-3 py-2"><Val v={r.rs_market_20_delta_1d} signed /></td>
+      <td className="px-3 py-2"><Val v={r.rs_market_20_delta_3d} signed /></td>
       <td className="px-3 py-2"><Val v={r.rs_sector_20} signed /></td>
+      <td className="px-3 py-2"><Val v={r.volume_ratio_5d} digits={2} /></td>
       <td className="px-3 py-2"><Val v={r.turnover_rate} suffix="%" /></td>
     </tr>
   )

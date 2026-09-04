@@ -49,16 +49,41 @@ class LeaderCycleItem(BaseModel):
     amount: Optional[float] = None
     turnover_rate: Optional[float] = None
 
+    # ── 变化速度：截面看不出"正在变强"还是"已经强了很久"。RS20=+12 是从 -5 爬
+    # 上来还是从 +30 掉下来的，含义完全相反。全部由相邻快照相减，缺一端就是 None
+    rs_market_20_delta_1d: Optional[float] = None
+    rs_market_20_delta_3d: Optional[float] = None
+    rs_sector_20_delta_1d: Optional[float] = None
+    dist_to_post_break_high: Optional[float] = None   # 离断板后阶段高点还有几 %
+    dist_to_cycle_peak: Optional[float] = None        # 离原周期顶还有几 %
+    new_post_break_high_today: Optional[bool] = None
+    volume_ratio_5d: Optional[float] = None
+    amount_ratio_5d: Optional[float] = None
+
+    bar_count: Optional[int] = None      # 参与均线计算的 bar 根数
     missing_days: Optional[int] = None
     peak_board_confident: Optional[bool] = None
+
+
+class UnresolvedItem(BaseModel):
+    """在强势池里、但本地识别不出 >=4 连板周期的股票。"""
+    code: str
+    name: Optional[str] = None
+    board_count_60d: Optional[int] = None    # 本地重算的 60 日最高连板
+    reason: str
 
 
 class LeaderCycleResponse(BaseModel):
     trade_date: Optional[date] = None
     running: List[LeaderCycleItem]      # 仍在连板中（break_date 为空）
     broken: List[LeaderCycleItem]       # 已断板，按距断板交易日数升序
+    # 在池子里但识别不出周期的。**不能让它们静默消失**——它们是东财召回口径与
+    # 本地重算的差异，而这轮排查证明这类差异里绝大多数曾经是我们自己算错的
+    unresolved: List[UnresolvedItem] = []
     # 覆盖率：每一项都是"这个事实我们掌握了多少"。**必须暴露给前端**——
-    # 一个 63% 覆盖率的字段和一个 100% 的字段，读图的人有权知道区别
+    # 一个 63% 覆盖率的字段和一个 100% 的字段，读图的人有权知道区别。
+    # 分母是**整个强势池**，不是"已识别出周期的那些"：用后者当分母是幸存者偏差，
+    # 解析不出周期的股票直接从分母里消失，覆盖率看起来比实际好
     coverage: dict
     scope_note: str
 
@@ -108,7 +133,11 @@ def get_leader_cycle(
                 "rs_market_10", "rs_market_20", "rs_market_60",
                 "rs_sector_10", "rs_sector_20", "rs_sector_60",
                 "volume", "amount", "turnover_rate",
-                "missing_days", "peak_board_confident")},
+                "rs_market_20_delta_1d", "rs_market_20_delta_3d",
+                "rs_sector_20_delta_1d", "dist_to_post_break_high",
+                "dist_to_cycle_peak", "new_post_break_high_today",
+                "volume_ratio_5d", "amount_ratio_5d",
+                "bar_count", "missing_days", "peak_board_confident")},
         ))
 
     running = [i for i in items if i.break_date is None]
@@ -118,8 +147,23 @@ def get_leader_cycle(
     broken.sort(key=lambda i: (i.days_since_break if i.days_since_break is not None
                                else 10 ** 6, -(i.peak_board_count or 0)))
 
-    n = len(items)
+    # 分母用整个强势池，不是 len(items)
+    pool = db.query(Stock).filter(Stock.in_strong_pool.is_(True)).all()
+    resolved = {i.code for i in items}
+    unresolved = sorted(
+        (UnresolvedItem(
+            code=st.code, name=st.name, board_count_60d=st.board_count_60d,
+            reason=("本地重算未达 4 连板（与东财召回口径有差异）"
+                    if (st.board_count_60d or 0) < 4
+                    else "60日窗口内识别不出连板周期"))
+         for st in pool if st.code not in resolved),
+        key=lambda u: -(u.board_count_60d or 0))
+
+    n = len(pool) or len(items)
     cov = {
+        "pool_total": len(pool),
+        "cycle_identified": len(items),
+        "cycle_unresolved": len(unresolved),
         "total": n,
         "peak_board_confident": sum(1 for i in items if i.peak_board_confident),
         "ma_window_complete": sum(1 for i in items if i.ma_window_complete),
@@ -127,8 +171,10 @@ def get_leader_cycle(
         "rs_sector": sum(1 for i in items if i.rs_sector_20 is not None),
         "turnover_rate": sum(1 for i in items if i.turnover_rate is not None),
         "volume": sum(1 for i in items if i.volume is not None),
+        "rs_delta": sum(1 for i in items if i.rs_market_20_delta_1d is not None),
     }
     return LeaderCycleResponse(
-        trade_date=trade_date, running=running, broken=broken, coverage=cov,
+        trade_date=trade_date, running=running, broken=broken,
+        unresolved=unresolved, coverage=cov,
         scope_note="高标池 = 近60个交易日最高连板 ≥ 4；不含 ST、退市整理期、北交所",
     )

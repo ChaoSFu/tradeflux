@@ -73,14 +73,34 @@ export interface LeaderCycleItem {
   rs_market_10: number | null; rs_market_20: number | null; rs_market_60: number | null
   rs_sector_10: number | null; rs_sector_20: number | null; rs_sector_60: number | null
   volume: number | null; amount: number | null; turnover_rate: number | null
+  // 变化速度：截面数字答不了「正在变强」还是「已经强了很久」。
+  // RS20=+12 是从 -5 爬上来还是从 +30 掉下来的，含义完全相反
+  rs_market_20_delta_1d: number | null
+  rs_market_20_delta_3d: number | null
+  rs_sector_20_delta_1d: number | null
+  dist_to_post_break_high: number | null   // 离断板后阶段高点还有几 %
+  dist_to_cycle_peak: number | null        // 离原周期顶还有几 %
+  new_post_break_high_today: boolean | null
+  volume_ratio_5d: number | null
+  amount_ratio_5d: number | null
+  bar_count: number | null
   missing_days: number | null
   peak_board_confident: boolean | null
+}
+
+/** 在强势池里、但本地识别不出 >=4 连板周期的股票——不能让它们静默消失 */
+export interface UnresolvedLeader {
+  code: string
+  name: string | null
+  board_count_60d: number | null
+  reason: string
 }
 
 export interface LeaderCycleResponse {
   trade_date: string | null
   running: LeaderCycleItem[]
   broken: LeaderCycleItem[]
+  unresolved: UnresolvedLeader[]
   coverage: Record<string, number>
   scope_note: string
 }

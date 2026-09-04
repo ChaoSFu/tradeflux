@@ -94,8 +94,12 @@ class StockWindowStats:
     is_new_stock: bool
 
     # 阶段分类
-    ma60: float                # 60日均线（收盘价）
-    ma30: float                # 30日均线（收盘价）
+    # 均线：**窗口不足一律 None，不是 0.0，也不是"有多少根算多少根"**
+    # （2026-09-04 改）。原来 ma60 在只有 15 根 bar 时给的是 15 日均价，字段却仍
+    # 叫 ma60——一个名不副实的数会被下游当成真的 60 日均线用，而且不会报错。
+    # 新加的 ma5/10/20 当初给 0.0 也不对：0 是个合法价格，跟"没算出来"混在一起。
+    ma60: Optional[float]
+    ma30: Optional[float]
     consecutive_declines: int  # 从今日起连续下跌天数
     phase: str                 # "broken"（破位）| "weakening"（走弱）| "normal"
 
@@ -103,9 +107,12 @@ class StockWindowStats:
     # 带默认值的字段必须排在无默认字段之后，否则 dataclass 直接 TypeError。
     # 短周期均线：0.0 = 窗口不足，不是"均线是0元"。下游一律 `if maN > 0` 判断，
     # 跟既有的 ma30/ma60 同一条规矩。
-    ma5: float = 0.0
-    ma10: float = 0.0
-    ma20: float = 0.0
+    ma5: Optional[float] = None
+    ma10: Optional[float] = None
+    ma20: Optional[float] = None
+    # 这只股票一共有多少根 bar。有它就能自己判断哪几条均线该有值，
+    # 不用再靠一个笼统的 ma_window_complete 布尔
+    bar_count: int = 0
     # 成交量（股）/ 成交额（元）/ 量的来源口径。None = 该源没给，不是 0。
     # 来源要一路带到快照：dump 未复权、腾讯 qfq，复权会同时调整价和量。
     today_volume: Optional[float] = None
@@ -189,14 +196,12 @@ def compute_window_stats(
 
     # 60日均线 / 30日均线（收盘价均值）
     recent_30 = bars[-30:] if n >= 30 else bars
-    ma60 = sum(b.close_price for b in recent_60) / len(recent_60) if recent_60 else 0.0
-    ma30 = sum(b.close_price for b in recent_30) / len(recent_30) if recent_30 else 0.0
-    # 短周期均线（2026-09-03 补，高标龙头生命周期要用）。跟 ma30/ma60 同一份 bars，
-    # **窗口不足就给 0.0 而不是"有多少算多少"**——跟上面两条保持一致的口径。
-    # 0.0 在下游一律当"没有"处理（`if ma5 > 0` 是既有写法），不会被当成 0 元均线。
-    ma5 = sum(b.close_price for b in bars[-5:]) / 5 if len(bars) >= 5 else 0.0
-    ma10 = sum(b.close_price for b in bars[-10:]) / 10 if len(bars) >= 10 else 0.0
-    ma20 = sum(b.close_price for b in bars[-20:]) / 20 if len(bars) >= 20 else 0.0
+    # 均线一律"窗口够才算"。够不够只看 bar 数，跟 recent_60 那种"不够就用全部"
+    # 的旧写法彻底分开——那种写法产出的是一个名不副实的数（15根算出来仍叫 ma60）
+    def _ma(win: int) -> Optional[float]:
+        return sum(b.close_price for b in bars[-win:]) / win if n >= win else None
+
+    ma5, ma10, ma20, ma30, ma60 = _ma(5), _ma(10), _ma(20), _ma(30), _ma(60)
 
     # 从今日起连续下跌天数（向历史倒推，遇到非负涨幅即停止）
     consecutive_declines = 0
@@ -209,10 +214,14 @@ def compute_window_stats(
     # 今日数据
     today = bars[-1]
 
-    # 阶段分类（优先级：破位 > 走弱 > 正常）
-    if ma60 > 0 and today.close_price < ma60:
+    # 阶段分类（优先级：破位 > 走弱 > 正常）。
+    # **均线为 None 时不参与判定**：以前窗口不足会拿"15根均价"冒充 ma60，
+    # 于是上市不久的股票很容易被误判成破位。算不出来就不判，不是判成正常也不是破位
+    # ——但 phase 只有三个取值，这里落到 normal，同时靠 bar_count 让下游能看出
+    # 这只股票的历史根本不够做趋势判定。
+    if ma60 is not None and today.close_price < ma60:
         phase = "broken"       # 跌破60日均线 → 破位
-    elif consecutive_declines >= 4 or (ma30 > 0 and today.close_price < ma30):
+    elif consecutive_declines >= 4 or (ma30 is not None and today.close_price < ma30):
         phase = "weakening"    # 连跌4天及以上，或跌破30日均线（且未破60日均线）→ 走弱
     else:
         phase = "normal"
@@ -320,9 +329,12 @@ def compute_window_stats(
         risk_score=round(risk, 1),
         leader_score=round(leader, 1),
         is_new_stock=is_new,
-        ma60=round(ma60, 3),
-        ma30=round(ma30, 3),
-        ma5=round(ma5, 3), ma10=round(ma10, 3), ma20=round(ma20, 3),
+        ma60=round(ma60, 3) if ma60 is not None else None,
+        ma30=round(ma30, 3) if ma30 is not None else None,
+        ma5=round(ma5, 3) if ma5 is not None else None,
+        ma10=round(ma10, 3) if ma10 is not None else None,
+        ma20=round(ma20, 3) if ma20 is not None else None,
+        bar_count=n,
         consecutive_declines=consecutive_declines,
         phase=phase,
     )

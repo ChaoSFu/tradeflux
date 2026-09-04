@@ -243,3 +243,78 @@ class TestSuspensionNotGap:
         build_snapshots(db, later.date, {st.code: bars + [later]}, trading_days=days)
         row = db.query(LeaderCycleSnapshot).one()
         assert row.missing_days == 1 and row.peak_board_confident is False
+
+
+class TestChangeVelocity:
+    """
+    2026-09-04 加的「变化速度」字段。
+
+    动机：截面数字回答不了"它正在变强还是已经强了很久"。RS20=+12 是从 -5 爬上来
+    的，还是从 +30 掉下来的？含义完全相反，而截面看不出来。这些字段全部由**相邻
+    快照相减**得到，仍然是事实层，不是判定。
+    """
+
+    def _row(self, db, code="600001"):
+        return db.query(LeaderCycleSnapshot).filter_by(
+            stock_id=db.query(Stock).filter_by(code=code).one().id).order_by(
+            LeaderCycleSnapshot.date.desc()).first()
+
+    def test_没有昨天的快照时delta是空值而不是0(self, db):
+        """
+        0 的意思是"没变化"，None 的意思是"不知道"。第一天就写 0，等于宣称
+        这只票 RS 纹丝不动——这正是这轮排查里反复出现的那类错。
+        """
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 16.1])
+        build_snapshots(db, bars[-1].date, {st.code: bars},
+                        trading_days=[b.date for b in bars])
+        row = self._row(db)
+        assert row.rs_market_20_delta_1d is None
+        assert row.rs_market_20_delta_3d is None
+
+    def test_量比缺任一根就不算(self, db):
+        """
+        5 日均量拿 4 根算，跟 ma60 拿 15 根算是同一类错：名字说 5 根，实际不是。
+        宁可给 None。
+        """
+        from app.services.leader_cycle_snapshot_service import _ratio
+        assert _ratio(100.0, [10.0, 10.0, 10.0, 10.0, None]) is None
+        assert _ratio(100.0, [10.0, 10.0, 10.0, 10.0]) is None, "只有4根不能冒充5根"
+        assert _ratio(None, [10.0] * 5) is None
+        assert _ratio(100.0, [10.0] * 5) == 10.0
+
+    def test_量比用昨天之前5根不含当日(self, db):
+        """含当日就是拿自己跟含自己的均值比，放大越猛比值越被自己拉低。"""
+        st = _seed_stock(db)
+        # 先 4 连板攒出一个周期（不然识别不出周期，压根不会落快照），再走平
+        closes = [10.0, 11.0, 12.1, 13.31, 14.64] + [14.64] * 5
+        bars, prev = [], closes[0]
+        for i, c in enumerate(closes[1:], start=1):
+            bars.append(build_kline_bar(
+                dt=D0 + timedelta(days=i), open_p=c, close_p=c, high_p=c, low_p=c,
+                pct=(c / prev - 1) * 100, turnover=None, limit_pct=9.90,
+                prev_close=prev,
+                volume=(5000.0 if i == len(closes) - 1 else 1000.0),
+                amount=None, volume_source="tencent"))
+            prev = c
+        build_snapshots(db, bars[-1].date, {st.code: bars},
+                        trading_days=[b.date for b in bars])
+        row = self._row(db)
+        assert row.volume_ratio_5d == 5.0, "5000 ÷ 前五根均值1000；含当日会变成 3.57"
+        assert row.amount_ratio_5d is None, "amount 全是 None，不能补零凑出一个比值"
+
+    def test_行情不新鲜时不产出变化速度(self, db):
+        """
+        最后一根 bar 不是当日 → latest_close 本身就是隔夜陈值。拿陈值去算
+        "今天创没创新高"，会把上周的高点写成今天的突破。
+        """
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64])
+        later = bars[-1].date + timedelta(days=3)
+        build_snapshots(db, later, {st.code: bars},
+                        trading_days=[b.date for b in bars] + [later])
+        row = self._row(db)
+        assert row.data_fresh is False
+        assert row.new_post_break_high_today is None
+        assert row.volume_ratio_5d is None
+        assert row.dist_to_post_break_high is None

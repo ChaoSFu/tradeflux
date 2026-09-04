@@ -62,6 +62,9 @@ class LeaderCycleSnapshot(Base):
     ma30 = Column(Float, nullable=True)
     # 窗口不足时上面几个是 0.0（沿用 screening_service 的既有口径），这个标志
     # 让下游能区分"均线是0元"和"窗口没攒够"——后者不该参与任何判定
+    # 实际参与均线计算的 bar 根数。一个布尔分不清"MA5有效但MA30无效"，
+    # 而这正是 2026-09-04 把均线改成 Optional 之后下游要判断的东西
+    bar_count = Column(Integer, nullable=True)
     ma_window_complete = Column(Boolean, nullable=True)
 
     # ── 相对强度（None = 不知道，见 relative_strength_service）───────────────
@@ -75,6 +78,22 @@ class LeaderCycleSnapshot(Base):
     # "vendor"=板块那边用东财服务端算好的区间涨幅（板块指数历史拿不到时的替代）。
     # 两者不等价，不记来源就是让两个不同定义共用一个字段名——跟 volume_source 同理
     rs_sector_source = Column(String(10), nullable=True)
+
+    # ── 变化速度（2026-09-04）───────────────────────────────────────────────
+    # 静态截面回答不了"它正在变强还是已经强了很久"。RS20=+12 这个数，是刚从 -5
+    # 爬上来，还是从 +30 掉下来的？含义完全相反，而截面看不出来。
+    # 全部由**相邻快照相减**得到，仍然是事实，不是判定；缺任一端就是 None。
+    rs_market_20_delta_1d = Column(Float, nullable=True)
+    rs_market_20_delta_3d = Column(Float, nullable=True)
+    rs_sector_20_delta_1d = Column(Float, nullable=True)
+    # 离"二波突破"还有多远（%）。post_break_high 是断板后的阶段高点，
+    # cycle_peak 是原周期顶——两个都要，前者是近的坎，后者是远的坎
+    dist_to_post_break_high = Column(Float, nullable=True)
+    dist_to_cycle_peak = Column(Float, nullable=True)
+    new_post_break_high_today = Column(Boolean, nullable=True)   # 今天创断板后新高
+    # 修复有没有量能配合。None = 前 5 根里有 bar 没有量（不补零、不用均值顶替）
+    volume_ratio_5d = Column(Float, nullable=True)
+    amount_ratio_5d = Column(Float, nullable=True)
 
     # ── 量能（2026-09-03 刚接入，来源口径见 StockDailySnapshot.volume_source）──
     volume = Column(Float, nullable=True)
