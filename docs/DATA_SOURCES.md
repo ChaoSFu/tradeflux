@@ -169,6 +169,46 @@ GET https://np-tjxg-g.eastmoney.com/api/smart-tag/stock/v3/pw/search-code
 
 ---
 
+### 1.10 东财：连板天梯（权威梯队，2026-09-03 接入）
+
+```
+GET https://datacenter.eastmoney.com/securities/api/data/v1/get
+    ?source=SECURITIES&client=APP
+    &reportName=RPT_INTSELECTION_MONITORHIS
+    &columns=SECUCODE,SECURITY_CODE,SECURITY_NAME_ABBR,N_CLASS
+    &filter=(TRADE_DATE='2026-09-01')(@N_CLASS<>"NULL")(IS_ST="0")
+```
+
+- `N_CLASS` = 连板数。**`TRADE_DATE` 是入参，任意历史日期都能取**——这是它最大的价值
+- 只返回 **2 板及以上**，不含首板
+- `IS_ST="0"` 服务端已排除 ST；但**不排除退市整理期股票**，"退"字股要自己剔
+  （2026-07-17 实测：东财最高 5 板，那只是 920305「云创退」，0.40 元的退市股）
+- **也不排除北交所**。北交所 30% 涨跌幅，3 连板 = +120%，跟主板 +33% 不可比，
+  混进同一个「最高连板」指标会让曲线失去意义，同样要自己剔
+- `code=9201「返回数据为空」` 是"那天没有"的明确信号，跟请求失败分开了。
+  但**收盘后不是立即发布**：09-03 收盘后仍返回 9201，所以"返回空且我们有连板记录"
+  要判为"疑似未发布"而不是"确实没有"
+- 它**会漏**（见坑 11），不能当唯一真理
+
+代码：`app/services/limit_up_detail_fetcher.fetch_limit_up_ladder()`
+
+### 1.11 东财：板块指数 K 线（RS_sector 基准）
+
+```
+GET https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=90.BK0832&klt=101...
+```
+
+- `secid` = `"90." + Sector.code`，实测 BK0832 工业互联网可取 **300 根**
+  （2025-06-16 ~ 2026-09-03）
+- **不能走 `fetch_index_kline()`**：那个函数是腾讯优先的（为 5 个固定指数定的），
+  而腾讯根本没有 BK 板块码，会先拿到畸形数据再在兜底里抛
+  `'list' object has no attribute 'get'`——**不是"板块拉不到"，是走错了路**
+- push2his 限流很凶（见坑 13），所以只用于一次性回填；日常增量走 clist 的 `f2`
+  字段（板块指数点位），零新增请求
+
+代码：`app/services/eastmoney_fetcher.fetch_sector_kline()` /
+`app/services/sector_index_service.py`
+
 ## 二、评估过但**没有采用**
 
 ### 2.1 东财 stockextenddata typelist（2026-08-26 评估，未采用）
@@ -251,3 +291,58 @@ GET .../multi_last_snapshot                                     # 批量快照�
    挡掉、又把新浪 K 线的 `/*注释*/` 前缀误判成非 JSON，白白让人去查不存在的问题。
 
 7. **改代码前先 dump 原始响应。**（见文首）
+
+8. **要一个"没有的"字段时，先把现有请求的完整响应打出来看一遍。**
+   2026-09-03 要给高标龙头生命周期补成交量、成交额、相对强度、换手率四项，
+   最初判定为"数据缺失、需要接新接口"。逐个查证后**四项全部零新增请求**：
+
+   | 以为要新接口 | 实际在哪 |
+   |---|---|
+   | 成交量 / 成交额 | fuyao dump 的 parquet **本来就有** `volume`/`turnover` 两列，`load_bars` 的 `read_table` 只选了 6 列；腾讯 K 线每行 `row[5]` 也被解析器直接丢掉 |
+   | rs_market | `IndexDailySnapshot` 已有 5 指数 × 120 根完整历史 |
+   | rs_sector | `Sector.pct_change_5d/10d/20d/60d`（f109/f110/f160/f165）每天在同步 |
+   | 换手率 | 涨停池**和炸板池**的 `ltsz`（流通市值）÷ 收盘价 = 流通股本 |
+
+   同一份文档第 1.1 节早就列着 dump 的完整列名。**写在文档里的经验，不主动去查
+   还是会重蹈。** 这条要当默认排查顺序，不是"想起来再说"。
+
+9. **两个数据源不一致时，先假设是自己错。**
+   2026-09-03 强势池按 `PeakBoard60D>=4` 收窄后，东财返回 61 只、本地重算只有 47 只
+   符合。第一反应是"东财理解错了 prompt"——**实测 14 只差异里 11 只是我们自己算错的**
+   （`_snapshots_to_klinebars` 在快照缺口处取错前收，把正确的 `is_limit_up=True`
+   改成了 False，连板数系统性偏低）。剩下 3 只用腾讯 K 线独立重算确认确实没到 4 板，
+   才是真正的口径差异。
+
+10. **内部一致性检查证明不了正确性，必须有独立外部源。**
+    `verify_board_history.py` 只对"库里已标记 board_count>=3"的记录重拉 K 线对账，
+    是**自指的**——它能证伪"我们说有、实际没有"，却完全看不见"实际有、我们没记"。
+    2026-08-06 那天它报「0 分歧」，而东财连板天梯是 10 板、我们只有 5 板，
+    整段行情的最高点漏掉了，校验却全绿。
+    真正补上这个盲区的是东财连板天梯（`RPT_INTSELECTION_MONITORHIS`，见 1.10）。
+
+11. **权威源也会漏。** 上一条那个天梯接口实测至少 3 例真实连板股没收录
+    （002827 08-04、600272 08-12、600540 09-02），每例都用腾讯按交易所精确涨停价
+    核对过——收盘价分毫不差等于涨停价。所以修数据时用**三源裁决**：
+    我们的值 × 东财天梯 × 腾讯K线重算，两源一致才动，三方不同就如实报冲突不动数据。
+
+12. **"功能做完了"和"数据真的到了"是两回事。**
+    接入成交量时，同一个功能连续三次"接了一半"：先是造好 `compute_turnover_rate()`
+    没在快照里调用；再是三条取数路径（dump / 腾讯 / DB重建）只接了两条，而日志里
+    「DB重建 230 只」说明绝大多数走的正是漏掉那条；最后还漏了行情兜底和历史行回填。
+    **每一段单独看都对，断的是端到端的链条，而单元测试全绿。**
+    抓到它们的是生产上一条覆盖率查询：
+
+    ```sql
+    SELECT date, count(*) 行数, count(volume) 有量,
+           count(*) FILTER (WHERE volume_source='dump') 来自dump
+    FROM stock_daily_snapshots WHERE date >= CURRENT_DATE - 12
+    GROUP BY date ORDER BY date DESC;
+    ```
+
+    这类"数据实际到没到"的断言比测代码更有价值。接完任何新字段都该跑一次。
+
+13. **push2 和 push2his 是两个域名，不要混为一谈。**
+    `push2.eastmoney.com/api/qt/clist`（列表、板块行情）实测正常——888 个板块 10 页
+    8.3 秒。而 `push2his.eastmoney.com/api/qt/stock/kline`（K线历史）限流很凶，
+    约十几次请求就会把 IP 打进封锁，且**连既有代码依赖的指数 K 线也一起拉不到**。
+    所以设计上要让 push2his 只承担一次性回填，日常增量走 clist。
