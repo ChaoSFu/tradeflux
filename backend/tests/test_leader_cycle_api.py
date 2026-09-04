@@ -156,3 +156,57 @@ class TestLifecycleInApi:
               cycle_start_date=TODAY, cycle_peak_date=TODAY)
         cov = client.get("/leader-cycle").json()["coverage"]
         assert cov["lifecycle_resolved"] == 1 and cov["settled"] == 1
+
+
+class TestNothingSwallowed:
+    """
+    **一只股票因为归不了类而从界面上消失，是这个页面最不能容忍的失败。**
+    不可见比判断错更糟——判断错还能被看见并纠正。
+
+    所以接口层必须保证：running + broken + unresolved 是整个强势池的一个划分
+    （不重不漏）。前端的分组桶再怎么改，都是在这三个列表之上切的。
+    """
+
+    def test_三个列表不重不漏地覆盖整个池(self, db, client):
+        a, b = _stock(db, "600001"), _stock(db, "600002")
+        _stock(db, "600003", board60=2)           # 识别不出周期
+        _stock(db, "600004", board60=9)           # 60日够但没算出周期
+        _snap(db, a, break_date=None, data_fresh=True, bar_settled=True,
+              latest_close=10.0, cycle_start_date=TODAY, cycle_peak_date=TODAY)
+        _snap(db, b, break_date=date(2026, 8, 28), days_since_break=3,
+              data_fresh=True, bar_settled=True, latest_close=10.0,
+              cycle_start_date=TODAY, cycle_peak_date=TODAY)
+        d = client.get("/leader-cycle").json()
+        codes = ([i["code"] for i in d["running"]] + [i["code"] for i in d["broken"]]
+                 + [u["code"] for u in d["unresolved"]])
+        assert len(codes) == len(set(codes)) == d["coverage"]["pool_total"] == 4, \
+            "三个列表加起来必须正好是整个池，且不重复"
+        assert set(codes) == {"600001", "600002", "600003", "600004"}
+
+    def test_识别不出周期的也要说明原因(self, db, client):
+        """
+        只给一个代码等于把问题丢给人。前端要把它们渲染成表格里的行，
+        原因就是那行唯一能显示的内容。
+        """
+        _snap(db, _stock(db, "600001"), break_date=None, data_fresh=True,
+              bar_settled=True, latest_close=10.0,
+              cycle_start_date=TODAY, cycle_peak_date=TODAY)
+        _stock(db, "600003", board60=2)
+        u = client.get("/leader-cycle").json()["unresolved"][0]
+        assert u["reason"] and u["board_count_60d"] == 2
+
+    def test_每只有快照的都判得出一个状态(self, db, client):
+        """
+        replay 永远返回一个状态（最差是 UNKNOWN），不会返回 None——前端的
+        `?? 'UNKNOWN'` 只是防御，不该是常态。
+        """
+        for i, (fresh, settled) in enumerate(
+                [(True, True), (True, False), (False, True), (True, None)]):
+            st = _stock(db, f"60000{i + 1}")
+            _snap(db, st, break_date=None, data_fresh=fresh, bar_settled=settled,
+                  latest_close=10.0, cycle_start_date=TODAY, cycle_peak_date=TODAY)
+        d = client.get("/leader-cycle").json()
+        items = d["running"] + d["broken"]
+        assert len(items) == 4
+        assert all(i["lifecycle_state"] for i in items), "一个都不能是 null"
+        assert sum(1 for i in items if i["lifecycle_state"] == "UNKNOWN") == 3

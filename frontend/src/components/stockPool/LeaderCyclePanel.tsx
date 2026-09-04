@@ -31,13 +31,29 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Info, TrendingUp } from 'lucide-react'
-import { fetchLeaderCycle, type LeaderCycleItem } from '@/api/stocks'
+import { fetchLeaderCycle, type LeaderCycleItem, type LifecycleState } from '@/api/stocks'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 
-type Group = 'core' | 'CROSS_WEAKENING' | 'BROKEN' | 'STREAKING'
-           | 'CROSS_FAILED' | 'FADED' | 'UNKNOWN'
+type Group = 'core' | 'waiting' | 'dropped' | 'all' | 'unbucketed'
 const NUM = 'font-mono tabular-nums'
+
+/**
+ * 分组只有三个语义桶 + 一个「全部」。系统的职责是**剔除**，把注意力收敛到少数
+ * 几只上；不是替人做买点判断——买点由人确认，这里一个 BUY/BUYABLE 都不给。
+ *
+ * **每一桶的并集必须等于整个强势池。** 一只股票因为归不了类而从界面上消失，
+ * 是这个页面最不能容忍的失败：不可见比判断错更糟，判断错还能被看见并纠正。
+ * 所以下面三个桶之外还有一个 unbucketed 兜底——它平时是 0，一旦非 0 就会亮出来。
+ */
+const BUCKET: Record<Group, LifecycleState[]> = {
+  core:    ['REPAIRING', 'CROSS_SUCCESS'],
+  waiting: ['STREAKING', 'BROKEN'],
+  dropped: ['CROSS_WEAKENING', 'CROSS_FAILED', 'FADED'],
+  all:     [],          // 不过滤
+  unbucketed: [],       // 动态：不属于上面任何一桶的
+}
+const BUCKETED = new Set<string>([...BUCKET.core, ...BUCKET.waiting, ...BUCKET.dropped])
 
 /** 每个状态的交易含义。写在这里而不是让人猜——状态名本身不自解释 */
 const STATE_META: Record<string, { label: string; hint: string; tone: string }> = {
@@ -59,11 +75,13 @@ const STATE_META: Record<string, { label: string; hint: string; tone: string }> 
                      hint: '今天的事实不足以判断——不拿"破位/失败"顶替"不知道"' },
 }
 
-const TABS: Array<[Group, string]> = [
-  ['core', '核心机会'], ['CROSS_WEAKENING', '成功后走弱'], ['BROKEN', '刚断板'],
-  ['STREAKING', '连板中'], ['CROSS_FAILED', '修复失败'], ['FADED', '周期结束'],
-  ['UNKNOWN', '数据不足'],
-]
+const TAB_HINT: Record<Group, string> = {
+  core: '第一次转强（修复中）+ 已完成二波结构（穿越成功）。这里只是观察名单，买点由人确认',
+  waiting: '还没进场：仍在连板中，或刚断板、结构未演化',
+  dropped: '已从核心池剔除：成功后走弱 / 修复失败 / 周期结束',
+  all: '整个强势池，一只不落',
+  unbucketed: '归不了类的股票。这一栏非 0 就是 bug——但宁可让它显眼，也不能让股票消失',
+}
 
 function StateTag({ r }: { r: LeaderCycleItem }) {
   const st = r.lifecycle_state
@@ -96,6 +114,31 @@ function Val({ v, digits = 1, suffix = '', signed = false }: {
   )
 }
 
+/**
+ * 一行"只有代码和名字"的空壳。给识别不出周期的股票用——它们没有任何价格事实，
+ * 所有事实列都得是 null，**绝不能填 0 冒充**。
+ */
+const EMPTY_ITEM = {
+  code: '', name: null, sector_name: null, peak_board_count: null,
+  board_count_60d: null, cycle_start_date: null, cycle_peak_date: null,
+  break_date: null, days_since_break: null, peak_price: null,
+  post_break_high: null, post_break_low: null, latest_close: null,
+  peak_drawdown: null, ma5: null, ma10: null, ma20: null, ma30: null,
+  ma_window_complete: null, rs_market_10: null, rs_market_20: null,
+  rs_market_60: null, rs_sector_10: null, rs_sector_20: null, rs_sector_60: null,
+  volume: null, amount: null, turnover_rate: null,
+  rs_market_20_delta_1d: null, rs_market_20_delta_3d: null,
+  rs_sector_20_delta_1d: null, dist_to_post_break_high: null,
+  dist_to_cycle_peak: null, new_post_break_high_today: null,
+  new_post_break_low_today: null, volume_ratio_5d: null, amount_ratio_5d: null,
+  bar_count: null, data_fresh: null, bar_settled: null, latest_bar_date: null,
+  lifecycle_state: null, previous_lifecycle_state: null, state_since_date: null,
+  transitioned_today: false, lifecycle_formula_version: null,
+  transition_reason_codes: [], transition_reasons: [], evaluation_status: null,
+  ever_cross_success: false, first_cross_success_date: null,
+  missing_days: null, peak_board_confident: null,
+}
+
 function MaPos({ close, ma }: { close: number | null; ma: number | null }) {
   if (!close || !ma || ma <= 0) return <span className="text-text-muted/50">—</span>
   const pct = (close / ma - 1) * 100
@@ -114,30 +157,58 @@ export default function LeaderCyclePanel() {
     staleTime: 10 * 60 * 1000,
   })
 
-  const all = useMemo(
-    () => [...(data?.running ?? []), ...(data?.broken ?? [])], [data])
-  // 「核心机会」= 修复中 + 穿越成功。这两个是唯一值得占用注意力的
-  const counts = useMemo(() => {
-    const c: Record<string, number> = {}
-    all.forEach((r) => { c[r.lifecycle_state ?? 'UNKNOWN'] =
-      (c[r.lifecycle_state ?? 'UNKNOWN'] ?? 0) + 1 })
-    c.core = (c.REPAIRING ?? 0) + (c.CROSS_SUCCESS ?? 0)
-    return c
-  }, [all])
-  const rows = useMemo(() => {
-    const picked = group === 'core'
-      ? all.filter((r) => r.lifecycle_state === 'REPAIRING'
-                       || r.lifecycle_state === 'CROSS_SUCCESS')
-      : all.filter((r) => (r.lifecycle_state ?? 'UNKNOWN') === group)
-    // 核心机会里穿越成功排前面；其余按距断板天数
-    return picked.sort((a, b) =>
-      (a.lifecycle_state === b.lifecycle_state ? 0
-        : a.lifecycle_state === 'CROSS_SUCCESS' ? -1 : 1)
-      || (a.days_since_break ?? 1e6) - (b.days_since_break ?? 1e6))
-  }, [all, group])
   const cov = data?.coverage ?? {}
   const total = cov.total ?? 0          // = 整个强势池，不是已识别出周期的数量
-  const unresolved = data?.unresolved ?? []
+
+  // **识别不出周期的股票也必须是表格里的一行。** 之前它们只在覆盖率卡片里
+  // 以小字 chip 出现，一眼扫过去就没了——那等于被系统吞掉
+  const all = useMemo(() => {
+    const pseudo = (data?.unresolved ?? []).map((u) => ({
+      ...EMPTY_ITEM, code: u.code, name: u.name,
+      board_count_60d: u.board_count_60d,
+      lifecycle_state: 'UNKNOWN' as LifecycleState,
+      transition_reasons: [u.reason],
+      transition_reason_codes: ['NO_CYCLE'],
+      evaluation_status: 'INSUFFICIENT',
+    })) as LeaderCycleItem[]
+    return [...(data?.running ?? []), ...(data?.broken ?? []), ...pseudo]
+  }, [data])
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { core: 0, waiting: 0, dropped: 0,
+                                        unbucketed: 0, all: all.length }
+    all.forEach((r) => {
+      const st = r.lifecycle_state ?? 'UNKNOWN'
+      const g = (['core', 'waiting', 'dropped'] as Group[])
+        .find((k) => (BUCKET[k] as string[]).includes(st))
+      c[g ?? 'unbucketed'] += 1
+    })
+    return c
+  }, [all])
+
+  const rows = useMemo(() => {
+    const picked =
+      group === 'all' ? all
+      : group === 'unbucketed'
+        ? all.filter((r) => !BUCKETED.has(r.lifecycle_state ?? 'UNKNOWN'))
+        : all.filter((r) => (BUCKET[group] as string[])
+            .includes(r.lifecycle_state ?? 'UNKNOWN'))
+    // 今天刚变的排最前——转强和转弱都是当天才需要动脑子的事
+    return [...picked].sort((a, b) =>
+      Number(b.transitioned_today) - Number(a.transitioned_today)
+      || (a.days_since_break ?? 1e6) - (b.days_since_break ?? 1e6))
+  }, [all, group])
+
+  // 今天的两个动作信号：谁第一次转强、谁从强转弱
+  const turned = useMemo(() => ({
+    up: all.filter((r) => r.transitioned_today
+      && (BUCKET.core as string[]).includes(r.lifecycle_state ?? '')),
+    down: all.filter((r) => r.transitioned_today
+      && r.lifecycle_state === 'CROSS_WEAKENING'),
+  }), [all])
+
+  // 池子里有几只、界面上显示了几只，必须对得上
+  const missing = total > 0 ? total - all.length : 0
 
   return (
     <div className="space-y-3">
@@ -176,47 +247,67 @@ export default function LeaderCyclePanel() {
             </span>
           </div>
         )}
-        {unresolved.length > 0 && (
-          <div className="text-[11px] pt-1 border-t border-bg-border space-y-1">
-            <div className="flex items-center gap-1 text-warn">
-              <AlertTriangle className="w-3 h-3" />
-              <span>本地识别不出 ≥4 连板周期（{unresolved.length} 只）</span>
-            </div>
-            <div className="flex flex-wrap gap-x-3 gap-y-1">
-              {unresolved.map((u) => (
-                <span key={u.code} className="text-text-secondary" title={u.reason}>
-                  {u.name || u.code}
-                  <span className={cn('ml-1 text-text-muted', NUM)}>
-                    {u.code} · 60日{u.board_count_60d ?? '?'}板
-                  </span>
-                </span>
-              ))}
-            </div>
-            <div className="text-text-muted/70">
-              它们仍在东财召回的强势池里，但我们自己重算的连板数没到 4——
-              可能是对方口径不同，也可能是我们算错了。<span className="text-text-primary">
-              放在这里而不是从分母里删掉</span>，是因为静默消失就永远查不出来。
-            </div>
+        {missing !== 0 && (
+          <div className="text-[11px] pt-1 border-t border-bg-border flex items-start
+                          gap-1 text-down">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span>
+              <span className="font-medium">对不上：</span>强势池 {total} 只，
+              界面上 {all.length} 只，差 <span className={NUM}>{Math.abs(missing)}</span> 只。
+              {missing > 0
+                ? '有股票没出现在任何分组里——这是 bug。一只股票因为归不了类而从界面消失，比判断错更糟，判断错还能被看见并纠正。'
+                : '界面上比池子还多，多半是已移出强势池但当日快照还在（口径变化的正常残留），不影响可见性。'}
+            </span>
           </div>
         )}
       </div>
 
+      {(turned.up.length > 0 || turned.down.length > 0) && (
+        <div className="card p-2.5 text-[11px] flex flex-wrap items-center gap-x-5 gap-y-1">
+          <span className="text-text-muted">今日变化</span>
+          <span className="flex items-center gap-1">
+            <span className="text-up">↑ 转强</span>
+            <span className={cn(NUM, 'text-text-primary')}>{turned.up.length}</span>
+            <span className="text-text-secondary">
+              {turned.up.map((r) => r.name || r.code).join('、') || '—'}</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="text-warn">↓ 转弱</span>
+            <span className={cn(NUM, 'text-text-primary')}>{turned.down.length}</span>
+            <span className="text-text-secondary">
+              {turned.down.map((r) => r.name || r.code).join('、') || '—'}</span>
+          </span>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 flex-wrap">
-        {TABS.map(([k, label]) => (
+        {(['core', 'waiting', 'dropped', 'all'] as Group[]).map((k) => (
           <button key={k} onClick={() => setGroup(k)}
             className={cn('text-xs px-3 py-1 rounded border transition-colors',
-              k === 'FADED' && group !== k ? 'opacity-50' : '',
+              k === 'dropped' && group !== k ? 'opacity-60' : '',
               group === k ? 'border-accent/50 text-accent bg-accent/10'
                           : 'border-bg-border text-text-secondary hover:text-text-primary')}>
-            {label} <span className={NUM}>{counts[k] ?? 0}</span>
+            {({ core: '核心观察', waiting: '待观察', dropped: '已剔除',
+                all: '全部' } as Record<string, string>)[k]}
+            {' '}<span className={NUM}>{counts[k] ?? 0}</span>
           </button>
         ))}
+        {counts.unbucketed > 0 && (
+          <button onClick={() => setGroup('unbucketed')}
+            className={cn('text-xs px-3 py-1 rounded border transition-colors',
+              'border-down/60 text-down bg-down/10')}>
+            未归类 <span className={NUM}>{counts.unbucketed}</span>
+          </button>
+        )}
       </div>
       <div className="text-[11px] text-text-secondary">
-        {group === 'core'
-          ? <>修复中 + 穿越成功。<span className="text-text-primary">穿越成功不等于可以买</span>
-              ——这一层只描述价格结构，不含领导力和交易许可（那是 Phase 2）。</>
-          : STATE_META[group]?.hint}
+        {TAB_HINT[group]}
+        {group === 'core' && (
+          <span className="text-text-muted">
+            {' '}这一层只描述<span className="text-text-primary">价格结构</span>，
+            不含领导力和交易许可（Phase 2）。
+          </span>
+        )}
       </div>
 
       {isLoading ? <LoadingRows /> : rows.length === 0 ? (
