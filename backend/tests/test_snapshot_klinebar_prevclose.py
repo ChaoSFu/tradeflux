@@ -41,6 +41,7 @@ class _Snap:
         self.is_limit_up, self.is_limit_down = is_lu, is_ld
         self.open_price, self.high_price, self.low_price = o, h, lo
         self.turnover_rate = None
+        self.volume = self.amount = self.volume_source = None
         self.is_broken_board = False
         self.is_one_word_limit_up = self.is_one_word_limit_down = False
 
@@ -148,3 +149,20 @@ class TestOneDirectionalCorrection:
         snaps = [_Snap(date(2026, 8, 4), 70.00, 5.00, o=69.0, h=71.43, lo=68.0)]
         snaps[0].is_broken_board = True
         assert du._snapshots_to_klinebars(snaps, "603773", False)[0].is_broken_board is True
+
+
+class TestVolumePassThrough:
+    """
+    DB 重建这条路必须把成交量带过去。首版漏了，而"DB重建 230 只"说明绝大多数股票
+    走的正是这条——结果 leader_cycle_snapshots 的 volume/turnover_rate 全空。
+    dump 和腾讯/新浪都接了 volume，唯独这里断链。
+    """
+    def test_成交量成交额来源一路带到bar(self):
+        s = _Snap(date(2026, 8, 4), 71.43, 9.99, is_lu=True)
+        s.volume, s.amount, s.volume_source = 1.23e7, 8.7e8, "dump"
+        b = du._snapshots_to_klinebars([s], "603773", False)[0]
+        assert (b.volume, b.amount, b.volume_source) == (1.23e7, 8.7e8, "dump")
+
+    def test_快照没有量时保持None不是0(self):
+        b = du._snapshots_to_klinebars([_Snap(date(2026, 8, 4), 71.43, 9.99)], "603773", False)[0]
+        assert b.volume is None and b.amount is None

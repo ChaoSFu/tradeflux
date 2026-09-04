@@ -371,6 +371,11 @@ def _snapshots_to_klinebars(snaps: list, code: str = "", is_st: bool = False) ->
             low_price=lo or 0.0,
             pct_change=s.pct_change or 0.0,
             turnover_rate=s.turnover_rate,   # None 保持 None＝未知，不降级成0.0
+            # 成交量/成交额/来源口径（2026-09-03 补）。首版漏了这三个，而绝大多数
+            # 股票走的正是 DB 重建这条路（日志里"DB重建 230 只"），结果生产上
+            # leader_cycle_snapshots 的 volume 和 turnover_rate 全部为空——
+            # dump 和腾讯/新浪那两条路都接了，唯独这里没接，链条断在中间。
+            volume=s.volume, amount=s.amount, volume_source=s.volume_source,
             is_limit_up=is_lu,
             is_limit_down=is_ld,
             is_broken_board=is_bb,
