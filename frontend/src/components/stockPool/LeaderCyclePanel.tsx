@@ -123,9 +123,17 @@ function StateTag({ r }: { r: LeaderCycleItem }) {
   const why = r.transition_reasons?.join('；')
   return (
     <span className={cn('inline-flex items-center gap-1', m.tone)}
-          title={[m.hint, why && `今日判定：${why}`, r.state_since_date &&
-                  `${r.state_since_date} 起`].filter(Boolean).join('\n')}>
-      {r.transitioned_today && <span className="text-[9px] opacity-70">▲</span>}
+          title={[m.hint,
+                  r.transitioned_today ? '今日刚转入此状态' : null,
+                  why && `判定依据：${why}`,
+                  r.state_since_date && `${r.state_since_date} 起`,
+                 ].filter(Boolean).join('\n')}>
+      {/* 用文字不用符号：▲ 自带方向暗示，而它同时标记转强和转弱，
+          「▲周期结束」读起来像"向上进入周期结束"，是反的。
+          而且要靠问才知道含义的标记，等于没有标记 */}
+      {r.transitioned_today && (
+        <span className="text-[9px] px-1 rounded bg-current/15 leading-tight">今日</span>
+      )}
       {m.label}
       {st === 'CROSS_WEAKENING' && r.ever_cross_success && (
         <span className="text-[9px] text-text-muted">曾成功</span>
@@ -340,6 +348,10 @@ export default function LeaderCyclePanel() {
         )}
       </div>
       <div className="text-[11px] text-text-secondary">
+        <span className="mr-2 text-text-muted">
+          <span className="text-[9px] px-1 rounded bg-text-muted/20">今日</span>
+          {' '}= 今天刚转入该状态
+        </span>
         {TAB_HINT[group]}
         {group === 'core' && (
           <span className="text-text-muted">
