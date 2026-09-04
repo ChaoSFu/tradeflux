@@ -1934,6 +1934,34 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             need_through=_need_through,
         )
 
+        # ── 第4.02步：高标龙头生命周期事实快照 ────────────────────
+        # 复用上面已经拿到的 klines_map 和 stats_list，**不重新拉任何数据**。
+        # 必须在池子更新（in_strong_pool 已是最新）和补结算之后——它读的就是这两样。
+        #
+        # 只落事实、不落状态判定：状态机的六条转换全是人定阈值，阈值会改；
+        # 把结论冻进历史，口径一变整段历史就失去意义，只存事实则永远可以重算。
+        try:
+            from app.services.leader_cycle_snapshot_service import build_snapshots
+            _tdays = None
+            try:
+                from app.services.trading_calendar import get_trading_days
+                _tdays = get_trading_days(db, need_through=target_date, log=log)
+            except Exception:  # noqa: BLE001
+                pass          # 拿不到日历就不算缺口，snapshot 里会如实标成"没检查"
+            _lc = build_snapshots(
+                db, target_date, klines_map,
+                trading_days=_tdays,
+                stats_map={st.code: st for st in stats_list},
+            )
+            log.info(
+                f"高标龙头周期快照：{_lc['written']} 只"
+                + (f"，{_lc['no_cycle']} 只当前识别不出≥4连板周期" if _lc["no_cycle"] else "")
+                + (f"，{_lc['skipped']} 只无K线跳过" if _lc["skipped"] else "")
+            )
+        except Exception as e:  # noqa: BLE001
+            log.info(f"[leader-cycle] 生命周期快照失败（不影响主流程）: {e}")
+            db.rollback()
+
         # ── 第4.05步：历史快照自举 ────────────────────────────────
         # full_group 这次全量拉到的 65 日 K 线，把历史日(< target_date)一并落库，
         # 使该股下次更新即可走 DB 重建（仅拉今日）——每只股票全量拉取一生只发生一次。

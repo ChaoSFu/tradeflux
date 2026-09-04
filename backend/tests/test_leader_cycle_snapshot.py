@@ -1,0 +1,142 @@
+"""
+高标龙头周期的每日事实快照落库。
+
+**只落事实、不落状态判定**：状态机的六条转换全是人定阈值，而阈值会改。把结论冻进
+历史，口径一变整段历史就失去意义；只存事实则永远可以按新口径重算。跟
+RegulatoryStatusDaily "派生事件不落库"是同一条设计决定。
+
+为什么现在就要落：生命周期的价值全在时间序列上——「断板 D+2 有没有创新低」
+「RS 在改善还是恶化」都要靠相邻两天相减。今天不记，一个月后还是只有一个截面，
+而且丢掉的那段永远补不回来。
+"""
+from datetime import date, timedelta
+
+from app.models.leader_cycle import LeaderCycleSnapshot
+from app.models.market_index import IndexDailySnapshot
+from app.models.stock import Stock
+from app.services.eastmoney_fetcher import build_kline_bar
+from app.services.leader_cycle_snapshot_service import build_snapshots
+
+D0 = date(2026, 8, 1)
+
+
+def _bars(closes, start=D0):
+    out, prev = [], closes[0]
+    for i, c in enumerate(closes[1:], start=1):
+        out.append(build_kline_bar(
+            dt=start + timedelta(days=i), open_p=c, close_p=c, high_p=c, low_p=c,
+            pct=(c / prev - 1) * 100, turnover=None, limit_pct=9.90, prev_close=prev))
+        prev = c
+    return out
+
+
+def _seed_stock(db, code="600001", in_pool=True, board60=5):
+    st = Stock(code=code, name="测试", market="SH",
+               in_strong_pool=in_pool, board_count_60d=board60)
+    db.add(st); db.flush()
+    return st
+
+
+class TestBuildSnapshots:
+    def test_落一行事实且不含任何状态字段(self, db):
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        r = build_snapshots(db, date(2026, 8, 7), {st.code: bars})
+        assert r["written"] == 1
+        row = db.query(LeaderCycleSnapshot).one()
+        assert row.peak_board_count == 4
+        assert row.break_date == bars[-1].date
+        assert row.board_count_60d == 5, "历史辨识度另存，不跟当前周期混"
+        assert not hasattr(row, "state") and not hasattr(row, "lifecycle_state"), \
+            "这一层不许出现状态字段——那是状态机的事，建在这层之上"
+
+    def test_同一天重复跑是覆盖不是追加(self, db):
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        build_snapshots(db, date(2026, 8, 7), {st.code: bars})
+        build_snapshots(db, date(2026, 8, 7), {st.code: bars})
+        assert db.query(LeaderCycleSnapshot).count() == 1, \
+            "daily_update 一天跑 2~3 次，必须幂等"
+
+    def test_不同日期各自成行(self, db):
+        """相邻两天相减是这张表存在的全部意义。"""
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        build_snapshots(db, date(2026, 8, 7), {st.code: bars})
+        build_snapshots(db, date(2026, 8, 8), {st.code: bars})
+        assert db.query(LeaderCycleSnapshot).count() == 2
+
+    def test_识别不出周期时不建空行(self, db):
+        """缺行表达'没有周期'，比一行字段全 NULL 清楚。"""
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 11.0])      # 只有 2 连板
+        r = build_snapshots(db, date(2026, 8, 5), {st.code: bars})
+        assert r["no_cycle"] == 1 and r["written"] == 0
+        assert db.query(LeaderCycleSnapshot).count() == 0
+
+    def test_不在强势池的股票不落(self, db):
+        st = _seed_stock(db, in_pool=False)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64])
+        assert build_snapshots(db, date(2026, 8, 6), {st.code: bars})["written"] == 0
+
+    def test_没有基准指数时RS为None而不是0(self, db):
+        """None = 不知道。写 0 会让'跟基准持平'和'算不出来'分不开。"""
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        build_snapshots(db, date(2026, 8, 7), {st.code: bars})
+        row = db.query(LeaderCycleSnapshot).one()
+        assert row.rs_market_20 is None and row.rs_sector_20 is None
+
+    def test_有基准时算出RS(self, db):
+        st = _seed_stock(db)
+        # 上证指数 11 根：前 10 根 100，最后一根 110（近10日 +10%）
+        for i, c in enumerate([100.0] * 10 + [110.0]):
+            db.add(IndexDailySnapshot(index_code="000001",
+                                      date=D0 + timedelta(days=i), close=c))
+        db.flush()
+        closes = [100.0] * 10 + [130.0]      # 个股近10日 +30%
+        bars = []
+        prev = 100.0
+        for i, c in enumerate(closes):
+            bars.append(build_kline_bar(
+                dt=D0 + timedelta(days=i), open_p=c, close_p=c, high_p=c, low_p=c,
+                pct=(c / prev - 1) * 100, turnover=None, limit_pct=9.90, prev_close=prev))
+            prev = c
+        # 造一段 4 连板让它能识别出周期
+        for k in range(4):
+            prev = bars[-1].close_price
+            c = round(prev * 1.10, 2)
+            bars.append(build_kline_bar(
+                dt=D0 + timedelta(days=11 + k), open_p=c, close_p=c, high_p=c, low_p=c,
+                pct=10.0, turnover=None, limit_pct=9.90, prev_close=prev))
+        build_snapshots(db, date(2026, 8, 20), {st.code: bars})
+        row = db.query(LeaderCycleSnapshot).one()
+        assert row.rs_market_10 is not None, "指数和个股都齐了就该算得出"
+
+
+class TestConfidence:
+    def test_周期区间内的缺口会被如实标注(self, db):
+        """
+        缺口只算 [周期起点, 最新bar] 区间内的。最新 bar 之后的交易日不算缺口——
+        那是"还没到的数据"，不是"该有却没有"。
+        """
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])   # 08-02 ~ 08-06
+        gap_day = date(2026, 8, 7)
+        later = build_kline_bar(dt=date(2026, 8, 10), open_p=14.0, close_p=14.0,
+                                high_p=14.0, low_p=14.0, pct=0.0, turnover=None,
+                                limit_pct=9.90, prev_close=14.0)
+        days = [b.date for b in bars] + [gap_day, later.date]   # 08-07 应有交易日却无 bar
+        build_snapshots(db, date(2026, 8, 10), {st.code: bars + [later]},
+                        trading_days=days)
+        row = db.query(LeaderCycleSnapshot).one()
+        assert row.missing_days == 1 and row.peak_board_confident is False, \
+            "周期内缺一天，连板数就可能偏低，必须标出来"
+
+    def test_均线窗口不足时标出来(self, db):
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])   # 只有 5 根
+        build_snapshots(db, date(2026, 8, 7), {st.code: bars})
+        row = db.query(LeaderCycleSnapshot).one()
+        assert row.ma_window_complete is False, \
+            "窗口不满时 ma 是 0.0，必须能区分'均线是0'和'没攒够'"

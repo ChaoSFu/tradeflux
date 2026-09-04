@@ -27,7 +27,7 @@ def get_db():
 
 
 def init_db():
-    from .models import stock, sector, review, screening, regulatory, market_index, app_config, trade_journal, market_effect, weak_to_strong_radar, limit_up_detail  # noqa: F401 - imports trigger table registration
+    from .models import stock, sector, review, screening, regulatory, market_index, app_config, trade_journal, market_effect, weak_to_strong_radar, limit_up_detail, leader_cycle  # noqa: F401 - imports trigger table registration
     Base.metadata.create_all(bind=engine)
     _apply_schema_patches()
 
