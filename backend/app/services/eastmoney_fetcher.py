@@ -2457,23 +2457,23 @@ def fetch_index_kline(secid: str, days: int = 70, timeout: int = 15) -> list[dic
     return em_out if len(em_out) > len(out) else out
 
 
-def fetch_sector_kline(sector_code: str, days: int = 300,
-                       timeout: int = 15) -> list[dict]:
+def fetch_sector_kline_detailed(sector_code: str, days: int = 300,
+                                timeout: int = 15) -> tuple:
     """
-    板块指数日线。`sector_code` 是 `BK0832` 这种码（对应 sectors.code）。
-    返回与 fetch_index_kline 同结构的 dict 列表，按日期升序；失败返回空列表。
+    同 fetch_sector_kline，但额外返回**为什么没拿到**：(rows, kind, detail, retry_after)。
 
-    **刻意不复用 fetch_index_kline()**：那个函数是**腾讯优先**的——那个优先级是为
-    那 5 个固定指数定的（它们此前确认被 push2his 针对性限流），而腾讯根本没有 BK
-    板块码。实测 `fetch_index_kline("90.BK0832")` 会先走腾讯拿到畸形数据，再在兜底
-    里抛 `'list' object has no attribute 'get'`——**不是"板块拉不到"，是走错了路**。
+    2026-09-04 加。原来三件不同的事都返回 `[]`——网络异常、HTTP 200 但没有序列、
+    行全部解析失败。回填靠"连续 N 次失败"判定被限流，而这三者里只有第一类该退避：
 
-    板块只有东财这一个源，所以直连 push2his，不做多源兜底。失败就是失败，
-    返回空列表让调用方如实记录，不用别的板块或别的日期顶替。
+        no_data  合法 JSON、确实没有这段序列  → 数据本身如此，退避没有意义
+        blocked  被拦 / 空响应 / 连接被掐    → 必须退避
+        error    拿到了却解析不出来           → 接口变了，退避也没用但要报出来
 
-    实测 BK0832 工业互联网可取 300 根（2025-06-16 ~ 2026-09-03），够 RS_sector 用。
+    分不清就只有两种结局：该退避时硬打（加深封锁），不该退避时空等。这是
+    "用一个空值表达好几件事"在限速场景下的具体代价，跟 turnover_rate=0.0 同源。
+
+    retry_after 来自服务端的 Retry-After 头——它明说了等多久就听它的。
     """
-    raw: list = []
     try:
         client = _thread_warmed_client(timeout=timeout)
         resp = client.get(KLINE_URL, params={
@@ -2483,13 +2483,38 @@ def fetch_sector_kline(sector_code: str, days: int = 300,
             "lmt": days, "klt": 101, "fqt": 1,
             "end": date.today().strftime("%Y%m%d"),
         })
-        payload = json_or_explain(resp, f"东财板块K线 {sector_code} ")
-        raw = (payload.get("data") or {}).get("klines") or []
     except Exception as e:  # noqa: BLE001
-        print(f"[fetcher] 板块K线 {sector_code} 失败: {type(e).__name__}: {str(e)[:80]}",
-              flush=True)
-        return []
+        # 连接层异常：连接重置、超时、协议错误。push2his 被限流时正是成片的
+        # RemoteProtocolError（见 fetch_index_kline 那段历史），一律当被限流处理
+        return [], "blocked", f"{type(e).__name__}: {str(e)[:80]}", None
 
+    retry_after = None
+    try:
+        retry_after = float(resp.headers.get("Retry-After") or 0) or None
+    except (TypeError, ValueError):
+        retry_after = None
+    if resp.status_code in (403, 429, 451, 503):
+        return [], "blocked", f"HTTP {resp.status_code}", retry_after
+
+    try:
+        payload = json_or_explain(resp, f"东财板块K线 {sector_code} ")
+    except ResponseNotJSON as e:
+        # HTTP 200 + 空 body / HTML 拦截页都落在这里，都是限流的表现
+        return [], "blocked", str(e)[:120], retry_after
+
+    raw = (payload.get("data") or {}).get("klines") or []
+    if not raw:
+        # 合法 JSON 但没有序列 —— 这个板块本来就没有指数日线，不是我们被拦了。
+        # **不退避**：退避解决不了"数据不存在"
+        return [], "no_data", "接口返回合法 JSON，但 data.klines 为空", None
+
+    out = _parse_sector_klines(raw)
+    if not out:
+        return [], "error", f"拿到 {len(raw)} 行但一行都解析不出（接口格式可能变了）", None
+    return out, "ok", "", None
+
+
+def _parse_sector_klines(raw: list) -> list[dict]:
     out: list[dict] = []
     for line in raw:
         parts = line.split(",")
@@ -2507,6 +2532,31 @@ def fetch_sector_kline(sector_code: str, days: int = 300,
         except (ValueError, IndexError):
             continue
     return out
+
+
+def fetch_sector_kline(sector_code: str, days: int = 300,
+                       timeout: int = 15) -> list[dict]:
+    """
+    板块指数日线。`sector_code` 是 `BK0832` 这种码（对应 sectors.code）。
+    返回与 fetch_index_kline 同结构的 dict 列表，按日期升序；失败返回空列表。
+
+    **刻意不复用 fetch_index_kline()**：那个函数是**腾讯优先**的——那个优先级是为
+    那 5 个固定指数定的（它们此前确认被 push2his 针对性限流），而腾讯根本没有 BK
+    板块码。实测 `fetch_index_kline("90.BK0832")` 会先走腾讯拿到畸形数据，再在兜底
+    里抛 `'list' object has no attribute 'get'`——**不是"板块拉不到"，是走错了路**。
+
+    板块只有东财这一个源，所以直连 push2his，不做多源兜底。失败就是失败，
+    返回空列表让调用方如实记录，不用别的板块或别的日期顶替。
+
+    实测 BK0832 工业互联网可取 300 根（2025-06-16 ~ 2026-09-03），够 RS_sector 用。
+
+    **只是 fetch_sector_kline_detailed 的薄封装**，丢掉失败原因。要做限速的调用方
+    一律用 detailed 版——分不清"被限流"和"这个板块没数据"就做不对退避。
+    """
+    rows, kind, detail, _ = fetch_sector_kline_detailed(sector_code, days, timeout)
+    if kind != "ok":
+        print(f"[fetcher] 板块K线 {sector_code} {kind}: {detail}", flush=True)
+    return rows
 
 
 def _fetch_index_kline_sina(secid: str, days: int = 320, timeout: int = 15) -> list[dict]:
