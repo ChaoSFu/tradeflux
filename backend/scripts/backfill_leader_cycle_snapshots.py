@@ -42,6 +42,7 @@ from app.database import SessionLocal
 from app.models.leader_cycle import LeaderCycleSnapshot
 from app.models.stock import Stock, StockDailySnapshot
 from app.services.leader_cycle_snapshot_service import build_snapshots
+from app.services.screening_service import compute_window_stats
 from app.services.trading_calendar import get_trading_days
 
 # daily_update 里的 K 线→bar 转换，直接复用，不另写一套
@@ -50,6 +51,14 @@ from daily_update import _snapshots_to_klinebars    # noqa: E402
 # 至少要几根 bar 才值得重建那一天。少于这个数，均线大多是 None，
 # 状态机也推不动，写进去只是噪声
 MIN_BARS = 10
+
+# **必须跟 daily_update 用同一个窗口**（daily_update.py:462 取最近 65 条快照）。
+# identify_leader_cycle 扫的是传进来的整段 bar，窗口更长就会找到更早的连板周期
+# ——回填出来的历史会跟线上真跑出来的行口径不同，两者拼在一起就是一条口径混杂的
+# 序列，而状态机正是靠这条序列往前推。
+# 这跟 2026-09-04 修的"连板段被 bars[-60:] 切开"是同一个家族：**窗口口径必须
+# 只有一处定义**，第二处迟早跟第一处分叉。
+KLINE_WINDOW = 65
 
 
 def main():
@@ -69,6 +78,8 @@ def main():
             print("强势池为空，无可回填")
             return
         ids = {st.id: st.code for st in pool}
+        by_id = {st.id: st for st in pool}
+        by_code = {st.code: st for st in pool}
         print(f"强势池 {len(pool)} 只（**今天的**成分，不是历史成分）")
 
         tdays = get_trading_days(db, need_through=date.today())
@@ -110,17 +121,30 @@ def main():
             for sid, code in ids.items():
                 # **按日期截断**——这是防 look-ahead 的关键：重建 T 那天，
                 # 只能看到 <= T 的 bar
+                # **按日期截断**——这是防 look-ahead 的关键：重建 T 那天，
+                # 只能看到 <= T 的 bar。再截到 KLINE_WINDOW 根，跟线上同口径
                 cut = [s for s in snaps_by_stock.get(sid, []) if s.date <= d]
+                cut = cut[-KLINE_WINDOW:]
                 if len(cut) < MIN_BARS:
                     continue
-                st = next(x for x in pool if x.id == sid)
+                st = by_id[sid]
                 klines_map[code] = _snapshots_to_klinebars(cut, code, st.is_st)
             if not klines_map:
                 print(f"  {d}  无足够K线，跳过")
                 continue
+            # 均线必须一起算。漏了它 build_snapshots 会把 ma5/10/20/30 全留成
+            # None，写出来的行状态机一步都推不动——2026-09-04 第一次回填就是
+            # 这么跑出 1639 行废数据的
+            stats_map = {}
+            for code, bars in klines_map.items():
+                st = by_code[code]
+                stat = compute_window_stats(code, st.name, st.is_st, bars)
+                if stat is not None:
+                    stats_map[code] = stat
             r = build_snapshots(
                 db, d, klines_map,
                 trading_days=[x for x in tdays if x <= d],
+                stats_map=stats_map,
                 # 回填的每一天都是历史交易日，那天早收盘了
                 settled=True,
             )
@@ -130,7 +154,15 @@ def main():
                   + (f"，{r['no_cycle']} 只无周期" if r["no_cycle"] else "")
                   + (f"，{r['skipped']} 只跳过" if r["skipped"] else ""))
 
+        # 均线覆盖率必须打出来。上次回填漏传 stats_map，1639 行的均线全是 None，
+        # 而输出里只报"写入多少只"，看不出行是残的
+        from sqlalchemy import func as _f
+        n_all, n_ma = db.query(
+            _f.count(LeaderCycleSnapshot.id),
+            _f.count(LeaderCycleSnapshot.ma5)).one()
         print(f"\n共写入 {total_written} 行，覆盖 {len(todo)} 个交易日")
+        print(f"全表 {n_all} 行，其中 MA5 有值 {n_ma} 行"
+              + ("" if n_ma else "  ← **全是空的，状态机推不动，检查 stats_map**"))
         print("⚠️ 这些行是「今天在池子里的股票，当时长什么样」，**不是当时的池子成分**。"
               "做趋势/状态轨迹研究可以，当历史成分股用就是错的。")
     finally:
