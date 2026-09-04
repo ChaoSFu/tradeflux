@@ -78,13 +78,18 @@ class HeightPoint:
     date: str
     height: int                 # H_t 当日最高连板
     frontier: Optional[int]     # 近 FRONTIER_WINDOW 日（不含当日）的最高连板 = 上沿
-    is_breakout: bool           # 当日高度 > 上沿 → 首次突破
+    # True=突破；False=确实没突破；**None=不知道**（窗口里有交易日缺连板数据，
+    # 上沿可能被低估，那样算出的"突破"可能是假的）。
+    # 没证明突破 ≠ 已证明没突破，这两件事必须分开。
+    is_breakout: Optional[bool]
     near_top_count: int         # F_t 板数 >= H_t - 1 的只数
     multi_board_count: int      # M_t 3 板以上只数
     limit_up_count: int         # 当日涨停总数（is_limit_up 口径）
     ladder_count: int           # 梯队覆盖到的只数（board_count>0 口径）
                                 # 与 limit_up_count 的差 = 当天梯队数据的覆盖缺口
     ladder: Dict[str, int] = field(default_factory=dict)   # {"1": 48, "2": 14, ...}
+    has_data: bool = True          # 这一天有没有连板数据（没有 = 曲线上的空洞）
+    frontier_covered: int = 0      # 上沿窗口 20 个交易日里，有几天有数据
 
 
 def _drop_carried_forward(
@@ -175,9 +180,15 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
     # 用过滤后的 all_days[0] 会把缺失的日子全排除在查询范围外（写第一版时就是
     # 这么错的，warnings 恒为空）
     scan_from = all_days[0]
-    usable = [d for d in all_days if by_date.get(d)]
-    all_days = usable
-    if not all_days:
+    # **不再把没有连板数据的交易日删掉**（2026-09-04 改）。删掉之后
+    # `all_days[i-20:i]` 取的是"最近 20 个**有数据**的日子"，而页面写的是
+    # "20日上沿"——真实最近20个交易日里若有2天缺数据，实际会往前多跨2天。
+    # 更糟的是缺数据只会让上沿**偏低**，于是可能报出一个并不存在的"突破"，
+    # 而这张图的全部意义就在这个判定上。
+    #
+    # 现在保留完整交易日 spine，缺数据的那天 height=None 在曲线上留空洞，
+    # 并统计上沿窗口的覆盖度：覆盖不满就不给突破结论。
+    if not [d for d in all_days if by_date.get(d)]:
         return [], ["加载到的交易日都没有连板数据，无法计算市场高度"]
 
     by_date, warns = _drop_carried_forward(by_date, all_days)
@@ -191,15 +202,16 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
                 StockDailySnapshot.is_limit_up.is_(True))
         .distinct().all()
     )}
-    missing = sorted(lu_days - set(all_days))
+    missing = sorted(d for d in all_days if not by_date.get(d))
     if missing:
         warns.insert(0, f"{len(missing)} 个交易日有涨停但没有任何连板数据"
-                        f"（历史回填行不写 board_count），不在曲线上："
-                        f"{missing[0]}~{missing[-1]}")
+                        f"（历史回填行不写 board_count），曲线上留空洞、"
+                        f"且这些天不参与上沿判定：{missing[0]}~{missing[-1]}")
 
     out: List[HeightPoint] = []
     for i, d in enumerate(all_days):
         counts = by_date.get(d, {})
+        has_data = bool(counts)
         height = max(counts.values(), default=0)
         ladder: Dict[str, int] = {}
         for bc in counts.values():
@@ -211,14 +223,26 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
         # 生产首测就是这么翻车的：06-03/04/05/08 连续四天 is_breakout=true，
         # 那不是行情，是滚动窗口还没攒够数据的伪影。宁可线短一截、开头不给结论，
         # 也不能拿一个假上沿去判"天花板被打破了"——这张图的全部意义就在这个判定上。
+        # 窗口现在是**真的 20 个交易日**（spine 不再被过滤）。
+        # 窗口里有天缺数据 → 上沿可能偏低 → 算出的"突破"可能是假的。
+        # 这种情况给 None（不知道）而不是 False —— **没证明突破 ≠ 已证明没突破**。
         win = all_days[max(0, i - FRONTIER_WINDOW):i]
+        covered = sum(1 for w in win if by_date.get(w))
+        full = len(win) >= FRONTIER_WINDOW
         frontier = (max((max(by_date.get(w, {}).values(), default=0) for w in win),
-                        default=0)
-                    if len(win) >= FRONTIER_WINDOW else None)
+                        default=0) or None) if full else None
+        if not has_data or not full:
+            breakout: Optional[bool] = None      # 当天没数据，或窗口没攒够
+        elif covered < FRONTIER_WINDOW:
+            breakout = None                      # 上沿可能被低估，不敢判
+        else:
+            breakout = bool(frontier and height > frontier)
         out.append(HeightPoint(
             date=str(d), height=height,
-            frontier=frontier or None,
-            is_breakout=bool(frontier and height > frontier),
+            frontier=frontier,
+            is_breakout=breakout,
+            has_data=has_data,
+            frontier_covered=covered,
             near_top_count=sum(1 for v in counts.values() if height and v >= height - 1),
             multi_board_count=sum(1 for v in counts.values() if v >= 3),
             limit_up_count=lu_count.get(d, 0),

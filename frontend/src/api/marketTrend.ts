@@ -42,7 +42,11 @@ export interface HeightPoint {
   date: string
   height: number                 // 当日最高连板
   frontier: number | null        // 近20日上沿；窗口不满时为 null（不知道，不是0）
-  is_breakout: boolean           // 当日高度 > 上沿
+  // null = 不知道（上沿窗口里有交易日缺连板数据，上沿可能被低估，
+  // 那样算出的"突破"可能是假的）。**没证明突破 ≠ 已证明没突破**
+  is_breakout: boolean | null
+  has_data: boolean
+  frontier_covered: number
   near_top_count: number         // 板数 >= 最高板-1 的只数（天花板附近孤不孤单）
   multi_board_count: number      // 3板以上只数（中高位赚钱效应扩散程度）
   limit_up_count: number         // 当日涨停总数（is_limit_up 口径）

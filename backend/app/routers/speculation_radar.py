@@ -17,7 +17,11 @@ class HeightPointOut(BaseModel):
     date: str
     height: int
     frontier: Optional[int] = None
-    is_breakout: bool
+    # None = 不知道（窗口里有交易日缺连板数据，上沿可能被低估）。
+    # 没证明突破 ≠ 已证明没突破
+    is_breakout: Optional[bool] = None
+    has_data: bool = True
+    frontier_covered: int = 0
     near_top_count: int
     multi_board_count: int
     limit_up_count: int

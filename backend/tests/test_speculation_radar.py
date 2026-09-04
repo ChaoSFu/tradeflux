@@ -110,11 +110,15 @@ class TestHeightFrontier:
         joined = " ".join(warns)
         assert "600001" in joined and "保留" in joined, "保留了也要说出来，不能默默放过"
 
-    def test_连板数缺失的整天不参与计算也不当上沿基线(self, db):
+    def test_缺连板数据的天保留在曲线上但不参与上沿(self, db):
         """
-        dump 回填的历史行只写涨跌停标志、不写 board_count。第一版把缺失按 1 板算，
-        于是那些天全成了"最高1板"，早期上沿被拉到地板上，06-03/04/05/08 连续四天
-        被标成"突破"。缺失就是不知道，不能拿一个数字顶替。
+        2026-09-04 改：**不再把缺数据的交易日删掉**。删掉之后
+        `all_days[i-20:i]` 取的是"最近20个**有数据**的日子"，而页面写的是"20日上沿"
+        ——真实20个交易日里若有2天缺数据，实际会往前多跨2天。更糟的是缺数据只会让
+        上沿**偏低**，于是可能报出一个并不存在的"突破"。
+
+        现在保留完整交易日 spine：缺数据那天 has_data=False、在曲线上是空洞，
+        且不参与上沿判定。
         """
         ids = {}
         for off, (code, bc) in enumerate([("600001", 0), ("600001", 0), ("600002", 2)]):
@@ -126,8 +130,30 @@ class TestHeightFrontier:
                 close_price=10.0, pct_change=10.0, is_limit_up=True, board_count=bc))
         db.flush()
         pts, warns = compute_height_series(db, days=10)
-        assert [p.date for p in pts] == [str(D0 + timedelta(days=2))], \
-            "前两天没有连板数据，整天不该出现在序列里"
-        # 缺了几天必须说出来：不然页面上是一条连续曲线，实际中间缺一段却无人知晓
-        assert any("有涨停但没有任何连板数据" in w for w in warns), \
-            f"缺失的天数要如实报出，实际 warnings: {warns}"
+        by_date = {p.date: p for p in pts}
+        assert len(pts) == 3, "缺数据的天要留在序列里，不能删掉"
+        assert by_date[str(D0)].has_data is False
+        assert by_date[str(D0 + timedelta(days=2))].has_data is True
+        assert any("留空洞" in w for w in warns), "缺了哪几天必须如实报出"
+
+    def test_窗口里有缺数据的天时突破判定为不知道(self, db, monkeypatch):
+        """
+        **没证明突破 ≠ 已证明没突破。** 上沿窗口里缺数据 → 上沿可能被低估 →
+        算出的"突破"可能是假的，这时给 None 而不是 False。
+        """
+        import app.services.speculation_radar_service as srs
+        monkeypatch.setattr(srs, "FRONTIER_WINDOW", 2)
+        ids = {}
+        plan = [(0, "600001", 1), (1, "600002", 0), (2, "600001", 3)]
+        for off, code, bc in plan:
+            if code not in ids:
+                st = Stock(code=code, name=f"股{code}", market="SH")
+                db.add(st); db.flush(); ids[code] = st.id
+            db.add(StockDailySnapshot(
+                stock_id=ids[code], date=D0 + timedelta(days=off), close_price=10.0,
+                pct_change=10.0, is_limit_up=True, board_count=bc))
+        db.flush()
+        pts, _ = compute_height_series(db, days=10)
+        last = pts[-1]
+        assert last.frontier_covered == 1, "窗口2天里只有1天有数据"
+        assert last.is_breakout is None, "上沿可能被低估，不能判成突破也不能判成没突破"

@@ -67,7 +67,10 @@ export default function SpeculationRadar() {
   }, [levels, points])
 
   const last = points[points.length - 1]
-  const breakouts = points.filter((p) => p.is_breakout)
+  // 只画**确认**的突破。is_breakout === null 是"不知道"（上沿窗口里有天缺数据，
+  // 上沿可能被低估），把它画成突破点就是把不确定当成结论
+  const breakouts = points.filter((p) => p.is_breakout === true)
+  const unknownBreakout = points.filter((p) => p.is_breakout === null && p.has_data).length
 
   return (
     <div className="space-y-4">
@@ -115,8 +118,11 @@ export default function SpeculationRadar() {
       {last && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Stat label="当日最高连板" value={last.height} suffix="板"
-                hint={last.is_breakout ? `突破 ${last.frontier} 板上沿` : `上沿 ${last.frontier ?? '—'} 板`}
-                accent={last.is_breakout} />
+                hint={last.is_breakout === true ? `突破 ${last.frontier} 板上沿`
+                  : last.is_breakout === null
+                    ? `上沿窗口只覆盖 ${last.frontier_covered}/${data?.frontier_window ?? 20} 天，无法判定突破`
+                    : `上沿 ${last.frontier ?? '—'} 板`}
+                accent={last.is_breakout === true} />
           <Stat label="天花板附近" value={last.near_top_count} suffix="只"
                 hint={`板数 ≥ ${Math.max(1, last.height - 1)}，看最高板是不是孤票`} />
           <Stat label="3 板以上" value={last.multi_board_count} suffix="只"
@@ -134,6 +140,11 @@ export default function SpeculationRadar() {
           <span className="text-sm font-semibold text-text-primary">市场高度前沿</span>
           <span className="text-xs text-text-muted">
             实线=当日最高连板，虚线=近{data?.frontier_window ?? 20}日上沿，圈=突破
+            {unknownBreakout > 0 && (
+              <span className="text-warn ml-1">
+                · {unknownBreakout} 天因上沿窗口缺数据无法判定
+              </span>
+            )}
           </span>
         </div>
         <div className="h-56">
@@ -250,7 +261,13 @@ function HeightTip({ active, payload }: any) {
     <div className="bg-bg-elevated border border-bg-border rounded-lg px-3 py-2 shadow-xl text-xs">
       <div className="text-text-primary font-medium mb-1">
         {p.date}
-        {p.is_breakout && <span className="ml-2 text-up">突破 {p.frontier} 板上沿</span>}
+        {p.is_breakout === true && <span className="ml-2 text-up">突破 {p.frontier} 板上沿</span>}
+        {p.is_breakout === null && p.has_data && (
+          <span className="ml-2 text-warn">
+            上沿窗口覆盖 {p.frontier_covered} 天，不足以判定突破
+          </span>
+        )}
+        {!p.has_data && <span className="ml-2 text-text-muted">当日无连板数据</span>}
       </div>
       <div className="text-text-secondary space-y-0.5">
         <div>最高 <b className="text-text-primary font-mono">{p.height}</b> 板

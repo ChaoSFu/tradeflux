@@ -30,6 +30,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 结构化步骤日志
 # ---------------------------------------------------------------------------
 
+class _SkipW2SRefresh(Exception):
+    """盘前主动跳过 W2S 候选状态刷新的哨兵，不是错误。见调用处注释。"""
+
+
 class StepLogger:
     """
     记录每日更新各步骤的耗时和关键指标，运行结束后输出汇总表。
@@ -2304,7 +2308,22 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 价值而移除；这里是跟其余所有步骤同频（每天一次、收盘后）的批量收尾，性质
         # 上更接近"写入复盘"这类日终归档，不是新增自动轮询。用跟手动/refresh接口
         # 同一把锁文件，避免撞上用户手动点刷新的并发写入。
+        #
+        # **2026-09-04 补一道闸：只在收盘后跑。** 上面那段"每天一次、收盘后"的论证
+        # 只考虑了 15:30 那次，漏了 scheduler 里还有一次 **09:27 盘前** daily_update
+        # ——而 run_refresh 内部会调 fetch_stock_quotes_batch 打实时行情。于是产品上
+        # 锁定的"弱转强雷达不做自动轮询"，实际变成了"自动轮询从独立任务搬进了
+        # daily_update"。行为没变，只是换了个入口，边界照样被越过。
+        # 盘前那次跳过：盘前的实时报价对"昨日收盘后的候选状态"没有任何增量价值。
+        if not run_settled:
+            log.info("[weak-to-strong-radar] 尚未收盘，跳过候选状态刷新"
+                     "——它会打实时行情，而盘前刷新对收盘后的状态判断没有增量价值")
+            _skip_w2s_refresh = True
+        else:
+            _skip_w2s_refresh = False
         try:
+            if _skip_w2s_refresh:
+                raise _SkipW2SRefresh()
             import fcntl as _fcntl
             from app.services.w2s_refresh_service import run_refresh
             W2S_LOCK_FILE = "/tmp/tradeflux_w2s_radar.lock"
@@ -2320,6 +2339,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 finally:
                     _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
                     lock_fd.close()
+        except _SkipW2SRefresh:
+            pass          # 盘前主动跳过，不是失败——别记成错误日志
         except Exception as e:
             log.info(f"[weak-to-strong-radar] 候选状态刷新失败（不影响主流程）: {e}")
             db.rollback()
