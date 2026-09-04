@@ -22,6 +22,7 @@ from ..models.sector import Sector
 from ..models.stock import Stock, StockDailySnapshot
 from ..services.deviation_service import board_index_code
 from ..services.leader_cycle_service import identify_leader_cycle
+from ..services.turnover_rate_service import compute_turnover_rate
 from ..services.relative_strength_service import (
     MarketBenchmark, compute_rs_market, DEFAULT_WINDOWS,
 )
@@ -124,7 +125,13 @@ def build_snapshots(db: Session, trade_date: date,
         row.rs_sector_10, row.rs_sector_20, row.rs_sector_60 = (
             rs_s.get(10), rs_s.get(20), rs_s.get(60))
         row.volume, row.amount = last.volume, last.amount
-        row.turnover_rate = last.turnover_rate
+        # 换手率：K线源一律不提供（腾讯/新浪/dump 都不给），必须自己算——
+        # 成交量 ÷ 流通股本。首版这里直接写了 last.turnover_rate，于是 60 只全是
+        # None：**零件造好了没装上**。流通股本是 refresh_float_shares() 从涨停池的
+        # 流通市值反推的，观测过旧（>45天）时 compute 返回 None 而不是一个悄悄
+        # 错 20% 的数——除权、解禁会让流通股本台阶式跳变。
+        row.turnover_rate = compute_turnover_rate(
+            last.volume, st.float_shares, st.float_shares_date, trade_date)
         written += 1
 
     db.commit()

@@ -140,3 +140,38 @@ class TestConfidence:
         row = db.query(LeaderCycleSnapshot).one()
         assert row.ma_window_complete is False, \
             "窗口不满时 ma 是 0.0，必须能区分'均线是0'和'没攒够'"
+
+
+class TestTurnoverWiring:
+    """
+    首版把 row.turnover_rate 直接写成 last.turnover_rate，而 KLineBar 那个字段
+    永远是 None（腾讯/新浪/dump 都不提供换手率）——结果生产上 60 只全空。
+    零件造好了没装上，这条测试盯住它真的被调用。
+    """
+    def test_有流通股本时算出换手率(self, db):
+        st = _seed_stock(db)
+        st.float_shares = 1.0e8          # 1亿流通股
+        st.float_shares_date = date(2026, 8, 7)
+        db.flush()
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        bars[-1].volume = 1.0e7          # 1000万股成交 → 10%
+        build_snapshots(db, date(2026, 8, 7), {st.code: bars})
+        assert db.query(LeaderCycleSnapshot).one().turnover_rate == 10.0
+
+    def test_没有流通股本时是None不是0(self, db):
+        st = _seed_stock(db)
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        bars[-1].volume = 1.0e7
+        build_snapshots(db, date(2026, 8, 7), {st.code: bars})
+        assert db.query(LeaderCycleSnapshot).one().turnover_rate is None
+
+    def test_流通股本观测过旧时不用(self, db):
+        """除权、解禁会让流通股本台阶式跳变，旧观测算出的数悄悄错 20% 也不报警。"""
+        st = _seed_stock(db)
+        st.float_shares = 1.0e8
+        st.float_shares_date = date(2026, 1, 1)     # 半年前
+        db.flush()
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        bars[-1].volume = 1.0e7
+        build_snapshots(db, date(2026, 8, 7), {st.code: bars})
+        assert db.query(LeaderCycleSnapshot).one().turnover_rate is None
