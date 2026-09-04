@@ -105,8 +105,9 @@ class StockWindowStats:
 
     # ── 2026-09-03 新增（高标龙头生命周期用）─────────────────────────────────
     # 带默认值的字段必须排在无默认字段之后，否则 dataclass 直接 TypeError。
-    # 短周期均线：0.0 = 窗口不足，不是"均线是0元"。下游一律 `if maN > 0` 判断，
-    # 跟既有的 ma30/ma60 同一条规矩。
+    # 短周期均线，跟上面 ma30/ma60 同一条规矩：窗口不足是 None。
+    # 下游要用 `if maN is not None` —— 不能写 `if maN > 0`，None 参与比较直接
+    # TypeError（这行注释 2026-09-04 之前正是那么写的，改成 Optional 后就错了）。
     ma5: Optional[float] = None
     ma10: Optional[float] = None
     ma20: Optional[float] = None
