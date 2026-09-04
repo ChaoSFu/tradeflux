@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { fetchStrongPool, fetchLimitMoves } from '@/api/stocks'
+import { fetchStrongPool, fetchLimitMoves, fetchLeaderCycle } from '@/api/stocks'
 import LeaderCyclePanel from '@/components/stockPool/LeaderCyclePanel'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag, RegulatoryTag, YesterdayLimitTag, SevereTargetTag } from '@/components/common/SectorTags'
@@ -45,19 +45,22 @@ const UNIVERSES: { key: Universe; label: string }[] = [
 
 const DEFAULT_SORT: { key: SortKey; dir: SortDir } = { key: 'today_board_count', dir: 'desc' }
 
-// 震荡(0) → 涨停(1) → 走弱(2) → 破位(3)  asc = 最健康在前
-const PHASE_RANK: Record<string, number> = {
-  oscillating: 0,
-  limit_up:    1,
-  weakening:   2,
-  broken:      3,
+/**
+ * 分组列的排序名次。**直接用 GROUPS 里的下标**——另维护一张 rank 表，改了 tab
+ * 顺序却忘了改它，就是两处口径分叉，这个仓库为这类事栽过太多次。
+ */
+const groupRank = (stock: Stock, life: Map<string, string>) => {
+  const k = getGroupKeys(stock, life)[0]
+  const i = GROUPS.findIndex((g) => g.key === k)
+  return i < 0 ? GROUPS.length : i
 }
 
-function sortStocks(stocks: Stock[], key: SortKey, dir: SortDir): Stock[] {
+function sortStocks(stocks: Stock[], key: SortKey, dir: SortDir,
+                    life: Map<string, string>): Stock[] {
   if (key === 'phase_group') {
     return [...stocks].sort((a, b) => {
-      const ra = PHASE_RANK[getGroupKey(a)] ?? 0
-      const rb = PHASE_RANK[getGroupKey(b)] ?? 0
+      const ra = groupRank(a, life)
+      const rb = groupRank(b, life)
       return dir === 'asc' ? ra - rb : rb - ra
     })
   }
@@ -79,7 +82,22 @@ function sortValue(s: Stock, key: SortKey): number {
 
 // ─── Group definitions ────────────────────────────────────────────────────────
 
-type GroupKey = 'all' | 'dragon' | 'oscillating' | 'limit_up' | 'weakening' | 'broken' | 'limit_down'
+/**
+ * 分组有**两个互不干扰的轴**：
+ *
+ *   生命周期状态   跨日的价格结构，强势池股票各属其一（互斥）
+ *   今日涨跌停     单日事件，谁涨停谁跌停，跟上面无关
+ *
+ * 一只强势股今天涨停，会同时出现在它的状态组和涨停组里——这是刻意的。
+ * 旧分组把两者揉在一起（today_is_limit_up 优先于 phase），后果是核心观察的票
+ * 每逢涨停就从状态分组里消失，而那恰恰是最该盯着它的时候。
+ *
+ * 2026-09-04 用生命周期状态替换掉 震荡/走弱/破位龙头 —— 那三个来自
+ * `stock.phase`，只是"收盘价在哪条均线下面"的单日快照，说不出结构演化到哪一步。
+ */
+type LifeGroup = 'STREAKING' | 'BROKEN' | 'REPAIRING' | 'CROSS_SUCCESS'
+               | 'CROSS_WEAKENING' | 'CROSS_FAILED' | 'FADED' | 'UNCLASSIFIED'
+type GroupKey = 'all' | 'dragon' | LifeGroup | 'limit_up' | 'limit_down' | 'other'
 
 interface GroupDef {
   key: GroupKey
@@ -88,23 +106,69 @@ interface GroupDef {
   bgColor: string
 }
 
-// Tab display order: 全部 first, then 总龙头, then phase groups
+// Tab 顺序：全部 → 总龙头 → 生命周期（按结构推进方向）→ 今日涨跌停 → 兜底
 const GROUPS: GroupDef[] = [
-  { key: 'all',         label: '全部',     color: '#A78BFA', bgColor: 'rgba(167,139,250,0.10)' },
-  { key: 'dragon',      label: '总龙头',   color: '#FFD700', bgColor: 'rgba(255,215,0,0.10)'   },
-  { key: 'oscillating', label: '震荡龙头', color: '#4F9CF9', bgColor: 'rgba(79,156,249,0.10)'  },
-  { key: 'limit_up',    label: '涨停龙头', color: '#FF4560', bgColor: 'rgba(255,69,96,0.10)'   },
-  { key: 'weakening',   label: '走弱龙头', color: '#34D399', bgColor: 'rgba(52,211,153,0.10)' },
-  { key: 'broken',      label: '破位龙头', color: '#26C281', bgColor: 'rgba(38,194,129,0.08)'  },
-  { key: 'limit_down',  label: '跌停股',   color: '#059669', bgColor: 'rgba(5,150,105,0.12)'   },
+  { key: 'all',             label: '全部',       color: '#A78BFA', bgColor: 'rgba(167,139,250,0.10)' },
+  { key: 'dragon',          label: '总龙头',     color: '#FFD700', bgColor: 'rgba(255,215,0,0.10)'   },
+  { key: 'STREAKING',       label: '连板中',     color: '#FB7185', bgColor: 'rgba(251,113,133,0.10)' },
+  { key: 'BROKEN',          label: '刚断板',     color: '#8B95A5', bgColor: 'rgba(139,149,165,0.10)' },
+  { key: 'REPAIRING',       label: '修复中',     color: '#4F9CF9', bgColor: 'rgba(79,156,249,0.10)'  },
+  { key: 'CROSS_SUCCESS',   label: '穿越成功',   color: '#FF7A45', bgColor: 'rgba(255,122,69,0.10)'  },
+  { key: 'CROSS_WEAKENING', label: '成功后走弱', color: '#F59E0B', bgColor: 'rgba(245,158,11,0.10)'  },
+  { key: 'CROSS_FAILED',    label: '修复失败',   color: '#34D399', bgColor: 'rgba(52,211,153,0.10)'  },
+  { key: 'FADED',           label: '周期结束',   color: '#5B6472', bgColor: 'rgba(91,100,114,0.10)'  },
+  { key: 'UNCLASSIFIED',    label: '未分类',     color: '#C084FC', bgColor: 'rgba(192,132,252,0.10)' },
+  { key: 'limit_up',        label: '涨停股',     color: '#FF4560', bgColor: 'rgba(255,69,96,0.10)'   },
+  { key: 'limit_down',      label: '跌停股',     color: '#059669', bgColor: 'rgba(5,150,105,0.12)'   },
+  { key: 'other',           label: '其他',       color: '#64748B', bgColor: 'rgba(100,116,139,0.10)' },
 ]
 
-function getGroupKey(stock: Stock): GroupKey {
-  if (stock.today_is_limit_up) return 'limit_up'
-  if (stock.today_is_limit_down) return 'limit_down'
-  if (stock.phase === 'broken') return 'broken'
-  if (stock.phase === 'weakening') return 'weakening'
-  return 'oscillating'
+/** 后端的生命周期状态 → tab key。UNKNOWN / NO_CYCLE 都归「未分类」 */
+const LIFE_TO_GROUP: Record<string, LifeGroup> = {
+  STREAKING: 'STREAKING', BROKEN: 'BROKEN', REPAIRING: 'REPAIRING',
+  CROSS_SUCCESS: 'CROSS_SUCCESS', CROSS_WEAKENING: 'CROSS_WEAKENING',
+  CROSS_FAILED: 'CROSS_FAILED', FADED: 'FADED',
+  UNKNOWN: 'UNCLASSIFIED', NO_CYCLE: 'UNCLASSIFIED',
+}
+
+/**
+ * 一只股票属于哪些组。**返回数组不是单值**——两个轴互不干扰。
+ *
+ * `other` 是兜底：既不在强势池、今天也没涨跌停的（主要是炸板股）。它保证
+ * **任何一只股票至少落在一个组里**，不会因为归不了类就只在「全部」里出现一次
+ * 而实际上从筛选里消失。
+ */
+/**
+ * code → 生命周期状态。只有强势池股票有；识别不出周期的走 NO_CYCLE。
+ *
+ * 复用 LeaderCyclePanel 那个 query key，两处共享同一份缓存，不会多打一次接口。
+ */
+function useLifecycleStates(): Map<string, string> {
+  const { data } = useQuery({
+    queryKey: ['leader-cycle'],
+    queryFn: () => fetchLeaderCycle(),
+    staleTime: 10 * 60 * 1000,
+  })
+  return useMemo(() => {
+    const m = new Map<string, string>()
+    for (const r of [...(data?.running ?? []), ...(data?.broken ?? [])]) {
+      m.set(r.code, r.lifecycle_state ?? 'UNKNOWN')
+    }
+    // 在池里但识别不出周期的：给一个跟"数据不足"不同的值，两者都归「未分类」，
+    // 但保留区分的可能（tooltip 里能说清是哪一种）
+    for (const u of data?.unresolved ?? []) m.set(u.code, 'NO_CYCLE')
+    return m
+  }, [data])
+}
+
+function getGroupKeys(stock: Stock, life: Map<string, string>): GroupKey[] {
+  const out: GroupKey[] = []
+  const st = life.get(stock.code)
+  if (st) out.push(LIFE_TO_GROUP[st] ?? 'UNCLASSIFIED')
+  if (stock.today_is_limit_up) out.push('limit_up')
+  if (stock.today_is_limit_down) out.push('limit_down')
+  if (!out.length) out.push('other')
+  return out
 }
 
 // ─── Leader-tag helpers ───────────────────────────────────────────────────────
@@ -113,17 +177,12 @@ function getGroupKey(stock: Stock): GroupKey {
 
 // ─── Phase group tag ─────────────────────────────────────────────────────────
 
-const PHASE_META: Record<Exclude<GroupKey, 'dragon'>, { label: string; color: string; bg: string }> = {
-  all:         { label: '全部',     color: '#A78BFA', bg: 'rgba(167,139,250,0.10)' },
-  limit_up:    { label: '涨停龙头', color: '#FF4560', bg: 'rgba(255,69,96,0.12)'   },
-  oscillating: { label: '震荡龙头', color: '#5EA6FF', bg: 'rgba(94,166,255,0.12)'  },
-  weakening:   { label: '走弱龙头', color: '#34D399', bg: 'rgba(52,211,153,0.12)'  },
-  broken:      { label: '破位龙头', color: '#26C281', bg: 'rgba(38,194,129,0.10)'  },
-  limit_down:  { label: '跌停股',   color: '#059669', bg: 'rgba(5,150,105,0.12)'   },
-}
-
-function PhaseGroupTag({ phase }: { phase: Exclude<GroupKey, 'dragon'> }) {
-  const { label, color, bg } = PHASE_META[phase]
+/** 标签样式直接读 GROUPS —— 同一份定义，不再维护第二张表 */
+function PhaseGroupTag({ phase }: { phase: GroupKey }) {
+  const g = GROUPS.find((x) => x.key === phase)
+  if (!g) return null
+  const { label, color } = g
+  const bg = g.bgColor
   return (
     <span
       className="inline-block text-xs px-1.5 py-0.5 rounded font-medium whitespace-nowrap"
@@ -228,6 +287,7 @@ export default function StockPool() {
 
   // ── 板块龙头（完全支配，由板块分析页数据决定）────────────────────────────
   const sectorLeaders = useSectorLeaders()  // Map<stockId, primarySector>
+  const lifeStates = useLifecycleStates()   // code → 生命周期状态（强势池才有）
   const regStatus = useRegulatoryStatus()   // code → 监管状态（警示徽章）
   const severeTargets = useSevereTargets()   // code → 还需涨幅%触发严重异动
 
@@ -236,8 +296,9 @@ export default function StockPool() {
     for (const stock of filteredStocks) {
       // 全部 tab：所有股票
       map.get('all')!.push(stock)
-      // Phase groups (mutually exclusive)
-      map.get(getGroupKey(stock))!.push(stock)
+      // 生命周期状态（互斥）+ 今日涨跌停（另一个轴）。一只强势股今天涨停，
+      // 会同时进它的状态组和涨停组——两个轴互不干扰，见 getGroupKeys
+      for (const k of getGroupKeys(stock, lifeStates)) map.get(k)!.push(stock)
       // 总龙头 (non-exclusive)：仅全市场龙头标签持有者（10/20/60龙·60高板龙·连板龙 的龙1/龙2）
       // 不再纳入"每个板块的龙头"，避免被上百个板块各自的龙头撑大；板块龙头标签仍在行内展示。
       const hasLeaderTag = getLeaderTags(stock, globalLeaderMaxes).length > 0
@@ -246,7 +307,7 @@ export default function StockPool() {
       }
     }
     return map
-  }, [filteredStocks, globalLeaderMaxes, sectorLeaders])
+  }, [filteredStocks, globalLeaderMaxes, sectorLeaders, lifeStates])
 
   const activeDef = GROUPS.find((g) => g.key === activeTab)!
   // 当前是否由 sortDragon 控制顺序（未点列头 + 全部/总龙头 tab）
@@ -255,8 +316,9 @@ export default function StockPool() {
   const activeStocks = useMemo(() => {
     const stocks = grouped.get(activeTab) ?? []
     if (usingDragon) return sortDragon(stocks, globalLeaderMaxes, sectorLeaders)
-    return sortStocks(stocks, sort.key, sort.dir)
-  }, [grouped, activeTab, sort, usingDragon, globalLeaderMaxes, sectorLeaders])
+    return sortStocks(stocks, sort.key, sort.dir, lifeStates)
+  }, [grouped, activeTab, sort, usingDragon, globalLeaderMaxes, sectorLeaders,
+      lifeStates])
 
   // 传给列头的 sort 状态：sortDragon 模式下清空 key，使所有列头均不高亮
   const headerSort = usingDragon ? { key: '' as SortKey, dir: sort.dir } : sort
@@ -457,6 +519,7 @@ export default function StockPool() {
                       groupColor={activeDef.color}
                       leaderMaxes={leaderMaxes}
                       sectorLeaders={sectorLeaders}
+                      lifeStates={lifeStates}
                       regStatus={regStatus.get(stock.code)}
                       severe={severeTargets.get(stock.code)}
                       onClick={() => navigate(`/stocks/${stock.code}`)}
@@ -552,6 +615,7 @@ function StockRow({
   groupColor,
   leaderMaxes,
   sectorLeaders,
+  lifeStates,
   regStatus,
   severe,
   onClick,
@@ -560,6 +624,7 @@ function StockRow({
   groupColor: string
   leaderMaxes: LeaderMaxes
   sectorLeaders: Map<number, string>   // stockId → primarySector
+  lifeStates: Map<string, string>      // code → 生命周期状态
   regStatus?: RegStatus
   severe?: SevereTarget
   onClick: () => void
@@ -569,7 +634,9 @@ function StockRow({
   const overflow = sectors.length - MAX_VISIBLE_SECTORS
 
   const leaderTags = getLeaderTags(stock, leaderMaxes)
-  const phaseGroup = getGroupKey(stock) as Exclude<GroupKey, 'dragon'>
+  // 一只股票可能同时属于状态组和涨跌停组；行内标签展示**状态**那个
+  // ——涨跌停当天有单独的涨/跌幅列和标记，不必再占这一格
+  const phaseGroup = getGroupKeys(stock, lifeStates)[0]
 
   const sectorName = sectorLeaders.get(stock.id)
   const leadSectors: string[] = sectorName ? [sectorName] : []
