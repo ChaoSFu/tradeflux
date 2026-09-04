@@ -2233,21 +2233,25 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             # 当年避开的是同一个坑（见 turnover_rate_service docstring）。
             try:
                 from app.services.turnover_rate_service import refresh_float_shares
-                # 全市场流通市值：一次独立的 clist 扫描（约 25 页，走 push2 不是
-                # 被限流的 push2his）。明细表只含当天涨停/炸板的股票，实测强势池
-                # 61 只只覆盖到 38 只；这一趟换来的是全市场覆盖。拉失败就退回
-                # 只用明细表，行为跟以前一样
+                # 流通市值：**只查强势池那几十只**，批量行情一次带 60 个 secid，
+                # 通常 2 个请求就够。明细表只含当天涨停/炸板的股票，上限卡在
+                # "这只票最近进没进过涨停池"，跟它的流通股本毫无关系——实测
+                # 61 只只覆盖到 38 只。拉失败就退回只用明细表，行为跟以前一样
                 _caps = {}
                 try:
                     from app.services.eastmoney_fetcher import fetch_float_market_caps
-                    _caps, _bad = fetch_float_market_caps()
+                    _pool = db.query(Stock).filter(Stock.in_strong_pool.is_(True)).all()
+                    # 用 market_int，**不手搓 "SH"→1**：这个映射早就抽成唯一
+                    # 判定函数了（当时替掉了 8 处手搓），北交所的判断也在里面
+                    _cm = [(st.code, market_int(st.market, st.code)) for st in _pool]
+                    _caps, _bad = fetch_float_market_caps(_cm)
                     if _bad:
-                        # 拿到多少必须报出来。静默用一份残缺的全市场数据，
-                        # 跟"这只票本来就没有流通市值"看起来一模一样
-                        log.info(f"  全市场流通市值：{len(_caps)} 只，"
-                                 f"{_bad} 页失败（这趟不完整）")
+                        # 拿到多少必须报出来。静默用一份残缺数据，跟"这只票本来
+                        # 就没有流通市值"看起来一模一样
+                        log.info(f"  流通市值：{len(_caps)}/{len(_cm)} 只，"
+                                 f"{_bad} 批失败（这趟不完整）")
                 except Exception as e:  # noqa: BLE001
-                    log.info(f"  全市场流通市值拉取失败（退回明细表口径）: {e}")
+                    log.info(f"  流通市值拉取失败（退回明细表口径）: {e}")
                 _fs = refresh_float_shares(db, target_date, market_caps=_caps)
                 if _fs["updated"]:
                     log.info(f"  流通股本刷新：{_fs['updated']}/{_fs['seen']} 只"

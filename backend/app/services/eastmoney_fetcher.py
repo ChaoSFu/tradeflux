@@ -840,74 +840,71 @@ def _fetch_from_akshare() -> List[StockBasicInfo]:
     return results
 
 
-def fetch_float_market_caps(timeout: int = 20, max_retry: int = 2) -> tuple:
+# 批量行情的备用主机。push2delay 提供**同一套 API**，只是行情延迟——而流通市值
+# 只在除权、解禁时台阶式跳变，延迟对它毫无影响。
+# 2026-09-04 实测：push2 的列表端点（clist / ulist.np）整片 502（nginx 上游错误页，
+# 不是 403 反爬页），而 push2delay / push2ex / datacenter 三个子域名全部正常，
+# quote 网页也正常 —— 所以不是 IP 被封，是 push2 那一片后端在故障。
+ULIST_HOSTS = ("push2.eastmoney.com", "push2delay.eastmoney.com")
+
+
+def fetch_float_market_caps(codes_markets: list, timeout: int = 20) -> tuple:
     """
-    全市场 {code: (流通市值, 最新价)}，用来推流通股本 → 换手率。
-    返回 `(caps, failed_pages)`。
+    指定这些股票的 {code: (流通市值, 最新价)}，用来推流通股本 → 换手率。
+    返回 `(caps, failed_batches)`。
 
-    **这是一次独立的全市场 clist 扫描，约 25 页请求**，不是搭 fetch_main_board_stocks
-    的便车——那个函数只在"新代码需要回退补名"时才调用，不是每天跑（daily_update.py
-    :1404）。所以这里老老实实自己扫，并且承认成本。
+    ## 只查要用的那些
 
-    值不值得：流通股本原来只能从涨停池/炸板池明细取，上限卡在"这只票最近进没进过
-    涨停池"，跟它的流通股本毫无关系——实测强势池 61 只只覆盖到 38 只。
+    首版扫了全市场 5000 只，理由只是"一次调用形态更简单"——那不是理由。换手率
+    只有强势池那几十只要用，25 页请求换回 4939 只用不上的数据，还正好撞上列表
+    端点故障。批量行情一次带 60 个 secid，**整个池子 2 个请求就够**。
 
-    ## 一页失败不能扔掉整趟
+    ## 两个主机
 
-    首版一页抛异常就整个函数 raise，把前面已经拿到的两千多只一起丢了。那跟"炸板池
-    拉取失败返回 [] 被当成今天没炸板"是同一类错：**部分结果仍然有用，而"拿到了
-    多少"必须能被调用方看见**。所以失败的页重试若干次，仍不行就记一笔跳过，
-    最后把 failed_pages 一起返回——由调用方决定这趟够不够用。
+    push2 挂了就换 push2delay：同一套 API，行情延迟而已，而流通市值只在除权、
+    解禁时跳变，延迟对它毫无影响。一批在两个主机上都拿不到才记为失败。
 
-    2026-09-04 首测生产上遇到 HTTP 502（边缘网关错误，不是限流的 403/429 签名），
-    退避重试正是为这种瞬时故障准备的。
+    ## 一批失败不扔整趟
+
+    失败的批次跳过继续，最后把 failed_batches 一起返回。**部分结果仍然有用，而
+    "这趟拿到了多少"必须能被调用方看见**——静默用一份残缺数据，跟"这只票本来
+    就没有流通市值"看起来一模一样。
     """
     out: Dict[str, tuple] = {}
-    failed_pages = 0
-    limiter = AdaptiveRateLimiter(base_delay=0.25, max_delay=8.0, jitter=0.3)
+    failed = 0
+    if not codes_markets:
+        return out, 0
+    limiter = AdaptiveRateLimiter(base_delay=0.3, max_delay=8.0, jitter=0.3)
+    batches = [codes_markets[i:i + _QUOTE_BATCH_SIZE]
+               for i in range(0, len(codes_markets), _QUOTE_BATCH_SIZE)]
+
     with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
-        for fs, _market_id in EM_MARKET_CONFIGS:
-            page = 1
-            while True:
-                items = None
-                for attempt in range(max_retry + 1):
-                    limiter.before_request()
-                    try:
-                        resp = client.get(CLIST_URL, params={
-                            "pn": page, "pz": 200, "po": 1, "np": 1,
-                            "fltt": 2, "invt": 2, "fid": "f3",
-                            "fs": fs, "fields": "f12,f21,f2",
-                        })
-                        payload = json_or_explain(resp, f"东财流通市值 p{page} ")
-                        items = (payload.get("data") or {}).get("diff") or []
-                        limiter.on_outcome(Outcome(kind="ok"))
-                        break
-                    except Exception as e:  # noqa: BLE001
-                        limiter.on_outcome(Outcome(kind="blocked", detail=str(e)[:80]))
-                        if attempt == max_retry:
-                            print(f"[fetcher] 流通市值 p{page} 放弃: "
-                                  f"{type(e).__name__}: {str(e)[:80]}", flush=True)
-                if items is None:
-                    # 这一页拿不到就跳过它继续下一页。**不 raise**：已经拿到的
-                    # 两千多只不该被一页故障连坐
-                    failed_pages += 1
-                    page += 1
-                    if failed_pages >= 6:
-                        print("[fetcher] 流通市值连续失败过多，提前收工"
-                              "（已拿到的照常返回）", flush=True)
-                        return out, failed_pages
-                    continue
-                if not items:
+        for bi, batch in enumerate(batches):
+            secids = ",".join(f"{m}.{c}" for c, m in batch)
+            got = False
+            for host in ULIST_HOSTS:
+                limiter.before_request()
+                try:
+                    resp = client.get(f"https://{host}/api/qt/ulist.np/get", params={
+                        "secids": secids, "fields": "f12,f21,f2", "fltt": 2, "invt": 2,
+                    })
+                    payload = json_or_explain(resp, f"东财流通市值 {host} ")
+                    for it in (payload.get("data") or {}).get("diff") or []:
+                        code = str(it.get("f12", ""))
+                        fmc = _num_or_none(it.get("f21"))
+                        px = _num_or_none(it.get("f2"))
+                        if code and fmc and px:
+                            out[code] = (fmc, px)
+                    limiter.on_outcome(Outcome(kind="ok"))
+                    got = True
                     break
-                for it in items:
-                    code = str(it.get("f12", ""))
-                    fmc, px = _num_or_none(it.get("f21")), _num_or_none(it.get("f2"))
-                    if code and fmc and px:
-                        out[code] = (fmc, px)
-                if len(items) < 200:
-                    break
-                page += 1
-    return out, failed_pages
+                except Exception as e:  # noqa: BLE001
+                    limiter.on_outcome(Outcome(kind="blocked", detail=str(e)[:80]))
+                    print(f"[fetcher] 流通市值 批次{bi + 1} {host} 失败: "
+                          f"{type(e).__name__}: {str(e)[:70]}", flush=True)
+            if not got:
+                failed += 1
+    return out, failed
 
 
 def fetch_main_board_stocks(timeout: int = 60) -> List[StockBasicInfo]:
