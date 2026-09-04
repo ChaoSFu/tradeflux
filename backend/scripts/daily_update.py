@@ -2240,7 +2240,12 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 _caps = {}
                 try:
                     from app.services.eastmoney_fetcher import fetch_float_market_caps
-                    _caps = fetch_float_market_caps()
+                    _caps, _bad = fetch_float_market_caps()
+                    if _bad:
+                        # 拿到多少必须报出来。静默用一份残缺的全市场数据，
+                        # 跟"这只票本来就没有流通市值"看起来一模一样
+                        log.info(f"  全市场流通市值：{len(_caps)} 只，"
+                                 f"{_bad} 页失败（这趟不完整）")
                 except Exception as e:  # noqa: BLE001
                     log.info(f"  全市场流通市值拉取失败（退回明细表口径）: {e}")
                 _fs = refresh_float_shares(db, target_date, market_caps=_caps)
