@@ -206,23 +206,27 @@ def get_leader_cycle(
     broken.sort(key=lambda i: (i.days_since_break if i.days_since_break is not None
                                else 10 ** 6, -(i.peak_board_count or 0)))
 
-    # 分母用整个强势池，不是 len(items)
+    # 分母用整个强势池，不是 len(items)。
+    # **2026-09-04 起，识别不出周期的股票也有行**（周期字段整组为 NULL，
+    # lifecycle_state = NO_CYCLE），所以 unresolved 现在只剩一种情况：连 K 线
+    # 都没有、压根建不出行。它仍然要报出来——静默消失就永远查不出来
     pool = db.query(Stock).filter(Stock.in_strong_pool.is_(True)).all()
     resolved = {i.code for i in items}
     unresolved = sorted(
         (UnresolvedItem(
             code=st.code, name=st.name, board_count_60d=st.board_count_60d,
-            reason=("本地重算未达 4 连板（与东财召回口径有差异）"
-                    if (st.board_count_60d or 0) < 4
-                    else "60日窗口内识别不出连板周期"))
+            reason=("本地没有 K 线，连价格事实都没有"))
          for st in pool if st.code not in resolved),
         key=lambda u: -(u.board_count_60d or 0))
 
     n = len(pool) or len(items)
     cov = {
         "pool_total": len(pool),
-        "cycle_identified": len(items),
-        "cycle_unresolved": len(unresolved),
+        "cycle_identified": sum(1 for i in items
+                                if i.lifecycle_state != "NO_CYCLE"),
+        "with_facts": len(items),          # 有价格事实的（含无周期的）
+        "cycle_unresolved": (sum(1 for i in items if i.lifecycle_state == "NO_CYCLE")
+                             + len(unresolved)),
         "total": n,
         "peak_board_confident": sum(1 for i in items if i.peak_board_confident),
         "ma_window_complete": sum(1 for i in items if i.ma_window_complete),

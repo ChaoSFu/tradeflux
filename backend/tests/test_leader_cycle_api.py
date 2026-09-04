@@ -36,8 +36,12 @@ def _stock(db, code, board60=5, in_pool=True):
 
 
 def _snap(db, st, **kw):
-    row = LeaderCycleSnapshot(stock_id=st.id, stock_code=st.code,
-                              date=TODAY, peak_board_count=5,
+    # cycle_start_date 有没有值 = 这行有没有识别出周期。缺省当作有，
+    # 想造"无周期"的行就显式传 cycle_start_date=None
+    kw.setdefault("cycle_start_date", TODAY)
+    kw.setdefault("cycle_peak_date", TODAY)
+    kw.setdefault("peak_board_count", 5)
+    row = LeaderCycleSnapshot(stock_id=st.id, stock_code=st.code, date=TODAY,
                               board_count_60d=st.board_count_60d, **kw)
     db.add(row); db.flush()
     return row
@@ -210,3 +214,52 @@ class TestNothingSwallowed:
         assert len(items) == 4
         assert all(i["lifecycle_state"] for i in items), "一个都不能是 null"
         assert sum(1 for i in items if i["lifecycle_state"] == "UNKNOWN") == 3
+
+
+class TestNoCycleRowsAreRealRows:
+    """
+    2026-09-04：识别不出周期的股票也写行了。
+
+    之前直接不建行，理由是"缺行比一行 NULL 清楚"——那是**拿一个字段的缺失惩罚了
+    另外二十个**：收盘价、四条均线、成交量、换手率、RS 全都只需要 K 线，跟有没有
+    连板周期无关。后果是这只票把每个覆盖率的天花板压到 60/61，界面上只能显示一行
+    破折号。
+    """
+
+    def test_无周期的行状态是NO_CYCLE不是STREAKING(self, db, client):
+        """
+        没有周期时 break_date 也是 NULL，而 `break_date is None` 在状态机里的含义
+        是"仍在连板中"——不先判有没有周期，就会把一只没有周期的票标成连板中，
+        正好是反的。
+        """
+        _snap(db, _stock(db, "600003", board60=2), cycle_start_date=None,
+              cycle_peak_date=None, peak_board_count=None,
+              data_fresh=True, bar_settled=True, latest_close=10.0)
+        it = (client.get("/leader-cycle").json()["running"]
+              + client.get("/leader-cycle").json()["broken"])[0]
+        assert it["lifecycle_state"] == "NO_CYCLE"
+        assert it["evaluation_status"] == "NO_CYCLE"
+        assert it["transition_reasons"], "要说明为什么没有周期"
+
+    def test_无周期的行照样带价格事实(self, db, client):
+        """这才是改这一版的理由——它不该再是一行破折号。"""
+        _snap(db, _stock(db, "600003", board60=2), cycle_start_date=None,
+              cycle_peak_date=None, peak_board_count=None,
+              data_fresh=True, bar_settled=True, latest_close=12.34,
+              ma5=11.0, volume=1e7, turnover_rate=8.8, rs_market_20=3.3)
+        it = (client.get("/leader-cycle").json()["running"]
+              + client.get("/leader-cycle").json()["broken"])[0]
+        assert it["latest_close"] == 12.34 and it["ma5"] == 11.0
+        assert it["turnover_rate"] == 8.8 and it["rs_market_20"] == 3.3
+
+    def test_覆盖率把有事实和有周期分开报(self, db, client):
+        a = _stock(db, "600001")
+        _snap(db, a, data_fresh=True, bar_settled=True, latest_close=10.0,
+              break_date=None)
+        _snap(db, _stock(db, "600003", board60=2), cycle_start_date=None,
+              cycle_peak_date=None, peak_board_count=None,
+              data_fresh=True, bar_settled=True, latest_close=10.0)
+        cov = client.get("/leader-cycle").json()["coverage"]
+        assert cov["pool_total"] == 2
+        assert cov["with_facts"] == 2, "两只都有价格事实"
+        assert cov["cycle_identified"] == 1 and cov["cycle_unresolved"] == 1

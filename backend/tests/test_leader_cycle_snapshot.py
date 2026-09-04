@@ -66,13 +66,25 @@ class TestBuildSnapshots:
         build_snapshots(db, date(2026, 8, 8), {st.code: bars})
         assert db.query(LeaderCycleSnapshot).count() == 2
 
-    def test_识别不出周期时不建空行(self, db):
-        """缺行表达'没有周期'，比一行字段全 NULL 清楚。"""
+    def test_识别不出周期时仍写行但周期字段整组留空(self, db):
+        """
+        2026-09-04 改。原来这种情况直接不建行，理由是"缺行比一行 NULL 清楚"——
+        那是**拿一个字段的缺失惩罚了另外二十个**：收盘价、四条均线、成交量、
+        换手率、RS 全都只需要 K 线，跟有没有连板周期无关。
+
+        后果是这只票把每个覆盖率的天花板压到 60/61，在界面上只能显示一行破折号。
+        现在照写，用 cycle_start_date IS NULL 表达"没有周期"。
+        """
         st = _seed_stock(db)
         bars = _bars([10.0, 11.0, 12.1, 11.0])      # 只有 2 连板
-        r = build_snapshots(db, date(2026, 8, 5), {st.code: bars})
-        assert r["no_cycle"] == 1 and r["written"] == 0
-        assert db.query(LeaderCycleSnapshot).count() == 0
+        r = build_snapshots(db, bars[-1].date, {st.code: bars}, settled=True)
+        assert r["no_cycle"] == 1 and r["written"] == 1
+        row = db.query(LeaderCycleSnapshot).one()
+        assert row.cycle_start_date is None and row.peak_board_count is None
+        assert row.break_date is None and row.peak_board_confident is None
+        # 跟周期无关的事实必须照样有
+        assert row.latest_close == bars[-1].close_price
+        assert row.data_fresh is True and row.bar_settled is True
 
     def test_不在强势池的股票不落(self, db):
         st = _seed_stock(db, in_pool=False)
@@ -423,7 +435,7 @@ class TestSettlementAndNewLow:
         assert row.new_post_break_low_today is True, "判定必须排除当日"
 
 
-class TestStaleRowCleanup:
+class TestCycleFieldsCleared:
     """
     同一天重跑、这次识别不出周期了 → **上一次建的那行必须删掉**。
 
@@ -435,26 +447,29 @@ class TestStaleRowCleanup:
     cycle identity 对不上而误触发一次 NEW_CYCLE 重置。
     """
 
-    def test_周期不再成立时删掉旧行(self, db):
+    def test_周期不再成立时旧结论被清空而不是留着(self, db):
         st = _seed_stock(db)
-        d = date(2026, 8, 7)
         bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        d = bars[-1].date
         build_snapshots(db, d, {st.code: bars}, settled=True)
-        assert db.query(LeaderCycleSnapshot).count() == 1
+        assert db.query(LeaderCycleSnapshot).one().peak_board_count == 4
 
         # 同一天重跑，这次的 bar 序列里没有 4 连板了（模拟窗口收窄）
         flat = _bars([10.0, 10.1, 10.2, 10.3, 10.4, 10.5])
         r = build_snapshots(db, d, {st.code: flat}, settled=True)
-        assert r["no_cycle"] == 1 and r["cleaned"] == 1
-        assert db.query(LeaderCycleSnapshot).count() == 0, \
-            "旧结论必须删掉——不写新行不等于旧行会消失"
+        assert r["no_cycle"] == 1
+        row = db.query(LeaderCycleSnapshot).one()
+        assert row.peak_board_count is None and row.cycle_start_date is None, \
+            "上一版口径算出来的周期结论必须被清掉，不能留在行里"
+        assert row.latest_close == flat[-1].close_price, "非周期事实照常更新"
 
-    def test_只清当天不碰别的日子(self, db):
+    def test_只影响当天不碰别的日子(self, db):
         st = _seed_stock(db)
         bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
         build_snapshots(db, date(2026, 8, 6), {st.code: bars}, settled=True)
         build_snapshots(db, date(2026, 8, 7), {st.code: bars}, settled=True)
         flat = _bars([10.0, 10.1, 10.2, 10.3, 10.4, 10.5])
         build_snapshots(db, date(2026, 8, 7), {st.code: flat}, settled=True)
-        left = db.query(LeaderCycleSnapshot).all()
-        assert [r.date for r in left] == [date(2026, 8, 6)]
+        rows = {r.date: r for r in db.query(LeaderCycleSnapshot).all()}
+        assert rows[date(2026, 8, 6)].peak_board_count == 4
+        assert rows[date(2026, 8, 7)].peak_board_count is None

@@ -207,6 +207,18 @@ def json_or_explain(resp, what: str = ""):
         ) from None
 
 
+def _num_or_none(v) -> Optional[float]:
+    """
+    东财对停牌 / 无数据的字段返回字符串 "-"。转不出来就是 None，**不是 0**
+    ——0 在这里意味着"流通市值为零"，跟 turnover_rate=0.0 是同一类错。
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
 def _is_bj_code(code: str) -> bool:
     return code.startswith(_BJ_PREFIXES)
 
@@ -221,6 +233,11 @@ class StockBasicInfo:
     pct_change: float         # 今日涨跌幅 %
     turnover_rate: float      # 今日换手率 %（AkShare 备用来源可能为 0）
     listing_date: date | None = None  # 上市日期（AkShare 备用路径可获取；东方财富路径为 None）
+    # 流通市值（元）与最新价。用来推算流通股本 → 换手率。
+    # None = 这条路径没给（AkShare 备用路径、以及各处手工构造的 info），
+    # **不是 0** —— 0 会被当成"这只票流通市值为零"，那是 turnover_rate=0.0 那类错
+    float_market_cap: float | None = None
+    last_price: float | None = None
 
 
 @dataclass
@@ -615,7 +632,11 @@ def _fetch_from_eastmoney(timeout: int = 10) -> List[StockBasicInfo]:
                     "pn": page, "pz": 200, "po": 1, "np": 1,
                     "fltt": 2, "invt": 2, "fid": "f3",
                     "fs": fs,
-                    "fields": "f12,f13,f14,f3,f10",
+                    # f21=流通市值、f2=最新价，两个一起才能推流通股本。
+                    # **不是新增请求**：这个 clist 扫全市场每天本来就要跑 25 页，
+                    # 多要两个字段是免费的。而流通股本原来只能从涨停池/炸板池明细
+                    # 里取，那两张表 08-25 才建、历史浅，强势池 61 只只覆盖到 38 只
+                    "fields": "f12,f13,f14,f3,f10,f21,f2",
                 })
                 data = json_or_explain(resp, "东财全市场列表 ").get("data") or {}
                 items = data.get("diff") or []
@@ -627,6 +648,10 @@ def _fetch_from_eastmoney(timeout: int = 10) -> List[StockBasicInfo]:
                     name = str(item.get("f14", ""))
                     pct  = float(item.get("f3") or 0)
                     turn = float(item.get("f10") or 0)
+                    # 东财对停牌/无数据的字段返回字符串 "-"，float() 会抛。
+                    # 拿不到就是 None，不填 0
+                    fmc = _num_or_none(item.get("f21"))
+                    px = _num_or_none(item.get("f2"))
 
                     if not _should_include_stock(code, market_id):
                         continue
@@ -638,6 +663,8 @@ def _fetch_from_eastmoney(timeout: int = 10) -> List[StockBasicInfo]:
                         is_st="ST" in name,
                         pct_change=pct,
                         turnover_rate=turn,
+                        float_market_cap=fmc,
+                        last_price=px,
                     ))
 
                 if len(items) < 200:

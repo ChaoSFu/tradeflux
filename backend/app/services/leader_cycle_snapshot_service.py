@@ -99,23 +99,7 @@ def build_snapshots(db: Session, trade_date: date,
             bars, trading_days=trading_days,
             suspended_days=(suspended_map or {}).get(st.code))
         if cyc is None:
-            # 在池里但当前 60 日窗口内识别不出 >=4 连板周期。**这是事实不是错误**
-            # ——东财召回口径与本地重算存在已知差异（2026-09-03 实测 61 只里 3 只）。
-            # 不建行，而不是建一行字段全空的：缺行表达"没有周期"，比一行 NULL 清楚。
-            #
-            # 但"不建行"不够——**同一天重跑时，上一次建的行必须删掉**。这次不写，
-            # 不代表上次写的那行会消失：本函数是 upsert，只覆盖不清理。
-            # 2026-09-04 实测：回填口径从 ~98 根 bar 收窄到 65 根后，有几天的周期
-            # 不再成立，于是 4 行旧结论留在表里，字段还是上一版口径算出来的。
-            # 状态机拿它当有效 observation，还可能因为 cycle identity 对不上而
-            # 误触发一次 NEW_CYCLE 重置。
-            stale_row = existing.pop(st.id, None)
-            if stale_row is not None:
-                db.delete(stale_row)
-                cleaned += 1
             no_cycle += 1
-            continue
-
         closes = {b.date: b.close_price for b in bars if b.close_price}
         rs_m = compute_rs_market(bench, st.code, closes)
 
@@ -149,21 +133,26 @@ def build_snapshots(db: Session, trade_date: date,
         if row is None:
             row = LeaderCycleSnapshot(date=trade_date, stock_id=st.id, stock_code=st.code)
             db.add(row)
-        row.peak_board_count = cyc.peak_board_count
+        # ── 周期字段：识别不出周期时**整组留空**，用 cycle_start_date is NULL
+        # 表达"这只票没有周期"。2026-09-04 之前这种情况直接不建行，理由是"缺行
+        # 比一行 NULL 清楚"——那是拿一个字段的缺失惩罚了另外二十个：收盘价、
+        # 四条均线、成交量、换手率、RS 全都只需要 K 线，跟有没有连板周期无关。
+        # 后果是这只票把每个覆盖率的天花板压到 60/61，在表里只能显示一行破折号。
+        row.peak_board_count = cyc.peak_board_count if cyc else None
         row.board_count_60d = st.board_count_60d
-        row.cycle_start_date = cyc.cycle_start_date
-        row.cycle_peak_date = cyc.cycle_peak_date
-        row.break_date = cyc.break_date
-        row.days_since_break = cyc.days_since_break
-        row.peak_price = cyc.peak_price
-        row.post_break_high = cyc.post_break_high
-        row.post_break_low = cyc.post_break_low
-        row.peak_drawdown = cyc.peak_drawdown
-        row.market_sessions = cyc.market_sessions
-        row.absent_days = cyc.absent_days
-        row.suspended_days = cyc.suspended_days
-        row.missing_days = cyc.missing_days
-        row.peak_board_confident = cyc.peak_board_confident
+        row.cycle_start_date = cyc.cycle_start_date if cyc else None
+        row.cycle_peak_date = cyc.cycle_peak_date if cyc else None
+        row.break_date = cyc.break_date if cyc else None
+        row.days_since_break = cyc.days_since_break if cyc else None
+        row.peak_price = cyc.peak_price if cyc else None
+        row.post_break_high = cyc.post_break_high if cyc else None
+        row.post_break_low = cyc.post_break_low if cyc else None
+        row.peak_drawdown = cyc.peak_drawdown if cyc else None
+        row.market_sessions = cyc.market_sessions if cyc else None
+        row.absent_days = cyc.absent_days if cyc else None
+        row.suspended_days = cyc.suspended_days if cyc else None
+        row.missing_days = cyc.missing_days if cyc else None
+        row.peak_board_confident = cyc.peak_board_confident if cyc else None
         row.latest_bar_date = last.date
         row.data_fresh = fresh
         # 那根 bar 是不是终值。历史日的 bar 必然已收盘；当日那根要看调用方给的
@@ -171,7 +160,7 @@ def build_snapshots(db: Session, trade_date: date,
         row.bar_settled = True if last.date < trade_date else settled
         # 当日事实只在那根 bar 确实是今天时才写。不新鲜就留空——
         # 宁可缺失，也不要让昨天的收盘价挂着今天的日期
-        row.latest_close = cyc.latest_close if fresh else None
+        row.latest_close = (last.close_price if fresh else None)
         if stats is not None:
             row.ma5, row.ma10 = stats.ma5, stats.ma10
             row.ma20, row.ma30 = stats.ma20, stats.ma30
@@ -199,20 +188,21 @@ def build_snapshots(db: Session, trade_date: date,
                                            d3.rs_market_20 if d3 else None)
         row.rs_sector_20_delta_1d = _delta(rs_s.get(20),
                                            d1.rs_sector_20 if d1 else None)
-        px = cyc.latest_close if fresh else None
+        px = last.close_price if fresh else None
         row.dist_to_post_break_high = (
             round((cyc.post_break_high / px - 1) * 100, 2)
-            if px and cyc.post_break_high and px > 0 else None)
+            if cyc and px and cyc.post_break_high and px > 0 else None)
         row.dist_to_cycle_peak = (
             round((cyc.peak_price / px - 1) * 100, 2)
-            if px and cyc.peak_price and px > 0 else None)
+            if cyc and px and cyc.peak_price and px > 0 else None)
         # 今天是不是断板后新高：拿今天的收盘跟**断板到昨天**的最高比。
         # post_break_high 含今天，直接比会恒等，所以要排除最后一根
         _after_excl_today = [b.close_price for b in bars
-                             if cyc.break_date and cyc.break_date <= b.date < last.date]
+                             if cyc and cyc.break_date
+                             and cyc.break_date <= b.date < last.date]
         # 三态：没有可比的历史（断板当天，post-break 还没有任何一根 bar）→ None。
         # 写 False 等于宣称"比较过了，没创新高"，而其实根本没得比
-        if fresh and cyc.break_date and px and _after_excl_today:
+        if fresh and cyc and cyc.break_date and px and _after_excl_today:
             row.new_post_break_high_today = px > max(_after_excl_today)
             row.new_post_break_low_today = px < min(_after_excl_today)
         else:

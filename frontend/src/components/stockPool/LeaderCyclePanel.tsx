@@ -41,7 +41,7 @@ type Group = 'core' | 'waiting' | 'dropped' | 'all' | 'unbucketed'
  * 根本没有快照，也就没有 lifecycle_state。单独给个标签而不是混进 UNKNOWN——
  * 「识别不出 ≥4 连板周期」和「今天的价格事实不足以判断」是两回事。
  */
-type Bucketable = LifecycleState | 'NO_CYCLE'
+type Bucketable = LifecycleState
 const NUM = 'font-mono tabular-nums'
 
 /**
@@ -193,8 +193,10 @@ export default function LeaderCyclePanel() {
   const cov = data?.coverage ?? {}
   const total = cov.total ?? 0          // = 整个强势池，不是已识别出周期的数量
 
-  // **识别不出周期的股票也必须是表格里的一行。** 之前它们只在覆盖率卡片里
-  // 以小字 chip 出现，一眼扫过去就没了——那等于被系统吞掉
+  // **每一只都必须是表格里的一行。** 2026-09-04 起后端给识别不出周期的股票也
+  // 落行（周期字段整组 NULL、lifecycle_state=NO_CYCLE），所以这里不再需要造假行。
+  // unresolved 现在只剩一种：连 K 线都没有、压根建不出行——那种仍要补成空壳，
+  // 否则它会从界面上消失
   const all = useMemo(() => {
     const pseudo = (data?.unresolved ?? []).map((u) => ({
       ...EMPTY_ITEM, code: u.code, name: u.name,

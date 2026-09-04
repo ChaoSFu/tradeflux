@@ -55,7 +55,12 @@ export const fetchStockSnapshots = (code: string, days = 30) =>
 // ── 高标龙头生命周期（事实层，2026-09-04）────────────────────────────────────
 export type LifecycleState =
   | 'STREAKING' | 'BROKEN' | 'REPAIRING' | 'CROSS_SUCCESS'
-  | 'CROSS_WEAKENING' | 'CROSS_FAILED' | 'FADED' | 'UNKNOWN'
+  | 'CROSS_WEAKENING' | 'CROSS_FAILED' | 'FADED'
+  // 今天的价格事实不够判断
+  | 'UNKNOWN'
+  // 价格事实齐全，但本地重算不出 >=4 连板周期。跟 UNKNOWN 是两回事，
+  // 看数的人要能知道去查哪个
+  | 'NO_CYCLE'
 
 export interface LeaderCycleItem {
   code: string

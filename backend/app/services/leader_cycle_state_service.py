@@ -81,6 +81,10 @@ FADED = "FADED"                        # 当前这段 cycle 生命周期结束�
 # 技术状态，**不是生命周期阶段**：今天的事实不足以可靠判断。
 # 不用 BROKEN / FAILED / SUCCESS 去顶替「不知道」
 UNKNOWN = "UNKNOWN"
+# 这只票在池里、也有价格事实，但**本地重算不出 >=4 连板周期**（东财召回口径与
+# 我们的重算有已知差异）。跟 UNKNOWN 是两回事：UNKNOWN 是"今天的价格事实不够
+# 判断"，NO_CYCLE 是"价格事实齐全，但没有周期可谈"。看数的人要能知道去查哪个。
+NO_CYCLE = "NO_CYCLE"
 
 POST_BREAK_STATES = (BROKEN, REPAIRING, CROSS_SUCCESS, CROSS_WEAKENING, CROSS_FAILED)
 
@@ -107,6 +111,7 @@ REASON_TEXT = {
     "MA_MISSING": "判定所需均线缺失（历史不足），不拿 None 当跌破",
     "HISTORY_GAP": "缺少足够的历史 observation，无法证明连续性",
     "HOLD": "无满足条件的转移，维持原状态",
+    "NO_CYCLE": "本地重算不出 ≥4 连板周期（与东财召回口径存在已知差异）",
 }
 
 
@@ -148,7 +153,17 @@ def _usable(row) -> bool:
     `bar_settled is None`（调用方没说）同样不算可用——「不知道有没有收盘」不能
     当成「已经收盘」。宁可给 UNKNOWN。
     """
-    return bool(row.data_fresh) and row.bar_settled is True and row.latest_close
+    return (bool(row.data_fresh) and row.bar_settled is True
+            and row.latest_close is not None and _has_cycle(row))
+
+
+def _has_cycle(row) -> bool:
+    """
+    这一行有没有识别出连板周期。**必须先判它再看 break_date**：没有周期时
+    break_date 也是 NULL，而 `break_date is None` 在状态机里的含义是"仍在连板中"
+    ——直接把一只没有周期的票标成 STREAKING，正好是反的。
+    """
+    return row.cycle_start_date is not None
 
 
 def _cycle_id(row):
@@ -407,22 +422,25 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
             codes = new_codes
 
     if state is None:
-        # 一行都不可用：有历史但全是停牌 / 未结算 / 陈值
+        # 一行都不可用：有历史但全是停牌 / 未结算 / 陈值 / 压根没有周期
         last = rows[-1]
-        return DayState(date=as_of_date, state=UNKNOWN,
-                        reason_codes=[_why_unusable(last)],
-                        evaluation_status=_eval_status(last),
+        why = _why_unusable(last)
+        return DayState(date=as_of_date,
+                        state=(NO_CYCLE if why == "NO_CYCLE" else UNKNOWN),
+                        reason_codes=[why], evaluation_status=_eval_status(last),
                         formula_version=formula_version)
 
     today = rows[-1]
     if not _usable(today) or today.date != as_of_date:
         # **今天的事实不足以判断**。展示 UNKNOWN，但内部记忆保留——事实重新完整
         # 之后继续从最近一次有效状态推进，UNKNOWN 不永久污染 lifecycle memory
+        _why = _why_unusable(today) if today.date == as_of_date else "DATA_STALE"
         return DayState(
-            date=as_of_date, state=UNKNOWN, previous_state=state,
+            # 周期没了（比如整段连板滑出 60 日窗口）跟"今天判不出来"是两回事
+            date=as_of_date, state=(NO_CYCLE if _why == "NO_CYCLE" else UNKNOWN),
+            previous_state=state,
             state_since_date=since, transitioned_today=False,
-            reason_codes=[_why_unusable(today) if today.date == as_of_date
-                          else "DATA_STALE"],
+            reason_codes=[_why],
             evaluation_status=(_eval_status(today) if today.date == as_of_date
                                else "STALE"),
             formula_version=formula_version,
@@ -436,6 +454,8 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
 
 
 def _why_unusable(row) -> str:
+    if not _has_cycle(row):
+        return "NO_CYCLE"
     if not row.data_fresh:
         return "DATA_STALE"
     if row.bar_settled is not True:
@@ -444,6 +464,8 @@ def _why_unusable(row) -> str:
 
 
 def _eval_status(row) -> str:
+    if not _has_cycle(row):
+        return "NO_CYCLE"
     if not row.data_fresh:
         return "STALE"
     if row.bar_settled is not True:
