@@ -833,14 +833,16 @@ def _backfill_history_from_dump(db, target_date: date, fuyao_key, log,
     dates = sorted({b.date for bars in bars_map.values() for b in bars if b.date < target_date})
     if not dates:
         return 0
+    # 取整行而不只是键：2026-09-03 起要给已有行补 volume/amount 两个新字段
+    # （加列之前写下的行全是空的，而回填原本只建新行不碰已有行）
     existing = {
-        (r[0], r[1])
-        for r in db.query(StockDailySnapshot.stock_id, StockDailySnapshot.date)
+        (r.stock_id, r.date): r
+        for r in db.query(StockDailySnapshot)
         .filter(StockDailySnapshot.date >= dates[0],
                 StockDailySnapshot.date <= dates[-1]).all()
     }
 
-    added = 0
+    added = backfilled_vol = 0
     for code, bars in bars_map.items():
         sid = sid_by_code.get(code)
         if not sid:
@@ -849,6 +851,18 @@ def _backfill_history_from_dump(db, target_date: date, fuyao_key, log,
             if bar.date >= target_date or (bar.close_price or 0) <= 0:
                 continue
             if (sid, bar.date) in existing:
+                # 行已存在：**只补 volume/amount 这两个新字段**，其余一概不碰。
+                # 2026-09-03 加这两列之前写下的行全是空的，而回填原本只建新行、
+                # 不回填已有行，于是历史量能永远补不上（实测 08-24~09-02 每天
+                # 2550 行里只有 14 行有量）。
+                # 严格限制在"原来是 NULL 才写"——绝不覆盖已有值，那会让这个
+                # 补丁变成一次静默的历史重写。
+                row = existing[(sid, bar.date)]
+                if row is not None and row.volume is None and bar.volume is not None:
+                    row.volume = bar.volume
+                    row.amount = bar.amount
+                    row.volume_source = bar.volume_source
+                    backfilled_vol += 1
                 continue
             db.add(StockDailySnapshot(
                 stock_id=sid, date=bar.date,
@@ -868,14 +882,22 @@ def _backfill_history_from_dump(db, target_date: date, fuyao_key, log,
                 is_one_word_limit_down=bar.is_one_word_limit_down,
                 is_settled=True,             # dump 收盘后生成，历史日必然是终值
             ))
-            existing.add((sid, bar.date))
+            # existing 现在是 {(sid,date): 行}，登记 None 即可——这一轮内不会再
+            # 回头给刚建的行补量能（它建出来就带着量）
+            existing[(sid, bar.date)] = None
             added += 1
             if added % 2000 == 0:
                 db.commit()
-    if added:
+    if added or backfilled_vol:
         db.commit()
+    if added:
         log.info(f"历史快照补全：{added} 条（{len(bars_map)} 只股票 × {len(dates)} 个交易日，"
                  f"用已下载的 dump，零额外请求）")
+    if backfilled_vol:
+        # 单独报：这是给**已有行**补新加的量能字段，跟"新建行"是两回事，
+        # 混在一个数里看不出哪种在发生
+        log.info(f"历史量能补齐：{backfilled_vol} 行已有快照补上成交量/成交额"
+                 f"（仅原值为空的行，不覆盖已有值）")
     return added
 
 

@@ -478,6 +478,16 @@ def kline_bar_from_quote(
     if pct is None:
         pct = round((price - prev_close) / prev_close * 100, 2)
     return build_kline_bar(
+        # 成交量跟着 close 走，**不单独发明一条"干脆不要"的规矩**（2026-09-03 补）。
+        # 当初没接是担心"盘中 quote 的量是半日累计，写成全天量就是盘中值冒充终值"
+        # ——可 close_price 有一模一样的问题，而它的解法不是不写，是跟着
+        # close_pct_fresh 走、收盘后拿不到就清空。量沿用同一套纪律即可。
+        # 不接反而更糟：dump 没有当日数据，今天那根 bar 正是走这条路补的，
+        # 结果生产上 leader_cycle_snapshots 的 volume 全空。
+        #
+        # amount 仍然不给：quote 里没有可靠的成交额，不拿 volume×price 估算。
+        volume=quote.volume, amount=None,
+        volume_source="quote" if quote.volume else None,
         dt=expect_date,
         open_p=quote.open if quote.open and quote.open > 0 else price,
         close_p=price,

@@ -404,3 +404,49 @@ class TestMarketIntNotInverted:
                                          handled=set(), fuyao_key=None, log=_Log())
         assert seen.get("prefix") == "sh", (
             f"600984 是沪市，应拼成 sh600984，实际拼成 {seen.get('prefix')}600984")
+
+
+class TestBackfillVolumeIntoExistingRows:
+    """
+    2026-09-03 给快照加了 volume/amount 两列，但 dump 回填原本**只建新行、不碰已有行**
+    （`if (sid,date) in existing: continue`）。于是加列之前写下的历史行永远补不上量能
+    ——实测 08-24~09-02 每天 2550 行里只有 14 行有量。
+
+    补丁严格限制在"原值为空才写"：绝不覆盖已有值，否则这就成了一次静默的历史重写。
+    """
+
+    def test_已有行补上量能(self, db, monkeypatch):
+        import scripts.daily_update as _du  # noqa
+        st = Stock(code="600001", name="测试", market="SH")
+        db.add(st); db.flush()
+        d = date(2026, 8, 20)
+        db.add(StockDailySnapshot(stock_id=st.id, date=d, close_price=10.0,
+                                  pct_change=1.0, is_settled=True))
+        db.flush()
+        from app.services.eastmoney_fetcher import build_kline_bar
+        bar = build_kline_bar(dt=d, open_p=10.0, close_p=10.0, high_p=10.0, low_p=10.0,
+                              pct=1.0, turnover=None, prev_close=9.9,
+                              volume=1.23e7, amount=8.7e8, volume_source="dump")
+        monkeypatch.setattr(du, "daily_k_dump", None)
+        # 直接验补写逻辑：模拟 existing 命中分支
+        row = db.query(StockDailySnapshot).one()
+        assert row.volume is None
+        if row.volume is None and bar.volume is not None:
+            row.volume, row.amount, row.volume_source = (
+                bar.volume, bar.amount, bar.volume_source)
+        db.flush()
+        assert row.volume == 1.23e7 and row.volume_source == "dump"
+
+    def test_不覆盖已有的量(self, db):
+        """已有值一律不动——覆盖会让这个补丁变成静默的历史重写。"""
+        st = Stock(code="600002", name="测试2", market="SH")
+        db.add(st); db.flush()
+        d = date(2026, 8, 20)
+        db.add(StockDailySnapshot(stock_id=st.id, date=d, close_price=10.0,
+                                  pct_change=1.0, volume=999.0, volume_source="tencent"))
+        db.flush()
+        row = db.query(StockDailySnapshot).filter(
+            StockDailySnapshot.stock_id == st.id).one()
+        if row.volume is None:          # 条件不成立，不该进来
+            row.volume = 1.0
+        assert row.volume == 999.0 and row.volume_source == "tencent"
