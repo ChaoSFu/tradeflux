@@ -243,11 +243,13 @@ def main():
                 print("   → 接缝内外都有。注意 `?` 只表示 volume_source 为 NULL"
                       "（那列 09-03 才加），**不代表两行同源**，所以"
                       "\"不在接缝上\" 这个判断本身不可靠")
+
             if args.fix_mixed:
                 _fix_mixed(db, pool, sorted({x[0] for x in suspect}), lo, hi, tdays)
-            print("   处置：这些股票的窗口内发生过分红除权，dump(未复权) 和"
-                  "腾讯(前复权) 的价格不能拼。要么整只重拉成同一口径，要么把"
-                  "这几只标注为不可信，**不要当没看见**。")
+            else:
+                print("   处置：窗口内发生过分红除权，dump(未复权) 和腾讯(前复权)"
+                      "的价格不能拼。加 --fix-mixed 整只重拉成同一口径，"
+                      "或把这几只标注为不可信，**不要当没看见**。")
         else:
             print("✅ 未发现口径跳变")
     finally:
