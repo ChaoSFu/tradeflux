@@ -838,6 +838,45 @@ def _fetch_from_akshare() -> List[StockBasicInfo]:
     return results
 
 
+def fetch_float_market_caps(timeout: int = 20) -> Dict[str, tuple]:
+    """
+    全市场 {code: (流通市值, 最新价)}，用来推流通股本 → 换手率。
+
+    **这是一次独立的全市场 clist 扫描，约 25 页请求**，不是搭 fetch_main_board_stocks
+    的便车——那个函数只在"新代码需要回退补名"时才调用，不是每天跑（daily_update.py
+    :1404）。所以这里老老实实自己扫，并且承认成本。
+
+    值不值得：流通股本原来只能从涨停池/炸板池明细取，那两张表 08-25 才建、历史浅，
+    且只含当天涨停/炸板的股票，实测强势池 61 只只覆盖到 38 只。25 页请求换全市场
+    覆盖，而且 clist 走的是 push2（实测正常），不是被限流的 push2his。
+
+    每天跑一次就够——流通股本只在除权、解禁时台阶式跳变。
+    """
+    out: Dict[str, tuple] = {}
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
+        for fs, market_id in EM_MARKET_CONFIGS:
+            page = 1
+            while True:
+                resp = client.get(CLIST_URL, params={
+                    "pn": page, "pz": 200, "po": 1, "np": 1,
+                    "fltt": 2, "invt": 2, "fid": "f3",
+                    "fs": fs, "fields": "f12,f21,f2",
+                })
+                items = (json_or_explain(resp, "东财流通市值 ").get("data")
+                         or {}).get("diff") or []
+                if not items:
+                    break
+                for it in items:
+                    code = str(it.get("f12", ""))
+                    fmc, px = _num_or_none(it.get("f21")), _num_or_none(it.get("f2"))
+                    if code and fmc and px:
+                        out[code] = (fmc, px)
+                if len(items) < 200:
+                    break
+                page += 1
+    return out
+
+
 def fetch_main_board_stocks(timeout: int = 60) -> List[StockBasicInfo]:
     """
     获取 A 股全市场（主板 + 科创板 + 创业板）全部股票的当日基础信息。

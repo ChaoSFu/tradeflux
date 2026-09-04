@@ -2233,10 +2233,26 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             # 当年避开的是同一个坑（见 turnover_rate_service docstring）。
             try:
                 from app.services.turnover_rate_service import refresh_float_shares
-                _fs = refresh_float_shares(db, target_date)
+                # 全市场流通市值：一次独立的 clist 扫描（约 25 页，走 push2 不是
+                # 被限流的 push2his）。明细表只含当天涨停/炸板的股票，实测强势池
+                # 61 只只覆盖到 38 只；这一趟换来的是全市场覆盖。拉失败就退回
+                # 只用明细表，行为跟以前一样
+                _caps = {}
+                try:
+                    from app.services.eastmoney_fetcher import fetch_float_market_caps
+                    _caps = fetch_float_market_caps()
+                except Exception as e:  # noqa: BLE001
+                    log.info(f"  全市场流通市值拉取失败（退回明细表口径）: {e}")
+                _fs = refresh_float_shares(db, target_date, market_caps=_caps)
                 if _fs["updated"]:
                     log.info(f"  流通股本刷新：{_fs['updated']}/{_fs['seen']} 只"
-                             f"（供换手率推算，未接入打分）")
+                             f"（明细 {_fs['from_detail']} + 全市场 {_fs['from_clist']}"
+                             f"，供换手率推算，未接入打分）")
+                # 两个来源都有值却差 5% 以上的。**分歧率异常高就是字段口径理解错了**
+                # （比如 f21 根本不是流通市值），必须能看见而不是静默取其一
+                if _fs.get("disagree"):
+                    log.info(f"  ⚠️ 流通股本两源分歧 {_fs['disagree']} 只（>5%）"
+                             f"，明细表为准；分歧率高说明 clist 字段口径要重新核对")
             except Exception as e:  # noqa: BLE001
                 log.info(f"  流通股本刷新失败（不影响主流程）: {e}")
                 db.rollback()

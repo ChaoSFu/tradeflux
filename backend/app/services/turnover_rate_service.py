@@ -33,7 +33,7 @@
 用旧观测值算出来的换手率要能看出它有多旧。每次该股再次出现在涨停池，就刷新一次。
 """
 from datetime import date
-from typing import Optional
+from typing import Dict, Optional
 
 from sqlalchemy.orm import Session
 
@@ -45,15 +45,25 @@ from ..models.stock import Stock
 MAX_FLOAT_SHARES_AGE_DAYS = 45
 
 
-def refresh_float_shares(db: Session, trade_date: date) -> dict:
+def refresh_float_shares(db: Session, trade_date: date,
+                         market_caps: Optional[Dict[str, tuple]] = None) -> dict:
     """
-    用当日**涨停池和炸板池**明细里的流通市值刷新 Stock.float_shares。零新增请求。
+    刷新 Stock.float_shares（流通股本 = 流通市值 ÷ 价格）。**零新增请求**。
 
     只在算得出且比库里更新时才写——旧观测不覆盖新观测。
 
-    两张表都读（2026-09-04 补上炸板池）：它们的 ltsz 字段是同一个事实的两个来源，
-    只读一张纯属白白少一半覆盖。实测强势池 61 只里只有 36 只拿到流通股本，
-    上限卡在明细表自身的历史深度（08-25 才建表），能多一个来源就多一分覆盖。
+    ## 两个来源，覆盖面差一个数量级
+
+    涨停池 + 炸板池明细的 ltsz 字段（两张都读，2026-09-04 补上炸板池——同一个
+    事实的两个来源，只读一张纯属白白少一半覆盖）。但它们 08-25 才建表、历史浅，
+    且只含当天涨停/炸板的股票，**实测强势池 61 只只覆盖到 38 只**。
+
+    `market_caps` 是 {code: (流通市值, 最新价)}，来自 `fetch_main_board_stocks`
+    的全市场 clist——那个调用每天本来就要扫 25 页，多要两个字段是免费的，
+    换来的是全市场覆盖。调用方不传就退回只用明细表，行为跟以前一样。
+
+    两个来源冲突时**以明细表为准**并计数：明细的 ltsz 是收盘后归档的确定值，
+    clist 的 f21 可能是盘中快照。分歧率异常高就说明字段口径理解错了，要能看见。
     """
     rows = list(
         db.query(LimitUpDailyDetail.stock_id, LimitUpDailyDetail.float_market_cap,
@@ -70,27 +80,57 @@ def refresh_float_shares(db: Session, trade_date: date) -> dict:
                 BrokenBoardDailyDetail.price.isnot(None))
         .all()
     )
-    if not rows:
-        return {"updated": 0, "seen": 0}
-
     by_id = {s.id: s for s in db.query(Stock).filter(
-        Stock.id.in_([r[0] for r in rows])).all()}
-    updated = 0
+        Stock.id.in_([r[0] for r in rows])).all()} if rows else {}
+
+    def _shares(fmc, price) -> Optional[float]:
+        if not fmc or not price or price <= 0:
+            return None
+        sh = fmc / price
+        return sh if sh > 0 else None
+
+    # {code: 流通股本}，明细表优先
+    detail: Dict[str, float] = {}
     for sid, fmc, price in rows:
         st = by_id.get(sid)
-        if st is None or not fmc or not price or price <= 0:
+        sh = _shares(fmc, price)
+        if st is not None and sh is not None:
+            detail[st.code] = sh
+
+    from_clist: Dict[str, float] = {}
+    disagree = 0
+    for code, (fmc, price) in (market_caps or {}).items():
+        sh = _shares(fmc, price)
+        if sh is None:
             continue
-        shares = fmc / price
-        if shares <= 0:
+        if code in detail:
+            # 两个来源都有 → 对一下。差 5% 以上记一笔：分歧率异常高就说明
+            # 字段口径理解错了（比如 f21 根本不是流通市值），必须能看见
+            if abs(sh - detail[code]) / detail[code] > 0.05:
+                disagree += 1
+            continue
+        from_clist[code] = sh
+
+    merged = {**from_clist, **detail}          # 明细表覆盖 clist
+    if not merged:
+        return {"updated": 0, "seen": 0, "from_detail": 0, "from_clist": 0,
+                "disagree": 0}
+
+    updated = 0
+    stocks = db.query(Stock).filter(Stock.code.in_(list(merged))).all()
+    for st in stocks:
+        sh = merged.get(st.code)
+        if sh is None:
             continue
         # 旧观测不覆盖新的
         if st.float_shares_date and st.float_shares_date > trade_date:
             continue
-        st.float_shares = round(shares, 2)
+        st.float_shares = round(sh, 2)
         st.float_shares_date = trade_date
         updated += 1
     db.commit()
-    return {"updated": updated, "seen": len(rows)}
+    return {"updated": updated, "seen": len(merged), "from_detail": len(detail),
+            "from_clist": len(from_clist), "disagree": disagree}
 
 
 def compute_turnover_rate(

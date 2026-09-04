@@ -22,6 +22,12 @@ from app.services.turnover_rate_service import (
 D = date(2026, 9, 3)
 
 
+def _seed_limit_up(db, st, float_market_cap, price, d=D):
+    db.add(LimitUpDailyDetail(stock_id=st.id, stock_code=st.code, trade_date=d,
+                              float_market_cap=float_market_cap, price=price))
+    db.flush()
+
+
 class TestComputeTurnoverRate:
     def test_基本换算(self):
         # 1000万股成交 / 1亿流通股 = 10%
@@ -79,7 +85,7 @@ class TestRefreshFloatShares:
         assert st.float_shares is None, "除以0算不出来，就不该有值"
 
     def test_当日没有明细时不报错(self, db):
-        assert refresh_float_shares(db, D) == {"updated": 0, "seen": 0}
+        assert refresh_float_shares(db, D)["updated"] == 0
 
 
 class TestBothPools:
@@ -95,3 +101,53 @@ class TestBothPools:
         db.flush()
         assert refresh_float_shares(db, D)["updated"] == 1
         assert abs(st.float_shares - 1.0e8) < 1
+
+
+class TestMarketCapSource:
+    """
+    2026-09-04 加的第二个来源：全市场 clist 的流通市值。
+
+    明细表只含当天涨停/炸板的股票，实测强势池 61 只只覆盖到 38 只——**上限卡在
+    "这只票最近进没进过涨停池"，跟它的流通股本毫无关系**。全市场扫一遍才是对的
+    覆盖面。
+
+    两源冲突时以明细为准并计数：明细的 ltsz 是收盘后归档的确定值，clist 的 f21
+    可能是盘中快照。**分歧率异常高就说明字段口径理解错了**（比如 f21 根本不是
+    流通市值），必须能看见而不是静默取其一。
+    """
+
+    def _stock(self, db, code="600001"):
+        st = Stock(code=code, name="测试", market="SH")
+        db.add(st); db.flush()
+        return st
+
+    def test_明细里没有的股票靠全市场补上(self, db):
+        st = self._stock(db)
+        r = refresh_float_shares(db, D, market_caps={st.code: (1.0e9, 10.0)})
+        assert r["updated"] == 1 and r["from_clist"] == 1 and r["from_detail"] == 0
+        assert st.float_shares == 1.0e8 and st.float_shares_date == D
+
+    def test_两源都有时以明细为准(self, db):
+        st = self._stock(db)
+        _seed_limit_up(db, st, float_market_cap=1.0e9, price=10.0)   # → 1e8 股
+        refresh_float_shares(db, D, market_caps={st.code: (2.0e9, 10.0)})
+        assert st.float_shares == 1.0e8, "明细是收盘后归档的确定值，优先"
+
+    def test_两源分歧超过五个点要计数(self, db):
+        st = self._stock(db)
+        _seed_limit_up(db, st, float_market_cap=1.0e9, price=10.0)
+        r = refresh_float_shares(db, D, market_caps={st.code: (2.0e9, 10.0)})
+        assert r["disagree"] == 1, "分歧率高说明字段口径理解错了，不能静默取其一"
+
+    def test_细微差异不算分歧(self, db):
+        """盘中快照和收盘归档本来就会差一点，别把噪声当信号。"""
+        st = self._stock(db)
+        _seed_limit_up(db, st, float_market_cap=1.0e9, price=10.0)
+        r = refresh_float_shares(db, D, market_caps={st.code: (1.02e9, 10.0)})
+        assert r["disagree"] == 0
+
+    def test_流通市值或价格缺失时跳过不写0(self, db):
+        st = self._stock(db)
+        r = refresh_float_shares(db, D, market_caps={
+            st.code: (None, 10.0), "600002": (1.0e9, None)})
+        assert r["updated"] == 0 and st.float_shares is None
