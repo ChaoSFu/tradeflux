@@ -37,7 +37,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from ..models.limit_up_detail import LimitUpDailyDetail
+from ..models.limit_up_detail import BrokenBoardDailyDetail, LimitUpDailyDetail
 from ..models.stock import Stock
 
 # 观测超过这么多个自然日就不再用来算换手率。解禁/除权是台阶式跳变，
@@ -47,16 +47,27 @@ MAX_FLOAT_SHARES_AGE_DAYS = 45
 
 def refresh_float_shares(db: Session, trade_date: date) -> dict:
     """
-    用当日涨停/炸板明细里的流通市值刷新 Stock.float_shares。零新增请求。
+    用当日**涨停池和炸板池**明细里的流通市值刷新 Stock.float_shares。零新增请求。
 
     只在算得出且比库里更新时才写——旧观测不覆盖新观测。
+
+    两张表都读（2026-09-04 补上炸板池）：它们的 ltsz 字段是同一个事实的两个来源，
+    只读一张纯属白白少一半覆盖。实测强势池 61 只里只有 36 只拿到流通股本，
+    上限卡在明细表自身的历史深度（08-25 才建表），能多一个来源就多一分覆盖。
     """
-    rows = (
+    rows = list(
         db.query(LimitUpDailyDetail.stock_id, LimitUpDailyDetail.float_market_cap,
                  LimitUpDailyDetail.price)
         .filter(LimitUpDailyDetail.trade_date == trade_date,
                 LimitUpDailyDetail.float_market_cap.isnot(None),
                 LimitUpDailyDetail.price.isnot(None))
+        .all()
+    ) + list(
+        db.query(BrokenBoardDailyDetail.stock_id, BrokenBoardDailyDetail.float_market_cap,
+                 BrokenBoardDailyDetail.price)
+        .filter(BrokenBoardDailyDetail.trade_date == trade_date,
+                BrokenBoardDailyDetail.float_market_cap.isnot(None),
+                BrokenBoardDailyDetail.price.isnot(None))
         .all()
     )
     if not rows:

@@ -13,7 +13,7 @@
 """
 from datetime import date, timedelta
 
-from app.models.limit_up_detail import LimitUpDailyDetail
+from app.models.limit_up_detail import BrokenBoardDailyDetail, LimitUpDailyDetail
 from app.models.stock import Stock
 from app.services.turnover_rate_service import (
     compute_turnover_rate, refresh_float_shares, MAX_FLOAT_SHARES_AGE_DAYS,
@@ -80,3 +80,18 @@ class TestRefreshFloatShares:
 
     def test_当日没有明细时不报错(self, db):
         assert refresh_float_shares(db, D) == {"updated": 0, "seen": 0}
+
+
+class TestBothPools:
+    """
+    涨停池和炸板池的 ltsz 是同一个事实的两个来源，只读一张纯属白白少一半覆盖。
+    实测强势池 61 只里只有 36 只拿到流通股本，上限卡在明细表的历史深度。
+    """
+    def test_只在炸板池出现的股票也能拿到流通股本(self, db):
+        st = Stock(code="600009", name="只炸板", market="SH")
+        db.add(st); db.flush()
+        db.add(BrokenBoardDailyDetail(stock_id=st.id, stock_code=st.code, trade_date=D,
+                                      float_market_cap=2.0e9, price=20.0))
+        db.flush()
+        assert refresh_float_shares(db, D)["updated"] == 1
+        assert abs(st.float_shares - 1.0e8) < 1
