@@ -63,6 +63,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--days", type=int, default=70, help="往回补多少个交易日")
     ap.add_argument("--dry-run", action="store_true", help="只报缺多少，不写库")
+    ap.add_argument("--verify-only", action="store_true",
+                    help="只跑复权口径校验，不拉数据不写库")
     args = ap.parse_args()
 
     db = SessionLocal()
@@ -93,20 +95,22 @@ def main():
         print(f"缺 {total_gaps} 行，涉及 {len(holed)} 只")
         for c, v in sorted(holed.items(), key=lambda x: -len(x[1]))[:10]:
             print(f"  {c}  缺 {len(v)} 天：{v[0]} ~ {v[-1]}")
-        if args.dry_run or not holed:
-            print("\n--dry-run：未写库" if args.dry_run else "无需操作")
+        if args.dry_run:
+            print("\n--dry-run：未写库")
             return
+        if args.verify_only:
+            holed = {}          # 跳过补数，直接进校验
 
         by_code = {st.code: st for st in pool}
+        added = 0
         infos = [StockBasicInfo(code=c, name=by_code[c].name,
                                 market=market_int(by_code[c].market, c),
                                 is_st=by_code[c].is_st, pct_change=0.0,
                                 turnover_rate=0.0)
                  for c in holed]
         print(f"\n拉 {len(infos)} 只的 K 线（腾讯优先，前复权）...")
-        klines = fetch_klines_batch(infos, days=args.days + 20, max_workers=6)
-
-        added = 0
+        klines = fetch_klines_batch(infos, days=args.days + 20,
+                                    max_workers=6) if infos else {}
         for code, gaps in holed.items():
             st = by_code[code]
             bars = {b.date: b for b in (klines.get(code) or [])}
@@ -127,13 +131,23 @@ def main():
                 added += 1
             db.flush()
         db.commit()
-        print(f"新建 {added} 行")
+        still = total_gaps - added
+        print(f"新建 {added} 行" + (f"，仍缺 {still} 行（数据源也没有那几天，"
+                                     "多半是停牌或未上市）" if still else ""))
 
         # ── 复权口径校验 ────────────────────────────────────────────────────
         # 补完必须查，不能写完就算。相邻两行的 close 推出的涨幅跟存储的
         # pct_change 对不上，说明中间有复权跳变，两种口径拼在了一条序列上
-        print("\n复权口径校验（相邻两行 close 推涨幅 vs 存储 pct_change）...")
-        suspect = []
+        print("\n复权口径校验（相邻**交易日**两行 close 推涨幅 vs 存储 pct_change）...")
+        # **必须先确认两行是相邻交易日**。首版只按"相邻两行"比，而序列里还有
+        # 没补上的空洞，跨着空洞算 close[i]/close[i-1] 得到的是几天的累计涨幅，
+        # 当然对不上单日 pct_change ——首测 21 处"疑似复权跳变"里就混着这种。
+        #
+        # 这跟 2026-09-04 早上在状态机里修的「连续两个 observation 不能靠
+        # 过滤后相邻」是同一个错，当天又犯了一次：**时间轴上的相邻关系必须用
+        # 日历证明，不能用数组下标推断。**
+        pos = {d: i for i, d in enumerate(tdays)}
+        suspect, skipped_gap = [], 0
         for st in pool:
             rows = (db.query(StockDailySnapshot)
                     .filter(StockDailySnapshot.stock_id == st.id,
@@ -144,17 +158,32 @@ def main():
             for a, b in zip(rows, rows[1:]):
                 if not a.close_price or a.close_price <= 0 or b.pct_change is None:
                     continue
+                ia, ib = pos.get(a.date), pos.get(b.date)
+                if ia is None or ib is None or ib - ia != 1:
+                    skipped_gap += 1      # 中间还有空洞，比不了
+                    continue
                 derived = (b.close_price / a.close_price - 1) * 100
                 if abs(derived - b.pct_change) > _PCT_TOLERANCE:
+                    # 记下两行各自的来源：如果分歧全都发生在"源不同"的接缝上，
+                    # 那才是复权口径混了；发生在同源连续段中间就是别的问题
                     suspect.append((st.code, b.date, round(derived, 2),
-                                    round(b.pct_change, 2)))
+                                    round(b.pct_change, 2),
+                                    f"{a.volume_source or '?'}→{b.volume_source or '?'}"))
+        print(f"（跳过 {skipped_gap} 对：中间仍有空洞，不是相邻交易日，比不了）")
         if suspect:
-            print(f"⚠️ {len(suspect)} 处对不上——**很可能是复权口径混了**，"
-                  "这条序列上的均线/RS/连板判定都不可信：")
-            for code, d, derived, stored in suspect[:20]:
-                print(f"   {code} {d}  close推算 {derived:+.2f}%  存储 {stored:+.2f}%")
+            seam = sum(1 for x in suspect if x[4].split("→")[0] != x[4].split("→")[1])
+            print(f"⚠️ {len(suspect)} 处对不上，其中 {seam} 处发生在两个来源的接缝上：")
+            for code, d, derived, stored, src in suspect[:20]:
+                print(f"   {code} {d}  close推算 {derived:+.2f}%  存储 {stored:+.2f}%"
+                      f"  来源 {src}")
             if len(suspect) > 20:
                 print(f"   …还有 {len(suspect) - 20} 处")
+            if seam == len(suspect):
+                print("   → 全部在接缝上，**确认是复权口径混了**")
+            elif seam == 0:
+                print("   → 一处都不在接缝上，**不是复权问题**，另查")
+            else:
+                print("   → 接缝内外都有，两种原因混在一起，逐只看")
             print("   处置：这些股票的窗口内发生过分红除权，dump(未复权) 和"
                   "腾讯(前复权) 的价格不能拼。要么整只重拉成同一口径，要么把"
                   "这几只标注为不可信，**不要当没看见**。")
