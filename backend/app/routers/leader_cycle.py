@@ -10,6 +10,9 @@ from ..database import get_db
 from ..models.leader_cycle import LeaderCycleSnapshot
 from ..models.sector import Sector
 from ..models.stock import Stock
+from ..services.leader_cycle_state_service import (
+    CORE_OPPORTUNITY, UNKNOWN, replay_price_lifecycle,
+)
 
 router = APIRouter(prefix="/leader-cycle", tags=["leader-cycle"])
 
@@ -62,6 +65,23 @@ class LeaderCycleItem(BaseModel):
     volume_ratio_5d: Optional[float] = None
     amount_ratio_5d: Optional[float] = None
 
+    # ── Price Lifecycle v1（派生，**不落库**）────────────────────────────────
+    # 阈值以后一定会改。把 CROSS_SUCCESS 冻进历史事实表，换口径之后整段历史就
+    # 变成旧口径数据，再也回答不了"新口径下当时该是什么状态"。所以每次从事实
+    # replay，代价是几十只 × 60 天，可以忽略
+    lifecycle_state: Optional[str] = None
+    previous_lifecycle_state: Optional[str] = None
+    state_since_date: Optional[date] = None
+    transitioned_today: bool = False
+    lifecycle_formula_version: Optional[str] = None
+    transition_reason_codes: List[str] = []
+    transition_reasons: List[str] = []
+    evaluation_status: Optional[str] = None
+    # CROSS_WEAKENING 必须能跟 CROSS_FAILED 区分开：前者是"曾经穿越成功、现在
+    # 走弱"，后者是"这次修复就没成过"。交易含义完全不同
+    ever_cross_success: bool = False
+    first_cross_success_date: Optional[date] = None
+
     bar_count: Optional[int] = None      # 参与均线计算的 bar 根数
     # data_fresh = 那根 bar 是不是今天的；bar_settled = 那根 bar 是不是收盘终值。
     # 盘中两者会同时为真/假不同步，必须分开给——状态机只在两者都为真时才推进
@@ -95,6 +115,23 @@ class LeaderCycleResponse(BaseModel):
     scope_note: str
 
 
+def _lifecycle_fields(snaps, trade_date: date, calendar) -> dict:
+    """把 replay 结果摊平成 LeaderCycleItem 的字段。"""
+    st = replay_price_lifecycle(snaps, trade_date, trading_days=calendar)
+    return {
+        "lifecycle_state": st.state,
+        "previous_lifecycle_state": st.previous_state,
+        "state_since_date": st.state_since_date,
+        "transitioned_today": st.transitioned_today,
+        "lifecycle_formula_version": st.formula_version,
+        "transition_reason_codes": st.reason_codes,
+        "transition_reasons": st.reasons,
+        "evaluation_status": st.evaluation_status,
+        "ever_cross_success": st.ever_cross_success,
+        "first_cross_success_date": st.first_cross_success_date,
+    }
+
+
 @router.get("", response_model=LeaderCycleResponse)
 def get_leader_cycle(
     trade_date: Optional[date] = Query(None, description="不传=最新有数据的交易日"),
@@ -122,6 +159,18 @@ def get_leader_cycle(
 
     stocks = {s.code: s for s in db.query(Stock).filter(
         Stock.code.in_([r.stock_code for r in rows])).all()}
+
+    # ── 生命周期 replay 用的历史 ──────────────────────────────────────────
+    # **只取 date <= trade_date**。这是 look-ahead guard：查历史某天时，改了那天
+    # 之后的数据不能让那天的状态发生变化
+    hist_rows = (db.query(LeaderCycleSnapshot)
+                 .filter(LeaderCycleSnapshot.date <= trade_date).all())
+    hist: dict = {}
+    for r in hist_rows:
+        hist.setdefault(r.stock_code, []).append(r)
+    # 观测日历 = 我们有数据的那些交易日。「连续两个 observation」的规则靠它判相邻
+    # ——过滤掉不可用行之后两行相邻，不等于两个交易日相邻
+    obs_calendar = sorted({r.date for r in hist_rows})
     sec_names = {sid: name for sid, name in db.query(Sector.id, Sector.name).all()}
 
     items: List[LeaderCycleItem] = []
@@ -132,6 +181,7 @@ def get_leader_cycle(
             name=st.name if st else None,
             sector_name=(sec_names.get(st.primary_sector_id)
                          if st and st.primary_sector_id else None),
+            **_lifecycle_fields(hist.get(r.stock_code, []), trade_date, obs_calendar),
             **{k: getattr(r, k) for k in (
                 "peak_board_count", "board_count_60d", "cycle_start_date",
                 "cycle_peak_date", "break_date", "days_since_break",
@@ -182,6 +232,8 @@ def get_leader_cycle(
         "volume": sum(1 for i in items if i.volume is not None),
         "rs_delta": sum(1 for i in items if i.rs_market_20_delta_1d is not None),
         "settled": sum(1 for i in items if i.bar_settled and i.data_fresh),
+        "lifecycle_resolved": sum(1 for i in items
+                                  if i.lifecycle_state and i.lifecycle_state != UNKNOWN),
     }
     return LeaderCycleResponse(
         trade_date=trade_date, running=running, broken=broken,

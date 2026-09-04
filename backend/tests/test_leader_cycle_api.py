@@ -78,3 +78,81 @@ class TestCoverage:
         assert data["trade_date"] is None
         assert data["running"] == [] and data["broken"] == []
         assert data["unresolved"] == [] and data["coverage"] == {}
+
+
+class TestLifecycleInApi:
+    """
+    状态是**派生**出来的，不落库。所以接口这一层要保证两件事：
+    replay 用的历史不能越过 as_of，以及事实层依旧干净。
+    """
+
+    def _seq(self, db, st, days, **per_day):
+        """按日期造一串快照。per_day 里每个键是列名，值是与 days 等长的列表。"""
+        for i, d in enumerate(days):
+            db.add(LeaderCycleSnapshot(
+                stock_id=st.id, stock_code=st.code, date=d,
+                peak_board_count=5, board_count_60d=5,
+                cycle_start_date=days[0], cycle_peak_date=days[0],
+                data_fresh=True, bar_settled=True,
+                **{k: v[i] for k, v in per_day.items()}))
+        db.flush()
+
+    def test_历史查询不看未来(self, db, client):
+        """
+        Case N 的接口版：改了 T+1/T+2 的数据，T 那天的状态必须完全不变。
+        这是 look-ahead guard 唯一能在接口层验证的地方。
+        """
+        st = _stock(db, "600001")
+        # BROKEN → REPAIRING → CROSS_SUCCESS → 崩 → FADED，一天一步
+        days = [date(2026, 9, i) for i in (1, 2, 3, 4, 5)]
+        self._seq(db, st, days,
+                  break_date=[date(2026, 8, 28)] * 5,
+                  days_since_break=[1, 2, 3, 4, 5],
+                  latest_close=[19.0, 20.0, 22.0, 10.0, 9.0],
+                  ma5=[18.6, 18.8, 19.5, 19.0, 18.0],
+                  ma10=[17.6, 17.8, 18.0, 18.0, 17.0],
+                  ma20=[16.6, 17.0, 17.0, 17.0, 17.0],
+                  ma30=[15.6, 16.0, 16.0, 16.0, 16.0],
+                  new_post_break_high_today=[False, False, True, False, False],
+                  new_post_break_low_today=[False, False, False, True, True])
+        at_t = client.get("/leader-cycle",
+                          params={"trade_date": "2026-09-03"}).json()
+        later = client.get("/leader-cycle",
+                           params={"trade_date": "2026-09-05"}).json()
+        a = (at_t["running"] + at_t["broken"])[0]
+        b = (later["running"] + later["broken"])[0]
+        assert a["lifecycle_state"] == "CROSS_SUCCESS"
+        assert a["transitioned_today"] is True
+        assert b["lifecycle_state"] == "FADED", "后面两天确实崩了"
+        assert a["state_since_date"] == "2026-09-03"
+        assert a["lifecycle_formula_version"] == "price_v1"
+
+    def test_每只都带得出原因和口径版本(self, db, client):
+        _snap(db, _stock(db, "600001"), data_fresh=True, bar_settled=True,
+              latest_close=10.0, break_date=None,
+              cycle_start_date=TODAY, cycle_peak_date=TODAY)
+        item = client.get("/leader-cycle").json()["broken"][0] \
+            if False else (client.get("/leader-cycle").json()["running"] or
+                           client.get("/leader-cycle").json()["broken"])[0]
+        assert item["lifecycle_state"] == "STREAKING"
+        assert item["transition_reasons"], "code 要能翻成人话"
+        assert item["evaluation_status"] == "OK"
+
+    def test_未结算时状态是UNKNOWN而不是硬判(self, db, client):
+        _snap(db, _stock(db, "600001"), data_fresh=True, bar_settled=False,
+              latest_close=10.0, break_date=date(2026, 8, 28), days_since_break=3,
+              cycle_start_date=TODAY, cycle_peak_date=TODAY)
+        item = (client.get("/leader-cycle").json()["broken"] +
+                client.get("/leader-cycle").json()["running"])[0]
+        assert item["lifecycle_state"] == "UNKNOWN"
+        assert item["evaluation_status"] == "UNSETTLED"
+
+    def test_覆盖率报出有多少只判得出状态(self, db, client):
+        _snap(db, _stock(db, "600001"), data_fresh=True, bar_settled=True,
+              latest_close=10.0, break_date=None,
+              cycle_start_date=TODAY, cycle_peak_date=TODAY)
+        _snap(db, _stock(db, "600002"), data_fresh=True, bar_settled=False,
+              latest_close=10.0, break_date=None,
+              cycle_start_date=TODAY, cycle_peak_date=TODAY)
+        cov = client.get("/leader-cycle").json()["coverage"]
+        assert cov["lifecycle_resolved"] == 1 and cov["settled"] == 1
