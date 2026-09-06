@@ -43,7 +43,8 @@ export default function TradingConsole() {
   return (
     <div className="space-y-4">
       {/* ── 今日交易许可 ────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+      {/* 768~1024 之间四列会把 gate 卡挤到文字竖排，中间加一档两列 */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <GateCard name="市场" gate={mGate} compact />
         <GateCard name="主线" gate={sGate} compact />
         <div className="card p-3">
@@ -92,7 +93,7 @@ export default function TradingConsole() {
                 <span className={cn('w-5 text-center', i === 0 ? 'text-accent' : 'text-text-muted')}>
                   {i + 1}
                 </span>
-                <span className="text-text-primary w-24 truncate">{e.sector.name}</span>
+                <span className="text-text-primary min-w-[5rem] shrink-0 truncate">{e.sector.name}</span>
                 <span className="text-text-secondary flex-1 truncate">
                   {e.hits.join('、') || '—'}
                 </span>
