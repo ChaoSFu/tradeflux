@@ -170,7 +170,7 @@ function JobPanel({
 
 // ── 数据更新入口（整合按钮 + 下拉面板）────────────────────────────────────────
 
-function DataUpdateMenu({ onRequestLogin }: { onRequestLogin: () => void }) {
+export function DataUpdateMenu({ onRequestLogin }: { onRequestLogin: () => void }) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
