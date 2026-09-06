@@ -109,8 +109,16 @@ NO_CYCLE = "NO_CYCLE"
 
 POST_BREAK_STATES = (BROKEN, REPAIRING, CROSS_SUCCESS, CROSS_WEAKENING, CROSS_FAILED)
 
-# 前端默认只看这两个
-CORE_OPPORTUNITY = (REPAIRING, CROSS_SUCCESS)
+# 前端默认只看这两个。
+#
+# **叫 OBSERVATION 不叫 OPPORTUNITY**：2026-09-06 首次前瞻评估显示，这两个状态
+# 在同日同池对照下没有表现出正超额（REPAIRING T+5 -2.2、CROSS_SUCCESS T+5 -5.0，
+# 正超额占比都在 50% 以下）。样本还太小、有效样本数远小于打印值，不足以下
+# "有负 Edge"的结论；但足以说明**现在把它们叫「机会」是超前的**。
+#
+# 模块 docstring 一开始就写了：Phase 1 只回答"它在哪"，Phase 2 才回答
+# "能不能买"。变量名跟着这条语义走，比留一个乐观的旧名字诚实。
+CORE_OBSERVATION = (REPAIRING, CROSS_SUCCESS)
 
 REASON_TEXT = {
     "NEW_CYCLE": "识别到新的 ≥4 连板周期，状态机重置",

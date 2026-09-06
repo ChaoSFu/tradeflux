@@ -120,7 +120,58 @@ class TestNoSelfDeception:
         """
         import scripts.evaluate_lifecycle as m
         src = open(m.__file__, encoding="utf-8").read()
-        assert 'prev_state != "UNKNOWN"' in src
+        assert 's.previous_state in (None, "UNKNOWN")' in src
+
+    def test_不在外面重造transition检测(self):
+        """
+        状态机自己已经输出 transitioned_today / previous_state。评估器再维护一套
+        `cur != prev_state`，就等于"什么叫状态转移"有两个定义——这个仓库为
+        「同一个事实两套判定」栽过 8 次，不差这第 9 次。
+        """
+        import scripts.evaluate_lifecycle as m
+        src = open(m.__file__, encoding="utf-8").read()
+        assert "s.transitioned_today" in src
+        assert "cur != prev_state" not in src
+
+    def test_事件按from到to分组(self):
+        """
+        BROKEN→REPAIRING（第一次转强）和 CROSS_FAILED→REPAIRING（失败后再修复）
+        交易含义完全不同，混成一组「REPAIRING 68」会把信号稀释掉。
+        """
+        import scripts.evaluate_lifecycle as m
+        src = open(m.__file__, encoding="utf-8").read()
+        assert 'f"{s.previous_state}→{s.state}"' in src
+
+    def test_有平衡样本表(self):
+        """
+        T+1 含近期事件、T+10 只含更早的，两张表样本组成不同。
+        「T+1 略负而 T+10 大负」不能解释成"持有越久越差"——除非在同一批样本上比。
+        """
+        import scripts.evaluate_lifecycle as m
+        src = open(m.__file__, encoding="utf-8").read()
+        assert "balanced" in src and "时间衰减" in src
+
+    def test_每个指标单独给有效N(self):
+        """事件数 68 不等于每一项都有 68：窗口、OHLC、同日对照各扣各的。"""
+        from scripts.evaluate_lifecycle import _cell
+        assert "(  3)" in _cell([1.0, 2.0, 3.0])
+        assert _cell([]).strip() == "—"
+
+    def test_OHLC不拿收盘顶替(self):
+        """
+        StockDailySnapshot 的 OHLC 是 2026-08-27 才加的，更早的行是 NULL。
+        用收盘顶替会把「不知道盘中高低」变成「高低恰好等于收盘」，系统性压缩
+        MFE/MAE。首版就是这么写的，而提交信息还声称"不拿收盘顶替"。
+        """
+        rows = [_Row(CAL[i], 10.0 + i) for i in range(5)]
+        for r in rows:
+            r.high_price = None
+            r.low_price = None
+            r.open_price = None
+        b = Bars(rows, CAL)
+        assert b.high == {} and b.low == {} and b.open == {}
+        assert b.has_hl([CAL[1], CAL[2]]) is False
+        assert b.next_session(CAL[0]) is None, "没有真实开盘价就没有可执行口径"
 
     def test_超额必须逐事件对同日同池比较(self):
         """

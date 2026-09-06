@@ -11,7 +11,7 @@ from ..models.leader_cycle import LeaderCycleSnapshot
 from ..models.sector import Sector
 from ..models.stock import Stock
 from ..services.leader_cycle_state_service import (
-    CORE_OPPORTUNITY, UNKNOWN, replay_price_lifecycle,
+    CORE_OBSERVATION, UNKNOWN, replay_price_lifecycle,
 )
 
 router = APIRouter(prefix="/leader-cycle", tags=["leader-cycle"])

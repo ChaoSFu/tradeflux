@@ -64,17 +64,24 @@ class Bars:
 
     def __init__(self, rows, calendar: List[date]):
         self.close = {r.date: r.close_price for r in rows if r.close_price}
-        # 次日开盘价：**这才是能真实成交的价**。转入日收盘价往往已经跑掉一截，
-        # STREAKING 更是直接封在涨停板上，按它算出的收益现实中拿不到
-        self.open = {r.date: (r.open_price or r.close_price) for r in rows
-                     if r.close_price}
-        self.high = {r.date: (r.high_price or r.close_price) for r in rows
-                     if r.close_price}
-        self.low = {r.date: (r.low_price or r.close_price) for r in rows
-                    if r.close_price}
+        # ── OHLC **绝不用收盘顶替** ────────────────────────────────────────
+        # StockDailySnapshot 的 OHLC 是 2026-08-27 才加的，更早的历史行是 NULL。
+        # 首版写成 `r.open_price or r.close_price`，把"不知道盘中最高最低"变成了
+        # "盘中最高最低恰好等于收盘"——那是伪造观测，而且会系统性压缩 MFE/MAE。
+        #
+        # 更糟的是上一条提交信息写着"开盘价单独存，不拿收盘顶替"，而代码里就是
+        # 在顶替。**断言一个代码不具备的性质，比单纯的 bug 更坏**：它让人以为
+        # 这一层已经查过了。
+        self.open = {r.date: r.open_price for r in rows if r.open_price}
+        self.high = {r.date: r.high_price for r in rows if r.high_price}
+        self.low = {r.date: r.low_price for r in rows if r.low_price}
         self.lu = {r.date: bool(r.is_limit_up) for r in rows}
         self._cal = calendar
         self._pos = {d: i for i, d in enumerate(calendar)}
+
+    def has_hl(self, days: List[date]) -> bool:
+        """窗口内每一天都有真实的 high/low。缺一天就算不出可信的 MFE/MAE。"""
+        return all(d in self.high and d in self.low for d in days)
 
     def next_session(self, anchor: date) -> Optional[date]:
         i = self._pos.get(anchor)
@@ -126,23 +133,25 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
     baseline = []
     for code, rows in snaps.items():
         b = bars[code]
-        prev_state = None
         for d in dates:
             s = replay_price_lifecycle(rows, d, trading_days=cal)
-            cur = s.state
             # 每个"有价格事实的交易日"都进基线池——组间比较必须有同期对照
             if d in b.close:
                 baseline.append(("ALL_STOCK_DAYS", code, d, s.entry_reason_codes))
-            # **从 UNKNOWN 转出不是转移，是"我们开始有记录了"。** 首版只排除了
-            # 转入 UNKNOWN，于是一只票第一次出现可用快照时的 UNKNOWN→BROKEN
-            # 被记成一次"转入 BROKEN"，把样本和收益都污染了。
-            # NO_CYCLE→STREAKING 保留：那是真事件（第 4 个板刚成立）。
-            real = (prev_state is not None and cur != prev_state
-                    and cur not in ("UNKNOWN", "NO_CYCLE")
-                    and prev_state != "UNKNOWN")
-            if real and (only_event is None or cur == only_event):
-                events.append((cur, code, d, s.entry_reason_codes))
-            prev_state = cur
+            # **用状态机自己的 transitioned_today / previous_state，不在外面
+            # 重造一套 transition 检测**——否则"什么叫状态转移"会有两个定义，
+            # 迟早分叉（这个仓库为"同一个事实两套判定"栽过 8 次）。
+            if not s.transitioned_today or s.state in ("UNKNOWN", "NO_CYCLE"):
+                continue
+            if s.previous_state in (None, "UNKNOWN"):
+                continue      # 从 UNKNOWN 转出不是转移，是"我们开始有记录了"
+            # **事件是 from→to，不是 to。** BROKEN→REPAIRING（第一次转强）和
+            # CROSS_FAILED→REPAIRING（失败后再修复）交易含义完全不同；
+            # REPAIRING→CROSS_SUCCESS（首次二波突破）和 CROSS_WEAKENING→
+            # CROSS_SUCCESS（走弱后恢复）同理。混成一组会把信号稀释掉
+            ev = f"{s.previous_state}→{s.state}"
+            if only_event is None or only_event in (ev, s.state):
+                events.append((ev, code, d, s.entry_reason_codes))
 
     # ── 同日同池对照 ──────────────────────────────────────────────────────
     # **逐事件对照，不是两组中位数相减。** 事件集中在特定时段，而基线摊在全部
@@ -184,17 +193,31 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
                 # 同日至少要有 3 只同类才算得出对照，否则这个"超额"没有意义
                 if len(peers) >= 3:
                     out[f"exc{h}"].append(r - st.median(peers))
-                out[f"mfe{h}"].append(max(_ret(base, b.high[x]) for x in days))
-                out[f"mae{h}"].append(min(_ret(base, b.low[x]) for x in days))
+                # MFE/MAE 只在窗口内每天都有真实 high/low 时才算
+                if b.has_hl(days):
+                    out[f"mfe{h}"].append(max(_ret(base, b.high[x]) for x in days))
+                    out[f"mae{h}"].append(min(_ret(base, b.low[x]) for x in days))
                 if h == 5:
                     out["lu5"].append(1.0 if any(b.lu.get(x) for x in days) else 0.0)
         return out
+
+    # ── Balanced cohort ──────────────────────────────────────────────────
+    # T+1 的样本包含近期事件，T+10 只包含更早的——两者市场环境和样本组成不同，
+    # 所以"T+1 -0.4 而 T+10 -7.6"**不能**解释成"持有越久越差"。
+    # 只有在同一批（能走完 T+10 的）事件上比较，才谈得上时间衰减。
+    longest = max(HORIZONS)
+
+    def _complete(sample):
+        return [e for e in sample if bars[e[1]].forward(e[2], longest) is not None]
 
     groups = defaultdict(list)
     for e in events:
         groups[e[0]].append(e)
     groups["ALL_STOCK_DAYS"] = baseline
-    return {k: (len(v), _measure(v)) for k, v in groups.items()}, skipped_incomplete, events
+    full = {k: (len(v), _measure(v)) for k, v in groups.items()}
+    bal_src = {k: _complete(v) for k, v in groups.items()}
+    balanced = {k: (len(v), _measure(v)) for k, v in bal_src.items() if v}
+    return full, balanced, skipped_incomplete, events
 
 
 def _fmt(vals: List[float]) -> str:
@@ -209,76 +232,73 @@ def _rate(vals: List[float]) -> str:
     return f"{sum(vals) / len(vals) * 100:>5.0f}%" if vals else "    —"
 
 
+def _cell(vals) -> str:
+    """中位数 + 有效样本数。**每个指标的 N 都要单独给**——事件数 68 不等于
+    每一项都有 68：窗口没走完、OHLC 缺失、同日对照不足，各扣各的。"""
+    return f"{st.median(vals):>+6.1f}({len(vals):>3})" if vals else "      —   "
+
+
+def _print_table(title: str, res: dict, key: str, order: List[str]):
+    print(f"\n{title}")
+    print(f"{'事件':<28}" + "".join(f"{'T+' + str(h):>12}" for h in HORIZONS))
+    for ev in order:
+        if ev not in res:
+            continue
+        _n, m = res[ev]
+        print(f"{ev:<28}" + "".join(_cell(m.get(f"{key}{h}", [])) for h in HORIZONS))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--event", help="只看某一种转入，如 REPAIRING")
+    ap.add_argument("--event", help="只看某一种转移，如 BROKEN→REPAIRING 或 REPAIRING")
+    ap.add_argument("--min-n", type=int, default=8,
+                    help="样本少于这个数的事件不显示（默认8，太少的中位数没有意义）")
     ap.add_argument("--csv", help="逐条明细写到这个文件")
     args = ap.parse_args()
 
     db = SessionLocal()
     try:
-        res, skipped, events = evaluate(db, args.event)
+        full, balanced, skipped, events = evaluate(db, args.event)
         print(f"口径 {FORMULA_VERSION}\n")
-        print("⚠️ 幸存者偏差：快照是「今天在池子里的股票，当时长什么样」，不是历史")
-        print("   成分股。当时进不了池的票根本没有行，而它们大概率走得更差。")
-        print("   **所有绝对收益都偏高，只有组间对比和超额有意义。**\n")
+        print("⚠️ 这里的「同日同池」只消掉了**市场行情**，没有消掉**样本选择**：")
+        print("   快照是「今天在池子里的股票，当时长什么样」，当时进不了池的票")
+        print("   根本没有行。要彻底解决得能按时点重建历史强势池成分。")
+        print("   **所以绝对收益偏高，组间对比也只在「今天的幸存者」这个宇宙内成立。**")
 
-        hdr = (f"{'事件':<18}{'样本':>5}" +
-               "".join(f"{'T+' + str(h):>8}" for h in HORIZONS) +
-               f"{'MFE5':>8}{'MAE5':>8}{'5日再涨停':>10}")
-        print(hdr)
-        print("-" * len(hdr.encode('gbk', 'ignore')))
-        base = res.get("ALL_STOCK_DAYS", (0, {}))[1]
-        order = ["REPAIRING", "CROSS_SUCCESS", "CROSS_WEAKENING", "CROSS_FAILED",
-                 "FADED", "BROKEN", "STREAKING", "ALL_STOCK_DAYS"]
+        order = sorted((k for k in full if k != "ALL_STOCK_DAYS"),
+                       key=lambda k: -full[k][0])
+        order = [k for k in order if full[k][0] >= args.min_n] + ["ALL_STOCK_DAYS"]
+
+        _print_table("同日同池超额（逐事件对照后取中位数，括号内为有效样本）：",
+                     full, "exc", order)
+        print("  同日不足 3 只同类就没有对照，不计入——所以这里的 N 小于事件总数。")
+
+        _print_table("同一批样本（能走完 T+10 的事件）——只有这张能看时间衰减：",
+                     balanced, "exc", order)
+        print("  上一张表里 T+1 含近期事件、T+10 只含更早的，两者样本组成不同，")
+        print("  『T+1 略负而 T+10 大负』**不能**解释成「持有越久越差」。")
+
+        print("\n正超额占比（超过同日同池中位数的比例，括号内为有效样本）：")
         for ev in order:
-            if ev not in res:
+            if ev not in full:
                 continue
-            n, m = res[ev]
-            row = f"{ev:<18}{n:>5}"
-            for h in HORIZONS:
-                row += f"{_fmt(m.get(f'ret{h}', [])):>8}"
-            row += f"{_fmt(m.get('mfe5', [])):>8}{_fmt(m.get('mae5', [])):>8}"
-            row += f"{_rate(m.get('lu5', [])):>10}"
-            print(row)
-
-        # 超额：**逐事件对同日同池比较后的中位数**，不是两组中位数相减。
-        # 只有这一行能说明"这个状态本身有没有信息"——市场涨跌已经被消掉
-        print("\n同日同池超额（逐事件对照后取中位数，单位百分点）：")
-        for ev in order[:-1]:
-            if ev not in res:
-                continue
-            _n, m = res[ev]
-            parts = []
-            for h in HORIZONS:
-                a = m.get(f"exc{h}", [])
-                parts.append(f"T+{h} {st.median(a):+5.1f}({len(a)})" if a
-                             else f"T+{h}   —")
-            print(f"  {ev:<18}" + "  ".join(parts))
-        print("  括号里是能算出对照的样本数。同日不足 3 只同类就没有对照，不计入。")
-
-        # 胜率：**中位数单独看不出它有没有代表性**。n=50 时中位数差 1~2 个点
-        # 完全可能是噪声；正超额占比接近 50% 就是随机，明显偏离才是系统性的
-        print("\n正超额占比（超过同日同池中位数的事件比例）：")
-        for ev in order[:-1]:
-            if ev not in res:
-                continue
-            _n, m = res[ev]
+            _n, m = full[ev]
             parts = []
             for h in HORIZONS:
                 a = m.get(f"exc{h}", [])
                 parts.append(f"T+{h} {sum(1 for x in a if x > 0) / len(a) * 100:>3.0f}%"
-                             if a else f"T+{h}   —")
-            print(f"  {ev:<18}" + "  ".join(parts))
-        print("  50% 附近 = 跟随机没区别，中位数那几个点不用当真。")
+                             f"({len(a):>3})" if a else f"T+{h}    —    ")
+            print(f"  {ev:<28}" + " ".join(parts))
+        print("  50% 附近 = 跟随机没区别。**n≈50 时中位数差 1~2 个点本来就是噪声**，")
+        print("  而且同一只票、同一段周期会贡献多次事件，窗口还高度重叠——")
+        print("  有效样本数远小于打印出来的 N，不要按独立样本去算显著性。")
 
-        # 可执行性：收盘口径和次日开盘口径的差，就是"这个信号还剩多少空间"
-        print("\n次日开盘买入口径（对照上面的收盘口径，差多少就是跑掉多少）：")
-        for ev in order[:-1]:
-            if ev not in res:
+        print("\n次日开盘买入（能真实成交的价；括号内为有效样本）：")
+        for ev in order:
+            if ev not in full:
                 continue
-            _n, m = res[ev]
+            _n, m = full[ev]
             parts = []
             for h in HORIZONS:
                 if h == 1:
@@ -286,13 +306,22 @@ def main():
                 a, c = m.get(f"op{h}", []), m.get(f"ret{h}", [])
                 parts.append(f"T+{h} {st.median(a):+5.1f}(收盘{st.median(c):+.1f})"
                              if a and c else f"T+{h} —")
-            print(f"  {ev:<18}" + "  ".join(parts))
+            print(f"  {ev:<28}" + "  ".join(parts))
         print("  转入日收盘价往往已经跑掉一截，封板的更是根本买不到。")
 
+        print("\nMFE/MAE（5日，括号内为有效样本）：")
+        for ev in order:
+            if ev not in full:
+                continue
+            _n, m = full[ev]
+            mf, ma = m.get("mfe5", []), m.get("mae5", [])
+            print(f"  {ev:<28}MFE {_cell(mf)}   MAE {_cell(ma)}")
+        print("  OHLC 是 2026-08-27 才加的字段，更早的行是 NULL。**缺就不算**，")
+        print("  不拿收盘顶替——那会把「不知道盘中高低」变成「高低恰好等于收盘」。")
+
         if skipped:
-            print(f"\n窗口未走完而排除的 {skipped} 次测量（不用'目前为止'的收益顶替，"
-                  "那会系统性偏向近期）")
-        print("\n**这里不给结论也不打分**——一个自动判定'有没有 Edge'的评估器，"
+            print(f"\n窗口未走完而排除的 {skipped} 次测量")
+        print("\n**这里不给结论也不打分**——一个自动判定「有没有 Edge」的评估器，"
               "等于又造一个黑箱。")
 
         if args.csv:
