@@ -294,14 +294,21 @@ class TestCaseL:
     def test_没有日历时一律不触发连续规则(self):
         """
         不传日历 = 无从证明相邻。宁可漏一次走弱信号，也不要拿"过滤后相邻"冒充
-        "交易日相邻"——单日破 MA10 那条不依赖连续性，仍会立刻踢出核心池。
+        "交易日相邻"。
+
+        2026-09-06 起这条的影响范围扩大了：`_ma5_turning_up` 也要求相邻，所以
+        **没有日历时整个状态机推不过 BROKEN**——MA5 上行证明不了，修复就成立
+        不了。这是刻意的：状态机的正确性本来就依赖交易日历，与其让它在缺参数
+        时按"数组相邻"悄悄跑出一堆看似合理的状态，不如让它停在原地。
+        接口层始终传真实交易日历。
         """
         rows = _to_success() + [
             Row(3, 19.2, ma5=19.5, ma10=18.0, ma20=17.0, ma30=16.0, days_since_break=3),
             Row(4, 19.0, ma5=19.6, ma10=18.0, ma20=17.0, ma30=16.0, days_since_break=4),
         ]
-        assert _replay(rows, cal=None).state == CROSS_SUCCESS
-        assert _replay(rows).state == CROSS_WEAKENING, "给了日历就该触发"
+        assert _replay(rows, cal=None).state == BROKEN, \
+            "没有日历，MA5 上行证明不了，修复不成立，停在断板"
+        assert _replay(rows).state == CROSS_WEAKENING, "给了日历才能一路推进"
 
 
 class TestCaseM:
@@ -553,3 +560,65 @@ class TestEntryReason:
                           cycle_start=new_start, cycle_peak=new_start)]
         s = _replay(rows, cal=[D0 + timedelta(days=i) for i in range(45)])
         assert "NEW_CYCLE" in s.entry_reason_codes
+
+
+class TestUnknownIsNotFalse:
+    """
+    2026-09-06 review 抓到的：**「不知道有没有修复」被判成了「修复失败」。**
+
+    D+2 超期那条规则加进去之后，MA5 缺失时 above_ma5=False、ma5_up=None，
+    修复条件不成立，于是超期直接把它推成 CROSS_FAILED——而 evaluation_status
+    还标着 OK，看不出任何异常。
+
+    判失败会把股票推进「已剔除」，是个硬后果，必须建立在可信数据上。
+    """
+
+    def _no_ma(self, day, close, dsb):
+        return Row(day, close, ma5=None, ma10=None, ma20=None, ma30=None,
+                   days_since_break=dsb)
+
+    def test_均线缺失时超期不判失败(self):
+        rows = [Row(0, 10.0, ma5=10.5, ma10=11.0, ma20=11.5, ma30=12.0,
+                    days_since_break=0),
+                self._no_ma(1, 9.8, 1), self._no_ma(2, 9.6, 2)]
+        s = _replay(rows)
+        assert s.state == BROKEN, "证不出没修复，就不能判失败"
+        assert s.reason_codes == ["MA_MISSING"]
+
+    def test_均线补回来之后照常超期判失败(self):
+        rows = [Row(0, 10.0, ma5=10.5, ma10=11.0, ma20=11.5, ma30=12.0,
+                    days_since_break=0),
+                self._no_ma(1, 9.8, 1),
+                # MA5 回来了，且明确没站上、也没上行
+                Row(2, 9.6, ma5=10.2, ma10=10.5, ma20=8.0, ma30=7.0,
+                    days_since_break=2),
+                Row(3, 9.4, ma5=10.0, ma10=10.4, ma20=8.0, ma30=7.0,
+                    days_since_break=3)]
+        s = _replay(rows)
+        assert s.state == CROSS_FAILED and "BROKEN_TIMEOUT" in s.reason_codes
+
+    def test_MA5上行判定要求相邻交易日(self):
+        """
+        中间隔一天没数据时，"MA5 比上次高"说明的只是"比上一次我们有记录的时候
+        高"，不是"今天开始转头"。而这条判定直接决定「第一次转强」。
+        """
+        cal = [D0 + timedelta(days=i) for i in range(10)]
+        rows = [Row(0, 10.0, ma5=10.5, ma10=11.0, ma20=11.5, ma30=12.0,
+                    days_since_break=0),
+                # 第 1 天整行不可用（数据缺口），第 2 天站上 MA5 且 MA5 比第 0 天高
+                Row(1, 9.9, ma5=10.4, ma10=11.0, ma20=11.5, ma30=12.0,
+                    days_since_break=1, fresh=False),
+                Row(2, 11.0, ma5=10.6, ma10=10.0, ma20=9.0, ma30=8.0,
+                    days_since_break=2)]
+        s = replay_price_lifecycle(rows, rows[-1].date, trading_days=cal)
+        assert s.state != REPAIRING, \
+            "隔着一天缺口，证明不了 MA5 今天转头，不能算修复"
+
+    def test_相邻时正常判出转强(self):
+        cal = [D0 + timedelta(days=i) for i in range(10)]
+        rows = [Row(0, 10.0, ma5=10.5, ma10=11.0, ma20=11.5, ma30=12.0,
+                    days_since_break=0),
+                Row(1, 11.0, ma5=10.6, ma10=10.0, ma20=9.0, ma30=8.0,
+                    days_since_break=1)]
+        s = replay_price_lifecycle(rows, rows[-1].date, trading_days=cal)
+        assert s.state == REPAIRING and "MA5_TURN_UP" in s.reason_codes

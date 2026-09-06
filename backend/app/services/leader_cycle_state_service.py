@@ -60,7 +60,14 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import List, Optional, Sequence
 
-FORMULA_VERSION = "price_v1"
+# 口径版本。**状态函数一改就必须动它**——不是 UI 改动才不用动。
+# 2026-09-06 从 price_v1 升到 price_v1_1：BROKEN 从"可无限停留"变成"D+2 必须
+# 表态"，这是状态函数本身变了。不升版本的话，以后拿旧规则的 MFE 和新规则的
+# MFE 做对比就区分不出来，而那正是不落库、可 replay 的全部意义所在。
+FORMULA_VERSION = "price_v1_1"
+# 历史上出现过的版本，按时间倒序。replay 传入旧版本时要能明确拒绝而不是静默
+# 按新规则算——"这段历史是哪套规则算的"必须永远可追溯
+KNOWN_VERSIONS = ("price_v1_1", "price_v1")
 
 # ── 拍出来的常量（见模块 docstring）────────────────────────────────────────
 # 连续几个**有效交易 observation** 收在 MA5 之下才算走弱。1 次不够：高标波动大，
@@ -251,16 +258,22 @@ def _consecutive_below(obs, ma_attr: str, need: int,
     return all(r.latest_close < v for r, v in zip(tail, vals))
 
 
-def _ma5_turning_up(obs) -> Optional[bool]:
+def _ma5_turning_up(obs, calendar: Optional[Sequence[date]] = None) -> Optional[bool]:
     """
     MA5 本身在不在上行。只站上一条仍在快速下行的 MA5 不算真正修复。
 
-    比的是**上一个有效 observation** 的 MA5，不是「上一行数据库记录」。
-    缺上一个 observation 或任一端 MA5 为 None 时返回 None——不能因为缺失就
-    默认满足条件。
+    **必须是相邻交易日的两个 MA5。** 中间隔了一天没数据的话，"MA5 比上次高"
+    说明的只是"比上一次我们有记录的时候高"，不是"今天开始转头"。而这条判定
+    直接决定 BROKEN → REPAIRING，也就是「第一次转强」——这个仓库里最不该被
+    污染的一个信号。
+
+    缺上一个 observation、任一端 MA5 为 None、或两者不是相邻交易日 → None。
+    不能因为缺失就默认满足条件。
     """
     if len(obs) < 2:
         return None
+    if _adjacent(obs[-2].date, obs[-1].date, calendar) is not True:
+        return None            # 证明不了相邻，就证明不了"今天转头"
     cur, prev = obs[-1].ma5, obs[-2].ma5
     if cur is None or prev is None:
         return None
@@ -322,7 +335,7 @@ def _advance(prev_state: str, obs, calendar=None) -> tuple:
 
     above_ma5 = cur.ma5 is not None and cur.latest_close > cur.ma5
     above_ma10 = cur.ma10 is not None and cur.latest_close > cur.ma10
-    ma5_up = _ma5_turning_up(obs)
+    ma5_up = _ma5_turning_up(obs, calendar)
     below_ma5_2 = _consecutive_below(obs, "ma5", BELOW_MA5_OBS, calendar)
 
     # 5) CROSS_SUCCESS 的走弱判定「必须刻意敏感」——它进的是重点买入候选池。
@@ -364,6 +377,16 @@ def _advance(prev_state: str, obs, calendar=None) -> tuple:
         # 所以判失败的代价只是标签，不是把它踢出观察范围
         if (prev_state == BROKEN and cur.days_since_break is not None
                 and cur.days_since_break >= MAX_BROKEN_DAYS):
+            # **只有能证明"确实没修复"时才判失败。** 2026-09-06 实测：MA5 缺失
+            # 时 above_ma5=False、ma5_up=None，修复条件不成立，于是超期这条直接
+            # 把它推成 CROSS_FAILED——那是把"不知道有没有修复"当成了"修复失败"，
+            # 正好违反本仓库最核心的那条纪律，而且违反得毫无痕迹（evaluation
+            # 还标着 OK）。
+            #
+            # 判失败会把股票推进「已剔除」，是个硬后果，必须建立在可信数据上。
+            # 证不出来就维持 BROKEN 并说明原因，等事实补齐再推进。
+            if cur.ma5 is None or ma5_up is None:
+                return BROKEN, ["MA_MISSING"]
             codes = ["BROKEN_TIMEOUT"]
             if cur.new_post_break_low_today is True:
                 codes.append("BREAK_POST_LOW")
@@ -405,8 +428,11 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
     停牌也可能是数据缺口，在这一层分不出来。不传就一律证明不了，保守不触发。
     """
     if formula_version != FORMULA_VERSION:
-        raise ValueError(f"未知的口径版本 {formula_version}；本模块只实现 "
-                         f"{FORMULA_VERSION}。换口径要显式改，不能静默按旧的算")
+        known = ("（历史版本：" + "、".join(KNOWN_VERSIONS[1:]) + "，本模块不再实现）"
+                 if formula_version in KNOWN_VERSIONS else "")
+        raise ValueError(f"口径版本 {formula_version} 与本模块实现的 "
+                         f"{FORMULA_VERSION} 不一致{known}。换口径要显式改，"
+                         "不能静默按另一套规则算")
 
     rows = sorted((r for r in snapshots if r.date <= as_of_date),
                   key=lambda r: r.date)

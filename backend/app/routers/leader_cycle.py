@@ -145,11 +145,15 @@ def get_leader_cycle(
     db: Session = Depends(get_db),
 ):
     """
-    高标龙头生命周期的**事实层**。这里没有任何状态判定（RUNNING/RECLAIMING 之类）
-    ——那是状态机的事，等事实层积累出足够历史、能验证阈值之后再做。
+    高标龙头生命周期：**事实层 + 从事实 replay 出来的状态**。
 
-    分组只按一个纯事实切：`break_date` 有没有。不做 D+1~3 / D+4~10 这类分桶，
-    因为桶边界本身就是拍出来的阈值，而这一层刻意不引入任何阈值。
+    `running` / `broken` 仍按纯事实切（`break_date` 有没有），状态另挂在每个
+    item 上——`lifecycle_state` 及其入场原因由 `leader_cycle_state_service`
+    实时算出，**不写进 LeaderCycleSnapshot**：阈值以后一定会改，冻进事实表就
+    再也回答不了「新口径下当时该是什么状态」。
+
+    历史查询传 trade_date=T 时，replay 只读 `date <= T` 的行——这是 look-ahead
+    guard，改了 T 之后的数据不能让 T 那天的状态发生变化。
     """
     if trade_date is None:
         trade_date = db.query(LeaderCycleSnapshot.date).order_by(
@@ -175,9 +179,22 @@ def get_leader_cycle(
     hist: dict = {}
     for r in hist_rows:
         hist.setdefault(r.stock_code, []).append(r)
-    # 观测日历 = 我们有数据的那些交易日。「连续两个 observation」的规则靠它判相邻
-    # ——过滤掉不可用行之后两行相邻，不等于两个交易日相邻
-    obs_calendar = sorted({r.date for r in hist_rows})
+    # **交易日历必须来自 trading_calendar，不能用"库里有哪些日期"顶替。**
+    # 那是同一个错误模式从"股票数组"上升到"数据库日期集合"：假如 09-02 整个
+    # daily_update 挂了、一行快照都没写，日期集合就是 [09-01, 09-03]，两者会被
+    # 判成相邻交易日——而它们中间隔着一个真实开市日。
+    # **数据库有没有行，永远不能承担 calendar 的职责。**
+    try:
+        from ..services.trading_calendar import get_trading_days
+        _tdays = get_trading_days(db, need_through=trade_date)
+        obs_calendar = [d for d in (_tdays or []) if d <= trade_date]
+    except Exception:  # noqa: BLE001
+        obs_calendar = []
+    if not obs_calendar:
+        # 拿不到日历时**不退回日期集合**——那正是要防的东西。给空日历，状态机
+        # 会因为证明不了相邻而停在原地，界面上看得出来；比悄悄跑出一堆
+        # 看似合理的状态安全
+        obs_calendar = []
     sec_names = {sid: name for sid, name in db.query(Sector.id, Sector.name).all()}
 
     items: List[LeaderCycleItem] = []

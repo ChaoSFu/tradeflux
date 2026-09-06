@@ -271,8 +271,11 @@ export default function LeaderCyclePanel() {
             <span className="text-text-primary font-medium">口径：</span>
             {data?.scope_note ?? '高标池 = 近60个交易日最高连板 ≥ 4'}
             <span className="text-text-muted">
-              。本页只展示事实，<span className="text-text-primary">不给生命周期状态标签</span>
-              ——状态机的阈值要先攒够历史分布才能定，否则又是一个拍脑袋的黑箱。
+              。生命周期状态由 <span className="text-text-primary">Price Lifecycle
+              v1.1</span> 从历史事实实时 replay 得出，<span className="text-text-primary">
+              不写入事实表</span>——阈值以后一定会改，冻进历史就再也回答不了
+              「新口径下当时该是什么状态」。它只描述<span className="text-text-primary">
+              价格结构</span>，不代表交易许可。
             </span>
           </div>
         </div>

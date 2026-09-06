@@ -20,6 +20,21 @@ from app.routers import leader_cycle
 TODAY = date(2026, 9, 4)
 
 
+@pytest.fixture(autouse=True)
+def _seed_calendar(db):
+    """
+    接口层的状态机**必须拿到真实交易日历**才推得动（2026-09-06 起 MA5 上行判定
+    也要求相邻交易日）。测试库里没有日历，所以在这里种一份。
+
+    这也是刻意的设计：拿不到日历时状态机停在原地，而不是退回"库里有哪些日期"
+    ——那正是要防的东西（假如某天 daily_update 整个挂掉，一行快照都没写，
+    日期集合会把隔着一个开市日的两天判成相邻）。
+    """
+    from app.services.trading_calendar import _write_cache
+    _write_cache(db, [date(2026, 9, i) for i in range(1, 8)])
+    yield
+
+
 @pytest.fixture
 def client(db):
     app = FastAPI()
@@ -129,7 +144,8 @@ class TestLifecycleInApi:
         assert a["transitioned_today"] is True
         assert b["lifecycle_state"] == "FADED", "后面两天确实崩了"
         assert a["state_since_date"] == "2026-09-03"
-        assert a["lifecycle_formula_version"] == "price_v1"
+        from app.services.leader_cycle_state_service import FORMULA_VERSION
+        assert a["lifecycle_formula_version"] == FORMULA_VERSION
 
     def test_每只都带得出原因和口径版本(self, db, client):
         _snap(db, _stock(db, "600001"), data_fresh=True, bar_settled=True,

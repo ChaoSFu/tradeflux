@@ -29,6 +29,23 @@ from ..services.relative_strength_service import (
 
 # 均线窗口够不够：ma30 要 30 根
 _MA_MIN_BARS = 30
+
+
+def _nth_prev_session(calendar, ref: date, n: int) -> Optional[date]:
+    """
+    交易日历上 ref 往前第 n 个交易日。拿不到日历、或历史不够长 → None。
+
+    **不做近似**：没有那一天就是没有，不能用"最近的一条"顶替——那会让一个两日
+    变化顶着 "1d" 的名字出现在界面上。
+    """
+    if not calendar:
+        return None
+    try:
+        i = list(calendar).index(ref)
+    except ValueError:
+        return None
+    j = i - n
+    return calendar[j] if j >= 0 else None
 # 量比的回看根数
 _VOL_WINDOW = 5
 
@@ -79,13 +96,22 @@ def build_snapshots(db: Session, trade_date: date,
         r.stock_id: r for r in db.query(LeaderCycleSnapshot)
         .filter(LeaderCycleSnapshot.date == trade_date).all()
     }
-    # 前几天的快照，用来算「变化速度」。一次查完，不在循环里逐只查库。
-    # 只取 trade_date 之前的——用当天或之后的行算"昨天"就是 look-ahead
-    prior: Dict[int, list] = {}
-    for r in (db.query(LeaderCycleSnapshot)
-              .filter(LeaderCycleSnapshot.date < trade_date)
-              .order_by(LeaderCycleSnapshot.date.desc()).limit(4000).all()):
-        prior.setdefault(r.stock_id, []).append(r)   # 已按日期降序
+    # 「变化速度」的锚点：**按交易日历取精确的 T-1 / T-3，不是"上一条存在的快照"**。
+    #
+    # 首版用 hist[0] / hist[2]（该股最近的、第三近的快照）。那不是 T-1/T-3：
+    # 09-02 缺数据时，09-03 的 delta_1d 实际是两日变化，却顶着 "1d" 的名字出现
+    # 在界面上——**一个看起来非常精确、语义却是错的数字**，比直接留空危险得多。
+    #
+    # 顺带修掉另一个：原来全表按日期倒序 limit(4000) 再按股票分组，那 4000 是所有
+    # 股票共享的，历史一长就会有股票分不到 anchor。现在按精确日期查。
+    _anchor_1 = _nth_prev_session(trading_days, trade_date, 1)
+    _anchor_3 = _nth_prev_session(trading_days, trade_date, 3)
+    _wanted = [d for d in (_anchor_1, _anchor_3) if d is not None]
+    prior: Dict[date, Dict[int, LeaderCycleSnapshot]] = {}
+    if _wanted:
+        for r in (db.query(LeaderCycleSnapshot)
+                  .filter(LeaderCycleSnapshot.date.in_(_wanted)).all()):
+            prior.setdefault(r.date, {})[r.stock_id] = r
     written = no_cycle = skipped = stale = cleaned = 0
 
     for st in pool:
@@ -178,10 +204,11 @@ def build_snapshots(db: Session, trade_date: date,
         # 不记来源就等于让两个不同的东西共用一个字段名
         row.rs_sector_source = ("vendor" if any(v is not None for v in rs_s.values())
                                 else None)
-        # ── 变化速度（全部由相邻快照 / bar 序列相减，仍是事实不是判定）──────
-        hist = prior.get(st.id, [])
-        d1 = hist[0] if hist else None                       # 上一个有快照的交易日
-        d3 = hist[2] if len(hist) >= 3 else None
+        # ── 变化速度（全部由指定交易日的快照相减，仍是事实不是判定）──────
+        # T-1 / T-3 那天没有快照 → None。**不拿最近一条顶替**：
+        # 「没有 T-1」和「T-1 其实是三天前那条」是两件事
+        d1 = prior.get(_anchor_1, {}).get(st.id) if _anchor_1 else None
+        d3 = prior.get(_anchor_3, {}).get(st.id) if _anchor_3 else None
         row.rs_market_20_delta_1d = _delta(rs_m.get(20),
                                            d1.rs_market_20 if d1 else None)
         row.rs_market_20_delta_3d = _delta(rs_m.get(20),
