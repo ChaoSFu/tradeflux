@@ -207,3 +207,67 @@ class TestTradability:
         b = Bars(rows, CAL)
         assert b.next_session(CAL[0]) is None, \
             "日历上的次日是 CAL[1]，那天没数据——不能拿 CAL[2] 冒充"
+
+
+class TestStatisticalHonesty:
+    """
+    2026-09-06 第二轮 review 抓到的三条，都是"数字看起来精确、语义却错了"。
+    """
+
+    def test_对照组剔掉事件股票自己(self):
+        """
+        事件股票自己也在池子里。把它算进中位数等于用它自己给自己当基准，
+        会把超额往 0 拉。
+        """
+        import scripts.evaluate_lifecycle as m
+        src = open(m.__file__, encoding="utf-8").read()
+        assert "if c2 != code" in src
+        assert "leave-one-out" in src or "剔掉事件股票自己" in src
+
+    def test_可执行口径也要有超额(self):
+        """
+        实测 ALL_STOCK_DAYS 次日开盘 T+10 是 +2.5、收盘是 +1.0——**基线自己在
+        开盘口径下就不是 0**。拿事件的绝对开盘收益去跟收盘收益比，方向都可能
+        读反（BROKEN→REPAIRING 开盘 +1.1 看着是正的，其实跑输基线 +2.5）。
+        """
+        import scripts.evaluate_lifecycle as m
+        src = open(m.__file__, encoding="utf-8").read()
+        assert "cohort_op" in src and "opx" in src
+
+    def test_可执行口径包含T加1(self):
+        """
+        次日开盘买、当天收盘卖——最贴近实际操作的一格。首版写了 if h > 1
+        把它跳过了，而那正是最该看的。
+        """
+        import scripts.evaluate_lifecycle as m
+        src = open(m.__file__, encoding="utf-8").read()
+        assert "if nx is not None and h > 1" not in src
+
+    def test_bootstrap按周期整段重抽(self):
+        from scripts.evaluate_lifecycle import _cluster_bootstrap
+        # 5 个 cluster、每个 2 个样本，全为正 → 区间应当整体在 0 以上
+        vals = [1.0, 1.2] * 5
+        cls = [(f"c{i}", None) for i in range(5) for _ in range(2)]
+        ci = _cluster_bootstrap(vals, cls, n_boot=200)
+        assert ci is not None and ci[0] > 0
+
+    def test_样本或cluster太少时不给区间(self):
+        """给一个假的区间比不给更糟。"""
+        from scripts.evaluate_lifecycle import _cluster_bootstrap
+        assert _cluster_bootstrap([1.0, 2.0], [("a", None)] * 2) is None
+        # 20 个样本但全来自 2 只票 —— cluster 不够，同样不给
+        assert _cluster_bootstrap([1.0] * 20, [("a", None)] * 10
+                                  + [("b", None)] * 10) is None
+
+    def test_同一只票的重复事件被当成一个cluster(self):
+        """
+        BROKEN→REPAIRING→FAILED→REPAIRING→SUCCESS 全出自一段行情，收益窗口还
+        高度重叠。按独立样本算区间会严重高估把握。
+        """
+        from scripts.evaluate_lifecycle import _cluster_bootstrap
+        # 6 个 cluster，其中一个贡献 10 个样本 —— 重抽时它要么整段进要么整段不进
+        vals = [5.0] * 10 + [-1.0] * 5
+        cls = [("hot", "c1")] * 10 + [(f"x{i}", "c") for i in range(5)]
+        ci = _cluster_bootstrap(vals, cls, n_boot=300)
+        assert ci is not None
+        assert ci[0] < 0 < ci[1], "一个 cluster 主导时，区间必须宽到跨 0"

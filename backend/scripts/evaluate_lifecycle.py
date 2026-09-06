@@ -137,7 +137,8 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
             s = replay_price_lifecycle(rows, d, trading_days=cal)
             # 每个"有价格事实的交易日"都进基线池——组间比较必须有同期对照
             if d in b.close:
-                baseline.append(("ALL_STOCK_DAYS", code, d, s.entry_reason_codes))
+                baseline.append(("ALL_STOCK_DAYS", code, d, s.entry_reason_codes,
+                                 (code, None)))
             # **用状态机自己的 transitioned_today / previous_state，不在外面
             # 重造一套 transition 检测**——否则"什么叫状态转移"会有两个定义，
             # 迟早分叉（这个仓库为"同一个事实两套判定"栽过 8 次）。
@@ -151,29 +152,44 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
             # CROSS_SUCCESS（走弱后恢复）同理。混成一组会把信号稀释掉
             ev = f"{s.previous_state}→{s.state}"
             if only_event is None or only_event in (ev, s.state):
-                events.append((ev, code, d, s.entry_reason_codes))
+                # cluster = (股票, 周期起点)。**同一只票同一段周期里的多次转移
+                # 不是独立样本**：BROKEN→REPAIRING→FAILED→REPAIRING→SUCCESS 全
+                # 出自一段行情，收益窗口还高度重叠。bootstrap 要整段一起重抽
+                cyc = next((r.cycle_start_date for r in rows if r.date == d), None)
+                events.append((ev, code, d, s.entry_reason_codes, (code, cyc)))
 
     # ── 同日同池对照 ──────────────────────────────────────────────────────
     # **逐事件对照，不是两组中位数相减。** 事件集中在特定时段，而基线摊在全部
     # 3662 个股票日上，两组根本不在同一段行情里——那样算出来的"超额"测的是
     # 行情差异，不是状态的信息量。
     # 每个事件用"当天整个池子的同期收益中位数"做对照，市场本身的涨跌被消掉。
-    cohort: Dict[date, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
-    for _ev, code, d, _c in baseline:
+    # **对照组里要剔掉事件股票自己**（leave-one-out）。它自己也在池子里，
+    # 把它算进中位数等于用它自己给自己当基准，会把超额往 0 拉。
+    # 池子只有几十只时影响不大，但工具做到这一步就该做干净。
+    cohort: Dict[date, Dict[int, List[tuple]]] = defaultdict(lambda: defaultdict(list))
+    cohort_op: Dict[date, Dict[int, List[tuple]]] = defaultdict(lambda: defaultdict(list))
+    for _ev, code, d, _c, _cl in baseline:
         b = bars[code]
         base_px = b.close.get(d)
         if not base_px:
             continue
+        nx = b.next_session(d)
         for h in HORIZONS:
             days = b.forward(d, h)
-            if days is not None:
-                cohort[d][h].append(_ret(base_px, b.close[days[-1]]))
+            if days is None:
+                continue
+            cohort[d][h].append((code, _ret(base_px, b.close[days[-1]])))
+            # 可执行口径也要有自己的对照：**基线本身在次日开盘口径下就不是 0**
+            # （实测 ALL_STOCK_DAYS T+10 次日开盘 +2.5、收盘 +1.0），
+            # 拿事件的绝对开盘收益去跟它的收盘收益比，方向都可能读反
+            if nx is not None:
+                cohort_op[d][h].append((code, _ret(b.open[nx], b.close[days[-1]])))
 
     def _measure(sample):
         """给一组 (事件, 代码, 日期, 原因) 算前瞻指标。"""
         out = defaultdict(list)
         nonlocal skipped_incomplete
-        for _ev, code, d, _codes in sample:
+        for _ev, code, d, _codes, cluster in sample:
             b = bars[code]
             base = b.close.get(d)
             if not base:
@@ -185,14 +201,25 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
                     continue          # 窗口没走完，**不进统计**
                 r = _ret(base, b.close[days[-1]])
                 out[f"ret{h}"].append(r)
-                # 次日开盘买入口径：能不能真的赚到这笔，看这一行
-                nx = b.next_session(d)
-                if nx is not None and h > 1:
-                    out[f"op{h}"].append(_ret(b.open[nx], b.close[days[-1]]))
-                peers = cohort.get(d, {}).get(h) or []
-                # 同日至少要有 3 只同类才算得出对照，否则这个"超额"没有意义
+                peers = [x for c2, x in (cohort.get(d, {}).get(h) or [])
+                         if c2 != code]
+                # 同日至少要有 3 只**别的**股票才算得出对照
                 if len(peers) >= 3:
                     out[f"exc{h}"].append(r - st.median(peers))
+                    out[f"exc{h}_cl"].append(cluster)
+                # ── 可执行口径：次日开盘买入 ──────────────────────────────
+                # 包含 T+1（开盘买、当天收盘看）——**那恰恰是最贴近实际操作的
+                # 一格**：昨天收盘识别出信号，今天买进去，当天什么表现。
+                # 首版写了 `if h > 1` 把它跳过了
+                nx = b.next_session(d)
+                if nx is not None:
+                    orr = _ret(b.open[nx], b.close[days[-1]])
+                    out[f"op{h}"].append(orr)
+                    op_peers = [x for c2, x in (cohort_op.get(d, {}).get(h) or [])
+                                if c2 != code]
+                    if len(op_peers) >= 3:
+                        out[f"opx{h}"].append(orr - st.median(op_peers))
+                        out[f"opx{h}_cl"].append(cluster)
                 # MFE/MAE 只在窗口内每天都有真实 high/low 时才算
                 if b.has_hl(days):
                     out[f"mfe{h}"].append(max(_ret(base, b.high[x]) for x in days))
@@ -230,6 +257,42 @@ def _rate(vals: List[float]) -> str:
     首版就是这么把「5日再涨停」印成了一列 100%/0%，而基线显示 0% 更是明显荒谬。
     """
     return f"{sum(vals) / len(vals) * 100:>5.0f}%" if vals else "    —"
+
+
+def _cluster_bootstrap(vals: List[float], clusters: List[tuple],
+                       n_boot: int = 1000, seed: int = 20260906) -> Optional[tuple]:
+    """
+    按 cluster 重抽的 95% 区间，返回 (中位数下界, 上界, 正超额率下界, 上界)。
+
+    **整段周期一起抽，不是逐个事件抽。** 同一只票同一段周期里
+    BROKEN→REPAIRING→FAILED→REPAIRING→SUCCESS 全出自一段行情，收益窗口还高度
+    重叠——按独立样本算区间会严重高估把握。实测 n=40 时，即便当成独立样本，
+    55% 的粗略区间也已经跨过 50%；按 cluster 抽只会更宽。
+
+    样本或 cluster 太少时返回 None——**给一个假的区间比不给更糟**。
+    """
+    import random
+    by_cluster: Dict[tuple, List[float]] = defaultdict(list)
+    for v, c in zip(vals, clusters):
+        by_cluster[c].append(v)
+    keys = list(by_cluster)
+    if len(vals) < 8 or len(keys) < 5:
+        return None
+    rnd = random.Random(seed)
+    meds, rates = [], []
+    for _ in range(n_boot):
+        pick: List[float] = []
+        for _ in range(len(keys)):
+            pick.extend(by_cluster[keys[rnd.randrange(len(keys))]])
+        if not pick:
+            continue
+        meds.append(st.median(pick))
+        rates.append(sum(1 for x in pick if x > 0) / len(pick) * 100)
+    if not meds:
+        return None
+    meds.sort(); rates.sort()
+    lo, hi = int(0.025 * len(meds)), int(0.975 * len(meds)) - 1
+    return meds[lo], meds[hi], rates[lo], rates[hi]
 
 
 def _cell(vals) -> str:
@@ -294,20 +357,35 @@ def main():
         print("  而且同一只票、同一段周期会贡献多次事件，窗口还高度重叠——")
         print("  有效样本数远小于打印出来的 N，不要按独立样本去算显著性。")
 
-        print("\n次日开盘买入（能真实成交的价；括号内为有效样本）：")
+        _print_table("可执行超额（次日开盘买入，同样对同日同池；括号内有效样本）：",
+                     full, "opx", order)
+        print("  T+1 那一格 = 次日开盘买、当天收盘卖，**最贴近实际操作的一格**。")
+        print("  为什么必须看超额而不是绝对收益：基线自己在开盘口径下就不是 0")
+        print("  （实测 ALL_STOCK_DAYS T+10 开盘 +2.5 / 收盘 +1.0），拿事件的绝对")
+        print("  开盘收益去跟收盘收益比，方向都可能读反。")
+
+        # ── 区间：没有它，上面每一个数都会被过度解读 ──────────────────────
+        print("\n95% 区间（按「股票×周期」整段重抽 1000 次；跨 0 就是证据不足）：")
+        any_ci = False
         for ev in order:
             if ev not in full:
                 continue
             _n, m = full[ev]
             parts = []
             for h in HORIZONS:
-                if h == 1:
+                ci = _cluster_bootstrap(m.get(f"exc{h}", []),
+                                        m.get(f"exc{h}_cl", []))
+                if ci is None:
+                    parts.append(f"T+{h} 样本不足")
                     continue
-                a, c = m.get(f"op{h}", []), m.get(f"ret{h}", [])
-                parts.append(f"T+{h} {st.median(a):+5.1f}(收盘{st.median(c):+.1f})"
-                             if a and c else f"T+{h} —")
+                any_ci = True
+                mark = "" if ci[0] * ci[1] > 0 else "  跨0"
+                parts.append(f"T+{h} [{ci[0]:+.1f},{ci[1]:+.1f}]{mark}")
             print(f"  {ev:<28}" + "  ".join(parts))
-        print("  转入日收盘价往往已经跑掉一截，封板的更是根本买不到。")
+        if not any_ci:
+            print("  （全部样本或 cluster 太少，算不出区间——不给假区间）")
+        print("  同一只票同一段周期里的多次转移不是独立样本，收益窗口还高度重叠。")
+        print("  **区间跨 0 = 方向可能是噪声**，不管中位数看起来多好看。")
 
         print("\nMFE/MAE（5日，括号内为有效样本）：")
         for ev in order:
