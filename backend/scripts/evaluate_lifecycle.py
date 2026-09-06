@@ -122,11 +122,32 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
             # 每个"有价格事实的交易日"都进基线池——组间比较必须有同期对照
             if d in b.close:
                 baseline.append(("ALL_STOCK_DAYS", code, d, s.entry_reason_codes))
-            if prev_state is not None and cur != prev_state and cur not in (
-                    "UNKNOWN", "NO_CYCLE"):
-                if only_event is None or cur == only_event:
-                    events.append((cur, code, d, s.entry_reason_codes))
+            # **从 UNKNOWN 转出不是转移，是"我们开始有记录了"。** 首版只排除了
+            # 转入 UNKNOWN，于是一只票第一次出现可用快照时的 UNKNOWN→BROKEN
+            # 被记成一次"转入 BROKEN"，把样本和收益都污染了。
+            # NO_CYCLE→STREAKING 保留：那是真事件（第 4 个板刚成立）。
+            real = (prev_state is not None and cur != prev_state
+                    and cur not in ("UNKNOWN", "NO_CYCLE")
+                    and prev_state != "UNKNOWN")
+            if real and (only_event is None or cur == only_event):
+                events.append((cur, code, d, s.entry_reason_codes))
             prev_state = cur
+
+    # ── 同日同池对照 ──────────────────────────────────────────────────────
+    # **逐事件对照，不是两组中位数相减。** 事件集中在特定时段，而基线摊在全部
+    # 3662 个股票日上，两组根本不在同一段行情里——那样算出来的"超额"测的是
+    # 行情差异，不是状态的信息量。
+    # 每个事件用"当天整个池子的同期收益中位数"做对照，市场本身的涨跌被消掉。
+    cohort: Dict[date, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
+    for _ev, code, d, _c in baseline:
+        b = bars[code]
+        base_px = b.close.get(d)
+        if not base_px:
+            continue
+        for h in HORIZONS:
+            days = b.forward(d, h)
+            if days is not None:
+                cohort[d][h].append(_ret(base_px, b.close[days[-1]]))
 
     def _measure(sample):
         """给一组 (事件, 代码, 日期, 原因) 算前瞻指标。"""
@@ -142,7 +163,12 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
                 if days is None:
                     skipped_incomplete += 1
                     continue          # 窗口没走完，**不进统计**
-                out[f"ret{h}"].append(_ret(base, b.close[days[-1]]))
+                r = _ret(base, b.close[days[-1]])
+                out[f"ret{h}"].append(r)
+                peers = cohort.get(d, {}).get(h) or []
+                # 同日至少要有 3 只同类才算得出对照，否则这个"超额"没有意义
+                if len(peers) >= 3:
+                    out[f"exc{h}"].append(r - st.median(peers))
                 out[f"mfe{h}"].append(max(_ret(base, b.high[x]) for x in days))
                 out[f"mae{h}"].append(min(_ret(base, b.low[x]) for x in days))
                 if h == 5:
@@ -156,11 +182,16 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
     return {k: (len(v), _measure(v)) for k, v in groups.items()}, skipped_incomplete, events
 
 
-def _fmt(vals: List[float], pct=False) -> str:
-    if not vals:
-        return "    —"
-    m = st.median(vals)
-    return f"{m * 100:>5.0f}%" if pct else f"{m:>+6.1f}"
+def _fmt(vals: List[float]) -> str:
+    return f"{st.median(vals):>+6.1f}" if vals else "    —"
+
+
+def _rate(vals: List[float]) -> str:
+    """
+    发生比例。**必须用均值,不能用中位数** —— 0/1 列表的中位数只会是 0/0.5/1，
+    首版就是这么把「5日再涨停」印成了一列 100%/0%，而基线显示 0% 更是明显荒谬。
+    """
+    return f"{sum(vals) / len(vals) * 100:>5.0f}%" if vals else "    —"
 
 
 def main():
@@ -194,21 +225,23 @@ def main():
             for h in HORIZONS:
                 row += f"{_fmt(m.get(f'ret{h}', [])):>8}"
             row += f"{_fmt(m.get('mfe5', [])):>8}{_fmt(m.get('mae5', [])):>8}"
-            row += f"{_fmt(m.get('lu5', []), pct=True):>10}"
+            row += f"{_rate(m.get('lu5', [])):>10}"
             print(row)
 
-        # 超额：只有这一行能说明"这个状态本身有没有信息"
-        print("\n相对基线的超额（中位数之差，单位百分点）：")
+        # 超额：**逐事件对同日同池比较后的中位数**，不是两组中位数相减。
+        # 只有这一行能说明"这个状态本身有没有信息"——市场涨跌已经被消掉
+        print("\n同日同池超额（逐事件对照后取中位数，单位百分点）：")
         for ev in order[:-1]:
             if ev not in res:
                 continue
             _n, m = res[ev]
             parts = []
             for h in HORIZONS:
-                a, bb = m.get(f"ret{h}", []), base.get(f"ret{h}", [])
-                parts.append(f"T+{h} {st.median(a) - st.median(bb):+.1f}"
-                             if a and bb else f"T+{h} —")
-            print(f"  {ev:<18}" + "   ".join(parts))
+                a = m.get(f"exc{h}", [])
+                parts.append(f"T+{h} {st.median(a):+5.1f}({len(a)})" if a
+                             else f"T+{h}   —")
+            print(f"  {ev:<18}" + "  ".join(parts))
+        print("  括号里是能算出对照的样本数。同日不足 3 只同类就没有对照，不计入。")
 
         if skipped:
             print(f"\n窗口未走完而排除的 {skipped} 次测量（不用'目前为止'的收益顶替，"

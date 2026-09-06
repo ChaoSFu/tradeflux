@@ -95,3 +95,39 @@ class TestHarnessContract:
     def test_横轴覆盖多个时间尺度(self):
         """单一 horizon 容易被挑选。至少要能看到形状。"""
         assert len(HORIZONS) >= 3 and 1 in HORIZONS and 10 in HORIZONS
+
+
+class TestNoSelfDeception:
+    """
+    2026-09-06 首跑抓到的三个问题，每个都会让这个工具说好话。
+    """
+
+    def test_发生比例用均值不用中位数(self):
+        """
+        0/1 列表的中位数只会是 0 / 0.5 / 1。首版就是这么把「5日再涨停」印成一列
+        100% / 50% / 0%，而基线显示 0%——一眼就该看出荒谬，但它长得很像个比例。
+        """
+        from scripts.evaluate_lifecycle import _rate
+        assert _rate([1.0, 0.0, 0.0, 0.0]).strip() == "25%"
+        assert _rate([1.0, 1.0, 0.0]).strip() == "67%"
+        assert _rate([]).strip() == "—"
+
+    def test_从UNKNOWN转出不算转移(self):
+        """
+        一只票第一次出现可用快照时是 UNKNOWN→BROKEN。那不是转移，是"我们开始
+        有记录了"。首版把它记成一次"转入 BROKEN"，样本和收益一起被污染。
+        """
+        import scripts.evaluate_lifecycle as m
+        src = open(m.__file__, encoding="utf-8").read()
+        assert 'prev_state != "UNKNOWN"' in src
+
+    def test_超额必须逐事件对同日同池比较(self):
+        """
+        两组中位数相减测的是行情差异，不是状态的信息量：事件集中在特定时段，
+        基线摊在全部股票日上，两组根本不在同一段行情里。首跑 T+10 全线为负、
+        基线却是 +1.0，很可能就是这么来的。
+        """
+        import scripts.evaluate_lifecycle as m
+        src = open(m.__file__, encoding="utf-8").read()
+        assert "cohort" in src and "同日同池" in src
+        assert "len(peers) >= 3" in src, "同日样本太少时不该硬算对照"
