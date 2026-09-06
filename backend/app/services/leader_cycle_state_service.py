@@ -138,7 +138,12 @@ class DayState:
     previous_state: Optional[str] = None
     state_since_date: Optional[date] = None
     transitioned_today: bool = False
+    # 今天这一步的判定结果。状态没变时就是 HOLD——它只说明"今天什么都没发生"
     reason_codes: List[str] = field(default_factory=list)
+    # **当初为什么进入当前状态。** 状态一旦进入，入场原因原本就丢了：002742
+    # 09-02 判的修复失败，到 09-04 再看只剩一句"维持原状态"，对看的人毫无信息。
+    # 状态可能持续几十天，而人想知道的从来是"它为什么在这儿"，不是"今天没事"
+    entry_reason_codes: List[str] = field(default_factory=list)
     evaluation_status: str = "OK"          # OK | UNSETTLED | STALE | INSUFFICIENT
     formula_version: str = FORMULA_VERSION
     # 「曾经穿越成功」要单独记：CROSS_WEAKENING 必须能跟 CROSS_FAILED 区分开
@@ -148,6 +153,10 @@ class DayState:
     @property
     def reasons(self) -> List[str]:
         return [REASON_TEXT.get(c, c) for c in self.reason_codes]
+
+    @property
+    def entry_reasons(self) -> List[str]:
+        return [REASON_TEXT.get(c, c) for c in self.entry_reason_codes]
 
 
 # ── 有效 observation ───────────────────────────────────────────────────────
@@ -413,6 +422,7 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
     prev_state: Optional[str] = None
     since: Optional[date] = None
     codes: List[str] = ["HOLD"]
+    entry_codes: List[str] = []
     ever_success = False
     first_success: Optional[date] = None
     cycle: Optional[tuple] = None
@@ -432,6 +442,7 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
             cycle = cid
             obs = [row]
             state, prev_state, since, codes = new_state, state, row.date, new_codes
+            entry_codes = new_codes
             transitioned_on = row.date
             continue
 
@@ -440,7 +451,7 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
         if nxt != state:
             prev_state, state, since = state, nxt, row.date
             transitioned_on = row.date
-            codes = new_codes
+            codes = entry_codes = new_codes
             if nxt == CROSS_SUCCESS and not ever_success:
                 ever_success, first_success = True, row.date
         else:
@@ -465,7 +476,7 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
             date=as_of_date, state=(NO_CYCLE if _why == "NO_CYCLE" else UNKNOWN),
             previous_state=state,
             state_since_date=since, transitioned_today=False,
-            reason_codes=[_why],
+            reason_codes=[_why], entry_reason_codes=entry_codes,
             evaluation_status=(_eval_status(today) if today.date == as_of_date
                                else "STALE"),
             formula_version=formula_version,
@@ -474,7 +485,8 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
     return DayState(
         date=as_of_date, state=state, previous_state=prev_state,
         state_since_date=since, transitioned_today=(transitioned_on == as_of_date),
-        reason_codes=codes, evaluation_status="OK", formula_version=formula_version,
+        reason_codes=codes, entry_reason_codes=entry_codes,
+        evaluation_status="OK", formula_version=formula_version,
         ever_cross_success=ever_success, first_cross_success_date=first_success)
 
 

@@ -74,8 +74,13 @@ class LeaderCycleItem(BaseModel):
     state_since_date: Optional[date] = None
     transitioned_today: bool = False
     lifecycle_formula_version: Optional[str] = None
+    # 今天这一步的判定（状态没变时是 HOLD，只说明"今天没事发生"）
     transition_reason_codes: List[str] = []
     transition_reasons: List[str] = []
+    # **当初为什么进入当前状态**。状态可能持续几十天，人想知道的是"它为什么在
+    # 这儿"，不是"今天没事"——002742 在修复失败里挂着，今天的 reason 只有 HOLD
+    entry_reason_codes: List[str] = []
+    entry_reasons: List[str] = []
     evaluation_status: Optional[str] = None
     # CROSS_WEAKENING 必须能跟 CROSS_FAILED 区分开：前者是"曾经穿越成功、现在
     # 走弱"，后者是"这次修复就没成过"。交易含义完全不同
@@ -126,6 +131,8 @@ def _lifecycle_fields(snaps, trade_date: date, calendar) -> dict:
         "lifecycle_formula_version": st.formula_version,
         "transition_reason_codes": st.reason_codes,
         "transition_reasons": st.reasons,
+        "entry_reason_codes": st.entry_reason_codes,
+        "entry_reasons": st.entry_reasons,
         "evaluation_status": st.evaluation_status,
         "ever_cross_success": st.ever_cross_success,
         "first_cross_success_date": st.first_cross_success_date,

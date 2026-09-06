@@ -512,3 +512,44 @@ class TestBrokenIsTransient:
         assert s.state == CROSS_FAILED and s.state_since_date == rows[2].date, \
             "D+2 就该表态，而不是拖到 D+4 还叫「刚断板」"
         assert _replay(rows).state == CROSS_FAILED
+
+
+class TestEntryReason:
+    """
+    **状态一旦进入，入场原因原本就丢了。**
+
+    002742 是 09-02 判的修复失败，到 09-04 再看，reason 只剩一句「无满足条件的
+    转移，维持原状态」——技术上没错，但对看的人毫无信息：它只说明"今天什么都
+    没发生"，没说当初为什么判失败。
+
+    状态可能持续几十天，而人想知道的从来是"它为什么在这儿"。
+    """
+
+    def test_保留入场原因(self):
+        rows = _to_success() + [
+            Row(3, 18.0, ma5=19.5, ma10=19.0, ma20=17.0, ma30=16.0, days_since_break=3),
+            # 之后一直维持走弱，不再有新的转移
+            Row(4, 18.2, ma5=19.3, ma10=19.0, ma20=17.0, ma30=16.0, days_since_break=4),
+            Row(5, 18.4, ma5=19.1, ma10=19.0, ma20=17.0, ma30=16.0, days_since_break=5),
+        ]
+        s = _replay(rows)
+        assert s.state == CROSS_WEAKENING
+        assert s.reason_codes == ["HOLD"], "今天确实什么都没发生"
+        assert s.entry_reason_codes == ["BELOW_MA10"], "但当初是因为跌破 MA10"
+        assert s.entry_reasons[0] != "BELOW_MA10", "code 要能翻成人话"
+
+    def test_刚转入时两者一致(self):
+        rows = _to_success() + [
+            Row(3, 18.0, ma5=19.5, ma10=19.0, ma20=17.0, ma30=16.0, days_since_break=3)]
+        s = _replay(rows)
+        assert s.transitioned_today is True
+        assert s.reason_codes == s.entry_reason_codes == ["BELOW_MA10"]
+
+    def test_新周期重置时入场原因也跟着换(self):
+        old = _to_success()
+        new_start = date(2026, 7, 1)
+        rows = old + [Row(30, 30.0, ma5=25.0, ma10=22.0, ma20=20.0, ma30=18.0,
+                          break_date=None, days_since_break=None,
+                          cycle_start=new_start, cycle_peak=new_start)]
+        s = _replay(rows, cal=[D0 + timedelta(days=i) for i in range(45)])
+        assert "NEW_CYCLE" in s.entry_reason_codes

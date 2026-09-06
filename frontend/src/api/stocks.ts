@@ -102,6 +102,9 @@ export interface LeaderCycleItem {
   lifecycle_formula_version: string | null
   transition_reason_codes: string[]
   transition_reasons: string[]
+  // 当初为什么进入当前状态。状态可能持续几十天，人想知道的是"它为什么在这儿"
+  entry_reason_codes: string[]
+  entry_reasons: string[]
   evaluation_status: string | null
   // CROSS_WEAKENING 要能跟 CROSS_FAILED 分开：前者曾经成功过，后者没有
   ever_cross_success: boolean

@@ -123,12 +123,14 @@ function StateTag({ r }: { r: LeaderCycleItem }) {
   const st = r.lifecycle_state
   if (!st) return <span className="text-text-muted/50">—</span>
   const m = STATE_META[st] ?? { label: st, tone: 'text-text-secondary', hint: '' }
-  const why = r.transition_reasons?.join('；')
+  // 优先展示**入场原因**：状态可能已经持续几十天，"今天没事发生"没有信息量
+  const why = (r.entry_reasons?.length ? r.entry_reasons : r.transition_reasons)
+    ?.join('；')
   return (
     <span className={cn('inline-flex items-center gap-1', m.tone)}
           title={[m.hint,
                   r.transitioned_today ? '今日刚转入此状态' : null,
-                  why && `判定依据：${why}`,
+                  why && `${r.transitioned_today ? '判定依据' : '当初判定依据'}：${why}`,
                   r.state_since_date && `${r.state_since_date} 起`,
                  ].filter(Boolean).join('\n')}>
       {/* 用文字不用符号：▲ 自带方向暗示，而它同时标记转强和转弱，
