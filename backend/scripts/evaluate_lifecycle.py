@@ -64,6 +64,10 @@ class Bars:
 
     def __init__(self, rows, calendar: List[date]):
         self.close = {r.date: r.close_price for r in rows if r.close_price}
+        # 次日开盘价：**这才是能真实成交的价**。转入日收盘价往往已经跑掉一截，
+        # STREAKING 更是直接封在涨停板上，按它算出的收益现实中拿不到
+        self.open = {r.date: (r.open_price or r.close_price) for r in rows
+                     if r.close_price}
         self.high = {r.date: (r.high_price or r.close_price) for r in rows
                      if r.close_price}
         self.low = {r.date: (r.low_price or r.close_price) for r in rows
@@ -71,6 +75,13 @@ class Bars:
         self.lu = {r.date: bool(r.is_limit_up) for r in rows}
         self._cal = calendar
         self._pos = {d: i for i, d in enumerate(calendar)}
+
+    def next_session(self, anchor: date) -> Optional[date]:
+        i = self._pos.get(anchor)
+        if i is None or i + 1 >= len(self._cal):
+            return None
+        d = self._cal[i + 1]
+        return d if d in self.open else None
 
     def forward(self, anchor: date, n: int) -> Optional[List[date]]:
         """
@@ -165,6 +176,10 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
                     continue          # 窗口没走完，**不进统计**
                 r = _ret(base, b.close[days[-1]])
                 out[f"ret{h}"].append(r)
+                # 次日开盘买入口径：能不能真的赚到这笔，看这一行
+                nx = b.next_session(d)
+                if nx is not None and h > 1:
+                    out[f"op{h}"].append(_ret(b.open[nx], b.close[days[-1]]))
                 peers = cohort.get(d, {}).get(h) or []
                 # 同日至少要有 3 只同类才算得出对照，否则这个"超额"没有意义
                 if len(peers) >= 3:
@@ -242,6 +257,37 @@ def main():
                              else f"T+{h}   —")
             print(f"  {ev:<18}" + "  ".join(parts))
         print("  括号里是能算出对照的样本数。同日不足 3 只同类就没有对照，不计入。")
+
+        # 胜率：**中位数单独看不出它有没有代表性**。n=50 时中位数差 1~2 个点
+        # 完全可能是噪声；正超额占比接近 50% 就是随机，明显偏离才是系统性的
+        print("\n正超额占比（超过同日同池中位数的事件比例）：")
+        for ev in order[:-1]:
+            if ev not in res:
+                continue
+            _n, m = res[ev]
+            parts = []
+            for h in HORIZONS:
+                a = m.get(f"exc{h}", [])
+                parts.append(f"T+{h} {sum(1 for x in a if x > 0) / len(a) * 100:>3.0f}%"
+                             if a else f"T+{h}   —")
+            print(f"  {ev:<18}" + "  ".join(parts))
+        print("  50% 附近 = 跟随机没区别，中位数那几个点不用当真。")
+
+        # 可执行性：收盘口径和次日开盘口径的差，就是"这个信号还剩多少空间"
+        print("\n次日开盘买入口径（对照上面的收盘口径，差多少就是跑掉多少）：")
+        for ev in order[:-1]:
+            if ev not in res:
+                continue
+            _n, m = res[ev]
+            parts = []
+            for h in HORIZONS:
+                if h == 1:
+                    continue
+                a, c = m.get(f"op{h}", []), m.get(f"ret{h}", [])
+                parts.append(f"T+{h} {st.median(a):+5.1f}(收盘{st.median(c):+.1f})"
+                             if a and c else f"T+{h} —")
+            print(f"  {ev:<18}" + "  ".join(parts))
+        print("  转入日收盘价往往已经跑掉一截，封板的更是根本买不到。")
 
         if skipped:
             print(f"\n窗口未走完而排除的 {skipped} 次测量（不用'目前为止'的收益顶替，"

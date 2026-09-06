@@ -23,9 +23,10 @@ CAL = [D0 + timedelta(days=i) for i in range(20)]
 
 
 class _Row:
-    def __init__(self, d, close, high=None, low=None, lu=False):
+    def __init__(self, d, close, high=None, low=None, lu=False, open_p=None):
         self.date = d
         self.close_price = close
+        self.open_price = open_p if open_p is not None else close
         self.high_price = high if high is not None else close
         self.low_price = low if low is not None else close
         self.is_limit_up = lu
@@ -131,3 +132,27 @@ class TestNoSelfDeception:
         src = open(m.__file__, encoding="utf-8").read()
         assert "cohort" in src and "同日同池" in src
         assert "len(peers) >= 3" in src, "同日样本太少时不该硬算对照"
+
+
+class TestTradability:
+    """
+    **转入日收盘价往往买不到。** STREAKING 更是直接封在涨停板上，而它恰好是
+    首跑里唯一正超额的一组——如果只按收盘口径看，会得出一个正确但无法执行的结论。
+    """
+
+    def test_次日开盘口径存在(self):
+        rows = [_Row(CAL[i], 10.0 + i, open_p=9.0 + i) for i in range(10)]
+        b = Bars(rows, CAL)
+        assert b.next_session(CAL[0]) == CAL[1]
+        assert b.open[CAL[1]] == 10.0, "开盘价要单独存，不能拿收盘顶替"
+
+    def test_没有次日就没有可执行口径(self):
+        rows = [_Row(CAL[i], 10.0 + i) for i in range(3)]
+        b = Bars(rows, CAL)
+        assert b.next_session(CAL[2]) is None, "买不进去就是买不进去，不猜"
+
+    def test_次日缺数据时也算没有(self):
+        rows = [_Row(CAL[0], 10.0), _Row(CAL[2], 12.0)]
+        b = Bars(rows, CAL)
+        assert b.next_session(CAL[0]) is None, \
+            "日历上的次日是 CAL[1]，那天没数据——不能拿 CAL[2] 冒充"
