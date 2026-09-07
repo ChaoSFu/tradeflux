@@ -2015,6 +2015,27 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"[leader-cycle] 生命周期快照失败（不影响主流程）: {e}")
             db.rollback()
 
+        # ── 第4.03步：生命周期前瞻证据（离线评估产物）────────────
+        # 强势股概览那张「事件历史表现」读的就是这个文件。之前只能手工跑，
+        # 于是页面上的证据永远停在上一次有人想起来的那天。
+        #
+        # **只在收盘之后跑。** 它的 T+N 全靠 StockDailySnapshot 的收盘价，盘中
+        # 跑等于拿 11 点的现价当收盘价——Bars 现在会滤掉未结算的行，所以盘中跑
+        # 出来的不是错的，是**少了今天**、而且看不出来少了。宁可不刷新，也不
+        # 生成一份悄悄退化的证据。
+        if run_settled:
+            try:
+                from scripts.evaluate_lifecycle import write_evidence  # type: ignore
+                _ev = write_evidence(db)
+                log.info(f"[lifecycle-evidence] {_ev['events']} 类事件 → "
+                         f"{_ev['path']}（{_ev['seconds']}s）")
+            except Exception as e:  # noqa: BLE001
+                # 证据是"锦上添花"，事实快照才是主线。它挂了不能影响日更
+                log.info(f"[lifecycle-evidence] 评估失败（不影响主流程）: {e}")
+                db.rollback()
+        else:
+            log.info("[lifecycle-evidence] 尚未收盘，跳过（盘中价不能算 T+N）")
+
         # ── 第4.05步：历史快照自举 ────────────────────────────────
         # full_group 这次全量拉到的 65 日 K 线，把历史日(< target_date)一并落库，
         # 使该股下次更新即可走 DB 重建（仅拉今日）——每只股票全量拉取一生只发生一次。

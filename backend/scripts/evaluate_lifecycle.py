@@ -43,12 +43,14 @@ import json
 import os
 import statistics as st
 import sys
+import time
 from collections import defaultdict
 from datetime import date, datetime
 from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.config import settings
 from app.database import SessionLocal
 from app.models.leader_cycle import LeaderCycleSnapshot
 from app.models.stock import Stock, StockDailySnapshot
@@ -59,16 +61,31 @@ from app.services.trading_calendar import get_trading_days
 
 HORIZONS = (1, 3, 5, 10)
 
-# 界面读的那份产物。跟 app/config.py 的 LIFECYCLE_EVIDENCE_PATH 同一个位置
-DEFAULT_JSON = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data", "lifecycle_evidence.json")
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def default_json_path() -> str:
+    """
+    界面读的那份产物写到哪。**从 settings 取，不另立一个常量**——脚本写 A、
+    接口读 B 的时候，页面会一直显示「还没跑过」，而日志里明明写着已经生成。
+    """
+    raw = settings.LIFECYCLE_EVIDENCE_PATH
+    return raw if os.path.isabs(raw) else os.path.join(_BACKEND_DIR, raw)
 
 
 class Bars:
     """某只股票的日线，按交易日历索引。前瞻窗口全靠它。"""
 
     def __init__(self, rows, calendar: List[date]):
+        # ── **只收已结算的行** ────────────────────────────────────────────
+        # 盘中跑一次日更，今天那行躺着 11 点的现价，is_settled=False。不滤掉
+        # 它，最近那批事件的 T+N 就是拿盘中价当收盘价算出来的——而且看不出来。
+        #
+        # leader_cycle_effect_service 早就在 SQL 里滤了 is_settled，这里没有：
+        # 同一个「哪根 bar 算数」的事实有了两套判定。这是第 10 次。
+        # `is not True` 而不是 `is False`：拿不到这个字段就是不知道，不知道
+        # 不能当成"已经收盘了"
+        rows = [r for r in rows if getattr(r, "is_settled", None) is True]
         self.close = {r.date: r.close_price for r in rows if r.close_price}
         # ── OHLC **绝不用收盘顶替** ────────────────────────────────────────
         # StockDailySnapshot 的 OHLC 是 2026-08-27 才加的，更早的历史行是 NULL。
@@ -388,6 +405,44 @@ def _build_payload(full: dict, balanced: dict, skipped: int,
     }
 
 
+def write_evidence(db, path: Optional[str] = None, *, min_n: int = 8) -> dict:
+    """
+    跑一遍评估，把结构化产物写到 `path`（默认 backend/data/lifecycle_evidence.json）。
+    返回 {"path", "events", "seconds"}。
+
+    **给 daily_update 复用的入口**，跟 `--json` 走的是同一条路——不是复制一份
+    流程出来。评估口径只能有一处，两份迟早分叉。
+
+    调用方负责判断"该不该跑"（只有收盘之后才该跑），这里不猜。
+    """
+    t0 = time.monotonic()
+    full, balanced, skipped, _events, as_of = evaluate(db, None)
+    r = dump_evidence(full, balanced, skipped, as_of, path, min_n=min_n)
+    r["seconds"] = round(time.monotonic() - t0, 1)
+    return r
+
+
+def _order_of(full: dict, min_n: int) -> List[str]:
+    order = sorted((k for k in full if k != "ALL_STOCK_DAYS"),
+                   key=lambda k: -full[k][0])
+    return [k for k in order if full[k][0] >= min_n] + ["ALL_STOCK_DAYS"]
+
+
+def dump_evidence(full: dict, balanced: dict, skipped: int, as_of,
+                  path: Optional[str] = None, *, min_n: int = 8) -> dict:
+    """已经算好了就直接落盘——**不要为了写文件再 evaluate 一遍**。"""
+    payload = _build_payload(full, balanced, skipped, _order_of(full, min_n), as_of)
+    out = path or default_json_path()
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    # 先写临时文件再 rename：接口随时可能在读这个文件，写到一半被读走就是一个
+    # 语法不完整的 JSON。rename 在同一个文件系统上是原子的
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, out)
+    return {"path": out, "events": len(payload["events"])}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -410,9 +465,7 @@ def main():
         print("   根本没有行。要彻底解决得能按时点重建历史强势池成分。")
         print("   **所以绝对收益偏高，组间对比也只在「今天的幸存者」这个宇宙内成立。**")
 
-        order = sorted((k for k in full if k != "ALL_STOCK_DAYS"),
-                       key=lambda k: -full[k][0])
-        order = [k for k in order if full[k][0] >= args.min_n] + ["ALL_STOCK_DAYS"]
+        order = _order_of(full, args.min_n)
 
         _print_table("同日同池超额（逐事件对照后取中位数，括号内为有效样本）：",
                      full, "exc", order)
@@ -492,14 +545,12 @@ def main():
             print(f"\n明细写入 {args.csv}（{len(events)} 条）")
 
         if args.json_out:
-            path = (DEFAULT_JSON if args.json_out == "__default__"
-                    else args.json_out)
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            payload = _build_payload(full, balanced, skipped, order, as_of)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            print(f"\n结构化结果写入 {path}"
-                  f"（{len(payload['events'])} 类事件，界面读它）")
+            # 上面已经 evaluate 过了，直接落盘。daily_update 走 write_evidence，
+            # 最后汇到同一个 dump_evidence——**产物只有一处定义**
+            r = dump_evidence(full, balanced, skipped, as_of,
+                              None if args.json_out == "__default__" else args.json_out,
+                              min_n=args.min_n)
+            print(f"\n结构化结果写入 {r['path']}（{r['events']} 类事件，界面读它）")
     finally:
         db.close()
 

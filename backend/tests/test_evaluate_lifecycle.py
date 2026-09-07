@@ -23,8 +23,10 @@ CAL = [D0 + timedelta(days=i) for i in range(20)]
 
 
 class _Row:
-    def __init__(self, d, close, high=None, low=None, lu=False, open_p=None):
+    def __init__(self, d, close, high=None, low=None, lu=False, open_p=None,
+                 settled=True):
         self.date = d
+        self.is_settled = settled
         self.close_price = close
         self.open_price = open_p if open_p is not None else close
         self.high_price = high if high is not None else close
@@ -337,3 +339,73 @@ class TestJsonPayload:
         assert p["formula_version"] == FORMULA_VERSION
         assert p["generated_at"] and p["as_of"] == "2026-09-07", \
             "离线产物不带生成时间，过期了没人看得出来"
+
+
+class TestSettledOnly:
+    """
+    **盘中价不能当收盘价用。** 盘前/盘中跑一次日更，今天那行躺着 11 点的现价，
+    `is_settled=False`。不滤掉它，最近那批事件的 T+N 全是拿盘中价算的——而且
+    结果看起来完全正常。
+
+    leader_cycle_effect_service 早就在 SQL 里滤了 is_settled，这里没有：同一个
+    「哪根 bar 算数」的事实有了两套判定，这个仓库为这类问题栽过 9 次。
+    """
+
+    def test_未结算的行不进价格序列(self):
+        rows = [_Row(CAL[i], 10.0 + i) for i in range(5)]
+        rows.append(_Row(CAL[5], 99.0, settled=False))     # 盘中价
+        b = Bars(rows, CAL)
+        assert CAL[5] not in b.close, "盘中价进了序列，T+N 就会拿它当收盘价"
+        assert b.forward(CAL[4], 1) is None, \
+            "下一天没有终值 = 窗口不完整，不能用盘中价顶上"
+
+    def test_不知道有没有结算就不用(self):
+        """`is_settled` 拿不到时是「不知道」，不是「已经收盘」。"""
+        r = _Row(CAL[0], 10.0)
+        del r.is_settled
+        assert CAL[0] not in Bars([r], CAL).close
+
+    def test_已结算的照常进(self):
+        b = Bars([_Row(CAL[i], 10.0 + i) for i in range(5)], CAL)
+        assert len(b.close) == 5
+
+
+class TestDailyUpdateHook:
+    """
+    日更负责刷新这份证据。**接进主流程之后有两条新的骗人方式**：盘中也跑
+    （拿不到今天的终值却照样出一份看起来正常的产物），以及评估挂掉把整个日更
+    带下去（证据是锦上添花，事实快照才是主线）。
+    """
+
+    def _src(self):
+        import pathlib
+        import scripts.daily_update as m
+        return pathlib.Path(m.__file__).read_text(encoding="utf-8")
+
+    def test_日更会刷新证据(self):
+        src = self._src()
+        assert "write_evidence" in src, \
+            "证据只能手工跑的话，页面上的数字永远停在上次有人想起来的那天"
+
+    def test_只在收盘之后跑(self):
+        src = self._src()
+        i = src.index("write_evidence")
+        head = src[max(0, i - 1200):i]
+        assert "if run_settled:" in head, \
+            "盘中跑等于用 11 点的现价算 T+N；而且要用日更已有的 run_settled，" \
+            "不另起一套「收盘了没有」的判定"
+
+    def test_评估失败不能带垮日更(self):
+        src = self._src()
+        i = src.index("write_evidence")
+        assert "except Exception" in src[i:i + 800], "证据挂了不能影响事实快照"
+
+    def test_写的位置和接口读的位置是同一个(self):
+        import os
+        from app.config import settings
+        from app.routers.leader_cycle import _BACKEND_DIR
+        from scripts.evaluate_lifecycle import default_json_path
+        raw = settings.LIFECYCLE_EVIDENCE_PATH
+        api = raw if os.path.isabs(raw) else os.path.join(_BACKEND_DIR, raw)
+        assert default_json_path() == api, \
+            "脚本写 A、接口读 B 时，页面一直说「还没跑过」而日志说已生成"
