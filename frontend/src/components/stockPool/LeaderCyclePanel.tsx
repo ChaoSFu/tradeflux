@@ -64,6 +64,27 @@ const BUCKET: Record<Group, Bucketable[]> = {
 }
 const BUCKETED = new Set<string>([...BUCKET.core, ...BUCKET.waiting, ...BUCKET.dropped])
 
+/**
+ * 用来分组和展示的状态。
+ *
+ * **盘前跑日更时，当日 bar 还不是收盘终值，状态机按设计一律给 UNKNOWN**——
+ * 那条规则是对的（上午 11 点的价格不该推动跨日生命周期）。但界面不该因此把
+ * 已知的东西也丢掉：2026-09-06 实测，盘前更新后整页 59 只全变「数据不足」，
+ * 昨天的分组全没了。
+ *
+ * 所以当日判不出来时退回 last_valid_state（后端一直保留着），并在标签上标明
+ * 它是截至上一个已结算交易日的。**这不是拿旧值冒充新值**——它明确标注了日期，
+ * 而"今天还没收盘"本来就不该改变昨天的结论。
+ */
+const shownState = (r: LeaderCycleItem): LifecycleState =>
+  (r.lifecycle_state && r.lifecycle_state !== 'UNKNOWN'
+    ? r.lifecycle_state
+    : (r.last_valid_state ?? 'UNKNOWN'))
+
+/** 显示的是不是"截至上一个已结算交易日"的旧结论 */
+const isStale = (r: LeaderCycleItem) =>
+  r.lifecycle_state === 'UNKNOWN' && !!r.last_valid_state
+
 const COLS = ['股票', '状态', '主板块', '本轮', '60日', 'D+', '峰值回撤',
   '现价/MA5', '现价/MA10', '距阶段高', '距周期顶',
   'RS市场20', 'ΔRS 1日', 'ΔRS 3日', 'RS板块20', '量比5日', '换手']
@@ -120,7 +141,8 @@ const TAB_HINT: Record<Group, string> = {
 }
 
 function StateTag({ r }: { r: LeaderCycleItem }) {
-  const st = r.lifecycle_state
+  const st = shownState(r)
+  const stale = isStale(r)
   if (!st) return <span className="text-text-muted/50">—</span>
   const m = STATE_META[st] ?? { label: st, tone: 'text-text-secondary', hint: '' }
   // 优先展示**入场原因**：状态可能已经持续几十天，"今天没事发生"没有信息量
@@ -130,6 +152,8 @@ function StateTag({ r }: { r: LeaderCycleItem }) {
     <span className={cn('inline-flex items-center gap-1', m.tone)}
           title={[m.hint,
                   r.transitioned_today ? '今日刚转入此状态' : null,
+                  stale ? `今日尚未收盘，显示的是截至 ${r.last_valid_date ?? '上一交易日'}`
+                        + ' 的状态。盘中价不推动跨日生命周期。' : null,
                   why && `${r.transitioned_today ? '判定依据' : '当初判定依据'}：${why}`,
                   r.state_since_date && `${r.state_since_date} 起`,
                  ].filter(Boolean).join('\n')}>
@@ -138,6 +162,10 @@ function StateTag({ r }: { r: LeaderCycleItem }) {
           而且要靠问才知道含义的标记，等于没有标记 */}
       {r.transitioned_today && (
         <span className="text-[9px] px-1 rounded bg-current/15 leading-tight">今日</span>
+      )}
+      {stale && (
+        <span className="text-[9px] px-1 rounded bg-text-muted/20 text-text-muted
+                         leading-tight">昨收</span>
       )}
       {m.label}
       {st === 'CROSS_WEAKENING' && r.ever_cross_success && (
@@ -226,7 +254,7 @@ export default function LeaderCyclePanel() {
     const c: Record<string, number> = { core: 0, waiting: 0, dropped: 0,
                                         unbucketed: 0, all: all.length }
     all.forEach((r) => {
-      const st = r.lifecycle_state ?? 'UNKNOWN'
+      const st = shownState(r)
       const g = (['core', 'waiting', 'dropped'] as Group[])
         .find((k) => (BUCKET[k] as string[]).includes(st))
       // 落到 unbucketed 只有一种可能：出现了这里没列的新状态。那是 bug，
@@ -240,9 +268,8 @@ export default function LeaderCyclePanel() {
     const picked =
       group === 'all' ? all
       : group === 'unbucketed'
-        ? all.filter((r) => !BUCKETED.has(r.lifecycle_state ?? 'UNKNOWN'))
-        : all.filter((r) => (BUCKET[group] as string[])
-            .includes(r.lifecycle_state ?? 'UNKNOWN'))
+        ? all.filter((r) => !BUCKETED.has(shownState(r)))
+        : all.filter((r) => (BUCKET[group] as string[]).includes(shownState(r)))
     // 先按状态分段（段内顺序见 STATE_ORDER），段内今天刚变的在前——
     // 转强和转弱都是当天才需要动脑子的事
     return [...picked].sort((a, b) =>
@@ -300,6 +327,15 @@ export default function LeaderCyclePanel() {
               分母 = 强势池 {cov.pool_total ?? total} 只（含识别不出周期的
               <span className={NUM}> {cov.cycle_unresolved ?? 0} </span>只）
             </span>
+            {cov.settled === 0 && total > 0 && (
+              <span className="text-warn w-full">
+                今日尚未收盘（当日已结算 0/{total}）——
+                <span className="text-text-primary">盘中价不推动跨日生命周期</span>，
+                下面显示的是上一个已结算交易日的状态，标
+                <span className="text-[9px] px-1 mx-0.5 rounded bg-text-muted/20">昨收</span>
+                的都是。收盘后再跑一次日更就会更新。
+              </span>
+            )}
           </div>
         )}
         {missing !== 0 && (
@@ -358,7 +394,9 @@ export default function LeaderCyclePanel() {
       <div className="text-[11px] text-text-secondary">
         <span className="mr-2 text-text-muted">
           <span className="text-[9px] px-1 rounded bg-text-muted/20">今日</span>
-          {' '}= 今天刚转入该状态
+          {' '}= 今天刚转入该状态　
+          <span className="text-[9px] px-1 rounded bg-text-muted/20">昨收</span>
+          {' '}= 今日尚未收盘，显示的是上一个已结算交易日的状态
         </span>
         {TAB_HINT[group]}
         {group === 'core' && (
@@ -384,11 +422,10 @@ export default function LeaderCyclePanel() {
             </thead>
             <tbody>
               {rows.map((r, i) => {
-                const st = r.lifecycle_state ?? 'UNKNOWN'
-                const head = i === 0 || st !== (rows[i - 1].lifecycle_state ?? 'UNKNOWN')
+                const st = shownState(r)
+                const head = i === 0 || st !== shownState(rows[i - 1])
                 const m = STATE_META[st]
-                const n = rows.filter(
-                  (x) => (x.lifecycle_state ?? 'UNKNOWN') === st).length
+                const n = rows.filter((x) => shownState(x) === st).length
                 return (
                   <Fragment key={r.code}>
                     {head && (

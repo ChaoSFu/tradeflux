@@ -622,3 +622,44 @@ class TestUnknownIsNotFalse:
                     days_since_break=1)]
         s = replay_price_lifecycle(rows, rows[-1].date, trading_days=cal)
         assert s.state == REPAIRING and "MA5_TURN_UP" in s.reason_codes
+
+
+class TestLastValidState:
+    """
+    2026-09-06 生产实测：盘前跑一次日更，所有行 bar_settled=False，整页塌成
+    「数据不足」——59 只全部 UNKNOWN，昨天的分组全没了。
+
+    规则本身是对的（不能用上午 11 点的价格推动跨日状态），但**界面不该因此把
+    已知的东西也丢掉**。状态机内部一直保留着最近一次有效状态，只是没有一个
+    明确的字段把它端出来。
+    """
+
+    def test_未结算时给出最近一次有效状态(self):
+        rows = _to_success() + [
+            Row(3, 15.0, ma5=19.5, ma10=19.0, ma20=17.0, ma30=16.0,
+                days_since_break=3, settled=False)]
+        s = _replay(rows)
+        assert s.state == UNKNOWN, "当日仍然判不出，这条不放松"
+        assert s.last_valid_state == CROSS_SUCCESS
+        assert s.last_valid_date == rows[2].date, "要能说清是截至哪一天"
+
+    def test_状态判得出时最近有效就是当前(self):
+        s = _replay(_to_success())
+        assert s.state == CROSS_SUCCESS and s.last_valid_state == CROSS_SUCCESS
+        assert s.last_valid_date == s.date
+
+    def test_不复用previous_state那个一名两义的字段(self):
+        """
+        previous_state 在状态判得出时是"上一个状态"，判不出时才是"最后一个有效
+        状态"。让调用方按 evaluation_status 猜它当前是哪个意思，迟早出错。
+        """
+        s = _replay(_to_success())
+        assert s.previous_state == REPAIRING, "判得出时它是上一个状态"
+        assert s.last_valid_state == CROSS_SUCCESS, "而这个始终是最近有效状态"
+
+    def test_一行都不可用时没有最近有效状态(self):
+        rows = [Row(0, 10.0, ma5=10.5, ma10=11.0, ma20=11.5, ma30=12.0,
+                    days_since_break=0, settled=False)]
+        s = _replay(rows)
+        assert s.state == UNKNOWN and s.last_valid_state is None, \
+            "从来没判出来过就是没有，不编一个"

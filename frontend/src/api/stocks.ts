@@ -97,6 +97,10 @@ export interface LeaderCycleItem {
   // ── Price Lifecycle v1（后端 replay 出来的派生状态，不落库）──────────
   lifecycle_state: LifecycleState | null
   previous_lifecycle_state: LifecycleState | null
+  // 最近一次判得出的状态。盘前更新时 lifecycle_state 是 UNKNOWN（不能用盘中价
+  // 推动跨日状态），界面这时显示它，并标明截至哪天
+  last_valid_state: LifecycleState | null
+  last_valid_date: string | null
   state_since_date: string | null
   transitioned_today: boolean
   lifecycle_formula_version: string | null

@@ -161,6 +161,17 @@ class DayState:
     entry_reason_codes: List[str] = field(default_factory=list)
     evaluation_status: str = "OK"          # OK | UNSETTLED | STALE | INSUFFICIENT
     formula_version: str = FORMULA_VERSION
+    # **最近一次判得出的状态，及其日期。**
+    #
+    # 2026-09-06 实测：盘前跑一次日更，所有行 bar_settled=False，整页塌成
+    # 「数据不足」，昨天的分组全没了。规则本身是对的（不能用上午 11 点的价格
+    # 推动跨日状态），但界面不该因此把已知的东西也丢掉。
+    #
+    # 不复用 previous_state：那个字段**一名两义**——状态判得出时它是"上一个
+    # 状态"，判不出时才是"最后一个有效状态"。让调用方按 evaluation_status 去
+    # 猜它当前是哪个意思，正是以后会咬人的写法。
+    last_valid_state: Optional[str] = None
+    last_valid_date: Optional[date] = None
     # 「曾经穿越成功」要单独记：CROSS_WEAKENING 必须能跟 CROSS_FAILED 区分开
     ever_cross_success: bool = False
     first_cross_success_date: Optional[date] = None
@@ -458,6 +469,7 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
     codes: List[str] = ["HOLD"]
     entry_codes: List[str] = []
     ever_success = False
+    last_ok: Optional[date] = None      # 最近一个可用 observation 的日期
     first_success: Optional[date] = None
     cycle: Optional[tuple] = None
     transitioned_on: Optional[date] = None
@@ -475,12 +487,14 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
                 ever_success, first_success = False, None
             cycle = cid
             obs = [row]
+            last_ok = row.date
             state, prev_state, since, codes = new_state, state, row.date, new_codes
             entry_codes = new_codes
             transitioned_on = row.date
             continue
 
         obs.append(row)
+        last_ok = row.date
         nxt, new_codes = _advance(state, obs, trading_days)
         if nxt != state:
             prev_state, state, since = state, nxt, row.date
@@ -509,6 +523,7 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
             # 周期没了（比如整段连板滑出 60 日窗口）跟"今天判不出来"是两回事
             date=as_of_date, state=(NO_CYCLE if _why == "NO_CYCLE" else UNKNOWN),
             previous_state=state,
+            last_valid_state=state, last_valid_date=last_ok,
             state_since_date=since, transitioned_today=False,
             reason_codes=[_why], entry_reason_codes=entry_codes,
             evaluation_status=(_eval_status(today) if today.date == as_of_date
@@ -518,6 +533,7 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
 
     return DayState(
         date=as_of_date, state=state, previous_state=prev_state,
+        last_valid_state=state, last_valid_date=today.date,
         state_since_date=since, transitioned_today=(transitioned_on == as_of_date),
         reason_codes=codes, entry_reason_codes=entry_codes,
         evaluation_status="OK", formula_version=formula_version,

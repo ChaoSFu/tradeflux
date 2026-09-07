@@ -71,6 +71,11 @@ class LeaderCycleItem(BaseModel):
     # replay，代价是几十只 × 60 天，可以忽略
     lifecycle_state: Optional[str] = None
     previous_lifecycle_state: Optional[str] = None
+    # **最近一次判得出的状态**。盘前更新时 lifecycle_state 会是 UNKNOWN
+    # （不能用盘中价推动跨日状态），但界面不该因此把已知的也丢掉——
+    # 那时显示这个，并标明是截至哪一天
+    last_valid_state: Optional[str] = None
+    last_valid_date: Optional[date] = None
     state_since_date: Optional[date] = None
     transitioned_today: bool = False
     lifecycle_formula_version: Optional[str] = None
@@ -126,6 +131,8 @@ def _lifecycle_fields(snaps, trade_date: date, calendar) -> dict:
     return {
         "lifecycle_state": st.state,
         "previous_lifecycle_state": st.previous_state,
+        "last_valid_state": st.last_valid_state,
+        "last_valid_date": st.last_valid_date,
         "state_since_date": st.state_since_date,
         "transitioned_today": st.transitioned_today,
         "lifecycle_formula_version": st.formula_version,
@@ -262,6 +269,11 @@ def get_leader_cycle(
         "settled": sum(1 for i in items if i.bar_settled and i.data_fresh),
         "lifecycle_resolved": sum(1 for i in items
                                   if i.lifecycle_state and i.lifecycle_state != UNKNOWN),
+        # 含"截至上一个已结算交易日"的——盘前更新时前者会是 0，后者才反映
+        # 我们实际掌握多少
+        "lifecycle_known": sum(1 for i in items
+                               if (i.lifecycle_state and i.lifecycle_state != UNKNOWN)
+                               or i.last_valid_state),
     }
     return LeaderCycleResponse(
         trade_date=trade_date, running=running, broken=broken,
