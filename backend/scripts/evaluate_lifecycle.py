@@ -73,19 +73,45 @@ def default_json_path() -> str:
     return raw if os.path.isabs(raw) else os.path.join(_BACKEND_DIR, raw)
 
 
+#: 这一天的未结算行是**活价格**，必须排除。更早日期的未结算行不是。
+#: 由 evaluate() 按快照里最新的日期填进来。
+LIVE_DATE_DOC = """
+为什么不是「只收 is_settled=True」：
+
+  实测（2026-09-07 生产库）：
+    is_settled=t   38092 行，最早 2026-05-28
+    is_settled=f  172302 行，最早 2026-02-04
+    2026-09-07     253 行， settled 0     ← 盘前跑的，这批才是活价格
+    2026-09-04    2569 行， settled 2558
+    2026-08-17    2538 行， settled 2015
+    2026-08-13     571 行， settled 20
+
+  这个字段 2026-05-28 才开始有值。之前的行不是盘中价，是**字段还不存在时
+  写进去的收盘价**。硬滤 is_settled=True 会把它们一起扔掉——基线从 3650 掉到
+  1552，而且丢掉的样本跟时间强相关（越老丢得越多）。那不是随机损失，是系统性
+  偏向近期行情，还顺手把「修复中→穿越成功」的 T+1 从 +3.1 翻成 -2.97。
+
+  `nullable=False, default=False` 让「不知道」在写入那一刻就被压成了 False，
+  读的时候再也分不出「这是盘中价」和「没人给这行打过标」。既然分不出，就只
+  排除**能确定是活的**那一批：最新日期上未结算的行。更早的日期交易日已经结束，
+  后面还跑过很多次日更，那些 False 判定为记账缺口。
+
+  代价要说出来，不能咽掉：保留下来的未结算行数会记进 unsettled_kept，
+  跟着 JSON 产物一起端到界面上。
+"""
+
+
 class Bars:
     """某只股票的日线，按交易日历索引。前瞻窗口全靠它。"""
 
-    def __init__(self, rows, calendar: List[date]):
-        # ── **只收已结算的行** ────────────────────────────────────────────
-        # 盘中跑一次日更，今天那行躺着 11 点的现价，is_settled=False。不滤掉
-        # 它，最近那批事件的 T+N 就是拿盘中价当收盘价算出来的——而且看不出来。
-        #
-        # leader_cycle_effect_service 早就在 SQL 里滤了 is_settled，这里没有：
-        # 同一个「哪根 bar 算数」的事实有了两套判定。这是第 10 次。
-        # `is not True` 而不是 `is False`：拿不到这个字段就是不知道，不知道
-        # 不能当成"已经收盘了"
-        rows = [r for r in rows if getattr(r, "is_settled", None) is True]
+    def __init__(self, rows, calendar: List[date], live_date: Optional[date] = None):
+        # 只排除**已知是活的**那一行：最新日期上还没结算的。理由见 LIVE_DATE_DOC
+        rows = [r for r in rows
+                if not (live_date is not None and r.date == live_date
+                        and getattr(r, "is_settled", None) is not True)]
+        #: 保留下来的未结算行数——口径的代价要能被数出来，不能只写在注释里
+        self.unsettled_kept = sum(
+            1 for r in rows if getattr(r, "is_settled", None) is not True)
         self.close = {r.date: r.close_price for r in rows if r.close_price}
         # ── OHLC **绝不用收盘顶替** ────────────────────────────────────────
         # StockDailySnapshot 的 OHLC 是 2026-08-27 才加的，更早的历史行是 NULL。
@@ -144,13 +170,16 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
     dates = sorted({r.date for rows in snaps.values() for r in rows})
     cal = [d for d in cal_all if d <= dates[-1]]
 
+    # 快照里最新的那一天。**只有这一天的未结算行是活价格**，见 LIVE_DATE_DOC
+    live_date = dates[-1]
     sid = {s.code: s.id for s in db.query(Stock).all()}
     bars: Dict[str, Bars] = {}
     for code in snaps:
         rows = (db.query(StockDailySnapshot)
                 .filter(StockDailySnapshot.stock_id == sid.get(code, -1))
                 .order_by(StockDailySnapshot.date).all())
-        bars[code] = Bars(rows, cal)
+        bars[code] = Bars(rows, cal, live_date)
+    unsettled_kept = sum(b.unsettled_kept for b in bars.values())
 
     events, skipped_incomplete = [], 0
     baseline = []
@@ -267,7 +296,7 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
     full = {k: (len(v), _measure(v)) for k, v in groups.items()}
     bal_src = {k: _complete(v) for k, v in groups.items()}
     balanced = {k: (len(v), _measure(v)) for k, v in bal_src.items() if v}
-    return full, balanced, skipped_incomplete, events, dates[-1]
+    return full, balanced, skipped_incomplete, events, dates[-1], unsettled_kept
 
 
 def _fmt(vals: List[float]) -> str:
@@ -343,7 +372,8 @@ def _stat(vals: List[float]) -> Optional[dict]:
 
 
 def _build_payload(full: dict, balanced: dict, skipped: int,
-                   order: List[str], as_of: Optional[date]) -> dict:
+                   order: List[str], as_of: Optional[date],
+                   *, unsettled_kept: int = 0) -> dict:
     """
     把评估结果摊成 JSON。**界面用的是这一份,不是 stdout 的表格**——
     让人照着终端输出往前端里抄数字,抄错了没人会发现,而且第二天就过期了。
@@ -387,6 +417,8 @@ def _build_payload(full: dict, balanced: dict, skipped: int,
         "as_of": as_of.isoformat() if as_of else None,
         "horizons": list(HORIZONS),
         "skipped_incomplete": skipped,
+        # 口径的代价要跟数字一起走：保留了多少行没标 is_settled 的快照
+        "unsettled_kept": unsettled_kept,
         "events": [one(k) for k in order if k != "ALL_STOCK_DAYS"],
         "baseline": one("ALL_STOCK_DAYS") if "ALL_STOCK_DAYS" in full else None,
         # **免责声明跟数字一起走。** 数字会被复制到界面上,注意事项不会——
@@ -401,7 +433,12 @@ def _build_payload(full: dict, balanced: dict, skipped: int,
             "不管中位数看起来多好看。",
             "这里不给结论也不打分。一个自动判定「有没有 Edge」的评估器,等于又"
             "造一个黑箱。",
-        ],
+        ] + ([
+            f"样本里有 {unsettled_kept} 行快照没标 is_settled。这个字段 2026-05-28 "
+            "才开始有值,更早的行不是盘中价而是字段还不存在时写进去的收盘价,所以"
+            "只排除了最新日期上未结算的行(那批确定是活价格)。历史行里若混有当年"
+            "盘中跑出来的价格,现在分辨不出来。",
+        ] if unsettled_kept else []),
     }
 
 
@@ -416,8 +453,9 @@ def write_evidence(db, path: Optional[str] = None, *, min_n: int = 8) -> dict:
     调用方负责判断"该不该跑"（只有收盘之后才该跑），这里不猜。
     """
     t0 = time.monotonic()
-    full, balanced, skipped, _events, as_of = evaluate(db, None)
-    r = dump_evidence(full, balanced, skipped, as_of, path, min_n=min_n)
+    full, balanced, skipped, _events, as_of, unsettled = evaluate(db, None)
+    r = dump_evidence(full, balanced, skipped, as_of, path,
+                      min_n=min_n, unsettled_kept=unsettled)
     r["seconds"] = round(time.monotonic() - t0, 1)
     return r
 
@@ -429,9 +467,11 @@ def _order_of(full: dict, min_n: int) -> List[str]:
 
 
 def dump_evidence(full: dict, balanced: dict, skipped: int, as_of,
-                  path: Optional[str] = None, *, min_n: int = 8) -> dict:
+                  path: Optional[str] = None, *, min_n: int = 8,
+                  unsettled_kept: int = 0) -> dict:
     """已经算好了就直接落盘——**不要为了写文件再 evaluate 一遍**。"""
-    payload = _build_payload(full, balanced, skipped, _order_of(full, min_n), as_of)
+    payload = _build_payload(full, balanced, skipped, _order_of(full, min_n), as_of,
+                             unsettled_kept=unsettled_kept)
     out = path or default_json_path()
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     # 先写临时文件再 rename：接口随时可能在读这个文件，写到一半被读走就是一个
@@ -458,7 +498,7 @@ def main():
 
     db = SessionLocal()
     try:
-        full, balanced, skipped, events, as_of = evaluate(db, args.event)
+        full, balanced, skipped, events, as_of, unsettled = evaluate(db, args.event)
         print(f"口径 {FORMULA_VERSION}\n")
         print("⚠️ 这里的「同日同池」只消掉了**市场行情**，没有消掉**样本选择**：")
         print("   快照是「今天在池子里的股票，当时长什么样」，当时进不了池的票")
@@ -533,6 +573,9 @@ def main():
 
         if skipped:
             print(f"\n窗口未走完而排除的 {skipped} 次测量")
+        if unsettled:
+            print(f"保留了 {unsettled} 行未标 is_settled 的快照（该字段 2026-05-28 "
+                  f"才有值；只排除了最新日期上未结算的行）")
         print("\n**这里不给结论也不打分**——一个自动判定「有没有 Edge」的评估器，"
               "等于又造一个黑箱。")
 
@@ -549,7 +592,7 @@ def main():
             # 最后汇到同一个 dump_evidence——**产物只有一处定义**
             r = dump_evidence(full, balanced, skipped, as_of,
                               None if args.json_out == "__default__" else args.json_out,
-                              min_n=args.min_n)
+                              min_n=args.min_n, unsettled_kept=unsettled)
             print(f"\n结构化结果写入 {r['path']}（{r['events']} 类事件，界面读它）")
     finally:
         db.close()

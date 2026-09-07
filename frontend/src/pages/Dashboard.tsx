@@ -377,6 +377,17 @@ function LifecycleEffect() {
               </tbody>
             </table>
           </div>
+          {/* 后端的 notes 要渲染出来：口径的代价（比如保留了多少行未标
+              is_settled 的快照）跟数字一起来，不能只留在 JSON 里 */}
+          {(data?.notes ?? []).length > 0 && (
+            <ul className="text-[11px] text-text-muted mt-2 space-y-0.5">
+              {data!.notes.map((n, i) => (
+                <li key={i} className="flex gap-1.5">
+                  <span className="text-text-muted/50 shrink-0">·</span><span>{n}</span>
+                </li>
+              ))}
+            </ul>
+          )}
           <p className="text-[11px] text-text-muted mt-2">
             上涨占比在 50% 附近 = 跟随机没区别，但它本来也不是超额——
             做了对照和区间的版本是上面那张事件表。

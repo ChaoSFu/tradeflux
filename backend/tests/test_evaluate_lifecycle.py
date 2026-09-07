@@ -341,33 +341,44 @@ class TestJsonPayload:
             "离线产物不带生成时间，过期了没人看得出来"
 
 
-class TestSettledOnly:
+class TestLivePriceOnly:
     """
-    **盘中价不能当收盘价用。** 盘前/盘中跑一次日更，今天那行躺着 11 点的现价，
-    `is_settled=False`。不滤掉它，最近那批事件的 T+N 全是拿盘中价算的——而且
-    结果看起来完全正常。
+    **盘中价不能当收盘价用,但「没标 is_settled」不等于盘中价。**
 
-    leader_cycle_effect_service 早就在 SQL 里滤了 is_settled，这里没有：同一个
-    「哪根 bar 算数」的事实有了两套判定，这个仓库为这类问题栽过 9 次。
+    2026-09-07 实测生产库:该字段 2026-05-28 才开始有值,更早的 17 万行全是
+    False——那些不是盘中价,是字段还不存在时写进去的收盘价。硬滤
+    `is_settled=True` 会把它们一起扔掉:基线从 3650 掉到 1552,而且丢掉的样本
+    跟时间强相关(越老丢得越多),还把「修复中→穿越成功」的 T+1 从 +3.1 翻成
+    -2.97。那不是随机损失,是系统性偏向近期行情。
+
+    `nullable=False, default=False` 让「不知道」在写入那一刻就被压成 False,
+    读的时候分不出来。既然分不出,就只排除**能确定是活的**那一批。
     """
 
-    def test_未结算的行不进价格序列(self):
+    def test_最新日期上未结算的行是活价格要排除(self):
         rows = [_Row(CAL[i], 10.0 + i) for i in range(5)]
-        rows.append(_Row(CAL[5], 99.0, settled=False))     # 盘中价
-        b = Bars(rows, CAL)
+        rows.append(_Row(CAL[5], 99.0, settled=False))     # 今天，盘中价
+        b = Bars(rows, CAL, CAL[5])
         assert CAL[5] not in b.close, "盘中价进了序列，T+N 就会拿它当收盘价"
         assert b.forward(CAL[4], 1) is None, \
             "下一天没有终值 = 窗口不完整，不能用盘中价顶上"
 
-    def test_不知道有没有结算就不用(self):
-        """`is_settled` 拿不到时是「不知道」，不是「已经收盘」。"""
-        r = _Row(CAL[0], 10.0)
-        del r.is_settled
-        assert CAL[0] not in Bars([r], CAL).close
-
-    def test_已结算的照常进(self):
-        b = Bars([_Row(CAL[i], 10.0 + i) for i in range(5)], CAL)
+    def test_更早日期上未结算的行照常用(self):
+        """交易日已经结束、后面还跑过很多次日更，那个 False 是记账缺口。"""
+        rows = [_Row(CAL[i], 10.0 + i, settled=(i != 2)) for i in range(5)]
+        b = Bars(rows, CAL, CAL[4])
+        assert CAL[2] in b.close, "把历史行当盘中价扔掉，会系统性偏向近期行情"
         assert len(b.close) == 5
+
+    def test_保留了多少未结算行要数出来(self):
+        """口径的代价必须能被数出来，不能只写在注释里。"""
+        rows = [_Row(CAL[i], 10.0 + i, settled=(i % 2 == 0)) for i in range(5)]
+        assert Bars(rows, CAL, CAL[4]).unsettled_kept == 2
+
+    def test_不给live_date就不排除任何行(self):
+        """拿不到「哪天是最新的」就别猜——宁可全留，也不按 False 一刀切。"""
+        rows = [_Row(CAL[i], 10.0 + i, settled=False) for i in range(3)]
+        assert len(Bars(rows, CAL).close) == 3
 
 
 class TestDailyUpdateHook:

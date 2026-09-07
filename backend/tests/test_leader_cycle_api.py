@@ -417,3 +417,38 @@ class TestLimitMovesFreshness:
         from app.services.strong_stock_service import get_limit_moves_pool
         r = get_limit_moves_pool(db)
         assert r.trade_date is None and r.is_settled is None, "一行都没有就是不知道"
+
+
+class TestSettledCaliberIsShared:
+    """
+    「哪根 bar 算数」只能有一套判定。**这个仓库为「同一个事实两套判定」栽过 10 次**，
+    最近一次就是 is_settled：evaluate_lifecycle 的 Bars 和 leader_cycle_effect_service
+    一个不滤一个硬滤，同一张页面上两张表用了两套样本。
+
+    正确口径：只排除**最新日期上**未结算的行。更早日期的 False 是记账缺口——
+    该字段 2026-05-28 才开始有值，之前 17 万行全是 False，那是字段还不存在时写
+    进去的收盘价。
+    """
+
+    def _src(self, mod):
+        import pathlib
+        return pathlib.Path(mod.__file__).read_text(encoding="utf-8")
+
+    def test_赚钱效应不再硬滤settled(self):
+        from app.services import leader_cycle_effect_service as m
+        src = self._src(m)
+        assert "is_settled.is_(True)" not in src, \
+            "硬滤会把半年前的历史一起扔掉，而且丢掉的样本跟时间强相关"
+        assert "r.date == as_of and r.is_settled is not True" in src, \
+            "今天未结算的那一行才是活价格，必须排除"
+
+    def test_评估脚本用同一套口径(self):
+        import scripts.evaluate_lifecycle as m
+        src = self._src(m)
+        assert "live_date" in src and "unsettled_kept" in src
+        assert 'r.date == live_date' in src
+
+    def test_保留了多少未结算行要说出来(self):
+        from app.services import leader_cycle_effect_service as m
+        assert "没标 is_settled" in self._src(m), \
+            "口径的代价要跟数字一起走，不能只写在注释里"

@@ -98,16 +98,34 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
         return {"as_of": as_of, "prev": None, "cohorts": [], "history": [],
                 "formula_version": FORMULA_VERSION, "notes": notes + base_notes}
 
-    # 收盘价：只用 settled 的行。盘中价不能进赚钱效应——那会让上午的浮动
-    # 冒充当日结果
+    # ── 收盘价：只排除**最新日期上**未结算的行 ──────────────────────────
+    # 盘中价不能进赚钱效应——上午的浮动冒充当日结果。但「没标 is_settled」
+    # ≠ 盘中价：2026-09-07 实测生产库，该字段 2026-05-28 才开始有值，更早的
+    # 17 万行全是 False，那是**字段还不存在时写进去的收盘价**。
+    #
+    # 原来这里硬滤 is_settled=True，等于把半年前的历史一起扔掉，而且丢掉的
+    # 样本跟时间强相关（越老丢得越多）——系统性偏向近期行情，不是随机损失。
+    # `nullable=False, default=False` 让「不知道」在写入那一刻就被压成 False，
+    # 读的时候分不出来；既然分不出，就只排除**能确定是活的**那一批。
+    #
+    # 口径必须跟 scripts/evaluate_lifecycle.py 的 Bars 一致——同一个「哪根 bar
+    # 算数」的事实不能有两套判定。
     sid = {s.id: s.code for s in db.query(Stock).all()}
     px: Dict[str, Dict[date, float]] = defaultdict(dict)
+    unsettled_kept = 0
     for r in (db.query(StockDailySnapshot)
-              .filter(StockDailySnapshot.close_price.isnot(None),
-                      StockDailySnapshot.is_settled.is_(True)).all()):
+              .filter(StockDailySnapshot.close_price.isnot(None)).all()):
+        if r.date == as_of and r.is_settled is not True:
+            continue                       # 今天还没收盘，这一行是活价格
         code = sid.get(r.stock_id)
         if code:
             px[code][r.date] = r.close_price
+            if r.is_settled is not True:
+                unsettled_kept += 1
+    if unsettled_kept:
+        notes.append(
+            f"历史里有 {unsettled_kept} 行快照没标 is_settled（该字段 2026-05-28 "
+            "才开始有值）。它们按收盘价采用，只排除了今天未结算的行。")
 
     def _ret(code: str, a: date, b: date) -> Optional[float]:
         pa, pb = px.get(code, {}).get(a), px.get(code, {}).get(b)
