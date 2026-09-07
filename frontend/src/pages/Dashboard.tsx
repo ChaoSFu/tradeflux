@@ -998,6 +998,9 @@ export default function Dashboard() {
                   </span>
                   <span className="text-[10px] text-text-muted">
                     每条线 = 昨天处于该状态的票，今天的<span className="text-text-secondary">平均</span>涨幅
+                    <span className="text-text-muted/70">
+                      ；当天该组没有成员时按 0 画（悬停显示「无成员」）
+                    </span>
                   </span>
                 </div>
                 <LifecycleSeries history={history ?? []} />

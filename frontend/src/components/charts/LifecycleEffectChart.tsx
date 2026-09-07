@@ -57,9 +57,13 @@ export function LifecycleEffectChart({ series, history }: {
       const r: Row = { date: format(new Date(p.trade_date), 'MM/dd') }
       r[L_MAIN] = avgByDate.get(p.trade_date) ?? null
       for (const l of present) {
-        // **没有该状态的票时是 null，不是 0**。0 会被读成"那天这组不赚不亏"
-        r[zh(l.state)] = p.values[l.state]?.avg ?? null
-        r[`${zh(l.state)}__n`] = p.values[l.state]?.n ?? null
+        // 当天没有该状态的票 → **图上按 0 画**（产品决定：那一组当天没有贡献
+        // 赚钱效应）。但数据层不撒谎：后端那边"没有该状态"就是没有这个 key，
+        // 这里只是展示层填 0，并且把 n 一起带进 tooltip——n0 就是"当天这组没人"，
+        // 跟"这组有人但平均涨 0%"仍然分得出来
+        const v = p.values[l.state]
+        r[zh(l.state)] = v?.avg ?? 0
+        r[`${zh(l.state)}__n`] = v?.n ?? 0
       }
       return r
     })
@@ -95,8 +99,8 @@ export function LifecycleEffectChart({ series, history }: {
                   strokeWidth={2} dot={false} activeDot={{ r: 4 }} connectNulls
                   hide={hidden.has(L_MAIN)} />
             {present.map((l) => (
-              // connectNulls 关掉：那天没有这个状态的票就是断的，
-              // 连过去等于凭空造一段并不存在的走势
+              // 空组已经在上面填成 0 了，这里不会再有 null；connectNulls 保留
+              // 只是为了万一后端某天真给出 null 时不画一段假的
               <Line key={l.state} type="monotone" dataKey={zh(l.state)} stroke={l.color}
                     strokeWidth={1.5} strokeDasharray={l.dash} dot={false}
                     activeDot={{ r: 3 }} connectNulls={false}
@@ -154,9 +158,13 @@ function Tip({ active, label, payload, present }: TipProps) {
                   style={{ color: (p.value ?? 0) >= 0 ? '#FF4560' : '#26C281' }}>
               {p.value === null ? '—' : `${p.value > 0 ? '+' : ''}${p.value.toFixed(2)}%`}
             </span>
-            {/* **n 一起给。** n=1 的那天是一只票的涨幅，画成线跟 n=20 一样权威 */}
+            {/* **n 一起给。** n=1 那天是一只票的涨幅，画成线跟 n=20 一样权威；
+                n0 是"当天这组没人"，图上那个 0 不是"不赚不亏" */}
             {typeof n === 'number' && (
-              <span className="text-text-muted/70 font-mono">n{n}</span>
+              <span className={cn('font-mono',
+                n === 0 ? 'text-warn/70' : 'text-text-muted/70')}>
+                {n === 0 ? '无成员' : `n${n}`}
+              </span>
             )}
           </div>
         )
