@@ -110,17 +110,38 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     #
     # 口径必须跟 scripts/evaluate_lifecycle.py 的 Bars 一致——同一个「哪根 bar
     # 算数」的事实不能有两套判定。
-    sid = {s.id: s.code for s in db.query(Stock).all()}
+    # ── **只取用得到的股票、日期、列** ──────────────────────────────────
+    # 这里原来是 `db.query(StockDailySnapshot).filter(close_price.isnot(None)).all()`
+    # ——**整张表**，生产 21 万行、每行 40+ 列的映射对象。2026-09-07 探针抓到：
+    # 单次请求 +405MB / 11.95s，全站其余接口都在 20~40MB。
+    #
+    # 而这个函数只需要「池子里那几十只票、窗口那几十天、收盘价和结算标记」。
+    # 下面三个 filter 把 21 万行削到几千个 tuple。
+    #
+    # 顺带一句自我记录：今天下午摘掉 is_settled 硬过滤（那个改动是对的）时，
+    # 没注意到它同时还兼着"把 21 万行削到 3.8 万行"的副作用，于是这个接口的
+    # 内存一下涨了 5 倍。**一个 filter 同时承担两个职责，删掉它的时候只想着
+    # 其中一个。**
+    win_start = min([d for d in dates if d <= as_of][-history_days:], default=as_of)
+    pool_ids = [r.stock_id for rows_ in snaps.values() for r in rows_[:1]]
+    sid = {i: c for i, c in db.query(Stock.id, Stock.code)
+           .filter(Stock.id.in_(pool_ids)).all()} if pool_ids else {}
     px: Dict[str, Dict[date, float]] = defaultdict(dict)
     unsettled_kept = 0
-    for r in (db.query(StockDailySnapshot)
-              .filter(StockDailySnapshot.close_price.isnot(None)).all()):
-        if r.date == as_of and r.is_settled is not True:
+    q = (db.query(StockDailySnapshot.stock_id, StockDailySnapshot.date,
+                  StockDailySnapshot.close_price, StockDailySnapshot.is_settled)
+         .filter(StockDailySnapshot.close_price.isnot(None),
+                 StockDailySnapshot.date >= win_start,
+                 StockDailySnapshot.date <= as_of))
+    if pool_ids:
+        q = q.filter(StockDailySnapshot.stock_id.in_(pool_ids))
+    for stock_id, d_, close, settled in q.all():
+        if d_ == as_of and settled is not True:
             continue                       # 今天还没收盘，这一行是活价格
-        code = sid.get(r.stock_id)
+        code = sid.get(stock_id)
         if code:
-            px[code][r.date] = r.close_price
-            if r.is_settled is not True:
+            px[code][d_] = close
+            if settled is not True:
                 unsettled_kept += 1
     if unsettled_kept:
         notes.append(

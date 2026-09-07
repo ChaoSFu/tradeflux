@@ -439,7 +439,7 @@ class TestSettledCaliberIsShared:
         src = self._src(m)
         assert "is_settled.is_(True)" not in src, \
             "硬滤会把半年前的历史一起扔掉，而且丢掉的样本跟时间强相关"
-        assert "r.date == as_of and r.is_settled is not True" in src, \
+        assert "d_ == as_of and settled is not True" in src, \
             "今天未结算的那一行才是活价格，必须排除"
 
     def test_评估脚本用同一套口径(self):
@@ -512,3 +512,59 @@ class TestDailySeries:
         from app.services.leader_cycle_effect_service import compute_effect
         r = compute_effect(db, None)
         assert r["series"] == []
+
+
+class TestEffectQueryScope:
+    """
+    **赚钱效应只查用得到的股票、日期、列。**
+
+    2026-09-07 探针抓到：单次 `/leader-cycle/effect` 请求 +405MB / 11.95s，而全站
+    其余接口都在 20~40MB。原因是它 `db.query(StockDailySnapshot).all()` —— 整张
+    表，生产 21 万行、每行 40+ 列的映射对象。
+
+    根因是同一天早些时候摘掉 `is_settled == True` 那个 filter（摘得对）时，没注意
+    到它同时还兼着"把 21 万行削到 3.8 万行"的副作用——**一个 filter 同时承担两个
+    职责，删掉它的时候只想着其中一个**。
+    """
+
+    def _src(self):
+        import pathlib
+        from app.services import leader_cycle_effect_service as m
+        return pathlib.Path(m.__file__).read_text(encoding="utf-8")
+
+    def test_不整表加载快照(self):
+        src = self._src()
+        assert "db.query(StockDailySnapshot)\n" not in src, \
+            "整行 ORM 对象加载整张表，21 万行就是几百 MB"
+        assert "StockDailySnapshot.close_price," in src, "只取用得到的列"
+
+    def test_按日期和股票收窄(self):
+        src = self._src()
+        assert "StockDailySnapshot.date >= win_start" in src
+        assert "StockDailySnapshot.stock_id.in_(pool_ids)" in src
+
+    def test_不整表加载股票(self):
+        src = self._src()
+        assert "db.query(Stock).all()" not in src, \
+            "只要 id→code 两列，且只要池子里那几十只"
+        assert "db.query(Stock.id, Stock.code)" in src
+
+    def test_窄查询之后结果不变(self, db):
+        """收窄查询是性能改动，**数字一个都不能变**。"""
+        from datetime import date as d
+        from app.services.leader_cycle_effect_service import compute_effect
+        from app.services.trading_calendar import _write_cache
+        days = [d(2026, 9, i) for i in (1, 2, 3, 4)]
+        _write_cache(db, days)
+        st = _stock(db, "600099")
+        for i, day in enumerate(days):
+            db.add(StockDailySnapshot(stock_id=st.id, date=day,
+                                      close_price=10.0 + i, is_settled=True))
+            db.add(LeaderCycleSnapshot(
+                stock_id=st.id, stock_code=st.code, date=day, board_count_60d=5,
+                cycle_start_date=days[0], cycle_peak_date=days[0], peak_board_count=5,
+                latest_close=10.0 + i, data_fresh=True, bar_settled=True))
+        db.commit()
+        r = compute_effect(db, days[-1])
+        assert r["series"], "收窄之后还得算得出东西来"
+        assert all(p["values"] for p in r["series"])
