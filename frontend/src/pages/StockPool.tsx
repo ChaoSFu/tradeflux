@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { fetchStrongPool, fetchLimitMoves, fetchLeaderCycle } from '@/api/stocks'
 import { shownState } from '@/lib/lifecycle'
-import LeaderCyclePanel from '@/components/stockPool/LeaderCyclePanel'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag, RegulatoryTag, YesterdayLimitTag, SevereTargetTag } from '@/components/common/SectorTags'
 import { useSectorLeaders } from '@/hooks/useSectorLeaders'
@@ -418,11 +417,12 @@ export default function StockPool() {
         <div className="ml-auto text-xs text-text-muted">共 {total} 只{unitLabel}</div>
       </div>
 
-      {/* 强势股口径下换成「高标龙头生命周期」视图（2026-09-04）。
-          强势池已收窄成"近60日最高连板>=4"，那批股票该回答的问题不再是
-          "今天谁涨得多"，而是"过去打开过高度的龙头现在处于什么阶段"。
-          涨跌停股池**原样不动**——它的语义没变，仍然是当日涨跌停扫描。 */}
-      {universe === 'strong' ? <LeaderCyclePanel /> : (
+      {/* 生命周期视图 2026-09-07 移到「强势股概览」页——那里才是它的归属：
+          强势池该回答的问题是"过去打开过高度的龙头现在处于什么阶段"，那是
+          概览级的问题，不是股池筛选。
+          这里三个 universe 统一用同一张表，生命周期作为**分组维度**存在
+          （上面的 连板中/修复中/穿越成功… 那排 tab），不再单独换一个视图。 */}
+      {(
       <>
       {/* Tab bar */}
       <div className="flex items-center gap-2 flex-shrink-0">

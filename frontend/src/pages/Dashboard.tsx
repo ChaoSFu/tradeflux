@@ -2,12 +2,8 @@ import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchMarketState, fetchMarketHistory, fetchProfitEffect } from '@/api/marketState'
-import { fetchStrongPool, fetchLeaderCycle } from '@/api/stocks'
-// 分组口径跟活跃股池共用同一份，不在这里另起一套
-import {
-  GROUP_META, LIFECYCLE_ZH, groupByLifecycle, isStale, shownState,
-  type CoreGroup,
-} from '@/lib/lifecycle'
+import { fetchStrongPool } from '@/api/stocks'
+import LeaderCyclePanel from '@/components/stockPool/LeaderCyclePanel'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
@@ -221,28 +217,21 @@ function SectorEffectCard({
 }
 
 /**
- * 强势池的生命周期分布 —— 强势股概览页原来只有板块阶段和情绪分，看不出池子里
- * 那几十只票各自走到哪一步了。
+ * 强势池的生命周期 —— **完整视图，不是摘要**。
  *
- * 分组口径**跟活跃股池完全一致**（都用 lib/lifecycle），不在这里另起一套——
- * 同一份数据在两个页面给出不同分组，是这个仓库刚踩过的坑。
+ * 2026-09-07 从活跃股池搬过来的。强势池该回答的问题是"过去打开过高度的龙头
+ * 现在处于什么阶段"，那是概览级的问题，不是股池筛选；而活跃股池那边生命周期
+ * 仍然作为**分组维度**存在（连板中/修复中/穿越成功…那排 tab），两边不重复。
+ *
+ * 直接挂 LeaderCyclePanel，不在这里重做一个简版——一旦有简版和完整版两套，
+ * 它们迟早显示不一样的数字，这个仓库刚为此栽过。
  */
-function LifecycleSummary() {
-  const { data } = useQuery({
-    queryKey: ['leader-cycle'], queryFn: () => fetchLeaderCycle(),
-    staleTime: 10 * 60 * 1000,
-  })
-  const rows = useMemo(
-    () => [...(data?.running ?? []), ...(data?.broken ?? [])], [data])
-  const g = useMemo(() => groupByLifecycle(rows), [rows])
-  const stale = rows.length > 0 && rows.every((r) => isStale(r))
-  if (!rows.length) return null
-
+function LifecycleSection() {
   return (
-    <div className="card p-4">
+    <div className="space-y-2">
       <div className="flex items-baseline gap-2 flex-wrap">
         <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">
-          生命周期分布
+          生命周期
         </h2>
         <span className="text-[11px] text-text-muted">
           Price Lifecycle v1.1 · 只描述价格结构，不代表交易许可
@@ -251,50 +240,7 @@ function LifecycleSummary() {
           活跃股池 →
         </Link>
       </div>
-      {stale && (
-        <div className="mt-1 text-[11px] text-warn">
-          今日尚未收盘 —— 盘中价不推动跨日生命周期，下面是上一个已结算交易日的状态。
-        </div>
-      )}
-
-      <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
-        {(['core', 'waiting', 'dropped', 'pending'] as CoreGroup[]).map((k) => (
-          <div key={k} className="p-2 rounded bg-bg-elevated">
-            <div className="flex items-baseline gap-1.5">
-              <span className={cn('text-sm',
-                k === 'core' ? 'text-accent' : 'text-text-primary')}>
-                {GROUP_META[k].label}
-              </span>
-              <span className="text-sm font-mono tabular-nums text-text-primary">
-                {g[k].length}
-              </span>
-            </div>
-            <div className="text-[10px] text-text-muted mt-0.5 leading-snug">
-              {GROUP_META[k].hint}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {g.core.length > 0 && (
-        <div className="mt-3">
-          <div className="text-[11px] text-text-muted mb-1">
-            核心观察名单（买点由人确认）
-          </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-            {g.core.map((r) => (
-              <Link key={r.code} to={`/stocks/${r.code}`}
-                    className="text-text-primary hover:text-accent">
-                {r.name || r.code}
-                <span className="ml-1 text-[10px] text-text-muted">
-                  {LIFECYCLE_ZH[shownState(r)]}
-                  {r.days_since_break !== null && ` D+${r.days_since_break}`}
-                </span>
-              </Link>
-            ))}
-          </div>
-        </div>
-      )}
+      <LeaderCyclePanel />
     </div>
   )
 }
@@ -402,7 +348,7 @@ export default function Dashboard() {
 
       {/* 市场状态条已抽到全局 Layout（MarketStateBar），各页顶部统一展示 */}
 
-      <LifecycleSummary />
+      <LifecycleSection />
 
       {/* ════════════════════════════════════════════════════════════════════════
           赚钱效应模块
