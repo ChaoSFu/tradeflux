@@ -9,7 +9,7 @@ import LeaderCyclePanel from '@/components/stockPool/LeaderCyclePanel'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
-import { EmotionChart } from '@/components/charts/EmotionChart'
+import { LifecycleEffectChart } from '@/components/charts/LifecycleEffectChart'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { PhaseTag } from '@/components/common/PhaseTag'
 import { RiskBadge } from '@/components/common/RiskBadge'
@@ -23,7 +23,9 @@ import {
 import { cn } from '@/utils/cn'
 import { TrendingUp, Zap, ChevronDown, ChevronUp, Activity } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { RiskLevel, ProfitEffectGroup, SectorProfitEffect, Stock } from '@/types'
+import type {
+  RiskLevel, ProfitEffectGroup, SectorProfitEffect, Stock, MarketHistoryPoint,
+} from '@/types'
 import { useSectorTags, type SectorTagData } from '@/hooks/useSectorTags'
 import { useDragonStocks } from '@/hooks/useDragonStocks'
 import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
@@ -261,6 +263,23 @@ const HIST_TIEBREAK: Partial<Record<HistKey, HistKey>> = {
   t3: 't3_win', t3_win: 't3',
   t5: 't5_win', t5_win: 't5',
 }
+
+/**
+ * 逐日赚钱效应曲线。跟 LifecycleEffect 共用 ['lifecycle-effect'] 这一次请求——
+ * series 和 cohorts 本来就是同一个接口算出来的。
+ */
+function LifecycleSeries({ history }: { history: MarketHistoryPoint[] }) {
+  const q = useQuery({
+    queryKey: ['lifecycle-effect'], queryFn: fetchLifecycleEffect,
+    staleTime: 10 * 60 * 1000,
+  })
+  if (q.isPending) return <LoadingSpinner />
+  if (q.error) {
+    return <div className="text-center text-warn text-xs py-10">数据获取失败</div>
+  }
+  return <LifecycleEffectChart series={q.data?.series ?? []} history={history} />
+}
+
 
 function LifecycleEffect() {
   const { data } = useQuery({
@@ -967,15 +986,21 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* ── 情绪曲线 ── */}
-              <div className="card p-3 h-52">
-                {loadingHistory ? (
-                  <LoadingSpinner />
-                ) : history?.length ? (
-                  <EmotionChart data={history} />
-                ) : (
-                  <div className="text-center text-text-muted text-sm py-10">暂无历史数据</div>
-                )}
+              {/* ── 逐日赚钱效应：**按生命周期状态分组** ──
+                  换掉旧的四条（昨日涨停龙头/震荡/走弱/破位）。那四组按
+                  Stock.phase 分，而 phase 只是"收盘价在哪条均线下面"的单日
+                  快照——一只刚断板正在修复的票和一只连跌十天的老龙都可能被叫
+                  「震荡龙头」，分出来的组回答不了任何问题。 */}
+              <div className="card p-3">
+                <div className="flex items-baseline justify-between flex-wrap gap-2 mb-1">
+                  <span className="text-xs font-semibold text-text-primary">
+                    逐日赚钱效应 · 按生命周期
+                  </span>
+                  <span className="text-[10px] text-text-muted">
+                    每条线 = 昨天处于该状态的票，今天的<span className="text-text-secondary">平均</span>涨幅
+                  </span>
+                </div>
+                <LifecycleSeries history={history ?? []} />
               </div>
 
               {/* ── 分组赚钱效应：**按生命周期分组** ──

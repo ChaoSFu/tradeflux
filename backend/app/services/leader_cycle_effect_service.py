@@ -79,7 +79,7 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     ]
     rows = db.query(LeaderCycleSnapshot).all()
     if not rows:
-        return {"as_of": None, "prev": None, "cohorts": [], "history": [],
+        return {"as_of": None, "prev": None, "cohorts": [], "history": [], "series": [],
                 "formula_version": FORMULA_VERSION,
                 "notes": ["暂无生命周期快照", *base_notes]}
 
@@ -95,7 +95,7 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     if not cal:
         # 没日历就没法判"相邻交易日"，状态机会停在原地——如实说，不硬算
         notes.append("拿不到交易日历，生命周期无法推进")
-        return {"as_of": as_of, "prev": None, "cohorts": [], "history": [],
+        return {"as_of": as_of, "prev": None, "cohorts": [], "history": [], "series": [],
                 "formula_version": FORMULA_VERSION, "notes": notes + base_notes}
 
     # ── 收盘价：只排除**最新日期上**未结算的行 ──────────────────────────
@@ -162,6 +162,10 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     # ── 历史前瞻：过去 N 天所有该状态的股票日 → 之后 T+h ──────────────
     window = [d for d in dates if d <= as_of][-history_days:]
     fwd: Dict[str, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
+    # 逐日赚钱效应：**昨天处于某状态的票，今天的平均涨幅**。
+    # 顺着 h=1 那一趟顺手攒起来，不额外 replay 一遍——replay 是这里最贵的一步。
+    # 归到 nd（收益发生的那天），所以图上 09-07 那一点读作"昨天该状态的票今天涨了多少"
+    daily: Dict[date, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
     for d in window:
         for code, st in _states_on(snaps, d, cal).items():
             for h in HORIZONS:
@@ -169,8 +173,11 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
                 if nd is None:
                     continue          # 窗口没走完，不用"目前为止"顶替
                 r = _ret(code, d, nd)
-                if r is not None:
-                    fwd[st][h].append(r)
+                if r is None:
+                    continue
+                fwd[st][h].append(r)
+                if h == 1:
+                    daily[nd][st].append(r)
     history = []
     for st, per_h in fwd.items():
         item = {"state": st}
@@ -183,5 +190,16 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
         history.append(item)
     history.sort(key=lambda x: -(x.get("t1_n") or 0))
 
+    # **均值不是中位数。** 这条线要跟旧的「强势股均涨幅」可比，那条一直是均值；
+    # 而且"昨日该状态的票今天平均涨了多少"本来问的就是均值。
+    # n 一起给出去——n=1 的那天是一只票的涨幅，画成线看着跟 n=20 一样权威
+    series = [
+        {"trade_date": d.isoformat(),
+         "values": {st: {"avg": round(sum(v) / len(v), 2), "n": len(v)}
+                    for st, v in per_state.items() if v}}
+        for d, per_state in sorted(daily.items())
+    ]
+
     return {"as_of": as_of, "prev": prev, "formula_version": FORMULA_VERSION,
-            "cohorts": cohorts, "history": history, "notes": notes + base_notes}
+            "cohorts": cohorts, "history": history, "series": series,
+            "notes": notes + base_notes}

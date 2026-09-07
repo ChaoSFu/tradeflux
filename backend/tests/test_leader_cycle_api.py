@@ -452,3 +452,63 @@ class TestSettledCaliberIsShared:
         from app.services import leader_cycle_effect_service as m
         assert "没标 is_settled" in self._src(m), \
             "口径的代价要跟数字一起走，不能只写在注释里"
+
+
+class TestDailySeries:
+    """
+    逐日赚钱效应：**昨天处于某状态的票，今天的平均涨幅**。
+
+    这条曲线换掉了旧的四条（昨日涨停龙头/震荡/走弱/破位）——那四组按 Stock.phase
+    分，而 phase 只是"收盘价在哪条均线下面"的单日快照。
+
+    这里要钉住三件事：**归到收益发生的那天**（不是状态所在那天）、**用均值**
+    （要跟「强势股均涨幅」可比）、**没有该状态的票时那天没有这个 key**（不是 0）。
+    """
+
+    def _setup(self, db):
+        from datetime import date as d
+        from app.services.trading_calendar import _write_cache
+        days = [d(2026, 9, i) for i in (1, 2, 3, 4)]
+        _write_cache(db, days)
+        return days
+
+    def _mk(self, db, code, days, closes, *, break_on=None):
+        st = _stock(db, code)
+        for i, day in enumerate(days):
+            db.add(StockDailySnapshot(stock_id=st.id, date=day, close_price=closes[i],
+                                      is_settled=True))
+            db.add(LeaderCycleSnapshot(
+                stock_id=st.id, stock_code=code, date=day, board_count_60d=5,
+                cycle_start_date=days[0], cycle_peak_date=days[0], peak_board_count=5,
+                latest_close=closes[i], data_fresh=True, bar_settled=True,
+                break_date=break_on, days_since_break=(0 if break_on else None)))
+        return st
+
+    def test_归到收益发生的那天并用均值(self, db):
+        from app.services.leader_cycle_effect_service import compute_effect
+        days = self._setup(db)
+        # 两只票同状态，涨幅不同 → 那天该状态取均值
+        self._mk(db, "600001", days, [10.0, 11.0, 11.0, 11.0])   # 09-02 +10%
+        self._mk(db, "600002", days, [10.0, 10.0, 10.0, 10.0])   # 09-02  0%
+        db.commit()
+        r = compute_effect(db, days[-1])
+        by_date = {p["trade_date"]: p["values"] for p in r["series"]}
+        assert "2026-09-02" in by_date, "收益发生在 09-02，就该归到 09-02"
+        vals = list(by_date["2026-09-02"].values())
+        assert len(vals) == 1 and vals[0]["n"] == 2
+        assert vals[0]["avg"] == 5.0, "(+10% + 0%) / 2 —— 均值，不是中位数"
+
+    def test_没有该状态的票时那天没有这个key(self, db):
+        """**不是 0。** 0 会被读成"那天这组不赚不亏"。"""
+        from app.services.leader_cycle_effect_service import compute_effect
+        days = self._setup(db)
+        self._mk(db, "600003", days, [10.0, 10.5, 10.5, 10.5])
+        db.commit()
+        r = compute_effect(db, days[-1])
+        states = {s for p in r["series"] for s in p["values"]}
+        assert "CROSS_FAILED" not in states, "没有的状态不能凭空出现一条 0 的线"
+
+    def test_没有数据时给空列表不给假点(self, db):
+        from app.services.leader_cycle_effect_service import compute_effect
+        r = compute_effect(db, None)
+        assert r["series"] == []

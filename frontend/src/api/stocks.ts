@@ -165,11 +165,20 @@ export interface LifecycleForward {
   t5: number | null; t5_n: number; t5_win: number | null
 }
 
+/** 某一天、某个状态的逐日赚钱效应。**avg 是均值,不是中位数** */
+export interface LifecycleSeriesPoint {
+  trade_date: string
+  /** state → { avg, n }。当天没有该状态的票时这个 key 就不存在（不是 0） */
+  values: Record<string, { avg: number; n: number }>
+}
+
 export interface LifecycleEffectResponse {
   as_of: string | null
   prev: string | null
   formula_version: string
   cohorts: LifecycleCohort[]
+  /** 逐日：昨天处于某状态的票，今天的平均涨幅 */
+  series: LifecycleSeriesPoint[]
   /** 历史前瞻。**只是线索不是结论**——没做同日同池对照，也没有置信区间 */
   history: LifecycleForward[]
   notes: string[]
