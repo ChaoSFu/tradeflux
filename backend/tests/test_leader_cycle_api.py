@@ -568,3 +568,64 @@ class TestEffectQueryScope:
         r = compute_effect(db, days[-1])
         assert r["series"], "收窄之后还得算得出东西来"
         assert all(p["values"] for p in r["series"])
+
+
+class TestSnapshotWindowScope:
+    """
+    生命周期快照也只加载**算得到窗口所需**的行。
+
+    这张表每个交易日给池内每只票写一行（~60 行/天），而窗口固定 60 天——整表
+    加载的成本随时间线性增长，窗口却不变。2026-09-07 实测 3725 行（06-11 起），
+    刚好约等于窗口；半年后表就是窗口的三倍。**已知是问题就先解决。**
+
+    截断的安全性论证（这条比省内存重要）：新周期时状态机做 `obs = [row]` +
+    `_initial_state(row)`，并把 ever_success 归零——**某天的状态只取决于它所在
+    那个周期的行**。所以下界取「窗口内各行的最早 cycle_start_date」，窗口里每
+    一天的 state / last_valid_state 逐位不变。
+    """
+
+    def _src(self):
+        import pathlib
+        from app.services import leader_cycle_effect_service as m
+        return pathlib.Path(m.__file__).read_text(encoding="utf-8")
+
+    def test_不整表加载生命周期快照(self):
+        src = self._src()
+        assert "db.query(LeaderCycleSnapshot).all()" not in src
+        assert "LeaderCycleSnapshot.date >= lower" in src
+
+    def test_下界考虑周期起点而不是直接砍到窗口(self):
+        """直接砍到 win_start 会让跨窗口边界的周期少掉前半段，状态就变了。"""
+        src = self._src()
+        assert "min(LeaderCycleSnapshot.cycle_start_date)" in src
+        assert "min(_win_start, _min_cycle)" in src
+
+    def test_跨窗口边界的周期状态不变(self, db):
+        """
+        造一段：周期从窗口**之前**开始，一直延续到窗口内。
+        history_days=2 把窗口压到最后两天，下界必须回退到 cycle_start。
+        """
+        from datetime import date as d
+        from app.services.leader_cycle_effect_service import compute_effect
+        from app.services.trading_calendar import _write_cache
+        days = [d(2026, 9, i) for i in (1, 2, 3, 4)]
+        _write_cache(db, days)
+        st = _stock(db, "600098")
+        for i, day in enumerate(days):
+            db.add(StockDailySnapshot(stock_id=st.id, date=day,
+                                      close_price=10.0 + i, is_settled=True))
+            db.add(LeaderCycleSnapshot(
+                stock_id=st.id, stock_code=st.code, date=day, board_count_60d=5,
+                cycle_start_date=days[0], cycle_peak_date=days[0], peak_board_count=5,
+                latest_close=10.0 + i, ma5=9.0, ma10=8.0, ma20=7.0, ma30=6.0,
+                data_fresh=True, bar_settled=True, days_since_break=i))
+        db.commit()
+
+        full = compute_effect(db, days[-1], history_days=60)
+        clipped = compute_effect(db, days[-1], history_days=2)
+        # 窗口重叠的那几天，状态必须一模一样
+        f = {p["trade_date"]: p["values"] for p in full["series"]}
+        c = {p["trade_date"]: p["values"] for p in clipped["series"]}
+        for day in c:
+            assert f.get(day) == c[day], f"{day} 截断之后状态变了：{f.get(day)} != {c[day]}"
+        assert c, "窗口压到 2 天之后还得算得出东西"

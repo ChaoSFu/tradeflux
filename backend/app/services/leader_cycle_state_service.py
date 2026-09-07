@@ -58,7 +58,7 @@ MA5/10/20/30 穿越是公认口径，不是我们自造的。但**次数**是拍
 """
 from dataclasses import dataclass, field
 from datetime import date
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 # 口径版本。**状态函数一改就必须动它**——不是 UI 改动才不用动。
 # 2026-09-06 从 price_v1 升到 price_v1_1：BROKEN 从"可无限停留"变成"D+2 必须
@@ -449,6 +449,150 @@ def _initial_state(row) -> tuple:
     return BROKEN, ["FIRST_BREAK"]
 
 
+@dataclass
+class _Walk:
+    """一只票 replay 到某一行为止的内部记忆。**只被 _step / _finish 碰。**"""
+    obs: List = field(default_factory=list)
+    state: Optional[str] = None
+    prev_state: Optional[str] = None
+    since: Optional[date] = None
+    codes: List[str] = field(default_factory=lambda: ["HOLD"])
+    entry_codes: List[str] = field(default_factory=list)
+    ever_success: bool = False
+    last_ok: Optional[date] = None          # 最近一个可用 observation 的日期
+    first_success: Optional[date] = None
+    cycle: Optional[tuple] = None
+    transitioned_on: Optional[date] = None
+
+
+def _step(w: _Walk, row, trading_days) -> None:
+    """吃掉一行，把记忆往前推一格。不可用的行不推进——见下面的注释。"""
+    # 停牌 / 数据缺口 / 盘中未结算的行不进 obs，于是它们**不会凭空制造一次
+    # below-MA observation**，也跨不过去假装「连续两日」
+    if not _usable(row):
+        return
+    cid = _cycle_id(row)
+    if w.state is None or cid != w.cycle:
+        # 新周期 → 整个状态机 reset。上一轮的 FADED / CROSS_FAILED 不能继承，
+        # FADED 只在「当前这段 cycle」里是 terminal
+        new_state, new_codes = _initial_state(row)
+        if w.state is not None:
+            new_codes = ["NEW_CYCLE"] + new_codes
+            w.ever_success, w.first_success = False, None
+        w.cycle = cid
+        w.obs = [row]
+        w.last_ok = row.date
+        w.state, w.prev_state, w.since, w.codes = new_state, w.state, row.date, new_codes
+        w.entry_codes = new_codes
+        w.transitioned_on = row.date
+        return
+
+    w.obs.append(row)
+    w.last_ok = row.date
+    nxt, new_codes = _advance(w.state, w.obs, trading_days)
+    if nxt != w.state:
+        w.prev_state, w.state, w.since = w.state, nxt, row.date
+        w.transitioned_on = row.date
+        w.codes = w.entry_codes = new_codes
+        if nxt == CROSS_SUCCESS and not w.ever_success:
+            w.ever_success, w.first_success = True, row.date
+    else:
+        w.codes = new_codes
+
+
+def _finish(w: _Walk, last_row, as_of_date: date,
+            trading_days, formula_version: str) -> DayState:
+    """把记忆收成 as_of_date 那天的 DayState。`last_row` = 最后一行 <= as_of。"""
+    if last_row is None:
+        return DayState(date=as_of_date, state=UNKNOWN,
+                        reason_codes=["HISTORY_GAP"], evaluation_status="INSUFFICIENT",
+                        formula_version=formula_version)
+
+    if w.state is None:
+        # 一行都不可用：有历史但全是停牌 / 未结算 / 陈值 / 压根没有周期
+        why = _why_unusable(last_row)
+        return DayState(date=as_of_date,
+                        state=(NO_CYCLE if why == "NO_CYCLE" else UNKNOWN),
+                        reason_codes=[why], evaluation_status=_eval_status(last_row),
+                        formula_version=formula_version)
+
+    today = last_row
+    if not _usable(today) or today.date != as_of_date:
+        # **今天的事实不足以判断**。展示 UNKNOWN，但内部记忆保留——事实重新完整
+        # 之后继续从最近一次有效状态推进，UNKNOWN 不永久污染 lifecycle memory
+        _why = _why_unusable(today) if today.date == as_of_date else "DATA_STALE"
+        return DayState(
+            # 周期没了（比如整段连板滑出 60 日窗口）跟"今天判不出来"是两回事
+            date=as_of_date, state=(NO_CYCLE if _why == "NO_CYCLE" else UNKNOWN),
+            # **不是 state。** 曾经这里写的是 previous_state=state，于是盘前
+            # 未结算时"上一个状态"和展示出来的状态完全一样，整列变成复读机。
+            # 这个字段现在只有一个意思：last_valid_state 之前的那一个状态
+            previous_state=w.prev_state,
+            last_valid_state=w.state, last_valid_date=w.last_ok,
+            days_in_state=_sessions_between(trading_days, w.since, w.last_ok),
+            state_since_date=w.since, transitioned_today=False,
+            reason_codes=[_why], entry_reason_codes=w.entry_codes,
+            evaluation_status=(_eval_status(today) if today.date == as_of_date
+                               else "STALE"),
+            formula_version=formula_version,
+            ever_cross_success=w.ever_success, first_cross_success_date=w.first_success)
+
+    return DayState(
+        date=as_of_date, state=w.state, previous_state=w.prev_state,
+        last_valid_state=w.state, last_valid_date=today.date,
+        days_in_state=_sessions_between(trading_days, w.since, today.date),
+        state_since_date=w.since, transitioned_today=(w.transitioned_on == as_of_date),
+        reason_codes=w.codes, entry_reason_codes=w.entry_codes,
+        evaluation_status="OK", formula_version=formula_version,
+        ever_cross_success=w.ever_success, first_cross_success_date=w.first_success)
+
+
+def _check_version(formula_version: str) -> None:
+    if formula_version != FORMULA_VERSION:
+        known = ("（历史版本：" + "、".join(KNOWN_VERSIONS[1:]) + "，本模块不再实现）"
+                 if formula_version in KNOWN_VERSIONS else "")
+        raise ValueError(f"口径版本 {formula_version} 与本模块实现的 "
+                         f"{FORMULA_VERSION} 不一致{known}。换口径要显式改，"
+                         "不能静默按另一套规则算")
+
+
+def replay_series(snapshots, dates: Sequence[date],
+                  trading_days: Optional[Sequence[date]] = None,
+                  formula_version: str = FORMULA_VERSION) -> Dict[date, DayState]:
+    """
+    一趟走完，产出**多个日期**各自的状态。
+
+    ## 为什么要它
+
+    调用方原来对窗口里的每一天各调一次 `replay_price_lifecycle`，而那个函数每次
+    都从周期起点重新推一遍——59 只票 × 60 天 = 3540 次 replay，总步数是 O(天²)。
+    2026-09-07 实测 `/leader-cycle/effect` 0.9 秒，大头就在这儿。
+
+    状态机本来就是顺着行往前推的，只是每次都从头再推一遍。这里把"推"和"收尾"
+    拆开（`_step` / `_finish`），行只走一趟，每到一个要的日期就收一次尾。
+
+    ## 它跟 replay_price_lifecycle 是同一套实现
+
+    `replay_price_lifecycle` 现在就是 `replay_series(…, [as_of])[as_of]`。
+    **不是两份代码**——这个仓库为「同一个事实两套判定」栽过 10 次，不能在最不能
+    出错的这块再造一份。
+
+    look-ahead guard 不变：算 d 那天只吃 `date <= d` 的行。
+    """
+    _check_version(formula_version)
+    want = sorted(set(dates))
+    rows = sorted(snapshots, key=lambda r: r.date)
+    out: Dict[date, DayState] = {}
+    w, i, last_row = _Walk(), 0, None
+    for d in want:
+        while i < len(rows) and rows[i].date <= d:
+            last_row = rows[i]
+            _step(w, last_row, trading_days)
+            i += 1
+        out[d] = _finish(w, last_row, d, trading_days, formula_version)
+    return out
+
+
 def replay_price_lifecycle(snapshots, as_of_date: date,
                            trading_days: Optional[Sequence[date]] = None,
                            formula_version: str = FORMULA_VERSION) -> DayState:
@@ -465,104 +609,10 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
     `trading_days` 是观测日历（升序）。「连续两个 observation」的规则**只有拿到它
     才会触发**：过滤掉不可用行之后两行相邻，不等于两个交易日相邻，中间那天可能是
     停牌也可能是数据缺口，在这一层分不出来。不传就一律证明不了，保守不触发。
+
+    要一次拿多天用 `replay_series`——它才是原语，这里只是取其中一天。
     """
-    if formula_version != FORMULA_VERSION:
-        known = ("（历史版本：" + "、".join(KNOWN_VERSIONS[1:]) + "，本模块不再实现）"
-                 if formula_version in KNOWN_VERSIONS else "")
-        raise ValueError(f"口径版本 {formula_version} 与本模块实现的 "
-                         f"{FORMULA_VERSION} 不一致{known}。换口径要显式改，"
-                         "不能静默按另一套规则算")
-
-    rows = sorted((r for r in snapshots if r.date <= as_of_date),
-                  key=lambda r: r.date)
-    if not rows:
-        return DayState(date=as_of_date, state=UNKNOWN,
-                        reason_codes=["HISTORY_GAP"], evaluation_status="INSUFFICIENT",
-                        formula_version=formula_version)
-
-    # 只保留能用来推进的 observation。停牌 / 数据缺口 / 盘中未结算的行不在序列里，
-    # 于是它们**不会凭空制造一次 below-MA observation**，也跨不过去假装「连续两日」
-    obs: List = []
-    state: Optional[str] = None
-    prev_state: Optional[str] = None
-    since: Optional[date] = None
-    codes: List[str] = ["HOLD"]
-    entry_codes: List[str] = []
-    ever_success = False
-    last_ok: Optional[date] = None      # 最近一个可用 observation 的日期
-    first_success: Optional[date] = None
-    cycle: Optional[tuple] = None
-    transitioned_on: Optional[date] = None
-
-    for row in rows:
-        if not _usable(row):
-            continue
-        cid = _cycle_id(row)
-        if state is None or cid != cycle:
-            # 新周期 → 整个状态机 reset。上一轮的 FADED / CROSS_FAILED 不能继承，
-            # FADED 只在「当前这段 cycle」里是 terminal
-            new_state, new_codes = _initial_state(row)
-            if state is not None:
-                new_codes = ["NEW_CYCLE"] + new_codes
-                ever_success, first_success = False, None
-            cycle = cid
-            obs = [row]
-            last_ok = row.date
-            state, prev_state, since, codes = new_state, state, row.date, new_codes
-            entry_codes = new_codes
-            transitioned_on = row.date
-            continue
-
-        obs.append(row)
-        last_ok = row.date
-        nxt, new_codes = _advance(state, obs, trading_days)
-        if nxt != state:
-            prev_state, state, since = state, nxt, row.date
-            transitioned_on = row.date
-            codes = entry_codes = new_codes
-            if nxt == CROSS_SUCCESS and not ever_success:
-                ever_success, first_success = True, row.date
-        else:
-            codes = new_codes
-
-    if state is None:
-        # 一行都不可用：有历史但全是停牌 / 未结算 / 陈值 / 压根没有周期
-        last = rows[-1]
-        why = _why_unusable(last)
-        return DayState(date=as_of_date,
-                        state=(NO_CYCLE if why == "NO_CYCLE" else UNKNOWN),
-                        reason_codes=[why], evaluation_status=_eval_status(last),
-                        formula_version=formula_version)
-
-    today = rows[-1]
-    if not _usable(today) or today.date != as_of_date:
-        # **今天的事实不足以判断**。展示 UNKNOWN，但内部记忆保留——事实重新完整
-        # 之后继续从最近一次有效状态推进，UNKNOWN 不永久污染 lifecycle memory
-        _why = _why_unusable(today) if today.date == as_of_date else "DATA_STALE"
-        return DayState(
-            # 周期没了（比如整段连板滑出 60 日窗口）跟"今天判不出来"是两回事
-            date=as_of_date, state=(NO_CYCLE if _why == "NO_CYCLE" else UNKNOWN),
-            # **不是 state。** 曾经这里写的是 previous_state=state，于是盘前
-            # 未结算时"上一个状态"和展示出来的状态完全一样，整列变成复读机。
-            # 这个字段现在只有一个意思：last_valid_state 之前的那一个状态
-            previous_state=prev_state,
-            last_valid_state=state, last_valid_date=last_ok,
-            days_in_state=_sessions_between(trading_days, since, last_ok),
-            state_since_date=since, transitioned_today=False,
-            reason_codes=[_why], entry_reason_codes=entry_codes,
-            evaluation_status=(_eval_status(today) if today.date == as_of_date
-                               else "STALE"),
-            formula_version=formula_version,
-            ever_cross_success=ever_success, first_cross_success_date=first_success)
-
-    return DayState(
-        date=as_of_date, state=state, previous_state=prev_state,
-        last_valid_state=state, last_valid_date=today.date,
-        days_in_state=_sessions_between(trading_days, since, today.date),
-        state_since_date=since, transitioned_today=(transitioned_on == as_of_date),
-        reason_codes=codes, entry_reason_codes=entry_codes,
-        evaluation_status="OK", formula_version=formula_version,
-        ever_cross_success=ever_success, first_cross_success_date=first_success)
+    return replay_series(snapshots, [as_of_date], trading_days, formula_version)[as_of_date]
 
 
 def _why_unusable(row) -> str:

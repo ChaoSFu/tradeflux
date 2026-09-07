@@ -34,12 +34,13 @@ from datetime import date
 from statistics import median
 from typing import Dict, List, Optional
 
+from sqlalchemy import func as sqlfunc
 from sqlalchemy.orm import Session
 
 from ..models.leader_cycle import LeaderCycleSnapshot
 from ..models.stock import Stock, StockDailySnapshot
 from ..services.leader_cycle_state_service import (
-    FORMULA_VERSION, replay_price_lifecycle,
+    FORMULA_VERSION, replay_series,
 )
 from ..services.trading_calendar import get_trading_days
 
@@ -49,15 +50,25 @@ HORIZONS = (1, 3, 5)
 MIN_N = 5
 
 
-def _states_on(snaps_by_code: Dict[str, list], d: date, cal: List[date]) -> Dict[str, str]:
-    """某一天每只票的生命周期状态。**只喂 <= d 的行**，这就是 look-ahead guard。"""
-    out: Dict[str, str] = {}
+def _states_by_date(snaps_by_code: Dict[str, list], days: List[date],
+                    cal: List[date]) -> Dict[date, Dict[str, str]]:
+    """
+    {日期: {代码: 状态}}。**每只票只 replay 一趟**。
+
+    原来是对窗口里的每一天各调一次 `replay_price_lifecycle`，而那个函数每次都从
+    周期起点重新推——59 只 × 60 天 = 3540 次 replay，总步数 O(天²)。
+    2026-09-07 实测这个接口 0.9 秒，大头就在这儿。
+    `replay_series` 一趟走完产出所有要的日期，同一套实现（见它的 docstring）。
+
+    look-ahead guard 不变：算 d 那天只吃 `date <= d` 的行。
+    """
+    out: Dict[date, Dict[str, str]] = {d: {} for d in days}
     for code, rows in snaps_by_code.items():
-        s = replay_price_lifecycle(rows, d, trading_days=cal)
-        # 当日判不出来时用最近一次有效状态——跟界面同一个口径
-        st = s.state if s.state not in ("UNKNOWN",) else s.last_valid_state
-        if st:
-            out[code] = st
+        for d, s in replay_series(rows, days, trading_days=cal).items():
+            # 当日判不出来时用最近一次有效状态——跟界面同一个口径
+            st = s.state if s.state not in ("UNKNOWN",) else s.last_valid_state
+            if st:
+                out[d][code] = st
     return out
 
 
@@ -77,17 +88,45 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
         "多数状态的区间是跨 0 的——要下结论用 scripts/evaluate_lifecycle.py。",
         "只统计已结算的收盘价，盘中价不计入。",
     ]
-    rows = db.query(LeaderCycleSnapshot).all()
-    if not rows:
+    # ── 只加载**算得到窗口所需**的行，不是整表 ──────────────────────────
+    # 这张表每个交易日给池内每只票写一行（~60 行/天），而窗口固定 60 天。
+    # 整表加载的成本随时间线性增长，窗口却不变——2026-09-07 实测 3725 行
+    # （06-11 起）刚好约等于窗口，所以今天省不了多少；但半年后表是窗口的三倍。
+    # **已知是问题就先解决，不等它长出来。**
+    #
+    # 截到哪一天才安全：新周期时状态机做 `obs = [row]` + `_initial_state(row)`，
+    # 并把 ever_success 归零——**某天的状态只取决于它所在那个周期的行**。所以
+    # 下界取「窗口内各行的最早 cycle_start_date」，窗口里每一天的 state /
+    # last_valid_state 逐位不变。
+    #
+    # 会变的是 `previous_state`（最早那个周期看不到它的前一个状态）和
+    # reason_codes 里的 NEW_CYCLE——**这两样本函数一个都不读**。/leader-cycle
+    # 那边要读 previous_state，但它走自己的查询，不受这里影响。
+    dates = [d for (d,) in db.query(LeaderCycleSnapshot.date).distinct()
+             .order_by(LeaderCycleSnapshot.date).all()]
+    if not dates:
         return {"as_of": None, "prev": None, "cohorts": [], "history": [], "series": [],
                 "formula_version": FORMULA_VERSION,
                 "notes": ["暂无生命周期快照", *base_notes]}
+    as_of = trade_date or dates[-1]
+    _win = [d for d in dates if d <= as_of][-history_days:]
+    _win_start = _win[0] if _win else as_of
+    _min_cycle = (db.query(sqlfunc.min(LeaderCycleSnapshot.cycle_start_date))
+                  .filter(LeaderCycleSnapshot.date >= _win_start,
+                          LeaderCycleSnapshot.date <= as_of).scalar())
+    lower = min(_win_start, _min_cycle) if _min_cycle else _win_start
+
+    rows = (db.query(LeaderCycleSnapshot)
+            .filter(LeaderCycleSnapshot.date >= lower,
+                    LeaderCycleSnapshot.date <= as_of).all())
+    if not rows:
+        return {"as_of": as_of, "prev": None, "cohorts": [], "history": [], "series": [],
+                "formula_version": FORMULA_VERSION,
+                "notes": ["窗口内没有生命周期快照", *base_notes]}
 
     snaps: Dict[str, list] = defaultdict(list)
     for r in rows:
         snaps[r.stock_code].append(r)
-    dates = sorted({r.date for r in rows})
-    as_of = trade_date or dates[-1]
 
     cal_all = get_trading_days(db, need_through=as_of) or []
     cal = [d for d in cal_all if d <= as_of]
@@ -159,14 +198,20 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
             return None
         return cal[i + n] if 0 <= i + n < len(cal) else None
 
-    # ── 当日 cohort：昨天的状态 → 今天的表现 ────────────────────────────
+    # ── 状态：**每只票一趟 replay，把窗口和 prev 一次算齐** ──────────────
+    # 下面两处（当日 cohort、历史前瞻）用的是同一批日期，没有理由算两遍
+    window = [d for d in dates if d <= as_of][-history_days:]
     prev = _nth(as_of, -1)
+    need_days = sorted(set(window) | ({prev} if prev else set()))
+    states = _states_by_date(snaps, need_days, cal) if need_days else {}
+
+    # ── 当日 cohort：昨天的状态 → 今天的表现 ────────────────────────────
     cohorts = []
     if prev is None:
         notes.append("没有上一个交易日，当日 cohort 无法计算")
     else:
         by_state: Dict[str, List[float]] = defaultdict(list)
-        for code, st in _states_on(snaps, prev, cal).items():
+        for code, st in (states.get(prev) or {}).items():
             r = _ret(code, prev, as_of)
             if r is not None:
                 by_state[st].append(r)
@@ -181,14 +226,13 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
         cohorts.sort(key=lambda c: -c["count"])
 
     # ── 历史前瞻：过去 N 天所有该状态的股票日 → 之后 T+h ──────────────
-    window = [d for d in dates if d <= as_of][-history_days:]
     fwd: Dict[str, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
     # 逐日赚钱效应：**昨天处于某状态的票，今天的平均涨幅**。
     # 顺着 h=1 那一趟顺手攒起来，不额外 replay 一遍——replay 是这里最贵的一步。
     # 归到 nd（收益发生的那天），所以图上 09-07 那一点读作"昨天该状态的票今天涨了多少"
     daily: Dict[date, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
     for d in window:
-        for code, st in _states_on(snaps, d, cal).items():
+        for code, st in (states.get(d) or {}).items():
             for h in HORIZONS:
                 nd = _nth(d, h)
                 if nd is None:

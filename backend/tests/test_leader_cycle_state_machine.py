@@ -721,3 +721,68 @@ class TestDaysInState:
         s = _replay(rows)
         assert s.state == UNKNOWN
         assert s.days_in_state == 0, "算到最后一个已结算日，不把未结算那天算进去"
+
+
+class TestReplaySeries:
+    """
+    `replay_series` 一趟走完产出多天，`replay_price_lifecycle` 是它取其中一天。
+
+    **必须逐日等价。** 这是全仓库最不能出错的一块，而"一次算一天"和"一趟算多天"
+    正是最容易分叉成两套实现的地方——这个仓库为「同一个事实两套判定」栽过 10 次。
+    所以这里不测"算得对"（那是上面几十条用例的事），只测**两条路径给出同一个答案**。
+    """
+
+    def _seq(self):
+        """一段跨了新周期、有缺口、有未结算的序列——把各条分支都走一遍。"""
+        rows = _to_success() + [
+            Row(3, 22.5, ma5=19.6, ma10=18.5, ma20=17.0, ma30=16.0, days_since_break=3),
+            Row(4, 15.0, ma5=19.8, ma10=19.0, ma20=17.0, ma30=16.0, days_since_break=4),
+            Row(5, 14.0, ma5=19.0, ma10=18.0, ma20=17.0, ma30=16.0,
+                days_since_break=5, fresh=False),           # 数据缺口
+            Row(6, 14.5, ma5=18.0, ma10=17.5, ma20=17.0, ma30=16.0, days_since_break=6),
+            Row(7, 30.0, ma5=25.0, ma10=22.0, ma20=20.0, ma30=18.0,
+                break_date=None, days_since_break=None,
+                cycle_start=D0 + timedelta(days=7),          # 新周期
+                cycle_peak=D0 + timedelta(days=7)),
+            Row(8, 31.0, ma5=26.0, ma10=23.0, ma20=20.0, ma30=18.0,
+                break_date=None, days_since_break=None,
+                cycle_start=D0 + timedelta(days=7),
+                cycle_peak=D0 + timedelta(days=7), settled=False),   # 未结算
+        ]
+        return rows
+
+    def test_逐日与单日完全一致(self):
+        from app.services.leader_cycle_state_service import replay_series
+        rows = self._seq()
+        days = [r.date for r in rows]
+        series = replay_series(rows, days, trading_days=CAL)
+        for d in days:
+            one = _replay(rows, as_of=d)
+            got = series[d]
+            assert got == one, f"{d} 两条路径给出不同结果：{got} != {one}"
+
+    def test_也覆盖没有行的日期(self):
+        """窗口里可能有这只票压根没有快照的日子——两条路径都该给 DATA_STALE。"""
+        from app.services.leader_cycle_state_service import replay_series
+        rows = self._seq()
+        gap = rows[-1].date + timedelta(days=1)
+        assert replay_series(rows, [gap], trading_days=CAL)[gap] == _replay(rows, as_of=gap)
+
+    def test_请求日期乱序也不影响结果(self):
+        """内部靠指针往前走，**调用方给的顺序不能改变答案**。"""
+        from app.services.leader_cycle_state_service import replay_series
+        rows = self._seq()
+        days = [r.date for r in rows]
+        a = replay_series(rows, days, trading_days=CAL)
+        b = replay_series(rows, list(reversed(days)), trading_days=CAL)
+        assert a == b
+
+    def test_look_ahead_guard仍然成立(self):
+        """算 d 那天只能吃 date <= d 的行。改了后面的数据不能让前面的状态变。"""
+        from app.services.leader_cycle_state_service import replay_series
+        rows = self._seq()
+        d = rows[2].date
+        before = replay_series(rows, [d], trading_days=CAL)[d]
+        tampered = rows + [Row(20, 999.0, ma5=1.0, ma10=1.0, ma20=1.0, ma30=1.0,
+                               days_since_break=20)]
+        assert replay_series(tampered, [d], trading_days=CAL)[d] == before
