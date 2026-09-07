@@ -8,7 +8,7 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { fetchMarketTrend } from '@/api/marketTrend'
-import { fetchSectors } from '@/api/sectors'
+import { fetchSectors, SECTORS_LITE_KEY } from '@/api/sectors'
 import { fetchLeaderCycle } from '@/api/stocks'
 import { fetchRegulatoryWatchlist } from '@/api/watchlist'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
@@ -23,7 +23,7 @@ const Q = { staleTime: 10 * 60 * 1000 }
 
 export default function TradingConsole() {
   const market = useQuery({ queryKey: ['market-trend'], queryFn: () => fetchMarketTrend(), ...Q })
-  const sectors = useQuery({ queryKey: ['sectors'], queryFn: fetchSectors, ...Q })
+  const sectors = useQuery({ queryKey: [...SECTORS_LITE_KEY], queryFn: () => fetchSectors(false), ...Q })
   const cycle = useQuery({ queryKey: ['leader-cycle'], queryFn: () => fetchLeaderCycle(), ...Q })
   const reg = useQuery({ queryKey: ['regulatory-watchlist'], queryFn: fetchRegulatoryWatchlist, ...Q })
 

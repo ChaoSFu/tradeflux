@@ -4,7 +4,7 @@
  * 连板高度/连续性/风险/情绪分），刻画板块所处的生命周期阶段（板块趋势视角）。
  */
 import { useQuery } from '@tanstack/react-query'
-import { fetchSectors } from '@/api/sectors'
+import { fetchSectors, SECTORS_LITE_KEY } from '@/api/sectors'
 import { PHASE_COLORS, PHASE_LABELS_ZH } from '@/utils/format'
 import { cn } from '@/utils/cn'
 import type { Sector } from '@/types'
@@ -23,7 +23,7 @@ export function PhaseLifecycleBar({
   /** 限定计数的板块名集合（仅统计这些板块的阶段分布）；不传则统计全部 is_watched */
   sectorNames?: string[] | null
 } = {}) {
-  const { data } = useQuery({ queryKey: ['sectors-lifecycle'], queryFn: fetchSectors })
+  const { data } = useQuery({ queryKey: [...SECTORS_LITE_KEY], queryFn: () => fetchSectors(false) })
   const sectors: Sector[] = (data as any)?.items ?? []
 
   const nameSet = sectorNames ? new Set(sectorNames) : null

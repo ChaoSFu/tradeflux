@@ -6,7 +6,7 @@
  */
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { fetchSectors } from '@/api/sectors'
+import { fetchSectors, SECTORS_LITE_KEY } from '@/api/sectors'
 import type { Sector } from '@/types'
 
 export interface SectorTagData {
@@ -38,8 +38,8 @@ export interface SectorTagMaps {
 
 export function useSectorTags(): SectorTagMaps {
   const { data } = useQuery({
-    queryKey: ['sectors-ranking'],
-    queryFn: fetchSectors,
+    queryKey: [...SECTORS_LITE_KEY],
+    queryFn: () => fetchSectors(false),
     staleTime: 5 * 60 * 1000,
   })
 

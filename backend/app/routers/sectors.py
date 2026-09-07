@@ -28,8 +28,15 @@ router = APIRouter(prefix="/sectors", tags=["sectors"])
 
 
 @router.get("", response_model=SectorListResponse)
-def list_sectors(db: Session = Depends(get_db)):
-    return get_all_sectors(db)
+def list_sectors(
+    include_stocks: bool = Query(
+        True,
+        description="是否返回每个板块的成员股列表。false=只要板块本身的字段——"
+                    "实测完整载荷 2.1MB/2.75s，是全站最大的一个请求，而多数调用方"
+                    "只读 rank/phase 那几个标签字段"),
+    db: Session = Depends(get_db),
+):
+    return get_all_sectors(db, include_stocks=include_stocks)
 
 
 @router.get("/{code}", response_model=SectorResponse)

@@ -68,18 +68,6 @@ export function MarketStateBar() {
   const { data: turnover } = useQuery({ queryKey: ['turnover-overview'], queryFn: () => fetchTurnoverOverview() })
   const turnoverUpCount = turnover?.stocks.filter((s) => s.pct_change > 0).length ?? 0
   const turnoverDownCount = turnover?.stocks.filter((s) => s.pct_change < 0).length ?? 0
-  // 全市场涨跌停家数（与「涨跌停概览」同源同缓存）
-  const { data: up } = useQuery({
-    queryKey: ['limit-moves', 'limit_up'],
-    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_up' }),
-  } as any)
-  const { data: down } = useQuery({
-    queryKey: ['limit-moves', 'limit_down'],
-    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_down' }),
-  } as any)
-  const limitUpCount = (up as any)?.items?.length ?? null
-  const limitDownCount = (down as any)?.items?.length ?? null
-
   // 点击板块 → 展开该板块强势股列表（与板块赚钱效应点击一致）
   const navigate = useNavigate()
   const { pathname } = useLocation()
@@ -87,9 +75,48 @@ export function MarketStateBar() {
   // MarketStateBar 挂载在 Layout 里、跨路由常驻不卸载，切换页面时默认收起，
   // 避免在别的页面下面拖着一个上个页面展开的板块股票列表
   useEffect(() => setExpandedSector(null), [pathname])
+
+  // ── 涨跌停家数：**只要一个数字，就别把 500 行拉回来数长度** ───────────────
+  // 这个组件挂在 Layout 上跨路由常驻，下面每一路查询都是"进任何页面都要付一遍"。
+  // 原来用 page_size=500 再取 items.length，实测 88KB / 0.40s，而接口本身就返回
+  // total —— page_size=1 之后 1KB / 0.12s。
+  //
+  // 顺带修掉一个正确性问题：**涨停超过 500 只时 items.length 会停在 500**，
+  // 而 total 才是真数。今天 93 只没暴露，那是运气不是设计。
+  const { data: upCount } = useQuery({
+    queryKey: ['limit-moves-count', 'limit_up'],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 1, move_type: 'limit_up' }),
+  })
+  const { data: downCount } = useQuery({
+    queryKey: ['limit-moves-count', 'limit_down'],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 1, move_type: 'limit_down' }),
+  })
+  const limitUpCount = upCount?.total ?? null
+  const limitDownCount = downCount?.total ?? null
+
+  // ── 板块展开用的三份名单：**点开才取** ───────────────────────────────────
+  // 它们只喂 sectorGroupMap，而那个只在 expandedSector 非空时才用得到（见文件
+  // 末尾的展开区）。默认是收起的，所以原来每进一个页面都白拉 146KB。
+  //
+  // queryKey 跟「涨跌停分析」页对齐，两边共享同一次请求——同一份涨停名单原来
+  // 有三个不同的 key，各取各的。
+  const sectorListEnabled = expandedSector !== null
+  const { data: up } = useQuery({
+    queryKey: ['limit-moves', 'limit_up'],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_up' }),
+    enabled: sectorListEnabled,
+  })
+  const { data: down } = useQuery({
+    queryKey: ['limit-moves', 'limit_down'],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_down' }),
+    enabled: sectorListEnabled,
+  })
   const { data: strongPool } = useQuery({
     queryKey: ['strong-pool-sector-analysis'],
     queryFn: () => fetchStrongPool({ page: 1, page_size: 500 }),
+    // 这个 key 另有 4 个 hook 和情绪板块页在用；那些页面照常取，
+    // 顶栏只是不再无条件替它们发起
+    enabled: sectorListEnabled,
   } as any)
   const sectorGroupMap = useMemo(() => {
     const seen = new Set<number>(); const merged: Stock[] = []

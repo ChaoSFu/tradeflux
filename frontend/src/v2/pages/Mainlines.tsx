@@ -17,7 +17,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { fetchSectors } from '@/api/sectors'
+import { fetchSectors, SECTORS_LITE_KEY } from '@/api/sectors'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 import { DataGap, Empty } from '../components/DataGap'
@@ -29,7 +29,7 @@ const rank = (r: number | null) =>
 
 export default function Mainlines() {
   const { data, isLoading } = useQuery({
-    queryKey: ['sectors'], queryFn: fetchSectors, staleTime: 10 * 60 * 1000 })
+    queryKey: [...SECTORS_LITE_KEY], queryFn: () => fetchSectors(false), staleTime: 10 * 60 * 1000 })
   const ranked = useMemo(() => rankMainlines(data?.items ?? []), [data])
 
   return (

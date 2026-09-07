@@ -50,14 +50,16 @@ const TABS: { k: Tab; label: string }[] = [
 export default function LimitMovesAnalysis() {
   const [tab, setTab] = useState<Tab>('overview')
 
+  // **key 和参数都跟 MarketStateBar 对齐**，两边共享同一次请求。
+  // 原来同一份涨停名单有三个 key（顶栏 / 旧涨跌停概览 / 这里），各取各的
   const up = useQuery({
-    queryKey: ['lma-limit-up'],
-    queryFn: () => fetchLimitMoves({ move_type: 'limit_up', page_size: 500 }),
+    queryKey: ['limit-moves', 'limit_up'],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_up' }),
     staleTime: 5 * 60 * 1000,
   })
   const down = useQuery({
-    queryKey: ['lma-limit-down'],
-    queryFn: () => fetchLimitMoves({ move_type: 'limit_down', page_size: 500 }),
+    queryKey: ['limit-moves', 'limit_down'],
+    queryFn: () => fetchLimitMoves({ page: 1, page_size: 500, move_type: 'limit_down' }),
     staleTime: 5 * 60 * 1000,
   })
   const height = useQuery({

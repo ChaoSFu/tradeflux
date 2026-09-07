@@ -150,10 +150,20 @@ def _build_rank_maps(sectors: list) -> dict:
     return result
 
 
-def get_all_sectors(db: Session) -> SectorListResponse:
+def get_all_sectors(db: Session, include_stocks: bool = True) -> SectorListResponse:
     """
     返回 is_watched=True 的板块列表，rank 字段直接读 DB（由 daily_update 写入）。
     批量预取关联数据，避免 N+1 查询。
+
+    include_stocks=False：**不返回每个板块的成员股列表**，`stocks` 一律给 []。
+
+    实测（2026-09-07 生产）：`/api/sectors` 完整载荷 **2.1MB / 2.75s**，304 个板块，
+    单个板块光 `stocks` 就 7.5KB。而它是全站最大的一个请求，还挂在常驻顶栏的
+    `useSectorTags` 上——**每进任何一个页面都要付一遍**，只为了读 rank_5d 那几个
+    标签字段。
+
+    关掉之后省的不只是 2MB 传输：板块成员关联表的整表查询、上万个 Stock 对象、
+    上万个 StockInSector 模型的构建和校验，全都不做了。
     """
     from ..models.sector import StockSectorRelation
     from ..schemas.sector import StockInSector
@@ -168,11 +178,12 @@ def get_all_sectors(db: Session) -> SectorListResponse:
     sector_ids = [s.id for s in sectors]
 
     # ── 批量预取：板块成员关联 ────────────────────────────────────────────
+    # 不要成员股时整个跳过——这是这个接口最大的一笔开销，不是"取了不用"的问题
     all_rels = (
         db.query(StockSectorRelation)
         .filter(StockSectorRelation.sector_id.in_(sector_ids))
         .all()
-    )
+    ) if include_stocks else []
     # {sector_id: [rel, ...]}
     rels_by_sector: dict = defaultdict(list)
     for rel in all_rels:

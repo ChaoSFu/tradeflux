@@ -214,7 +214,7 @@ export default function SectorRanking({ fixedView, phaseFilter }: SectorRankingP
 
   const { data, isLoading } = useQuery({
     queryKey: ['sectors-ranking'],
-    queryFn: fetchSectors,
+    queryFn: () => fetchSectors(true),   // 这一页要用 .stocks，成员股不能省
   })
 
   const allSectors: Sector[] = data?.items ?? []
