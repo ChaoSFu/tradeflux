@@ -440,29 +440,34 @@ const signed = (v: number | null | undefined, d = 1) =>
  *
  * `plain` 用于全池基线那一行——它按定义就该是 0，给它标「未确认」是噪声。
  */
-function HorizonCell({ c, plain = false }: {
-  c?: EvidenceCell | null; plain?: boolean
-}) {
+const TD = 'px-2 py-1.5 whitespace-nowrap font-mono tabular-nums'
+
+/**
+ * 一个视界摊成五个格子：超额 / 跑赢 / n / 95% 区间 / 判定。
+ *
+ * 原来是一个格子里叠三行，四列把宽度撑满、中间大片留白，而每格自己却在换行。
+ * 摊开之后每格只有一个值，扫读时视线是横着走的，不用在格子内部再解析一次。
+ *
+ * `plain` 用于全池基线那一行——它按定义就该是 0，给它标「未确认」是噪声。
+ */
+function horizonCells(c: EvidenceCell | null | undefined, plain = false) {
   const v = verdictOf(c)
   return (
-    <td className="px-2 py-1.5 align-top whitespace-nowrap">
-      <div className={cn('font-mono tabular-nums',
-        plain ? 'text-text-muted' : VERDICT_TONE[v])}>
+    <>
+      <td className={cn(TD, plain ? 'text-text-muted' : VERDICT_TONE[v])}>
         {signed(c?.median)}
-      </div>
-      <div className="text-[10px] text-text-muted font-mono tabular-nums">
-        {c?.pos_rate != null ? `跑赢 ${(c.pos_rate * 100).toFixed(0)}%` : '跑赢 —'}
-        {c ? ` · n${c.n}` : ''}
-      </div>
-      <div className="text-[10px] font-mono tabular-nums">
-        <span className="text-text-muted/70">
-          {c?.ci ? `[${signed(c.ci[0])}, ${signed(c.ci[1])}]` : '—'}
-        </span>
-        {!plain && (
-          <span className={cn('ml-1', VERDICT_TONE[v])}>{VERDICT_ZH[v]}</span>
-        )}
-      </div>
-    </td>
+      </td>
+      <td className={cn(TD, 'text-text-muted')}>
+        {c?.pos_rate != null ? `${(c.pos_rate * 100).toFixed(0)}%` : '—'}
+      </td>
+      <td className={cn(TD, 'text-text-muted')}>{c ? c.n : '—'}</td>
+      <td className={cn(TD, 'text-text-muted/70 text-[11px]')}>
+        {c?.ci ? `[${signed(c.ci[0])}, ${signed(c.ci[1])}]` : '—'}
+      </td>
+      <td className={cn(TD, 'text-[11px]', plain ? 'text-text-muted/40' : VERDICT_TONE[v])}>
+        {plain ? '—' : VERDICT_ZH[v]}
+      </td>
+    </>
   )
 }
 
@@ -597,44 +602,64 @@ function LifecycleEvidence() {
       </div>
 
       <div className="mt-2 overflow-x-auto">
-        <table className="w-full text-xs" style={{ minWidth: 560 }}>
+        <table className="text-xs" style={{ minWidth: 880 }}>
+          {/* 双行表头：上面一行分 T+1 / T+3 两组，下面一行是组内的五个字段。
+              排序只挂在两个「超额」上——其余四列是同一件事的不同侧面，
+              各自排一遍没有意义 */}
           <thead>
             <tr className="text-[10px]">
-              <SortTh col={'event' as EvKey} label="事件" align="left"
+              <th rowSpan={2} className={cn(th, 'text-left text-text-secondary/55')}>
+                <SortTh col={'event' as EvKey} label="事件" align="left"
+                        sort={sort} onSort={onSort} className="!px-0 !py-0 !border-0" />
+              </th>
+              <th colSpan={5}
+                  className="px-2 pt-1 pb-0.5 text-left text-[10px] font-medium
+                             text-text-secondary border-b border-bg-border/40">T+1</th>
+              <th colSpan={5}
+                  className="px-2 pt-1 pb-0.5 text-left text-[10px] font-medium
+                             text-text-secondary border-b border-bg-border/40
+                             border-l border-l-bg-border">T+3</th>
+              <th rowSpan={2} className={cn(th, 'text-left text-text-secondary/55')}>
+                <SortTh col={'n' as EvKey} label="事件数" align="left"
+                        sort={sort} onSort={onSort} className="!px-0 !py-0 !border-0" />
+              </th>
+            </tr>
+            <tr className="text-[10px]">
+              <SortTh col={'x1' as EvKey} label="超额" align="left"
                       sort={sort} onSort={onSort} className={th} />
-              <SortTh col={'x1' as EvKey} label="T+1 超额" align="left"
-                      sort={sort} onSort={onSort} className={th} />
-              <SortTh col={'x3' as EvKey} label="T+3 超额" align="left"
-                      sort={sort} onSort={onSort} className={th} />
-              <SortTh col={'n' as EvKey} label="事件数" align="left"
-                      sort={sort} onSort={onSort} className={th} />
+              {['跑赢', 'n', '95% 区间', '判定'].map((h) => (
+                <th key={`1${h}`} className={cn(th, 'text-left font-medium',
+                  'text-text-secondary/55')}>{h}</th>
+              ))}
+              <SortTh col={'x3' as EvKey} label="超额" align="left"
+                      sort={sort} onSort={onSort} className={cn(th, 'border-l border-l-bg-border')} />
+              {['跑赢', 'n', '95% 区间', '判定'].map((h) => (
+                <th key={`3${h}`} className={cn(th, 'text-left font-medium',
+                  'text-text-secondary/55')}>{h}</th>
+              ))}
             </tr>
           </thead>
           <tbody>
             {rows.map((e) => (
               <tr key={e.event} className="border-b border-bg-border/40 last:border-0">
-                <td className="px-2 py-1.5 align-top text-text-primary whitespace-nowrap">
+                <td className="px-2 py-1.5 text-text-primary whitespace-nowrap">
                   {evLabel(e)}
                 </td>
-                <HorizonCell c={e.excess?.['1']} />
-                <HorizonCell c={e.excess?.['3']} />
-                <td className="px-2 py-1.5 align-top font-mono tabular-nums text-text-muted">
-                  {e.n_events}
-                </td>
+                {horizonCells(e.excess?.['1'])}
+                {horizonCells(e.excess?.['3'])}
+                <td className={cn(TD, 'text-text-muted')}>{e.n_events}</td>
               </tr>
             ))}
             {/* 基线留着：它是「超额确实以 0 为中心」的自查，不是一个待比较的对象 */}
             {data.baseline && (
               <tr className="border-t border-bg-border text-text-muted/70">
-                <td className="px-2 py-1.5 align-top whitespace-nowrap"
+                <td className="px-2 py-1.5 whitespace-nowrap"
                     title="全部股票日。超额口径下它按定义就该接近 0——这一行是自查">
                   全池基线
                 </td>
-                <HorizonCell c={data.baseline.excess?.['1']} plain />
-                <HorizonCell c={data.baseline.excess?.['3']} plain />
-                <td className="px-2 py-1.5 align-top font-mono tabular-nums">
-                  {data.baseline.n_events}
-                </td>
+                {horizonCells(data.baseline.excess?.['1'], true)}
+                {horizonCells(data.baseline.excess?.['3'], true)}
+                <td className={cn(TD, 'text-text-muted')}>{data.baseline.n_events}</td>
               </tr>
             )}
           </tbody>
