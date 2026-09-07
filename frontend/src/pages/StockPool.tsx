@@ -15,6 +15,7 @@ import {
 import { Search, Star, Flame, Crown, Info, ChevronUp, ChevronDown, ChevronsUpDown, TrendingDown } from 'lucide-react'
 // Note: Star kept for is_leader badge; Flame for limit_up tab; Crown for dragon tab; Info for ColInfo tooltips
 import { cn } from '@/utils/cn'
+import { SortTh } from '@/components/common/SortTh'
 import type { Stock } from '@/types'
 
 // ─── Sort ─────────────────────────────────────────────────────────────────────
@@ -33,7 +34,7 @@ type SortKey =
   | 'today_pct_change'
   | 'phase_group'
 
-type SortDir = 'asc' | 'desc'
+type SortDir = 'asc' | 'desc'   // 与 components/common/SortTh 同名同义
 
 // 股票全集口径
 type Universe = 'all' | 'strong' | 'limit'
@@ -539,37 +540,6 @@ export default function StockPool() {
       </>
       )}
     </div>
-  )
-}
-
-// ─── SortTh (matches LimitMovesPool style) ───────────────────────────────────
-
-function SortTh({ col, label, sort, onSort, align = 'right' }: {
-  col: SortKey; label: string
-  sort: { key: SortKey; dir: SortDir }
-  onSort: (k: SortKey) => void
-  align?: 'left' | 'right'
-}) {
-  const active = sort.key === col
-  const justifyClass = align === 'left' ? 'justify-start' : 'justify-end'
-  const textClass    = align === 'left' ? 'text-left'     : 'text-right'
-  return (
-    <th
-      onClick={() => onSort(col)}
-      className={cn(
-        'px-3 py-2 text-xs font-medium cursor-pointer select-none group whitespace-nowrap',
-        textClass,
-        active ? 'text-accent' : 'text-text-secondary/55 hover:text-text-secondary',
-      )}
-    >
-      <span className={cn('inline-flex items-center gap-0.5', justifyClass)}>
-        {label}
-        {active
-          ? (sort.dir === 'desc' ? <ChevronDown className="w-3 h-3 shrink-0" /> : <ChevronUp className="w-3 h-3 shrink-0" />)
-          : <ChevronsUpDown className="w-3 h-3 shrink-0 opacity-0 group-hover:opacity-40 transition-opacity" />
-        }
-      </span>
-    </th>
   )
 }
 

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchMarketState, fetchMarketHistory, fetchProfitEffect } from '@/api/marketState'
 import { fetchStrongPool, fetchLifecycleEffect } from '@/api/stocks'
-import { LIFECYCLE_ZH } from '@/lib/lifecycle'
+import { LIFECYCLE_ZH, STATE_ORDER } from '@/lib/lifecycle'
 import LeaderCyclePanel from '@/components/stockPool/LeaderCyclePanel'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -13,6 +13,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { PhaseTag } from '@/components/common/PhaseTag'
 import { RiskBadge } from '@/components/common/RiskBadge'
 import { SectorSection, buildSectorGroups } from '@/components/common/SectorSection'
+import { SortTh, compareWithNullsLast, type SortState } from '@/components/common/SortTh'
 import {
   MARKET_PHASE_LABELS, EMOTION_CYCLE_LABELS, ACTION_LABELS,
   ACTION_COLORS, LEADER_TYPE_LABELS, SIGNAL_TYPE_LABELS,
@@ -238,13 +239,55 @@ function SectorEffectCard({
  * 按周期整段重抽的 95% 区间），而那里多数状态的区间是**跨 0 的**。
  * 在界面上把这几个数字摆成结论，就等于又造了一个看起来精确的黑箱。
  */
+type HistKey = 't1' | 't1_win' | 't3' | 't3_win' | 't5' | 't5_win' | 't1_n' | 'state'
+
+const HISTORY_COLS: { key: HistKey; label: string }[] = [
+  { key: 'state', label: '状态' },
+  { key: 't1', label: 'T+1' }, { key: 't1_win', label: '胜率' },
+  { key: 't3', label: 'T+3' }, { key: 't3_win', label: '胜率' },
+  { key: 't5', label: 'T+5' }, { key: 't5_win', label: '胜率' },
+  { key: 't1_n', label: '样本' },
+]
+
+/**
+ * 同分时的次序键。做短线看的是 T+1：**平均涨幅一样,就先看谁赢面大**。
+ * 点胜率时反过来用涨幅打平——两个数本来就是一件事的两面。
+ */
+const HIST_TIEBREAK: Partial<Record<HistKey, HistKey>> = {
+  t1: 't1_win', t1_win: 't1',
+  t3: 't3_win', t3_win: 't3',
+  t5: 't5_win', t5_win: 't5',
+}
+
 function LifecycleEffect() {
   const { data } = useQuery({
     queryKey: ['lifecycle-effect'], queryFn: fetchLifecycleEffect,
     staleTime: 10 * 60 * 1000,
   })
+  // 默认按 T+1 效应从高到低,平手再看 T+1 胜率——短线先问明天怎么走
+  const [sort, setSort] = useState<SortState<HistKey>>({ key: 't1', dir: 'desc' })
+  const onSort = (k: HistKey) =>
+    setSort((p) => (p.key === k ? { key: k, dir: p.dir === 'desc' ? 'asc' : 'desc' }
+                                : { key: k, dir: 'desc' }))
+
+  const history = useMemo(() => {
+    const rows = [...(data?.history ?? [])]
+    const key = sort.key
+    if (!key) return rows
+    const tie = HIST_TIEBREAK[key]
+    // 「状态」按生命周期的先后排，不按枚举名的字母序——CROSS_FAILED 排在
+    // CROSS_SUCCESS 前面对看的人没有任何意义
+    const val = (r: typeof rows[number], k: HistKey) =>
+      k === 'state' ? STATE_ORDER.indexOf(r.state) : r[k]
+    return rows.sort((a, b) => {
+      const c = compareWithNullsLast(val(a, key), val(b, key), sort.dir)
+      if (c !== 0 || !tie) return c
+      return compareWithNullsLast(val(a, tie), val(b, tie), sort.dir)
+    })
+  }, [data?.history, sort])
+
   const cohorts = (data?.cohorts ?? []).filter((c) => c.count > 0)
-  if (!cohorts.length && !(data?.history ?? []).length) return null
+  if (!cohorts.length && !history.length) return null
 
   const pct = (v: number | null) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
   const rate = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(0)}%`)
@@ -273,7 +316,7 @@ function LifecycleEffect() {
         ))}
       </div>
 
-      {(data?.history ?? []).length > 0 && (
+      {history.length > 0 && (
         <div className="card p-3">
           <div className="flex items-baseline gap-2 flex-wrap">
             <span className="text-xs text-text-secondary font-medium">
@@ -286,15 +329,16 @@ function LifecycleEffect() {
           <div className="mt-2 overflow-x-auto">
             <table className="w-full text-xs" style={{ minWidth: 560 }}>
               <thead>
-                <tr className="text-[10px] text-text-muted">
-                  {['状态', 'T+1', '胜率', 'T+3', '胜率', 'T+5', '胜率', '样本'].map((h, k) => (
-                    <th key={k} className="px-2 py-1 text-left font-medium
-                                           border-b border-bg-border">{h}</th>
+                <tr className="text-[10px]">
+                  {HISTORY_COLS.map(({ key, label }) => (
+                    <SortTh key={key} col={key} label={label} align="left"
+                            sort={sort} onSort={onSort}
+                            className="px-2 py-1 border-b border-bg-border" />
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {(data?.history ?? []).map((h) => (
+                {history.map((h) => (
                   <tr key={h.state} className="border-b border-bg-border/40 last:border-0">
                     <td className="px-2 py-1 text-text-primary whitespace-nowrap">
                       {LIFECYCLE_ZH[h.state] ?? h.state}
