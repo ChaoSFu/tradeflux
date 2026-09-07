@@ -217,7 +217,9 @@ class TestCaseJ:
                 days_since_break=3, settled=False)]
         s = _replay(rows)
         assert s.state == UNKNOWN
-        assert s.previous_state == CROSS_SUCCESS, "内部记忆保留最近一次有效状态"
+        assert s.last_valid_state == CROSS_SUCCESS, "内部记忆保留最近一次有效状态"
+        assert s.previous_state == REPAIRING, \
+            "「来自」问的是展示出来那个状态的前一个，不是它自己"
         assert s.evaluation_status == "UNSETTLED"
         assert s.reason_codes == ["DATA_UNSETTLED"]
 
@@ -648,14 +650,23 @@ class TestLastValidState:
         assert s.state == CROSS_SUCCESS and s.last_valid_state == CROSS_SUCCESS
         assert s.last_valid_date == s.date
 
-    def test_不复用previous_state那个一名两义的字段(self):
+    def test_previous_state只有一个意思(self):
         """
-        previous_state 在状态判得出时是"上一个状态"，判不出时才是"最后一个有效
-        状态"。让调用方按 evaluation_status 猜它当前是哪个意思，迟早出错。
+        previous_state 一度一名两义：判得出时是"上一个状态"，判不出时是"最后一
+        个有效状态"。2026-09-07 界面拿它当「来自」列，盘前全员未结算，于是
+        「来自」跟「状态」逐行雷同。现在两种情况下都是"展示状态的前一个"。
         """
-        s = _replay(_to_success())
-        assert s.previous_state == REPAIRING, "判得出时它是上一个状态"
-        assert s.last_valid_state == CROSS_SUCCESS, "而这个始终是最近有效状态"
+        ok = _replay(_to_success())
+        assert ok.previous_state == REPAIRING, "判得出时它是上一个状态"
+        assert ok.last_valid_state == CROSS_SUCCESS, "而这个始终是最近有效状态"
+
+        stale = _replay(_to_success() + [
+            Row(3, 22.5, ma5=19.6, ma10=18.5, ma20=17.0, ma30=16.0,
+                days_since_break=3, settled=False)])
+        assert stale.state == UNKNOWN and stale.last_valid_state == CROSS_SUCCESS
+        assert stale.previous_state == REPAIRING, "判不出时也还是同一个意思"
+        assert stale.previous_state != stale.last_valid_state, \
+            "「来自」等于「状态」说明这一列什么都没说"
 
     def test_一行都不可用时没有最近有效状态(self):
         rows = [Row(0, 10.0, ma5=10.5, ma10=11.0, ma20=11.5, ma30=12.0,

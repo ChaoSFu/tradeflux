@@ -150,6 +150,9 @@ class DayState:
     """某一个交易日 replay 出来的状态。每次转移都带 reason code，可解释。"""
     date: date
     state: str
+    # **展示出来的那个状态之前的那一个状态。** 只有这一个意思：
+    # 判得出时是 state 的前一个，判不出时是 last_valid_state 的前一个。
+    # 不要再让它兼职表示"最后一个有效状态"——那是 last_valid_state 的活
     previous_state: Optional[str] = None
     state_since_date: Optional[date] = None
     transitioned_today: bool = False
@@ -167,9 +170,9 @@ class DayState:
     # 「数据不足」，昨天的分组全没了。规则本身是对的（不能用上午 11 点的价格
     # 推动跨日状态），但界面不该因此把已知的东西也丢掉。
     #
-    # 不复用 previous_state：那个字段**一名两义**——状态判得出时它是"上一个
-    # 状态"，判不出时才是"最后一个有效状态"。让调用方按 evaluation_status 去
-    # 猜它当前是哪个意思，正是以后会咬人的写法。
+    # 不复用 previous_state。那个字段一度**一名两义**——判得出时是"上一个状
+    # 态"，判不出时是"最后一个有效状态"。2026-09-07 兑现了这句预言：界面拿它
+    # 当"来自"列，盘前所有行未结算，「来自」跟「状态」一模一样。已经改成单义
     last_valid_state: Optional[str] = None
     last_valid_date: Optional[date] = None
     # **在当前状态里待了几个交易日。** 按交易日历数，不是自然日、也不是"有几行
@@ -539,7 +542,10 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
         return DayState(
             # 周期没了（比如整段连板滑出 60 日窗口）跟"今天判不出来"是两回事
             date=as_of_date, state=(NO_CYCLE if _why == "NO_CYCLE" else UNKNOWN),
-            previous_state=state,
+            # **不是 state。** 曾经这里写的是 previous_state=state，于是盘前
+            # 未结算时"上一个状态"和展示出来的状态完全一样，整列变成复读机。
+            # 这个字段现在只有一个意思：last_valid_state 之前的那一个状态
+            previous_state=prev_state,
             last_valid_state=state, last_valid_date=last_ok,
             days_in_state=_sessions_between(trading_days, since, last_ok),
             state_since_date=since, transitioned_today=False,

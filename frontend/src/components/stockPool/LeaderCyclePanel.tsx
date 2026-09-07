@@ -442,6 +442,27 @@ export default function LeaderCyclePanel() {
   )
 }
 
+/**
+ * 「来自」——展示出来的那个状态之前的**那一个**状态。
+ *
+ * 首次出现（没有上一个）给 —，不编一个。跨周期时上一轮的末态和这一轮的现态
+ * 可能是同一个标签（连板中 → 新一轮 → 连板中），那时说"新一轮"比复读状态名
+ * 有信息。
+ */
+function FromCell({ r }: { r: LeaderCycleItem }) {
+  const prev = r.previous_lifecycle_state
+  const zh = prev ? LIFECYCLE_ZH[prev] ?? prev : null
+  if (r.entry_reason_codes?.includes('NEW_CYCLE')) {
+    return (
+      <span className="text-text-muted/80"
+            title={zh ? `上一轮结束在「${zh}」，这是重新起的一轮` : '重新起的一轮'}>
+        新一轮
+      </span>
+    )
+  }
+  return <>{zh ?? '—'}</>
+}
+
 function Row({ r }: { r: LeaderCycleItem }) {
   const suspect = r.peak_board_confident === false
   return (
@@ -451,11 +472,8 @@ function Row({ r }: { r: LeaderCycleItem }) {
         <span className={cn('ml-1.5 text-[10px] text-text-muted', NUM)}>{r.code}</span>
       </td>
       <td className="px-3 py-2 whitespace-nowrap text-xs"><StateTag r={r} /></td>
-      {/* 从哪个状态来的。首次出现（没有上一个状态）给 — ，不编一个 */}
       <td className="px-3 py-2 whitespace-nowrap text-[11px] text-text-muted">
-        {r.previous_lifecycle_state
-          ? LIFECYCLE_ZH[r.previous_lifecycle_state] ?? r.previous_lifecycle_state
-          : '—'}
+        <FromCell r={r} />
       </td>
       {/* 在当前状态待了几个交易日。按日历数，转入当天是 0 */}
       <td className={cn('px-3 py-2 whitespace-nowrap', NUM)}
