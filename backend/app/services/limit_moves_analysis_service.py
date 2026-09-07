@@ -17,7 +17,7 @@
 """
 from collections import defaultdict
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Dict, List, NamedTuple, Optional
 
 from sqlalchemy import func as sqlfunc
 from sqlalchemy.orm import Session
@@ -47,9 +47,31 @@ def _resolve_dates(db: Session, trade_date: Optional[date]):
     return today, cal[i - 1], notes
 
 
-def _snapshots(db: Session, d: date) -> Dict[int, StockDailySnapshot]:
-    return {r.stock_id: r for r in
-            db.query(StockDailySnapshot).filter(StockDailySnapshot.date == d).all()}
+class _Row(NamedTuple):
+    """一天里一只股票，**只带这两个统计用得到的三个字段**。"""
+    is_limit_up: bool
+    is_limit_down: bool
+    board_count: Optional[int]
+
+
+def _snapshots(db: Session, d: date) -> Dict[int, _Row]:
+    """
+    **只取用得到的列，不加载整行 ORM 对象。**
+
+    全市场一天约 2570 行，两天就是 5000 多个映射对象（每个 40+ 列），还全被
+    session 的 identity map 抓住不放。这台服务器只有 1.8G 物理内存，uvicorn
+    自己就占掉一半——2026-09-07 实测：日更峰值把它顶到 940MB 之后整个进程开始
+    换页，一个只读文件的接口冷启要 30 秒。
+
+    换成三列的 tuple 之后，同样两天的数据占的内存小一个量级，而且不进 identity
+    map，请求结束就回收。
+    """
+    return {sid: _Row(bool(lu), bool(ld), bc) for sid, lu, ld, bc in
+            db.query(StockDailySnapshot.stock_id,
+                     StockDailySnapshot.is_limit_up,
+                     StockDailySnapshot.is_limit_down,
+                     StockDailySnapshot.board_count)
+            .filter(StockDailySnapshot.date == d).all()}
 
 
 def compute_advance_ladder(db: Session, trade_date: Optional[date] = None) -> dict:

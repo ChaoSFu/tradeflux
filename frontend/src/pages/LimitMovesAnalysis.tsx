@@ -84,6 +84,9 @@ export default function LimitMovesAnalysis() {
     queryKey: ['lma-sector-continuation'],
     queryFn: () => fetchSectorContinuation(),
     staleTime: 10 * 60 * 1000,
+    // **只在真正显示它的那个 Tab 上取。** 它要扫两整天的全市场快照，
+    // 为一个没人打开的 Tab 付这个代价不值得——这台机器只有 1.8G
+    enabled: tab === 'sectors',
   })
   const trend = useQuery({
     queryKey: ['lma-trend'],
