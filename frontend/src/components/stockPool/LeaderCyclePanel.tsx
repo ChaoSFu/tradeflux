@@ -37,6 +37,9 @@ import {
   GROUP_META, LIFECYCLE_ZH, STATE_ORDER, groupOf, isStale, shownState,
 } from '@/lib/lifecycle'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
+import {
+  SortTh, compareWithNullsLast, type SortState,
+} from '@/components/common/SortTh'
 import { cn } from '@/utils/cn'
 
 type Group = 'core' | 'waiting' | 'dropped' | 'all' | 'unbucketed'
@@ -70,9 +73,64 @@ const BUCKET: Record<Exclude<Group, 'all' | 'unbucketed'>, Bucketable[]> = {
 STATE_ORDER.forEach((st) => BUCKET[bucketOf(st)].push(st))
 const BUCKETED = new Set<string>(STATE_ORDER)
 
-const COLS = ['股票', '状态', '来自', '停留', '主板块', '本轮', '60日', 'D+', '峰值回撤',
-  '现价/MA5', '现价/MA10', '距阶段高', '距周期顶',
-  'RS市场20', 'ΔRS 1日', 'ΔRS 3日', 'RS板块20', '量比5日', '换手']
+type CycKey =
+  | 'name' | 'from' | 'days_in_state' | 'sector' | 'peak_board' | 'board60'
+  | 'dplus' | 'drawdown' | 'ma5' | 'ma10' | 'dist_high' | 'dist_peak'
+  | 'rs20' | 'drs1' | 'drs3' | 'rs_sector' | 'vol5' | 'turnover'
+
+/** `key: null` = 这一列不排序。「状态」就是分段本身，段内它恒定，排它没有意义 */
+const COLS: { key: CycKey | null; label: string }[] = [
+  { key: 'name', label: '股票' },
+  { key: null, label: '状态' },
+  { key: 'from', label: '来自' },
+  { key: 'days_in_state', label: '停留' },
+  { key: 'sector', label: '主板块' },
+  { key: 'peak_board', label: '本轮' },
+  { key: 'board60', label: '60日' },
+  { key: 'dplus', label: 'D+' },
+  { key: 'drawdown', label: '峰值回撤' },
+  { key: 'ma5', label: '现价/MA5' },
+  { key: 'ma10', label: '现价/MA10' },
+  { key: 'dist_high', label: '距阶段高' },
+  { key: 'dist_peak', label: '距周期顶' },
+  { key: 'rs20', label: 'RS市场20' },
+  { key: 'drs1', label: 'ΔRS 1日' },
+  { key: 'drs3', label: 'ΔRS 3日' },
+  { key: 'rs_sector', label: 'RS板块20' },
+  { key: 'vol5', label: '量比5日' },
+  { key: 'turnover', label: '换手' },
+]
+
+/** 现价相对均线的偏离 %。跟 MaPos 显示的是同一个数——**不能两套算法** */
+const maPos = (close: number | null, ma: number | null) =>
+  !close || !ma || ma <= 0 ? null : (close / ma - 1) * 100
+
+/** 排序取值。**拿不到就是 null，交给 compareWithNullsLast 沉底** */
+function cycValue(r: LeaderCycleItem, k: CycKey): number | string | null {
+  switch (k) {
+    case 'name':          return r.name || r.code
+    // 「来自」按生命周期先后排，不按中文字面——刚断板→修复中 和 修复失败→修复中
+    // 是两条不同的路径，按笔画排等于把它们打乱
+    case 'from':          return r.previous_lifecycle_state
+      ? STATE_ORDER.indexOf(r.previous_lifecycle_state as Bucketable) : null
+    case 'days_in_state': return r.days_in_state
+    case 'sector':        return r.sector_name
+    case 'peak_board':    return r.peak_board_count
+    case 'board60':       return r.board_count_60d
+    case 'dplus':         return r.days_since_break
+    case 'drawdown':      return r.peak_drawdown
+    case 'ma5':           return maPos(r.latest_close, r.ma5)
+    case 'ma10':          return maPos(r.latest_close, r.ma10)
+    case 'dist_high':     return r.dist_to_post_break_high
+    case 'dist_peak':     return r.dist_to_cycle_peak
+    case 'rs20':          return r.rs_market_20
+    case 'drs1':          return r.rs_market_20_delta_1d
+    case 'drs3':          return r.rs_market_20_delta_3d
+    case 'rs_sector':     return r.rs_sector_20
+    case 'vol5':          return r.volume_ratio_5d
+    case 'turnover':      return r.turnover_rate
+  }
+}
 
 /**
  * 表格内的排序 / 分段顺序：按生命周期推进的方向排（STATE_ORDER 在 lib 里）。
@@ -209,6 +267,13 @@ function MaPos({ close, ma }: { close: number | null; ma: number | null }) {
 
 export default function LeaderCyclePanel() {
   const [group, setGroup] = useState<Group>('core')
+  // **段内排序。** 生命周期分段永远不混——点「峰值回撤」是让修复中那几只按回撤
+  // 排、穿越成功那几只按回撤排，不是把两组揉成一张榜。段本身的顺序永远按
+  // STATE_ORDER（生命周期推进方向），不受列排序影响
+  const [sort, setSort] = useState<SortState<CycKey>>({ key: '', dir: 'desc' })
+  const onSort = (k: CycKey) =>
+    setSort((p) => (p.key === k ? { key: k, dir: p.dir === 'desc' ? 'asc' : 'desc' }
+                                : { key: k, dir: 'desc' }))
   const { data, isLoading } = useQuery({
     queryKey: ['leader-cycle'],
     queryFn: () => fetchLeaderCycle(),
@@ -253,13 +318,25 @@ export default function LeaderCyclePanel() {
         ? all.filter((r) => !BUCKETED.has(shownState(r)))
         : all.filter((r) => BUCKETED.has(shownState(r))
                             && bucketOf(shownState(r)) === group)
-    // 先按状态分段（段内顺序见 STATE_ORDER），段内今天刚变的在前——
-    // 转强和转弱都是当天才需要动脑子的事
-    return [...picked].sort((a, b) =>
-      orderOf(a.lifecycle_state) - orderOf(b.lifecycle_state)
-      || Number(b.transitioned_today) - Number(a.transitioned_today)
-      || (a.days_since_break ?? 1e6) - (b.days_since_break ?? 1e6))
-  }, [all, group])
+    // 先按状态分段（段内顺序见 STATE_ORDER）。
+    //
+    // **分段用 shownState，跟表体里画分段标题的判据保持一致。** 之前这里用的是
+    // lifecycle_state：盘前所有行都是 UNKNOWN，段序全相等，而标题按 shownState
+    // 分——同一个状态会被切成好几段，各带一个标题。
+    //
+    // 段内：用户点了列头就按那一列；没点则维持默认（今天刚变的在前，转强转弱
+    // 都是当天才要动脑子的事）。
+    return [...picked].sort((a, b) => {
+      const g = orderOf(shownState(a)) - orderOf(shownState(b))
+      if (g !== 0) return g
+      if (sort.key) {
+        const c = compareWithNullsLast(cycValue(a, sort.key), cycValue(b, sort.key), sort.dir)
+        if (c !== 0) return c
+      }
+      return Number(b.transitioned_today) - Number(a.transitioned_today)
+        || (a.days_since_break ?? 1e6) - (b.days_since_break ?? 1e6)
+    })
+  }, [all, group, sort])
 
   // 今天的两个动作信号：谁第一次转强、谁从强转弱
   const turned = useMemo(() => ({
@@ -396,11 +473,16 @@ export default function LeaderCyclePanel() {
         <div className="card overflow-x-auto">
           <table className="w-full text-xs" style={{ minWidth: 1500 }}>
             <thead>
-              <tr className="text-[10px] text-text-muted uppercase tracking-wider">
-                {COLS.map((h) => (
-                  <th key={h} className="px-3 py-2 text-left font-medium whitespace-nowrap
-                                         border-b border-bg-border">{h}</th>
-                ))}
+              <tr className="text-[10px] tracking-wider">
+                {COLS.map((c) => (c.key === null ? (
+                  <th key={c.label}
+                      className="px-3 py-2 text-left font-medium whitespace-nowrap
+                                 text-text-muted border-b border-bg-border">{c.label}</th>
+                ) : (
+                  <SortTh key={c.label} col={c.key} label={c.label} align="left"
+                          sort={sort} onSort={onSort}
+                          className="px-3 py-2 border-b border-bg-border" />
+                )))}
               </tr>
             </thead>
             <tbody>
