@@ -374,6 +374,15 @@ def get_limit_moves_pool(
     if not target_date:
         return StockListResponse(items=[], total=0, page=page, page_size=page_size)
 
+    # 这一天的快照是不是收盘终值。**同一天的行可能一部分已结算一部分没有**
+    # （盘中跑过日更、之后个别股票补过），所以取"全都结算了才算结算"：
+    # 只要还有一行是盘中值，这份涨跌停名单就不是收盘结果。
+    # 一行都没有 → None（不知道），不是 False
+    settled_flags = [r[0] for r in db.query(StockDailySnapshot.is_settled)
+                     .filter(StockDailySnapshot.date == target_date)
+                     .distinct().all()]
+    is_settled = None if not settled_flags else all(bool(f) for f in settled_flags)
+
     q = (
         db.query(Stock)
         .join(StockDailySnapshot, StockDailySnapshot.stock_id == Stock.id)
@@ -407,6 +416,8 @@ def get_limit_moves_pool(
         total=total,
         page=page,
         page_size=page_size,
+        trade_date=target_date,
+        is_settled=is_settled,
     )
 
 

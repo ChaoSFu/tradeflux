@@ -79,6 +79,17 @@ export interface StockListResponse {
   total: number
   page: number
   page_size: number
+  /**
+   * 这份名单查的是哪个交易日。**服务端一直知道，之前不返回，调用方只能猜。**
+   * 涨跌停分析页要把它跟涨停板块雷达、市场效应并排摆，不给日期就只能默认三者
+   * 同一天——而它们经常不是。null = 库里一行都没有。
+   */
+  trade_date?: string | null
+  /**
+   * 这一天的快照是不是收盘终值。**只要还有一行是盘中值就是 false**：盘中跑过
+   * 日更之后的「涨停 91 只」是 11 点的现场，不是收盘结果。null = 不知道。
+   */
+  is_settled?: boolean | null
 }
 
 // ─── Sector ──────────────────────────────────────────────────────────────────

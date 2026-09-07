@@ -104,6 +104,14 @@ class StockListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+    # ── 数据新鲜度：**服务端知道自己查的是哪一天，调用方原本无从得知** ──────
+    # 涨跌停口径默认取「最新有快照的交易日」，页面把它跟涨停板块雷达、市场效应
+    # 摆在一起时，不给日期就只能默认它们是同一天——而它们经常不是。
+    # 两个字段都是 Optional：不是所有列表接口都基于某一个交易日
+    trade_date: Optional[date] = None
+    # 这一天的快照是不是收盘终值。盘中跑过日更之后 is_settled=False，
+    # 那时的「涨停 91 只」是 11 点的现场，不是收盘结果
+    is_settled: Optional[bool] = None
 
 
 class LimitMoveTrendPoint(BaseModel):

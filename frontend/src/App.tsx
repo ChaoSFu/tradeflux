@@ -14,6 +14,7 @@ import SectorTrend from '@/pages/SectorTrend'
 import SectorEmotion from '@/pages/SectorEmotion'
 import DailyReview from '@/pages/DailyReview'
 import LimitMovesDashboard from '@/pages/LimitMovesDashboard'
+import LimitMovesAnalysis from '@/pages/LimitMovesAnalysis'
 import TradeJournal from '@/pages/TradeJournal'
 import TurnoverOverview from '@/pages/TurnoverOverview'
 import WeakToStrongRadar from '@/pages/WeakToStrongRadar'
@@ -57,6 +58,8 @@ export default function App() {
           <Route path="trade-journal" element={<TradeJournal />} />
           {/* 涨跌停分析 */}
           <Route path="limit-moves" element={<LimitMovesDashboard />} />
+          {/* 四合一整合页。旧的四个路由全部保留，不做 redirect */}
+          <Route path="limit-moves-analysis" element={<LimitMovesAnalysis />} />
           <Route path="turnover" element={<TurnoverOverview />} />
         </Route>
 

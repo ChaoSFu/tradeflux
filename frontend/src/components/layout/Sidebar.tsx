@@ -21,6 +21,7 @@ import {
   Crosshair,
   Zap,
   Mountain,
+  Archive,
 } from 'lucide-react'
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
@@ -32,20 +33,30 @@ type NavEntry     = NavLinkItem | NavGroupItem
 const NAV: NavEntry[] = [
   { type: 'link', to: '/', label: '主页', icon: Home },
   { type: 'link', to: '/market-trend', label: '大盘趋势', icon: TrendingUp },
-  { type: 'link', to: '/speculation-radar', label: '破局雷达', icon: Mountain },
-  { type: 'link', to: '/limit-up-radar', label: '涨停板块雷达', icon: Zap },
   { type: 'link', to: '/weak-to-strong-radar', label: '弱转强雷达', icon: Crosshair },
-  { type: 'link', to: '/market-effects', label: '市场效应', icon: Gauge },
   {
     type: 'group',
     label: '活跃股分析',
     icon: Activity,
     children: [
-      { type: 'link', to: '/limit-moves', label: '涨跌停概览', icon: Flame },
+      { type: 'link', to: '/limit-moves-analysis', label: '涨跌停分析', icon: Flame },
       { type: 'link', to: '/strong',      label: '强势股概览', icon: LayoutDashboard },
       { type: 'link', to: '/stocks',      label: '活跃股池',   icon: TrendingUp },
       { type: 'link', to: '/turnover',    label: '成交额概览', icon: Coins },
       { type: 'link', to: '/watchlist',   label: '重点监控',   icon: ShieldAlert },
+    ],
+  },
+  // 被「涨跌停分析」整合掉的四个页面。**降级不是删除**——整合页有没有漏掉东西，
+  // 只有对着原页面才看得出来，所以它们留在这儿，路由也一行没动
+  {
+    type: 'group',
+    label: '旧版页面',
+    icon: Archive,
+    children: [
+      { type: 'link', to: '/limit-moves',       label: '涨跌停概览',   icon: Flame },
+      { type: 'link', to: '/speculation-radar', label: '破局雷达',     icon: Mountain },
+      { type: 'link', to: '/limit-up-radar',    label: '涨停板块雷达', icon: Zap },
+      { type: 'link', to: '/market-effects',    label: '市场效应',     icon: Gauge },
     ],
   },
   {

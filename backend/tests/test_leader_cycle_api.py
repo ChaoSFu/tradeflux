@@ -380,3 +380,40 @@ class TestEvidenceEndpoint:
         assert r["available"] is True and r["stale_formula"] is True, \
             "换了口径之后旧证据不再对应当前规则，界面必须能说出来"
         assert r["file_mtime"], "离线产物不带时间戳，过期了没人看得出来"
+
+
+class TestLimitMovesFreshness:
+    """
+    `/stocks/limit-moves` 原来只返回 items/total/page——**服务端知道自己查的是
+    哪一天，调用方却无从得知**。涨跌停分析页要把它跟涨停板块雷达、市场效应摆
+    在一起，不给日期就只能默认三者同一天，而它们经常不是。
+    """
+
+    def test_返回自己查的是哪一天(self, db):
+        from datetime import date as d
+        from app.services.strong_stock_service import get_limit_moves_pool
+        st = _stock(db, "600001")
+        db.add(StockDailySnapshot(stock_id=st.id, date=d(2026, 9, 4),
+                                  close_price=10.0, pct_change=10.0,
+                                  is_limit_up=True, is_settled=True))
+        db.commit()
+        r = get_limit_moves_pool(db)
+        assert r.trade_date == d(2026, 9, 4)
+        assert r.is_settled is True
+
+    def test_有一行是盘中值整份名单就不算收盘结果(self, db):
+        from datetime import date as d
+        from app.services.strong_stock_service import get_limit_moves_pool
+        a, b = _stock(db, "600002"), _stock(db, "600003")
+        db.add(StockDailySnapshot(stock_id=a.id, date=d(2026, 9, 4), close_price=10.0,
+                                  pct_change=10.0, is_limit_up=True, is_settled=True))
+        db.add(StockDailySnapshot(stock_id=b.id, date=d(2026, 9, 4), close_price=20.0,
+                                  pct_change=10.0, is_limit_up=True, is_settled=False))
+        db.commit()
+        assert get_limit_moves_pool(db).is_settled is False, \
+            "混着盘中值的名单不是收盘结果，不能标成已结算"
+
+    def test_没有数据时不猜(self, db):
+        from app.services.strong_stock_service import get_limit_moves_pool
+        r = get_limit_moves_pool(db)
+        assert r.trade_date is None and r.is_settled is None, "一行都没有就是不知道"
