@@ -92,3 +92,6 @@ docker-compose.override.yml
 # ── Claude Code ───────────────────────────────────────────────────────────────
 .claude/launch.json
 .claude/settings.local.json
+
+# 评估产物：环境相关、会过期，由 scripts/evaluate_lifecycle.py --json 生成
+backend/data/

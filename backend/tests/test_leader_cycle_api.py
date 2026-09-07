@@ -344,3 +344,39 @@ class TestLifecycleEffect:
         r = client.get("/leader-cycle/effect").json()
         from app.services.leader_cycle_state_service import FORMULA_VERSION
         assert r["formula_version"] == FORMULA_VERSION
+
+
+class TestEvidenceEndpoint:
+    """
+    `/leader-cycle/evidence` 端出离线评估产物。**它最容易出的错是把「没跑过」
+    伪装成「跑过了但没有证据」**——前者该提示去跑，后者会被读成「验证过，没
+    Edge」。返回空表就是在说后者。
+    """
+
+    def test_没跑过时如实说没跑过(self, client, tmp_path, monkeypatch):
+        from app.config import settings
+        monkeypatch.setattr(settings, "LIFECYCLE_EVIDENCE_PATH",
+                            str(tmp_path / "nope.json"))
+        r = client.get("/leader-cycle/evidence").json()
+        assert r["available"] is False and "evaluate_lifecycle" in r["reason"]
+        assert "events" not in r, "空的 events 会被读成「跑过了但没有证据」"
+
+    def test_产物读不出来跟没跑过要分开(self, client, tmp_path, monkeypatch):
+        from app.config import settings
+        bad = tmp_path / "broken.json"
+        bad.write_text("{ not json", encoding="utf-8")
+        monkeypatch.setattr(settings, "LIFECYCLE_EVIDENCE_PATH", str(bad))
+        r = client.get("/leader-cycle/evidence").json()
+        assert r["available"] is False and "读不出来" in r["reason"]
+
+    def test_口径变了要标出来(self, client, tmp_path, monkeypatch):
+        import json
+        from app.config import settings
+        f = tmp_path / "old.json"
+        f.write_text(json.dumps({"formula_version": "price_v0_9", "events": []}),
+                     encoding="utf-8")
+        monkeypatch.setattr(settings, "LIFECYCLE_EVIDENCE_PATH", str(f))
+        r = client.get("/leader-cycle/evidence").json()
+        assert r["available"] is True and r["stale_formula"] is True, \
+            "换了口径之后旧证据不再对应当前规则，界面必须能说出来"
+        assert r["file_mtime"], "离线产物不带时间戳，过期了没人看得出来"

@@ -2,7 +2,8 @@ import { Fragment, useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchMarketState, fetchMarketHistory, fetchProfitEffect } from '@/api/marketState'
-import { fetchStrongPool, fetchLifecycleEffect } from '@/api/stocks'
+import { fetchStrongPool, fetchLifecycleEffect, fetchLifecycleEvidence } from '@/api/stocks'
+import type { EvidenceEvent, EvidenceCell } from '@/api/stocks'
 import { LIFECYCLE_ZH, STATE_ORDER } from '@/lib/lifecycle'
 import LeaderCyclePanel from '@/components/stockPool/LeaderCyclePanel'
 import { Card } from '@/components/ui/card'
@@ -243,9 +244,11 @@ type HistKey = 't1' | 't1_win' | 't3' | 't3_win' | 't5' | 't5_win' | 't1_n' | 's
 
 const HISTORY_COLS: { key: HistKey; label: string }[] = [
   { key: 'state', label: '状态' },
-  { key: 't1', label: 'T+1' }, { key: 't1_win', label: '胜率' },
-  { key: 't3', label: 'T+3' }, { key: 't3_win', label: '胜率' },
-  { key: 't5', label: 'T+5' }, { key: 't5_win', label: '胜率' },
+  // **不叫「胜率」。** 它是绝对收益为正的比例，跟事件表里「跑赢同日同池」
+  // 是两个东西，摆在一起用同一个词迟早被读混
+  { key: 't1', label: 'T+1' }, { key: 't1_win', label: '上涨占比' },
+  { key: 't3', label: 'T+3' }, { key: 't3_win', label: '上涨占比' },
+  { key: 't5', label: 'T+5' }, { key: 't5_win', label: '上涨占比' },
   { key: 't1_n', label: '样本' },
 ]
 
@@ -287,7 +290,8 @@ function LifecycleEffect() {
   }, [data?.history, sort])
 
   const cohorts = (data?.cohorts ?? []).filter((c) => c.count > 0)
-  if (!cohorts.length && !history.length) return null
+  // **不在这里 return null。** 转移时点证据是独立的离线产物，跟今天有没有
+  // 队列、有没有历史前瞻无关；一起吞掉会让「评估还没跑」变成整块空白
 
   const pct = (v: number | null) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
   const rate = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(0)}%`)
@@ -316,16 +320,27 @@ function LifecycleEffect() {
         ))}
       </div>
 
+      <LifecycleEvidence />
+
       {history.length > 0 && (
         <div className="card p-3">
           <div className="flex items-baseline gap-2 flex-wrap">
             <span className="text-xs text-text-secondary font-medium">
-              历史前瞻（近 60 个交易日）
+              按状态截面（近 60 个交易日）
             </span>
             <span className="text-[11px] text-warn">
-              只是线索，不是结论 —— 没做同日同池对照，也没有置信区间
+              无对照、无区间 —— 只是线索，不是结论
             </span>
           </div>
+          {/* 状态会**混路径**：「修复中」既可能来自刚断板（第一次转强），也可能
+              来自修复失败（失败后再修复）——上面那张事件表里这两条方向相反。
+              混回一行等于把拆开的信息又稀释掉，所以这张表在下面 */}
+          <p className="text-[11px] text-text-muted mt-1">
+            这里的「上涨占比」是绝对收益为正的比例，<span className="text-text-secondary">
+            不是跑赢基准</span>；市场当天的涨跌全混在数字里。而且同一个状态会混路径
+            ——「修复中」既可能来自刚断板，也可能来自修复失败，上面那张表里这两条
+            方向相反。
+          </p>
           <div className="mt-2 overflow-x-auto">
             <table className="w-full text-xs" style={{ minWidth: 560 }}>
               <thead>
@@ -363,13 +378,374 @@ function LifecycleEffect() {
             </table>
           </div>
           <p className="text-[11px] text-text-muted mt-2">
-            胜率在 50% 附近 = 跟随机没区别。完整版（同日同池超额、可执行超额、
-            按「股票×周期」整段重抽的 95% 区间）在
-            <span className="text-text-secondary"> scripts/evaluate_lifecycle.py</span>
-            ，那里多数状态的区间是<span className="text-warn">跨 0 的</span>。
+            上涨占比在 50% 附近 = 跟随机没区别，但它本来也不是超额——
+            做了对照和区间的版本是上面那张事件表。
           </p>
         </div>
       )}
+    </div>
+  )
+}
+
+
+
+type EvKey = 'event' | 'x1' | 'x3' | 'n'
+
+type Verdict = 'pos' | 'neg' | 'unconfirmed' | 'insufficient'
+
+/**
+ * **判定完全由 95% 区间决定，不看中位数的正负。**
+ *
+ * 这不是打分,是把区间翻译成一句话:区间整段在 0 以上/以下才算方向确认,跨 0
+ * 就是没确认——中位数 +3.1% 看起来再好也一样。反过来说,页面也不能因为中位
+ * 数是正的就把它涂成红色:那等于用一个未确认的数字去锚定人的判断。
+ */
+function verdictOf(c?: EvidenceCell | null): Verdict {
+  if (!c || !c.ci) return 'insufficient'
+  if (c.ci[0] > 0) return 'pos'
+  if (c.ci[1] < 0) return 'neg'
+  return 'unconfirmed'
+}
+
+const VERDICT_ZH: Record<Verdict, string> = {
+  pos: '正向确认', neg: '负向确认', unconfirmed: '未确认', insufficient: '样本不足',
+}
+// 只有确认了方向才给颜色。未确认一律中性灰——**颜色是结论,不是装饰**
+const VERDICT_TONE: Record<Verdict, string> = {
+  pos: 'text-up', neg: 'text-down',
+  unconfirmed: 'text-text-secondary', insufficient: 'text-text-muted/60',
+}
+
+const evLabel = (e: EvidenceEvent) =>
+  e.from && e.to
+    ? `${LIFECYCLE_ZH[e.from] ?? e.from} → ${LIFECYCLE_ZH[e.to] ?? e.to}`
+    : e.event
+
+const signed = (v: number | null | undefined, d = 1) =>
+  v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(d)}%`
+
+/**
+ * 一个视界的三行：超额 / 跑赢基准·n / 区间·判定。
+ *
+ * `plain` 用于全池基线那一行——它按定义就该是 0，给它标「未确认」是噪声。
+ */
+function HorizonCell({ c, plain = false }: {
+  c?: EvidenceCell | null; plain?: boolean
+}) {
+  const v = verdictOf(c)
+  return (
+    <td className="px-2 py-1.5 align-top whitespace-nowrap">
+      <div className={cn('font-mono tabular-nums',
+        plain ? 'text-text-muted' : VERDICT_TONE[v])}>
+        {signed(c?.median)}
+      </div>
+      <div className="text-[10px] text-text-muted font-mono tabular-nums">
+        {c?.pos_rate != null ? `跑赢 ${(c.pos_rate * 100).toFixed(0)}%` : '跑赢 —'}
+        {c ? ` · n${c.n}` : ''}
+      </div>
+      <div className="text-[10px] font-mono tabular-nums">
+        <span className="text-text-muted/70">
+          {c?.ci ? `[${signed(c.ci[0])}, ${signed(c.ci[1])}]` : '—'}
+        </span>
+        {!plain && (
+          <span className={cn('ml-1', VERDICT_TONE[v])}>{VERDICT_ZH[v]}</span>
+        )}
+      </div>
+    </td>
+  )
+}
+
+function Fold({ title, note, children }: {
+  title: string; note?: string; children: React.ReactNode
+}) {
+  return (
+    <details className="mt-2 border-t border-bg-border/60 pt-2">
+      <summary className="text-[11px] text-text-secondary cursor-pointer select-none
+                          hover:text-text-primary">
+        {title}
+        {note && <span className="text-text-muted ml-1.5">{note}</span>}
+      </summary>
+      <div className="mt-1.5">{children}</div>
+    </details>
+  )
+}
+
+/**
+ * 生命周期**事件**的历史表现。
+ *
+ * 跟下面那张按状态截面统计的表不是同一件事:
+ *   按状态   = 处于某状态的期间怎么走（**无对照**,市场行情混在里面）
+ *   按事件   = 转入某状态那天之后怎么走（逐事件对同日同池,行情已消掉,带区间）
+ * 而且状态会**混路径**:「修复中」既可能来自刚断板,也可能来自修复失败,这两条
+ * 历史表现方向相反,混回一行等于把刚拆开的信息又稀释掉。所以事件表在上面。
+ *
+ * 数据来自 scripts/evaluate_lifecycle.py --json 的离线产物。**这里只摆分布和
+ * 区间,不打分**——判定那一列是把 95% 区间翻译成中文,不是评分。
+ */
+function LifecycleEvidence() {
+  const { data } = useQuery({
+    queryKey: ['lifecycle-evidence'], queryFn: fetchLifecycleEvidence,
+    staleTime: 30 * 60 * 1000,
+  })
+  const [sort, setSort] = useState<SortState<EvKey>>({ key: 'x1', dir: 'desc' })
+  const onSort = (k: EvKey) =>
+    setSort((p) => (p.key === k ? { key: k, dir: p.dir === 'desc' ? 'asc' : 'desc' }
+                                : { key: k, dir: 'desc' }))
+
+  const rows = useMemo(() => {
+    const es = [...(data?.events ?? [])]
+    const key = sort.key
+    if (!key) return es
+    const of = (e: EvidenceEvent) => ({
+      event: evLabel(e), n: e.n_events,
+      x1: e.excess?.['1']?.median ?? null,
+      x3: e.excess?.['3']?.median ?? null,
+    })[key]
+    return es.sort((a, b) => compareWithNullsLast(of(a), of(b), sort.dir))
+  }, [data?.events, sort])
+
+  // ── 顶部总览：**机械地从区间推出来,没有人工挑选** ────────────────────────
+  // 「哪个事件最值得看」这种话不能由页面来说——那就是打分了。这里只回答两个
+  // 数得出来的问题:有没有任何事件方向确认为正?哪些确认为负?
+  const confirmed = useMemo(() => {
+    const pos: string[] = [], neg: string[] = []
+    let best: { label: string; v: number } | null = null
+    for (const e of data?.events ?? []) {
+      const hs = (['1', '3'] as const).filter((h) => verdictOf(e.excess?.[h]) === 'pos')
+      const ns = (['1', '3'] as const).filter((h) => verdictOf(e.excess?.[h]) === 'neg')
+      if (hs.length) pos.push(`${evLabel(e)}（T+${hs.join('/T+')}）`)
+      if (ns.length) neg.push(`${evLabel(e)}（T+${ns.join('/T+')}）`)
+      // 没有正向确认时,说清「最高的那个是谁、多少」——**从数据里取,不写死**。
+      // 写死的例子过两天就跟表里对不上,而且那是个会自己腐烂的结论
+      const m = e.excess?.['1']?.median
+      if (m != null && (best === null || m > best.v)) best = { label: evLabel(e), v: m }
+    }
+    return { pos, neg, best }
+  }, [data?.events])
+
+  if (!data) return null
+
+  // **「还没跑过」不能显示成空表。** 空表看起来像「跑过了,但一条证据都没有」
+  if (!data.available) {
+    return (
+      <div className="card p-3">
+        <p className="text-xs text-text-secondary font-medium">生命周期事件历史表现</p>
+        <p className="text-[11px] text-text-muted mt-1.5">
+          {data.reason || '离线评估产物不可用'}
+        </p>
+        <code className="block mt-1.5 text-[11px] text-text-secondary
+                         bg-bg-elevated rounded px-2 py-1 overflow-x-auto">
+          cd backend && python scripts/evaluate_lifecycle.py --json
+        </code>
+      </div>
+    )
+  }
+
+  const th = 'px-2 py-1 border-b border-bg-border'
+  return (
+    <div className="card p-3">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-xs text-text-secondary font-medium">
+          生命周期事件历史表现
+        </span>
+        <span className="text-[11px] text-text-muted">
+          同日同池超额 · {data.formula_version}
+          {data.as_of && ` · 数据截至 ${data.as_of}`}
+          {data.generated_at &&
+            ` · 评估于 ${data.generated_at.slice(0, 16).replace('T', ' ')}`}
+        </span>
+        {data.stale_formula && (
+          <span className="text-[11px] text-warn">
+            产物口径 ≠ 当前 {data.current_formula_version}，旧证据不对应现在的规则
+          </span>
+        )}
+      </div>
+      <p className="text-[11px] text-warn/90 mt-1">
+        样本来自「今天仍在强势池里的幸存者」，当时进不了池的票根本没有行——
+        绝对水平偏高，只能做组间比较。
+      </p>
+
+      {/* ── 总览：直接由区间数出来，没有人工挑选，也没有评分 ─────────────── */}
+      <div className="mt-2 rounded bg-bg-elevated/60 px-2.5 py-2 space-y-1">
+        <div className="text-[11px]">
+          <span className="text-text-muted">正向确认：</span>
+          {confirmed.pos.length
+            ? <span className="text-up">{confirmed.pos.join('、')}</span>
+            : <span className="text-text-secondary">
+                暂无 —— 没有任何事件的 95% 区间整段落在 0 以上。
+                {confirmed.best && ` T+1 中位超额最高的是「${confirmed.best.label}」`
+                  + `（${signed(confirmed.best.v)}），但它的区间也跨 0。`}
+              </span>}
+        </div>
+        <div className="text-[11px]">
+          <span className="text-text-muted">负向确认：</span>
+          {confirmed.neg.length
+            ? <span className="text-down">{confirmed.neg.join('、')}</span>
+            : <span className="text-text-secondary">暂无</span>}
+        </div>
+      </div>
+
+      <div className="mt-2 overflow-x-auto">
+        <table className="w-full text-xs" style={{ minWidth: 560 }}>
+          <thead>
+            <tr className="text-[10px]">
+              <SortTh col={'event' as EvKey} label="事件" align="left"
+                      sort={sort} onSort={onSort} className={th} />
+              <SortTh col={'x1' as EvKey} label="T+1 超额" align="left"
+                      sort={sort} onSort={onSort} className={th} />
+              <SortTh col={'x3' as EvKey} label="T+3 超额" align="left"
+                      sort={sort} onSort={onSort} className={th} />
+              <SortTh col={'n' as EvKey} label="事件数" align="left"
+                      sort={sort} onSort={onSort} className={th} />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((e) => (
+              <tr key={e.event} className="border-b border-bg-border/40 last:border-0">
+                <td className="px-2 py-1.5 align-top text-text-primary whitespace-nowrap">
+                  {evLabel(e)}
+                </td>
+                <HorizonCell c={e.excess?.['1']} />
+                <HorizonCell c={e.excess?.['3']} />
+                <td className="px-2 py-1.5 align-top font-mono tabular-nums text-text-muted">
+                  {e.n_events}
+                </td>
+              </tr>
+            ))}
+            {/* 基线留着：它是「超额确实以 0 为中心」的自查，不是一个待比较的对象 */}
+            {data.baseline && (
+              <tr className="border-t border-bg-border text-text-muted/70">
+                <td className="px-2 py-1.5 align-top whitespace-nowrap"
+                    title="全部股票日。超额口径下它按定义就该接近 0——这一行是自查">
+                  全池基线
+                </td>
+                <HorizonCell c={data.baseline.excess?.['1']} plain />
+                <HorizonCell c={data.baseline.excess?.['3']} plain />
+                <td className="px-2 py-1.5 align-top font-mono tabular-nums">
+                  {data.baseline.n_events}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ── T+5/T+10 不进主表 ─────────────────────────────────────────────
+          主表里 T+1 含近期事件、T+10 只含更早的,并排放会被读成「持有越久越
+          差」。只有同一批（走得完 T+10 的）样本才谈得上时间衰减 */}
+      <Fold title="持有期比较（T+1 → T+10）"
+            note="只用能走完 T+10 的同一批事件，否则不是时间衰减">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs" style={{ minWidth: 480 }}>
+            <thead>
+              <tr className="text-[10px] text-text-muted">
+                <th className={cn(th, 'text-left font-medium')}>事件</th>
+                {(data.horizons ?? [1, 3, 5, 10]).map((h) => (
+                  <th key={h} className={cn(th, 'text-left font-medium')}>T+{h}</th>
+                ))}
+                <th className={cn(th, 'text-left font-medium')}>n</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.events ?? []).filter((e) => e.excess_balanced).map((e) => {
+                const b = e.excess_balanced!
+                const n = (data.horizons ?? [1, 3, 5, 10])
+                  .map((h) => b[String(h)]?.n).find((x) => x != null)
+                return (
+                  <tr key={e.event} className="border-b border-bg-border/40 last:border-0">
+                    <td className="px-2 py-1 text-text-primary whitespace-nowrap">
+                      {evLabel(e)}
+                    </td>
+                    {(data.horizons ?? [1, 3, 5, 10]).map((h) => (
+                      <td key={h} className="px-2 py-1 font-mono tabular-nums
+                                             text-text-secondary">
+                        {signed(b[String(h)]?.median)}
+                      </td>
+                    ))}
+                    <td className="px-2 py-1 font-mono tabular-nums text-text-muted">
+                      {n ?? '—'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          {!(data.events ?? []).some((e) => e.excess_balanced) && (
+            <p className="text-[11px] text-text-muted">
+              还没有事件能走完 T+10 的完整窗口。
+            </p>
+          )}
+          <p className="text-[11px] text-text-muted mt-1.5">
+            这里刻意不给区间和判定：换一批样本就是另一组数，跟主表的 T+1/T+3
+            不可直接对读。
+          </p>
+        </div>
+      </Fold>
+
+      {/* ── 可执行口径:方向最贴近实操,但 n 只有个位数 ──────────────────── */}
+      <Fold title="次日开盘可执行样本"
+            note="样本积累中，有效 n 多为个位数，不用于方向判断">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs" style={{ minWidth: 420 }}>
+            <thead>
+              <tr className="text-[10px] text-text-muted">
+                <th className={cn(th, 'text-left font-medium')}>事件</th>
+                <th className={cn(th, 'text-left font-medium')}>T+1 可执行超额</th>
+                <th className={cn(th, 'text-left font-medium')}>T+3</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.events ?? []).map((e) => (
+                <tr key={e.event} className="border-b border-bg-border/40 last:border-0">
+                  <td className="px-2 py-1 text-text-primary whitespace-nowrap">
+                    {evLabel(e)}
+                  </td>
+                  {(['1', '3'] as const).map((h) => (
+                    <td key={h} className="px-2 py-1 font-mono tabular-nums
+                                           text-text-secondary whitespace-nowrap">
+                      {signed(e.exec_excess?.[h]?.median)}
+                      <span className="text-text-muted/60 ml-0.5">
+                        {e.exec_excess?.[h] ? `(n${e.exec_excess[h]!.n})` : ''}
+                      </span>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="text-[11px] text-text-muted mt-1.5">
+            T+1 = 昨收识别信号、次日开盘买、当天收盘卖，是最贴近实操的一格。
+            <span className="text-warn"> 但现在有效 n 只有 1~12，方向不能当真。</span>
+            为什么必须看超额：基线自己在开盘口径下就不是 0。
+          </p>
+        </div>
+      </Fold>
+
+      <Fold title="口径与数据质量">
+        <ul className="text-[11px] text-text-muted space-y-1">
+          {(data.caveats ?? []).map((c, i) => (
+            <li key={i} className="flex gap-1.5">
+              <span className="text-text-muted/50 shrink-0">·</span><span>{c}</span>
+            </li>
+          ))}
+          <li className="flex gap-1.5">
+            <span className="text-text-muted/50 shrink-0">·</span>
+            <span>
+              MFE/MAE：真实 OHLC 自 2026-08-27 起才有，缺就不算（不拿收盘顶替），
+              当前有效样本不足，暂不展示。
+            </span>
+          </li>
+          <li className="flex gap-1.5">
+            <span className="text-text-muted/50 shrink-0">·</span>
+            <span>
+              每一格的 n 是它自己的有效样本：事件数不等于每格都有那么多——窗口
+              没走完、同日不足 3 只同类没有对照，各扣各的。
+              {data.skipped_incomplete
+                ? ` 窗口未走完而排除 ${data.skipped_incomplete} 次测量。` : ''}
+            </span>
+          </li>
+        </ul>
+      </Fold>
     </div>
   )
 }

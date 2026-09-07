@@ -271,3 +271,69 @@ class TestStatisticalHonesty:
         ci = _cluster_bootstrap(vals, cls, n_boot=300)
         assert ci is not None
         assert ci[0] < 0 < ci[1], "一个 cluster 主导时，区间必须宽到跨 0"
+
+
+class TestJsonPayload:
+    """
+    界面读的是 `--json` 产物，不是 stdout 那张表。**这条通道有它自己的骗人
+    方式**：把「没样本」写成 0、把算不出的区间写成 [0,0]、把免责声明留在终端
+    里而数字自己跑到页面上。
+    """
+
+    def _payload(self, **over):
+        from scripts.evaluate_lifecycle import _build_payload
+        m = {
+            "exc1": [1.0, 2.0, -1.0, 3.0, 2.5, -0.5, 4.0, 1.5, 0.5, 2.2],
+            "exc1_cl": [("A", D0), ("A", D0), ("B", D0), ("C", D0), ("D", D0),
+                        ("E", D0), ("F", D0), ("G", D0), ("H", D0), ("I", D0)],
+            "exc3": [],                 # 一格都没有 → 必须是 None，不是 0
+            "opx1": [0.5, -0.5],
+            "mfe5": [7.0], "mae5": [-3.0],
+        }
+        m.update(over)
+        full = {"BROKEN→REPAIRING": (12, m), "ALL_STOCK_DAYS": (900, m)}
+        return _build_payload(full, {}, 33,
+                              ["BROKEN→REPAIRING", "ALL_STOCK_DAYS"],
+                              date(2026, 9, 7))
+
+    def test_没样本的格子是None不是0(self):
+        ev = self._payload()["events"][0]
+        assert ev["excess"]["3"] is None, "「没有样本」不能写成 0——那是个观测"
+        assert ev["excess"]["1"]["n"] == 10
+
+    def test_每格带自己的n(self):
+        ev = self._payload()["events"][0]
+        assert ev["n_events"] == 12
+        assert ev["excess"]["1"]["n"] == 10, "事件数 12 不等于每一项都有 12"
+        assert ev["exec_excess"]["1"]["n"] == 2
+
+    def test_算不出区间时给None不给假区间(self):
+        ev = self._payload(exc1=[1.0, 2.0], exc1_cl=[("A", D0), ("A", D0)])
+        e1 = ev["events"][0]["excess"]["1"]
+        assert e1["ci"] is None and e1["crosses_zero"] is None, \
+            "样本太少就是算不出来，给一个 [0,0] 比不给更糟"
+
+    def test_跨0要标出来(self):
+        e1 = self._payload()["events"][0]["excess"]["1"]
+        assert e1["ci"] is not None
+        assert e1["crosses_zero"] == (e1["ci"][0] * e1["ci"][1] <= 0)
+
+    def test_免责声明跟数字一起走(self):
+        p = self._payload()
+        joined = "".join(p["caveats"])
+        assert "幸存者" in joined or "进不了池" in joined, "幸存者偏差必须随数字走"
+        assert "跨 0" in joined, "区间跨 0 的含义必须随数字走"
+        assert "不打分" in joined or "不给结论" in joined
+
+    def test_拆出from和to(self):
+        ev = self._payload()["events"][0]
+        assert (ev["from"], ev["to"]) == ("BROKEN", "REPAIRING"), \
+            "BROKEN→REPAIRING 和 CROSS_FAILED→REPAIRING 交易含义完全不同"
+        assert self._payload()["baseline"]["from"] is None
+
+    def test_带上口径版本和生成时间(self):
+        from scripts.evaluate_lifecycle import FORMULA_VERSION
+        p = self._payload()
+        assert p["formula_version"] == FORMULA_VERSION
+        assert p["generated_at"] and p["as_of"] == "2026-09-07", \
+            "离线产物不带生成时间，过期了没人看得出来"

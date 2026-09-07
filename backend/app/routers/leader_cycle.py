@@ -1,18 +1,24 @@
 """高标龙头生命周期 —— 事实层接口。"""
-from datetime import date
+import json
+import os
+from datetime import date, datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..database import get_db
 from ..models.leader_cycle import LeaderCycleSnapshot
 from ..models.sector import Sector
 from ..models.stock import Stock
 from ..services.leader_cycle_state_service import (
-    CORE_OBSERVATION, UNKNOWN, replay_price_lifecycle,
+    CORE_OBSERVATION, FORMULA_VERSION, UNKNOWN, replay_price_lifecycle,
 )
+
+# app/routers/x.py → backend/
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 router = APIRouter(prefix="/leader-cycle", tags=["leader-cycle"])
 
@@ -167,6 +173,40 @@ def get_lifecycle_effect(
     """
     from ..services.leader_cycle_effect_service import compute_effect
     return compute_effect(db, trade_date, history_days)
+
+
+@router.get("/evidence")
+def get_lifecycle_evidence():
+    """
+    转移时点的**前瞻证据**，由 `scripts/evaluate_lifecycle.py --json` 离线生成。
+
+    为什么读文件而不是实时算：那套评估要把每只票的每个交易日 replay 一遍，再按
+    「股票×周期」整段 bootstrap 1000 次。不是一个 HTTP 请求能扛的量。
+
+    **没跑过就如实说没跑过。** 返回空的 events 列表看起来像「跑过了，但一条证据
+    都没有」——那是两件完全不同的事，界面会照着显示成后者。
+    """
+    raw = settings.LIFECYCLE_EVIDENCE_PATH
+    path = raw if os.path.isabs(raw) else os.path.join(_BACKEND_DIR, raw)
+    if not os.path.exists(path):
+        return {"available": False, "path": raw,
+                "reason": "还没跑过评估：python scripts/evaluate_lifecycle.py --json"}
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, ValueError) as e:
+        # 文件坏了也别装作没有——「没跑过」和「跑了但产物读不了」要分开
+        return {"available": False, "path": raw, "reason": f"产物读不出来：{e}"}
+
+    payload["available"] = True
+    payload["stale_formula"] = payload.get("formula_version") != FORMULA_VERSION
+    payload["current_formula_version"] = FORMULA_VERSION
+    try:
+        payload["file_mtime"] = datetime.fromtimestamp(
+            os.path.getmtime(path)).isoformat(timespec="seconds")
+    except OSError:
+        payload["file_mtime"] = None
+    return payload
 
 
 @router.get("", response_model=LeaderCycleResponse)

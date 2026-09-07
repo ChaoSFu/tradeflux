@@ -177,3 +177,59 @@ export interface LifecycleEffectResponse {
 
 export const fetchLifecycleEffect = () =>
   client.get<LifecycleEffectResponse>('/leader-cycle/effect').then((r) => r.data)
+
+// ─── 转移时点的前瞻证据（离线产物）─────────────────────────────────────────
+// 上面那份 history 测的是「**处于**某状态期间怎么走」，这份测的是「**转入**某
+// 状态那一天之后怎么走」，而且做了同日同池对照和 bootstrap 区间。两者可以方向
+// 相反，那不是矛盾——问的本来就不是同一件事。
+//
+// 由 scripts/evaluate_lifecycle.py --json 离线生成。不实时算：那套评估要把每只
+// 票的每个交易日 replay 一遍，再整段重抽 1000 次。
+export interface EvidenceCell {
+  median: number
+  n: number
+  /** 超过同日同池中位数的比例。50% 附近 = 跟随机没区别 */
+  pos_rate?: number
+  /** 按「股票×周期」整段重抽的 95% 区间。**算不出来就是 null，不给假区间** */
+  ci?: [number, number] | null
+  /** 跨 0 = 方向可能是噪声，不管中位数看起来多好看 */
+  crosses_zero?: boolean | null
+}
+
+export interface EvidenceEvent {
+  /** 形如 "BROKEN→REPAIRING" */
+  event: string
+  from: LifecycleState | null
+  to: LifecycleState | null
+  n_events: number
+  /** key 是 horizon 的字符串形式（"1"/"3"/"5"/"10"）。**没样本是 null，不是 0** */
+  excess: Record<string, EvidenceCell | null>
+  excess_balanced: Record<string, EvidenceCell | null> | null
+  /** 次日开盘买入。T+1 那格 = 开盘买、当天收盘卖，最贴近实际操作 */
+  exec_excess: Record<string, EvidenceCell | null>
+  mfe5: EvidenceCell | null
+  mae5: EvidenceCell | null
+}
+
+export interface LifecycleEvidence {
+  /** false = 还没跑过 / 产物读不出来。**这跟「跑过了但没有证据」是两件事** */
+  available: boolean
+  reason?: string
+  path?: string
+  formula_version?: string
+  current_formula_version?: string
+  /** 产物的口径跟当前代码对不上——旧证据不再对应现在的规则 */
+  stale_formula?: boolean
+  generated_at?: string
+  file_mtime?: string
+  as_of?: string
+  horizons?: number[]
+  skipped_incomplete?: number
+  events?: EvidenceEvent[]
+  baseline?: EvidenceEvent | null
+  /** 免责声明跟数字一起走——数字会被复制到界面上，注意事项不会 */
+  caveats?: string[]
+}
+
+export const fetchLifecycleEvidence = () =>
+  client.get<LifecycleEvidence>('/leader-cycle/evidence').then((r) => r.data)

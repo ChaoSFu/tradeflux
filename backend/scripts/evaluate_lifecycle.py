@@ -39,11 +39,12 @@
 """
 import argparse
 import csv
+import json
 import os
 import statistics as st
 import sys
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -57,6 +58,11 @@ from app.services.leader_cycle_state_service import (
 from app.services.trading_calendar import get_trading_days
 
 HORIZONS = (1, 3, 5, 10)
+
+# 界面读的那份产物。跟 app/config.py 的 LIFECYCLE_EVIDENCE_PATH 同一个位置
+DEFAULT_JSON = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "lifecycle_evidence.json")
 
 
 class Bars:
@@ -244,7 +250,7 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
     full = {k: (len(v), _measure(v)) for k, v in groups.items()}
     bal_src = {k: _complete(v) for k, v in groups.items()}
     balanced = {k: (len(v), _measure(v)) for k, v in bal_src.items() if v}
-    return full, balanced, skipped_incomplete, events
+    return full, balanced, skipped_incomplete, events, dates[-1]
 
 
 def _fmt(vals: List[float]) -> str:
@@ -311,6 +317,77 @@ def _print_table(title: str, res: dict, key: str, order: List[str]):
         print(f"{ev:<28}" + "".join(_cell(m.get(f"{key}{h}", [])) for h in HORIZONS))
 
 
+
+def _stat(vals: List[float]) -> Optional[dict]:
+    """一格指标。**没有样本就是 None,不是 0**。"""
+    if not vals:
+        return None
+    return {"median": round(st.median(vals), 2), "n": len(vals)}
+
+
+def _build_payload(full: dict, balanced: dict, skipped: int,
+                   order: List[str], as_of: Optional[date]) -> dict:
+    """
+    把评估结果摊成 JSON。**界面用的是这一份,不是 stdout 的表格**——
+    让人照着终端输出往前端里抄数字,抄错了没人会发现,而且第二天就过期了。
+
+    每一格都带自己的 n。事件数 41 不等于每一项都有 41:窗口没走完、
+    OHLC 缺失、同日对照不足,各扣各的。
+    """
+    def one(key: str) -> dict:
+        n_total, m = full[key]
+        excess = {}
+        for h in HORIZONS:
+            vals = m.get(f"exc{h}", [])
+            cell = _stat(vals)
+            if cell is not None:
+                pos = sum(1 for x in vals if x > 0) / len(vals)
+                cell["pos_rate"] = round(pos, 3)
+                ci = _cluster_bootstrap(vals, m.get(f"exc{h}_cl", []))
+                # **区间算不出来就是 None,不给一个假的**
+                cell["ci"] = [round(ci[0], 1), round(ci[1], 1)] if ci else None
+                cell["crosses_zero"] = (ci[0] * ci[1] <= 0) if ci else None
+            excess[str(h)] = cell
+        bal = balanced.get(key)
+        return {
+            "event": key,
+            "from": key.split("\u2192")[0] if "\u2192" in key else None,
+            "to": key.split("\u2192")[1] if "\u2192" in key else None,
+            "n_events": n_total,
+            "excess": excess,
+            # 同一批（能走完 T+10 的）样本——只有这张能谈时间衰减
+            "excess_balanced": {str(h): _stat(bal[1].get(f"exc{h}", []))
+                                for h in HORIZONS} if bal else None,
+            # 次日开盘买入。T+1 那格 = 开盘买、当天收盘卖,最贴近实际操作
+            "exec_excess": {str(h): _stat(m.get(f"opx{h}", [])) for h in HORIZONS},
+            "mfe5": _stat(m.get("mfe5", [])),
+            "mae5": _stat(m.get("mae5", [])),
+        }
+
+    return {
+        "formula_version": FORMULA_VERSION,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "as_of": as_of.isoformat() if as_of else None,
+        "horizons": list(HORIZONS),
+        "skipped_incomplete": skipped,
+        "events": [one(k) for k in order if k != "ALL_STOCK_DAYS"],
+        "baseline": one("ALL_STOCK_DAYS") if "ALL_STOCK_DAYS" in full else None,
+        # **免责声明跟数字一起走。** 数字会被复制到界面上,注意事项不会——
+        # 除非把它绑在同一个对象里
+        "caveats": [
+            "同日同池只消掉了市场行情,没有消掉样本选择:快照是「今天在池子里的"
+            "股票,当时长什么样」,当时进不了池的票根本没有行。绝对收益偏高,"
+            "组间对比也只在「今天的幸存者」这个宇宙内成立。",
+            "同一只票、同一段周期会贡献多次事件,收益窗口还高度重叠——有效样本"
+            "数远小于打印出来的 n,不要按独立样本算显著性。",
+            "95% 区间按「股票×周期」整段重抽 1000 次。跨 0 = 方向可能是噪声,"
+            "不管中位数看起来多好看。",
+            "这里不给结论也不打分。一个自动判定「有没有 Edge」的评估器,等于又"
+            "造一个黑箱。",
+        ],
+    }
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -318,11 +395,15 @@ def main():
     ap.add_argument("--min-n", type=int, default=8,
                     help="样本少于这个数的事件不显示（默认8，太少的中位数没有意义）")
     ap.add_argument("--csv", help="逐条明细写到这个文件")
+    ap.add_argument("--json", dest="json_out",
+                    help="结构化结果写到这个文件，界面读它（默认 "
+                         "backend/data/lifecycle_evidence.json）",
+                    nargs="?", const="__default__")
     args = ap.parse_args()
 
     db = SessionLocal()
     try:
-        full, balanced, skipped, events = evaluate(db, args.event)
+        full, balanced, skipped, events, as_of = evaluate(db, args.event)
         print(f"口径 {FORMULA_VERSION}\n")
         print("⚠️ 这里的「同日同池」只消掉了**市场行情**，没有消掉**样本选择**：")
         print("   快照是「今天在池子里的股票，当时长什么样」，当时进不了池的票")
@@ -406,9 +487,19 @@ def main():
             with open(args.csv, "w", newline="", encoding="utf-8-sig") as f:
                 w = csv.writer(f)
                 w.writerow(["event", "code", "date", "entry_reasons"])
-                for ev, code, d, codes in events:
+                for ev, code, d, codes, _cluster in events:
                     w.writerow([ev, code, d, "|".join(codes)])
             print(f"\n明细写入 {args.csv}（{len(events)} 条）")
+
+        if args.json_out:
+            path = (DEFAULT_JSON if args.json_out == "__default__"
+                    else args.json_out)
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            payload = _build_payload(full, balanced, skipped, order, as_of)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            print(f"\n结构化结果写入 {path}"
+                  f"（{len(payload['events'])} 类事件，界面读它）")
     finally:
         db.close()
 

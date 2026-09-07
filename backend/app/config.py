@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     # 空 = 未启用，完全退回腾讯/新浪逐股接口，功能不受影响。
     FUYAO_API_KEY: str = ""
 
+    # scripts/evaluate_lifecycle.py --json 写出的评估产物。**界面读文件，不实时
+    # 算**：那套评估要把每只票的每个交易日 replay 一遍再做 1000 次 bootstrap，
+    # 不是一个请求能扛的。相对路径按 backend/ 解析；文件不存在时接口如实说
+    # 「还没跑过」，不返回空表——空表看起来像「跑过了但什么都没有」
+    LIFECYCLE_EVIDENCE_PATH: str = "data/lifecycle_evidence.json"
+
     @property
     def cors_origins_list(self) -> List[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",")]
