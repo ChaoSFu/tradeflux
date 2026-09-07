@@ -76,6 +76,8 @@ class LeaderCycleItem(BaseModel):
     # 那时显示这个，并标明是截至哪一天
     last_valid_state: Optional[str] = None
     last_valid_date: Optional[date] = None
+    # 在当前状态里待了几个交易日（转入当天 = 0）。按交易日历数，不数快照行数
+    days_in_state: Optional[int] = None
     state_since_date: Optional[date] = None
     transitioned_today: bool = False
     lifecycle_formula_version: Optional[str] = None
@@ -133,6 +135,7 @@ def _lifecycle_fields(snaps, trade_date: date, calendar) -> dict:
         "previous_lifecycle_state": st.previous_state,
         "last_valid_state": st.last_valid_state,
         "last_valid_date": st.last_valid_date,
+        "days_in_state": st.days_in_state,
         "state_since_date": st.state_since_date,
         "transitioned_today": st.transitioned_today,
         "lifecycle_formula_version": st.formula_version,

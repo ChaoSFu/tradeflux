@@ -663,3 +663,50 @@ class TestLastValidState:
         s = _replay(rows)
         assert s.state == UNKNOWN and s.last_valid_state is None, \
             "从来没判出来过就是没有，不编一个"
+
+
+class TestDaysInState:
+    """
+    「它从哪来、在这待了多久」——`previous_state` 回答前半句，`days_in_state`
+    回答后半句。
+
+    **按交易日历数，不数快照行数。** 缺一行就少算一天，那正是 days_since_break
+    早期踩过的坑（快照有空洞时它系统性低估）。
+    """
+
+    def test_转入当天是0(self):
+        rows = _to_success()
+        s = _replay(rows)
+        assert s.transitioned_today is True and s.days_in_state == 0
+
+    def test_按交易日历数(self):
+        rows = _to_success() + [
+            Row(3, 22.5, ma5=19.6, ma10=18.5, ma20=17.0, ma30=16.0, days_since_break=3),
+            Row(4, 22.8, ma5=19.8, ma10=18.6, ma20=17.0, ma30=16.0, days_since_break=4),
+        ]
+        s = _replay(rows)
+        assert s.state == CROSS_SUCCESS
+        assert s.days_in_state == 2, "第2天转入，现在是第4天，隔了 2 个交易日"
+
+    def test_中间缺一行也照样按日历数(self):
+        """
+        第 3 天的行不可用（数据缺口）。停留天数仍应是 2——它问的是"过了几个
+        交易日"，不是"我们有几行记录"。
+        """
+        rows = _to_success() + [
+            Row(3, 22.5, ma5=19.6, ma10=18.5, ma20=17.0, ma30=16.0,
+                days_since_break=3, fresh=False),
+            Row(4, 22.8, ma5=19.8, ma10=18.6, ma20=17.0, ma30=16.0, days_since_break=4),
+        ]
+        assert _replay(rows).days_in_state == 2
+
+    def test_没有日历时不猜(self):
+        assert _replay(_to_success(), cal=None).days_in_state is None
+
+    def test_未结算时算到最后一个有效日(self):
+        rows = _to_success() + [
+            Row(3, 22.0, ma5=19.6, ma10=18.5, ma20=17.0, ma30=16.0,
+                days_since_break=3, settled=False)]
+        s = _replay(rows)
+        assert s.state == UNKNOWN
+        assert s.days_in_state == 0, "算到最后一个已结算日，不把未结算那天算进去"

@@ -172,6 +172,10 @@ class DayState:
     # 猜它当前是哪个意思，正是以后会咬人的写法。
     last_valid_state: Optional[str] = None
     last_valid_date: Optional[date] = None
+    # **在当前状态里待了几个交易日。** 按交易日历数，不是自然日、也不是"有几行
+    # 快照"——后者会因为缺行而低估，跟 days_since_break 是同一个家族的坑。
+    # 转入当天是 0。拿不到日历时是 None（不猜）
+    days_in_state: Optional[int] = None
     # 「曾经穿越成功」要单独记：CROSS_WEAKENING 必须能跟 CROSS_FAILED 区分开
     ever_cross_success: bool = False
     first_cross_success_date: Optional[date] = None
@@ -415,6 +419,19 @@ def _advance(prev_state: str, obs, calendar=None) -> tuple:
     return prev_state, ["HOLD"]
 
 
+def _sessions_between(cal, a: Optional[date], b: Optional[date]) -> Optional[int]:
+    """
+    交易日历上 a 到 b 之间隔了几个交易日。**用日历数，不数快照行数**——
+    缺一行就少算一天，那正是 days_since_break 早期踩过的坑。
+    """
+    if not cal or a is None or b is None:
+        return None
+    try:
+        return list(cal).index(b) - list(cal).index(a)
+    except ValueError:
+        return None
+
+
 def _initial_state(row) -> tuple:
     """
     replay 起点。历史从中途开始时（我们的快照只有 60 天）不能假装知道更早的事：
@@ -524,6 +541,7 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
             date=as_of_date, state=(NO_CYCLE if _why == "NO_CYCLE" else UNKNOWN),
             previous_state=state,
             last_valid_state=state, last_valid_date=last_ok,
+            days_in_state=_sessions_between(trading_days, since, last_ok),
             state_since_date=since, transitioned_today=False,
             reason_codes=[_why], entry_reason_codes=entry_codes,
             evaluation_status=(_eval_status(today) if today.date == as_of_date
@@ -534,6 +552,7 @@ def replay_price_lifecycle(snapshots, as_of_date: date,
     return DayState(
         date=as_of_date, state=state, previous_state=prev_state,
         last_valid_state=state, last_valid_date=today.date,
+        days_in_state=_sessions_between(trading_days, since, today.date),
         state_since_date=since, transitioned_today=(transitioned_on == as_of_date),
         reason_codes=codes, entry_reason_codes=entry_codes,
         evaluation_status="OK", formula_version=formula_version,

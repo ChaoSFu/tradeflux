@@ -70,7 +70,7 @@ const BUCKET: Record<Exclude<Group, 'all' | 'unbucketed'>, Bucketable[]> = {
 STATE_ORDER.forEach((st) => BUCKET[bucketOf(st)].push(st))
 const BUCKETED = new Set<string>(STATE_ORDER)
 
-const COLS = ['股票', '状态', '主板块', '本轮', '60日', 'D+', '峰值回撤',
+const COLS = ['股票', '状态', '来自', '停留', '主板块', '本轮', '60日', 'D+', '峰值回撤',
   '现价/MA5', '现价/MA10', '距阶段高', '距周期顶',
   'RS市场20', 'ΔRS 1日', 'ΔRS 3日', 'RS板块20', '量比5日', '换手']
 
@@ -394,7 +394,7 @@ export default function LeaderCyclePanel() {
         <div className="card p-8 text-center text-text-muted text-sm">该分组暂无股票</div>
       ) : (
         <div className="card overflow-x-auto">
-          <table className="w-full text-xs" style={{ minWidth: 1380 }}>
+          <table className="w-full text-xs" style={{ minWidth: 1500 }}>
             <thead>
               <tr className="text-[10px] text-text-muted uppercase tracking-wider">
                 {COLS.map((h) => (
@@ -451,6 +451,21 @@ function Row({ r }: { r: LeaderCycleItem }) {
         <span className={cn('ml-1.5 text-[10px] text-text-muted', NUM)}>{r.code}</span>
       </td>
       <td className="px-3 py-2 whitespace-nowrap text-xs"><StateTag r={r} /></td>
+      {/* 从哪个状态来的。首次出现（没有上一个状态）给 — ，不编一个 */}
+      <td className="px-3 py-2 whitespace-nowrap text-[11px] text-text-muted">
+        {r.previous_lifecycle_state
+          ? LIFECYCLE_ZH[r.previous_lifecycle_state] ?? r.previous_lifecycle_state
+          : '—'}
+      </td>
+      {/* 在当前状态待了几个交易日。按日历数，转入当天是 0 */}
+      <td className={cn('px-3 py-2 whitespace-nowrap', NUM)}
+          title={r.state_since_date ? `${r.state_since_date} 起` : ''}>
+        {r.days_in_state === null || r.days_in_state === undefined
+          ? <span className="text-text-muted/50">—</span>
+          : <span className={r.days_in_state === 0 ? 'text-accent' : ''}>
+              {r.days_in_state}日
+            </span>}
+      </td>
       <td className="px-3 py-2 text-text-secondary whitespace-nowrap max-w-[8rem] truncate"
           title={r.sector_name || ''}>{r.sector_name || '—'}</td>
       <td className="px-3 py-2 whitespace-nowrap">

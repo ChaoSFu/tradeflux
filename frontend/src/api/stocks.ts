@@ -101,6 +101,8 @@ export interface LeaderCycleItem {
   // 推动跨日状态），界面这时显示它，并标明截至哪天
   last_valid_state: LifecycleState | null
   last_valid_date: string | null
+  // 在当前状态里待了几个交易日（转入当天 = 0）。按交易日历数，不数快照行数
+  days_in_state: number | null
   state_since_date: string | null
   transitioned_today: boolean
   lifecycle_formula_version: string | null
