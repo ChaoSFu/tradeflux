@@ -1,6 +1,9 @@
+from datetime import date as dt_date
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import List, Optional
 from ..database import get_db
 from ..models.stock import Stock, StockDailySnapshot
 from ..services.strong_stock_service import (
@@ -15,6 +18,16 @@ from ..schemas.stock import (
 )
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
+
+
+def _parse_date(s: Optional[str]) -> Optional[dt_date]:
+    """YYYY-MM-DD → date。**解析不出来就是 None（不传），不是报错也不是今天。**"""
+    if not s:
+        return None
+    try:
+        return dt_date.fromisoformat(s)
+    except ValueError:
+        return None
 
 
 @router.get("", response_model=StockListResponse)
@@ -73,6 +86,73 @@ def get_sector_trend(
     return get_sector_limit_trend(db, sector, days)
 
 
+class AdvanceLadderRow(BaseModel):
+    from_board: int
+    to_board: int
+    previous_count: int          # 昨天该板位的涨停股总数
+    observed_count: int          # 其中今天有快照的（= advanced + broken）
+    advanced_count: int
+    broken_count: int
+    unknown_count: int           # 今天没有这只票的行。**既不是晋级也不是断板**
+    advance_ratio: Optional[float] = None   # 分母是 observed；没观测到就是 None
+
+
+class AdvanceLadderResponse(BaseModel):
+    trade_date: Optional[dt_date] = None
+    prev_date: Optional[dt_date] = None     # 交易日历上的前一个交易日
+    rows: List[AdvanceLadderRow] = []
+    notes: List[str] = []
+
+
+class SectorContinuationRow(BaseModel):
+    sector_id: int
+    sector_name: str
+    yesterday_limit_up_count: int
+    today_continued_limit_up_count: int
+    today_new_limit_up_count: int
+    today_broken_count: int
+    today_unknown_count: int
+    today_limit_down_count: int
+    continuation_ratio: Optional[float] = None
+
+
+class SectorContinuationResponse(BaseModel):
+    trade_date: Optional[dt_date] = None
+    prev_date: Optional[dt_date] = None
+    rows: List[SectorContinuationRow] = []
+    notes: List[str] = []
+
+
+@router.get("/limit-moves/advance-ladder", response_model=AdvanceLadderResponse)
+def get_advance_ladder(
+    date: Optional[str] = Query(None, description="交易日 YYYY-MM-DD，不传=最新"),
+    db: Session = Depends(get_db),
+):
+    """
+    分板位晋级：昨日 N 板的票今天有多少继续涨停。**只出计数和比率，不出接力分。**
+
+    T-1 取交易日历上的前一个交易日，不是"库里上一条记录"。
+    今天没有快照的票单独计入 unknown，不并进 broken——停牌和退市不是断板。
+    """
+    from ..services.limit_moves_analysis_service import compute_advance_ladder
+    return compute_advance_ladder(db, _parse_date(date))
+
+
+@router.get("/limit-moves/sector-continuation", response_model=SectorContinuationResponse)
+def get_sector_continuation(
+    date: Optional[str] = Query(None, description="交易日 YYYY-MM-DD，不传=最新"),
+    db: Session = Depends(get_db),
+):
+    """
+    板块跨日延续：昨天强的板块今天还强不强。**只出计数，不出延续分。**
+
+    归组走 StockSectorRelation（关注板块），一只股票可同时属于多个板块，
+    所以各行相加会大于全市场涨停数。
+    """
+    from ..services.limit_moves_analysis_service import compute_sector_continuation
+    return compute_sector_continuation(db, _parse_date(date))
+
+
 @router.get("/limit-moves", response_model=StockListResponse)
 def list_limit_moves(
     page: int = Query(1, ge=1),
@@ -83,14 +163,8 @@ def list_limit_moves(
     db: Session = Depends(get_db),
 ):
     """非ST股中指定交易日涨停/跌停的股票列表。move_type=limit_up|limit_down|不传(两者)；date 指定历史日。"""
-    from datetime import date as _date
-    d = None
-    if date:
-        try:
-            d = _date.fromisoformat(date)
-        except ValueError:
-            d = None
-    return get_limit_moves_pool(db, page, page_size, search, move_type, date=d)
+    return get_limit_moves_pool(db, page, page_size, search, move_type,
+                                date=_parse_date(date))
 
 
 @router.get("/{code}", response_model=StockResponse)

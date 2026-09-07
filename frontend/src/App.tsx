@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Layout } from '@/components/layout/Layout'
 import Home from '@/pages/Home'
 import MarketTrend from '@/pages/MarketTrend'
@@ -41,7 +41,6 @@ export default function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<Home />} />
           <Route path="market-trend" element={<MarketTrend />} />
-          <Route path="market-effects" element={<MarketEffects />} />
           <Route path="strong" element={<Dashboard />} />
           <Route path="stocks" element={<StockPool />} />
           <Route path="watchlist" element={<Watchlist />} />
@@ -50,16 +49,26 @@ export default function App() {
           <Route path="pool-config" element={<PoolConfig />} />
           <Route path="sector-trend" element={<SectorTrend />} />
           <Route path="sector-emotion" element={<SectorEmotion />} />
-          <Route path="speculation-radar" element={<SpeculationRadar />} />
-          <Route path="limit-up-radar" element={<LimitUpSectorRadar />} />
           <Route path="weak-to-strong-radar" element={<WeakToStrongRadar />} />
           <Route path="weak-to-strong-radar/guide" element={<WeakToStrongRadarGuide />} />
           <Route path="review" element={<DailyReview />} />
           <Route path="trade-journal" element={<TradeJournal />} />
-          {/* 涨跌停分析 */}
-          <Route path="limit-moves" element={<LimitMovesDashboard />} />
-          {/* 四合一整合页。旧的四个路由全部保留，不做 redirect */}
+          {/* ── 涨跌停分析：四合一整合页 ─────────────────────────────
+              旧的四个页面**没有删**，挪到 /legacy/* 继续可访问。整合页有没有
+              漏掉东西，只有对着原页面才看得出来；redirect 如果同时让原页面
+              失联，就等于把这个校验能力一起丢了。 */}
           <Route path="limit-moves-analysis" element={<LimitMovesAnalysis />} />
+          <Route path="legacy/limit-moves" element={<LimitMovesDashboard />} />
+          <Route path="legacy/speculation-radar" element={<SpeculationRadar />} />
+          <Route path="legacy/limit-up-radar" element={<LimitUpSectorRadar />} />
+          <Route path="legacy/market-effects" element={<MarketEffects />} />
+          {/* 老书签 / 老链接落到整合页。replace 不留历史，避免返回键在
+              重定向和目标页之间来回弹 */}
+          {['limit-moves', 'speculation-radar', 'limit-up-radar', 'market-effects']
+            .map((p) => (
+              <Route key={p} path={p}
+                     element={<Navigate to="/limit-moves-analysis" replace />} />
+            ))}
           <Route path="turnover" element={<TurnoverOverview />} />
         </Route>
 

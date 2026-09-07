@@ -47,16 +47,17 @@ const NAV: NavEntry[] = [
     ],
   },
   // 被「涨跌停分析」整合掉的四个页面。**降级不是删除**——整合页有没有漏掉东西，
-  // 只有对着原页面才看得出来，所以它们留在这儿，路由也一行没动
+  // 只有对着原页面才看得出来。原路由已 redirect 到整合页（老书签不落空），
+  // 页面本体挪到 /legacy/* 继续可访问
   {
     type: 'group',
     label: '旧版页面',
     icon: Archive,
     children: [
-      { type: 'link', to: '/limit-moves',       label: '涨跌停概览',   icon: Flame },
-      { type: 'link', to: '/speculation-radar', label: '破局雷达',     icon: Mountain },
-      { type: 'link', to: '/limit-up-radar',    label: '涨停板块雷达', icon: Zap },
-      { type: 'link', to: '/market-effects',    label: '市场效应',     icon: Gauge },
+      { type: 'link', to: '/legacy/limit-moves',       label: '涨跌停概览',   icon: Flame },
+      { type: 'link', to: '/legacy/speculation-radar', label: '破局雷达',     icon: Mountain },
+      { type: 'link', to: '/legacy/limit-up-radar',    label: '涨停板块雷达', icon: Zap },
+      { type: 'link', to: '/legacy/market-effects',    label: '市场效应',     icon: Gauge },
     ],
   },
   {

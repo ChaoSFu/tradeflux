@@ -233,3 +233,56 @@ export interface LifecycleEvidence {
 
 export const fetchLifecycleEvidence = () =>
   client.get<LifecycleEvidence>('/leader-cycle/evidence').then((r) => r.data)
+
+// ─── 涨跌停分析 Phase 2：两个跨日统计 ───────────────────────────────────────
+// **只有计数和比率，没有接力分/延续分。** 多个事实加权成一个总分就是又一个
+// 说不清口径的黑箱，这一层刻意不做。
+export interface AdvanceLadderRow {
+  from_board: number
+  to_board: number
+  /** 昨天该板位的涨停股总数 */
+  previous_count: number
+  /** 其中今天有快照的（= advanced + broken）。比率的分母是它 */
+  observed_count: number
+  advanced_count: number
+  broken_count: number
+  /** 今天没有这只票的行（停牌 / 退市 / 未抓到）。**既不是晋级也不是断板** */
+  unknown_count: number
+  /** 一只都没观测到时是 null —— 算不出就是算不出，不是 0% */
+  advance_ratio: number | null
+}
+
+export interface AdvanceLadderResponse {
+  trade_date: string | null
+  /** 交易日历上的前一个交易日。null = 拿不到日历，整份结果为空 */
+  prev_date: string | null
+  rows: AdvanceLadderRow[]
+  notes: string[]
+}
+
+export interface SectorContinuationRow {
+  sector_id: number
+  sector_name: string
+  yesterday_limit_up_count: number
+  today_continued_limit_up_count: number
+  today_new_limit_up_count: number
+  today_broken_count: number
+  today_unknown_count: number
+  today_limit_down_count: number
+  continuation_ratio: number | null
+}
+
+export interface SectorContinuationResponse {
+  trade_date: string | null
+  prev_date: string | null
+  rows: SectorContinuationRow[]
+  notes: string[]
+}
+
+export const fetchAdvanceLadder = (date?: string) =>
+  client.get<AdvanceLadderResponse>('/stocks/limit-moves/advance-ladder',
+    { params: date ? { date } : {} }).then((r) => r.data)
+
+export const fetchSectorContinuation = (date?: string) =>
+  client.get<SectorContinuationResponse>('/stocks/limit-moves/sector-continuation',
+    { params: date ? { date } : {} }).then((r) => r.data)

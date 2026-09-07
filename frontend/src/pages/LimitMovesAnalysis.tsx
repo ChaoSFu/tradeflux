@@ -19,7 +19,10 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { cn } from '@/utils/cn'
-import { fetchLimitMoves, fetchLimitMovesTrend } from '@/api/stocks'
+import {
+  fetchLimitMoves, fetchLimitMovesTrend,
+  fetchAdvanceLadder, fetchSectorContinuation,
+} from '@/api/stocks'
 import { fetchHeightSeries } from '@/api/marketTrend'
 import { fetchLimitUpRadar } from '@/api/limitUpRadar'
 import { fetchMarketEffectLatest } from '@/api/marketEffects'
@@ -33,6 +36,8 @@ import { SectorLimitTable } from '@/components/limitMovesAnalysis/SectorLimitTab
 import { LadderStockList } from '@/components/limitMovesAnalysis/LadderStockList'
 import { CohortFeedbackTable } from '@/components/limitMovesAnalysis/CohortFeedbackTable'
 import { LimitHistoryChart } from '@/components/limitMovesAnalysis/LimitHistoryChart'
+import { AdvanceLadderPanel } from '@/components/limitMovesAnalysis/AdvanceLadderPanel'
+import { SectorContinuationPanel } from '@/components/limitMovesAnalysis/SectorContinuationPanel'
 import { buildSectorRows } from '@/components/limitMovesAnalysis/sectorRows'
 
 type Tab = 'overview' | 'sectors' | 'history'
@@ -68,6 +73,16 @@ export default function LimitMovesAnalysis() {
   const effect = useQuery({
     queryKey: ['lma-effect'],
     queryFn: fetchMarketEffectLatest,
+    staleTime: 10 * 60 * 1000,
+  })
+  const ladder = useQuery({
+    queryKey: ['lma-advance-ladder'],
+    queryFn: () => fetchAdvanceLadder(),
+    staleTime: 10 * 60 * 1000,
+  })
+  const continuation = useQuery({
+    queryKey: ['lma-sector-continuation'],
+    queryFn: () => fetchSectorContinuation(),
     staleTime: 10 * 60 * 1000,
   })
   const trend = useQuery({
@@ -195,11 +210,17 @@ export default function LimitMovesAnalysis() {
                                      frontierWindow={height.data?.frontier_window ?? 20} />
               </QueryState>
             </div>
-            <div className="card p-3">
+            <div className="card p-3 space-y-3">
               <QueryState qs={[height]}
                           isEmpty={!last}>
                 <BoardLadderPanel point={last} />
               </QueryState>
+              {/* 梯队是截面，晋级是这个截面怎么来的——放一起才读得出"厚了还是薄了" */}
+              <div className="pt-2 border-t border-bg-border/60">
+                <QueryState qs={[ladder]} rows={2}>
+                  {ladder.data && <AdvanceLadderPanel data={ladder.data} />}
+                </QueryState>
+              </div>
             </div>
           </div>
 
@@ -238,6 +259,11 @@ export default function LimitMovesAnalysis() {
                 <span className="text-xs font-semibold text-text-primary">连板梯队 · 个股</span>
                 <LadderStockList upStocks={upStocks} sectors={radar.data?.sectors ?? []} />
               </div>
+            </QueryState>
+          </div>
+          <div className="card p-3">
+            <QueryState qs={[continuation]} rows={3}>
+              {continuation.data && <SectorContinuationPanel data={continuation.data} />}
             </QueryState>
           </div>
           <div className="card p-3">

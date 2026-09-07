@@ -6,7 +6,6 @@ import { MarketStateBar } from './MarketStateBar'
 const TITLES: Record<string, string> = {
   '/': '主页 Home',
   '/market-trend': '大盘趋势 Market Trend',
-  '/speculation-radar': '破局雷达 Speculation Regime Radar',
   '/strong': '强势股概览 Strong Overview',
   '/stocks': '活跃股池 Active Pool',
   '/watchlist': '重点监控 Regulatory Monitor',
@@ -17,10 +16,12 @@ const TITLES: Record<string, string> = {
   '/sector-ranking': '板块涨幅排名 Sector Ranking',
   '/review': '日复盘 Daily Review',
   '/trade-journal': '交易复盘 Trade Journal',
-  '/limit-moves': '涨跌停概览 Limit Moves',
   '/limit-moves-analysis': '涨跌停分析 Limit Moves Analysis',
-  '/limit-up-radar': '涨停板块雷达 Limit Up Sector Radar',
-  '/market-effects': '市场效应 Market Effects',
+  // 旧版页面：原路由已 redirect 到整合页，本体在 /legacy/* 下留着做对照
+  '/legacy/limit-moves': '涨跌停概览 Limit Moves（旧版）',
+  '/legacy/speculation-radar': '破局雷达 Speculation Regime Radar（旧版）',
+  '/legacy/limit-up-radar': '涨停板块雷达 Limit Up Sector Radar（旧版）',
+  '/legacy/market-effects': '市场效应 Market Effects（旧版）',
   '/weak-to-strong-radar': '弱转强雷达 Weak-to-Strong Radar',
   '/weak-to-strong-radar/guide': '实现说明 · 弱转强雷达',
 }
