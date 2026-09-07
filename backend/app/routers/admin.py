@@ -176,10 +176,12 @@ def _write_log_file(target_date: date, message: str) -> None:
 
 
 def _capture_update(target_date: date, skip_boards: bool, source: str = "manual") -> None:
-    """Run daily_update in a thread; capture print output into _job['log_lines']."""
-    import io
-    import contextlib
+    """
+    起一个线程跑日更，把子进程的 stdout 逐行收进 _job['log_lines']。
 
+    **日更本身跑在子进程里**（services/daily_update_runner.py）——进程内 import
+    执行会把 ~700MB 的峰值留在常驻服务的堆里，这台 1.87G 的机器扛不住。
+    """
     log: list[str] = []
 
     def _flush(text: str) -> None:
@@ -189,7 +191,6 @@ def _capture_update(target_date: date, skip_boards: bool, source: str = "manual"
         with _lock:
             _job["log_lines"] = log[-60:]
 
-    buf = io.StringIO()
     lock_fd = None
     try:
         # ── 文件锁：与 cron 任务互斥，防止并发执行 ──────────────────────────
@@ -207,21 +208,20 @@ def _capture_update(target_date: date, skip_boards: bool, source: str = "manual"
 
         _write_log_file(target_date, "✅ UI 手动触发，获取锁成功，开始执行")
 
-        # Ensure the backend package root is importable
-        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        if backend_dir not in sys.path:
-            sys.path.insert(0, backend_dir)
-
-        with contextlib.redirect_stdout(buf):
-            from scripts.daily_update import run_daily_update  # type: ignore
-            result = run_daily_update(target_date, skip_boards=skip_boards)
+        # ── **子进程跑，不在 API 进程里 import 执行** ────────────────────
+        # 2026-09-07 现场：手动触发期间 RSS 700~870MB，而那几个采样窗口里唯一的
+        # 请求是几十字节的 /api/admin/update/status 轮询。这台机器只有 1.87G，
+        # 峰值一上来就换页，整站超时。详见 services/daily_update_runner.py
+        #
+        # 顺带一个好处：以前 redirect_stdout 要等跑完才 flush 一次，现在是逐行
+        # 回调，UI 能看到实时进度
+        from ..services.daily_update_runner import run_daily_update_subprocess
+        result = run_daily_update_subprocess(
+            target_date, skip_boards=skip_boards, on_line=lambda ln: _flush(ln + "\n"))
 
         degraded = bool(result and result.get("degraded"))
         warnings = list((result or {}).get("warnings") or [])
-
-        _flush(buf.getvalue())
         finished = datetime.now().isoformat(timespec="seconds")
-        _flush(buf.getvalue())
         _write_log_file(target_date, f"✅ {source} 触发完成"
                         + (f"（数据降级：{'；'.join(warnings)}）" if degraded else ""))
         message = f"更新完成 {target_date}" + ("（部分数据源降级，详见告警）" if degraded else "")
@@ -237,8 +237,9 @@ def _capture_update(target_date: date, skip_boards: bool, source: str = "manual"
             _job["warnings"] = warnings
 
     except Exception as exc:  # noqa: BLE001
+        # 日志已经逐行进过 _flush 了，这里不用再补——失败前跑到哪一步，
+        # log_lines 里就有到哪一步
         finished = datetime.now().isoformat(timespec="seconds")
-        _flush(buf.getvalue())
         _write_log_file(target_date, f"❌ {source} 触发失败: {exc}")
         _save_last_update(source, "error", _job.get("started_at"), finished, str(exc))
         with _lock:

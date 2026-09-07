@@ -2453,6 +2453,12 @@ if __name__ == "__main__":
         default=False,
         help="跳过东财概念板块同步（sync_boards.py），节省约10分钟",
     )
+    parser.add_argument(
+        "--result-json",
+        default=None,
+        help="把 {degraded, warnings} 汇总写到这个文件。**子进程调用方靠它拿返回值**"
+             "——被 API 进程当子进程拉起时，返回的 dict 没法跨进程传回去",
+    )
     args = parser.parse_args()
 
     if args.date:
@@ -2460,4 +2466,11 @@ if __name__ == "__main__":
     else:
         target = date.today()
 
-    run_daily_update(target, skip_boards=args.skip_boards)
+    _res = run_daily_update(target, skip_boards=args.skip_boards) or {}
+    if args.result_json:
+        import json as _json
+        try:
+            with open(args.result_json, "w", encoding="utf-8") as _f:
+                _json.dump(_res, _f, ensure_ascii=False)
+        except OSError as _e:      # 写不出来不能让整次更新算失败
+            print(f"⚠️ 汇总结果写入失败（不影响本次更新）: {_e}")

@@ -37,12 +37,16 @@ def _do_update(log_path: str, today: date) -> dict:
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
 
-    from scripts.daily_update import run_daily_update  # type: ignore
     from scripts.sync_boards import run_sync_boards    # type: ignore
     from app.routers.admin import record_job_duration  # type: ignore
+    from app.services.daily_update_runner import run_daily_update_subprocess  # type: ignore
 
     t0 = datetime.now().isoformat(timespec="seconds")
-    result = run_daily_update(today) or {}
+    # **子进程跑。** 跟 UI 手动触发同一条路径——在 API 进程里 import 执行会把
+    # ~700MB 的峰值永久留在常驻服务的堆里，这台 1.87G 的机器扛不住（见
+    # services/daily_update_runner.py 里的现场数据）
+    result = run_daily_update_subprocess(
+        today, on_line=lambda ln: _log(log_path, "SCHED", ln)) or {}
     t1 = datetime.now().isoformat(timespec="seconds")
     record_job_duration("daily_update", t0, t1)
     _log(log_path, "SCHED", "✅ 每日数据更新完成，开始板块行情同步...")

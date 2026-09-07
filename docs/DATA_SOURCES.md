@@ -439,3 +439,81 @@ GET .../multi_last_snapshot                                     # 批量快照�
 
     具体的坏习惯：拿到"A 通 B 不通"就去解释差异，却没先确认 **"A 现在还通吗"**。
     开发机二十分钟后自己就翻盘了。
+
+---
+
+### 坑 18：把重活跑在常驻服务进程里 —— 内存峰值不会还回来
+
+**症状（2026-09-07 生产）**：整站接口超时,`[API] timeout of 15000ms exceeded`。
+但 nginx 正常(静态页 200 / 0.12s),而一个**只读一个 JSON 文件**的接口也超时。
+
+第一次探测就把方向定死了:
+
+```
+/api/openapi.json（不碰数据库，返回 404）   404，但花了 8.7~15s
+/api/leader-cycle/evidence（只读文件）      冷启 29.75s → 0.91s → 0.41s
+```
+
+一个不查库的 404 要等十几秒,**说明整个进程被占满,不是某个接口慢**。冷启慢、
+热了快,是换页(swap thrash),不是计算慢。`top` 佐证:
+
+```
+%Cpu(s):  0.0 us,  6.9 sy,  24.1 id,  69.0 wa    ← 用户态 0%，69% 在等盘
+kswapd0 排在 CPU 榜首
+MiB Mem : 1871.0 total,    75.5 free
+MiB Swap: 4096.0 total,  1983.3 used
+```
+
+**定位方法**:每 10 秒采一次 RSS,同时把该窗口内服务处理过的请求打在同一行。
+RSS 跳变那一行左边就是嫌疑人。
+
+```bash
+P=$(systemctl show -p MainPID --value tradeflux); for i in $(seq 1 90); do
+  R=$(ps -o rss= -p $P | awk '{printf "%.0f",$1/1024}')
+  L=$(journalctl -u tradeflux --since "-10s" --no-pager -o cat | grep -o '"GET [^"]*"' \
+      | sed 's/"GET //;s/ HTTP.*//' | sort -u | tr '\n' ' ')
+  echo "$(date +%H:%M:%S)  ${R}MB | $L"; sleep 10
+done | tee /tmp/rss.log
+```
+
+抓到的现场:
+
+```
+17:23:10  [UI] ✅ UI 手动触发，获取锁成功，开始执行
+17:23:30  871MB | /api/admin/update/status
+17:23:40  791MB | /api/admin/update/status
+17:23:50  730MB | /api/admin/update/status
+```
+
+**那三行里唯一的请求是几十字节的状态轮询**,RSS 却在 700~870MB 之间起伏。涨的
+不是接口,是它在轮询的那个东西:跑在同一个进程里的日更。
+
+对照组(同一次采样):
+
+| | 峰值 | 会不会自己回落 |
+|---|---|---|
+| 日常浏览整个应用(21 个接口) | +70MB（147→218） | — |
+| 七个接口顺序各打一次 | +25MB | — |
+| 三个 `page_size=500` 富化接口同时飞 | +500MB | 30 秒内回落 |
+| **UI 触发日更** | **+700MB** | **跑完才回** |
+
+**页面从来不是问题,日更才是。**
+
+**根因**:同一件事有三条执行路径,只有一条内存是干净的 ——
+`cron_daily_update.sh` 起独立进程(跑完退出,内存全归还),而 APScheduler 定时
+任务和 UI「更新数据」按钮都是 `from scripts.daily_update import run_daily_update`
+**在 API 进程里直接执行**。Python 不会把释放的堆痛快还给操作系统,于是常驻服务
+一直背着那个峰值。
+
+**修法**:三条路径统一走 `app/services/daily_update_runner.py` 的子进程入口。
+stdout 逐行回传(比原来 `redirect_stdout` 到最后才 flush 还更实时),汇总 dict
+通过 `--result-json` 交回。峰值随进程退出一起消失。
+
+**过程中错了两次,都是同一个毛病:**
+
+1. 「是 15:30 定时任务在跑」—— 日志显示那次因为锁被占用**跳过了**
+2. 「`jitter=3600` + 重启重置 `next_run_time`,所以每次部署都重新触发」——
+   `next_run` 明明指向明天,`[SCHED]` 全天只有两条
+
+两次都是**对着代码推断生产行为**,而不是先量。第三次换成"把涨的那一刻抓在现场",
+一轮就定位了。**读代码能生成假设,不能验证假设。**
