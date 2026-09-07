@@ -146,6 +146,26 @@ def _lifecycle_fields(snaps, trade_date: date, calendar) -> dict:
     }
 
 
+@router.get("/effect")
+def get_lifecycle_effect(
+    trade_date: Optional[date] = Query(None, description="不传=最新有数据的交易日"),
+    history_days: int = Query(60, ge=5, le=250),
+    db: Session = Depends(get_db),
+):
+    """
+    生命周期口径的赚钱效应：**昨天处于某状态的票，今天赚不赚钱**。
+
+    强势股概览原来那四张卡按 `Stock.phase` 分组，那只是"收盘价在哪条均线下面"的
+    单日快照——一只刚断板正在修复的票和一只连跌十天的老龙都可能被叫"震荡龙头"。
+    换成生命周期分组后，同一张卡才回答得了有意义的问题。
+
+    另带历史前瞻（过去 N 天该状态之后 T+1/T+3/T+5 的中位收益）。**那部分只是
+    线索不是结论**：没做同日同池对照，也没有置信区间，返回的 notes 里写明了。
+    """
+    from ..services.leader_cycle_effect_service import compute_effect
+    return compute_effect(db, trade_date, history_days)
+
+
 @router.get("", response_model=LeaderCycleResponse)
 def get_leader_cycle(
     trade_date: Optional[date] = Query(None, description="不传=最新有数据的交易日"),

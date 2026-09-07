@@ -144,3 +144,34 @@ export interface LeaderCycleResponse {
 export const fetchLeaderCycle = (tradeDate?: string) =>
   client.get<LeaderCycleResponse>('/leader-cycle',
     { params: tradeDate ? { trade_date: tradeDate } : {} }).then((r) => r.data)
+
+// ─── 生命周期口径的赚钱效应 ──────────────────────────────────────────────
+// 强势股概览原来那四张卡按 Stock.phase 分组，那只是"收盘价在哪条均线下面"的
+// 单日快照——一只刚断板正在修复的票和一只连跌十天的老龙都可能被叫"震荡龙头"。
+export interface LifecycleCohort {
+  state: LifecycleState
+  count: number
+  /** 样本 <3 时为 null —— 个位数样本的中位数没有意义 */
+  median_pct_change: number | null
+  red_ratio: number
+}
+
+export interface LifecycleForward {
+  state: LifecycleState
+  t1: number | null; t1_n: number; t1_win: number | null
+  t3: number | null; t3_n: number; t3_win: number | null
+  t5: number | null; t5_n: number; t5_win: number | null
+}
+
+export interface LifecycleEffectResponse {
+  as_of: string | null
+  prev: string | null
+  formula_version: string
+  cohorts: LifecycleCohort[]
+  /** 历史前瞻。**只是线索不是结论**——没做同日同池对照，也没有置信区间 */
+  history: LifecycleForward[]
+  notes: string[]
+}
+
+export const fetchLifecycleEffect = () =>
+  client.get<LifecycleEffectResponse>('/leader-cycle/effect').then((r) => r.data)

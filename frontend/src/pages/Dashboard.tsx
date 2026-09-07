@@ -1,8 +1,9 @@
-import { useState, useMemo } from 'react'
+import { Fragment, useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchMarketState, fetchMarketHistory, fetchProfitEffect } from '@/api/marketState'
-import { fetchStrongPool } from '@/api/stocks'
+import { fetchStrongPool, fetchLifecycleEffect } from '@/api/stocks'
+import { LIFECYCLE_ZH } from '@/lib/lifecycle'
 import LeaderCyclePanel from '@/components/stockPool/LeaderCyclePanel'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -226,6 +227,110 @@ function SectorEffectCard({
  * 直接挂 LeaderCyclePanel，不在这里重做一个简版——一旦有简版和完整版两套，
  * 它们迟早显示不一样的数字，这个仓库刚为此栽过。
  */
+/**
+ * 生命周期口径的赚钱效应。
+ *
+ * 上面一格是**当日**：昨天处于某状态的票，今天中位涨幅多少、红盘率多少。
+ * 下面一格是**历史**：过去 60 天处于该状态之后 T+1/T+3/T+5 普遍怎么走。
+ *
+ * 历史那部分刻意标成「线索」而不是结论——它没做同日同池对照，也没有置信区间。
+ * `scripts/evaluate_lifecycle.py` 里有完整的版本（同日同池超额、可执行超额、
+ * 按周期整段重抽的 95% 区间），而那里多数状态的区间是**跨 0 的**。
+ * 在界面上把这几个数字摆成结论，就等于又造了一个看起来精确的黑箱。
+ */
+function LifecycleEffect() {
+  const { data } = useQuery({
+    queryKey: ['lifecycle-effect'], queryFn: fetchLifecycleEffect,
+    staleTime: 10 * 60 * 1000,
+  })
+  const cohorts = (data?.cohorts ?? []).filter((c) => c.count > 0)
+  if (!cohorts.length && !(data?.history ?? []).length) return null
+
+  const pct = (v: number | null) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
+  const rate = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(0)}%`)
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {cohorts.map((c) => (
+          <div key={c.state} className="card p-3">
+            <p className="text-xs text-text-secondary font-medium truncate">
+              昨日{LIFECYCLE_ZH[c.state] ?? c.state}
+            </p>
+            <div className="flex items-baseline gap-1 mt-1.5">
+              <span className={cn('text-xl font-mono font-bold',
+                c.median_pct_change === null ? 'text-text-muted'
+                  : c.median_pct_change >= 0 ? 'text-up' : 'text-down')}>
+                {pct(c.median_pct_change)}
+              </span>
+              <span className="text-xs text-text-muted">{c.count}只</span>
+            </div>
+            <div className="text-[11px] text-text-muted mt-1">
+              今日中位涨幅 · 红盘率 {rate(c.red_ratio)}
+              {c.median_pct_change === null && '（样本不足，不给中位数）'}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {(data?.history ?? []).length > 0 && (
+        <div className="card p-3">
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="text-xs text-text-secondary font-medium">
+              历史前瞻（近 60 个交易日）
+            </span>
+            <span className="text-[11px] text-warn">
+              只是线索，不是结论 —— 没做同日同池对照，也没有置信区间
+            </span>
+          </div>
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full text-xs" style={{ minWidth: 560 }}>
+              <thead>
+                <tr className="text-[10px] text-text-muted">
+                  {['状态', 'T+1', '胜率', 'T+3', '胜率', 'T+5', '胜率', '样本'].map((h, k) => (
+                    <th key={k} className="px-2 py-1 text-left font-medium
+                                           border-b border-bg-border">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(data?.history ?? []).map((h) => (
+                  <tr key={h.state} className="border-b border-bg-border/40 last:border-0">
+                    <td className="px-2 py-1 text-text-primary whitespace-nowrap">
+                      {LIFECYCLE_ZH[h.state] ?? h.state}
+                    </td>
+                    {([['t1', 't1_win'], ['t3', 't3_win'], ['t5', 't5_win']] as const)
+                      .map(([a, b]) => (
+                        <Fragment key={a}>
+                          <td className={cn('px-2 py-1 font-mono tabular-nums',
+                            h[a] === null ? 'text-text-muted'
+                              : h[a]! >= 0 ? 'text-up' : 'text-down')}>{pct(h[a])}</td>
+                          <td className="px-2 py-1 font-mono tabular-nums text-text-muted">
+                            {rate(h[b])}
+                          </td>
+                        </Fragment>
+                      ))}
+                    <td className="px-2 py-1 font-mono tabular-nums text-text-muted">
+                      {h.t1_n}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-text-muted mt-2">
+            胜率在 50% 附近 = 跟随机没区别。完整版（同日同池超额、可执行超额、
+            按「股票×周期」整段重抽的 95% 区间）在
+            <span className="text-text-secondary"> scripts/evaluate_lifecycle.py</span>
+            ，那里多数状态的区间是<span className="text-warn">跨 0 的</span>。
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 function LifecycleSection() {
   return (
     <div className="space-y-2">
@@ -417,40 +522,12 @@ export default function Dashboard() {
                 )}
               </div>
 
-              {/* ── 分组赚钱效应 ── */}
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                {pe.groups.map((g: ProfitEffectGroup) => {
-                  const s = GROUP_STYLES[g.key] ?? { border: 'border-border', dot: 'bg-text-muted' }
-                  return (
-                    <div key={g.key} className={cn('card p-3 border', s.border)}>
-                      <div className="flex items-center gap-1.5 mb-2">
-                        <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', s.dot)} />
-                        <p className="text-xs text-text-secondary font-medium truncate">{g.label}</p>
-                      </div>
-                      <div className="flex items-baseline gap-1 mb-2">
-                        <span className={cn('text-xl font-mono font-bold', pctColor(g.avg_pct))}>
-                          {g.stock_count > 0 ? pctSign(g.avg_pct) : '--'}
-                        </span>
-                        {g.stock_count > 0 && (
-                          <span className="text-xs text-text-muted">{g.stock_count}只</span>
-                        )}
-                      </div>
-                      {g.stock_count > 0 ? (
-                        <>
-                          <UpDownBar up={g.up_count} flat={g.flat_count} down={g.down_count} />
-                          <div className="flex justify-between text-xs mt-1.5 text-text-muted">
-                            <span className="text-up">↑{g.up_count}</span>
-                            <span>{g.flat_count}</span>
-                            <span className="text-down">{g.down_count}↓</span>
-                          </div>
-                        </>
-                      ) : (
-                        <p className="text-xs text-text-muted mt-1">暂无数据</p>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
+              {/* ── 分组赚钱效应：**按生命周期分组** ──
+                  2026-09-07 换掉旧的四张卡（昨日涨停龙头/震荡/走弱/破位）。
+                  那四组按 Stock.phase 分，而 phase 只是"收盘价在哪条均线下面"
+                  的单日快照——一只刚断板正在修复的票和一只连跌十天的老龙都可能
+                  被叫「震荡龙头」，分出来的组回答不了任何问题。 */}
+              <LifecycleEffect />
 
               {/* ── 板块赚钱 / 亏钱效应（并列） ── */}
               {pe.sectors.length > 0 && (() => {

@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.database import get_db
 from app.models.leader_cycle import LeaderCycleSnapshot
-from app.models.stock import Stock
+from app.models.stock import Stock, StockDailySnapshot
 from app.routers import leader_cycle
 
 TODAY = date(2026, 9, 4)
@@ -279,3 +279,68 @@ class TestNoCycleRowsAreRealRows:
         assert cov["pool_total"] == 2
         assert cov["with_facts"] == 2, "两只都有价格事实"
         assert cov["cycle_identified"] == 1 and cov["cycle_unresolved"] == 1
+
+
+class TestLifecycleEffect:
+    """
+    生命周期口径的赚钱效应。这个接口最容易犯的错是**用盘中价冒充当日结果**，
+    以及**样本三五个也照给中位数**。
+    """
+
+    def _seed(self, db, code, states_by_date, closes):
+        """states_by_date 用价格构造，这里直接落快照+日线。"""
+        st = _stock(db, code)
+        for d, close in closes.items():
+            db.add(StockDailySnapshot(stock_id=st.id, date=d, close_price=close,
+                                      is_settled=True))
+        for d in states_by_date:
+            db.add(LeaderCycleSnapshot(
+                stock_id=st.id, stock_code=code, date=d, peak_board_count=5,
+                board_count_60d=5, cycle_start_date=date(2026, 8, 20),
+                cycle_peak_date=date(2026, 8, 20), break_date=None,
+                data_fresh=True, bar_settled=True, latest_close=closes.get(d)))
+        db.flush()
+        return st
+
+    def test_盘中未结算的收盘价不进统计(self, db, client):
+        """
+        赚钱效应统计里混进盘中价，等于让上午的浮动冒充当日结果。
+        """
+        st = _stock(db, "600001")
+        d1, d2 = date(2026, 9, 3), date(2026, 9, 4)
+        db.add(StockDailySnapshot(stock_id=st.id, date=d1, close_price=10.0,
+                                  is_settled=True))
+        db.add(StockDailySnapshot(stock_id=st.id, date=d2, close_price=11.0,
+                                  is_settled=False))     # 盘中
+        for d in (d1, d2):
+            db.add(LeaderCycleSnapshot(
+                stock_id=st.id, stock_code=st.code, date=d, peak_board_count=5,
+                board_count_60d=5, cycle_start_date=date(2026, 8, 20),
+                cycle_peak_date=date(2026, 8, 20), break_date=None,
+                data_fresh=True, bar_settled=True, latest_close=10.0))
+        db.flush()
+        r = client.get("/leader-cycle/effect").json()
+        for c in r["cohorts"]:
+            assert c["count"] == 0 or c["median_pct_change"] is None, \
+                "未结算那天的收盘价不该产出收益"
+
+    def test_样本太少不给中位数(self, db, client):
+        """个位数样本的中位数没有意义，给 None 并把 count 一起返回。"""
+        r = client.get("/leader-cycle/effect").json()
+        for h in r["history"]:
+            for k in ("t1", "t3", "t5"):
+                if h[f"{k}_n"] < 5:
+                    assert h[k] is None and h[f"{k}_win"] is None
+
+    def test_必须声明历史部分只是线索(self, db, client):
+        """
+        没做同日同池对照、没有置信区间的前瞻数字最容易被当成结论。
+        接口自己要把这句话带上，不能指望界面记得写。
+        """
+        notes = " ".join(client.get("/leader-cycle/effect").json()["notes"])
+        assert "线索不是结论" in notes and "evaluate_lifecycle" in notes
+
+    def test_带口径版本(self, db, client):
+        r = client.get("/leader-cycle/effect").json()
+        from app.services.leader_cycle_state_service import FORMULA_VERSION
+        assert r["formula_version"] == FORMULA_VERSION
