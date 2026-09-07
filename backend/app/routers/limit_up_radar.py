@@ -14,12 +14,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal, get_db
 from ..schemas.limit_up_radar import (
-    GroupMode, LimitUpRadarRefreshResponse, LimitUpRadarResponse,
+    GroupMode, LimitUpRadarRefreshResponse, LimitUpRadarResponse, RadarSector,
 )
 from ..services import limit_up_radar_service as radar
 from ..services.limit_up_detail_fetcher import SOURCE_NAME
@@ -45,6 +45,11 @@ def _resolve_date(db: Session, trade_date: Optional[date]) -> date:
 def get_limit_up_radar(
     trade_date: Optional[date] = Query(None, alias="date", description="交易日，默认取库里最新一天"),
     include_core: bool = Query(True, description="是否补全板块核心（今日未涨停但历史强势）"),
+    include_stock_lists: bool = Query(
+        True,
+        description="是否返回板块内的三张明细表（今日涨停/炸板/核心锚）。"
+                    "false=只要汇总——实测完整载荷 670KB/1.3s，只要汇总时降一个量级。"
+                    "明细走 /limit-up-radar/sectors/{sector_id}，一次一个板块"),
     group_mode: GroupMode = Query("all_watched_sectors", description="板块归组方式"),
     core_10d_min: int = Query(radar.DEFAULT_CORE_10D_MIN, ge=1, le=10),
     core_20d_min: int = Query(radar.DEFAULT_CORE_20D_MIN, ge=1, le=20),
@@ -70,6 +75,7 @@ def get_limit_up_radar(
     result = radar.build_radar(
         db, target,
         include_core=include_core, group_mode=group_mode,
+        include_stock_lists=include_stock_lists,
         core_10d_min=core_10d_min, core_20d_min=core_20d_min,
         core_60d_min=core_60d_min, core_max_board_min=core_max_board_min,
         max_core_per_sector=max_core_per_sector,
@@ -80,6 +86,36 @@ def get_limit_up_radar(
     result["refreshed_at"] = refreshed.isoformat() if refreshed else None
     result["source"] = SOURCE_NAME if refreshed else None
     return result
+
+
+@router.get("/sectors/{sector_id}", response_model=RadarSector)
+def get_limit_up_radar_sector(
+    sector_id: int,
+    trade_date: Optional[date] = Query(None, alias="date"),
+    include_core: bool = Query(True),
+    group_mode: GroupMode = Query("all_watched_sectors"),
+    db: Session = Depends(get_db),
+):
+    """
+    **单个板块的完整明细**（今日涨停 / 炸板 / 核心锚）。
+
+    列表接口带 `include_stock_lists=false` 只取汇总，用户点开某一行时再来这里取那
+    一个板块——原来是为了一次点开，把 40 个板块的明细全拉过来（670KB / 1.3s）。
+
+    这里刻意**不加过滤门槛**：点开的板块可能本来就没进列表（比如从别处跳过来），
+    没理由因为它涨停数不够就说"找不到"。
+    """
+    target = _resolve_date(db, trade_date)
+    result = radar.build_radar(
+        db, target, include_core=include_core, group_mode=group_mode,
+        min_limit_up=0, min_board_height=0, min_limit_up_alone=0,
+        max_sectors=10_000,
+    )
+    for card in result.get("sectors") or []:
+        if card.get("sector_id") == sector_id:
+            return card
+    raise HTTPException(status_code=404,
+                        detail=f"板块 {sector_id} 在 {target} 没有涨停股")
 
 
 # ── 手动刷新：后台线程 + 状态轮询 ────────────────────────────────────────────

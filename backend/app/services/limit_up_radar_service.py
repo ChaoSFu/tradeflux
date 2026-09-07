@@ -477,6 +477,7 @@ def build_radar(
     trade_date: date,
     *,
     include_core: bool = True,
+    include_stock_lists: bool = True,
     group_mode: str = "all_watched_sectors",
     core_10d_min: int = DEFAULT_CORE_10D_MIN,
     core_20d_min: int = DEFAULT_CORE_20D_MIN,
@@ -491,6 +492,18 @@ def build_radar(
 ) -> dict:
     """
     组装涨停板块雷达。全部读本地库，不发任何外部请求（外部抓取只在同步那一步）。
+
+    include_stock_lists=False：板块卡里的三张明细表（today_limit_up_stocks /
+      broken_stocks / core_stocks）**只用来算汇总，不放进返回值**。
+
+      汇总字段（涨停数/连板/最高板/炸板/封板率/首封/核心均幅…）全部由那三张表
+      算出来，所以**不能跳过构建**，能省的是序列化和传输：实测 40 个板块的完整
+      载荷 670KB / 1.31s，去掉三张表之后只剩汇总。Pydantic 要挨个校验上千个嵌套
+      模型，那部分 CPU 和内存也一起省了。
+
+      「涨跌停分析」的板块表只用汇总列，明细是点开某一行才看的——为了一次点开
+      而把 40 个板块的明细全拉过来，是这个页面最大的一笔开销。
+      要明细走 GET /limit-up-radar/sectors/{sector_id}，一次只取一个。
 
     group_mode:
       all_watched_sectors（默认）—— 走 StockSectorRelation，一只股票可以出现在多个
@@ -604,6 +617,15 @@ def build_radar(
     hidden = total_with_limit_up - len(out_sectors)
 
     out_sectors = sort_sectors(out_sectors, by=sector_sort)[:max_sectors]
+
+    if not include_stock_lists:
+        # **在这里剥，不在 _build_sector_card 里分叉。** 汇总字段全部由这三张表
+        # 算出来（封板率、最高板、首封、核心均幅…），少算一样汇总就错一样，
+        # 所以只能算完再剥——同一个事实只有一套计算路径
+        for c in out_sectors:
+            c["today_limit_up_stocks"] = []
+            c["broken_stocks"] = []
+            c["core_stocks"] = []
 
     return {
         "trade_date": trade_date.isoformat(),

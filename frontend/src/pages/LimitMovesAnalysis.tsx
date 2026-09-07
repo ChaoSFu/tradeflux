@@ -67,7 +67,9 @@ export default function LimitMovesAnalysis() {
   })
   const radar = useQuery({
     queryKey: ['lma-radar'],
-    queryFn: () => fetchLimitUpRadar({ include_core: true }),
+    // **只要汇总。** 板块表只用汇总列，明细点开某一行时按 sector_id 单独取。
+    // 实测完整载荷 670KB / 1.31s，是这个页面首屏最大的一笔开销
+    queryFn: () => fetchLimitUpRadar({ include_core: true, include_stock_lists: false }),
     staleTime: 10 * 60 * 1000,
   })
   const effect = useQuery({

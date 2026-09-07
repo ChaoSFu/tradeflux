@@ -1,5 +1,7 @@
 import client from './client'
-import type { LimitUpRadarResponse, LimitUpRadarRefreshResponse } from '@/types'
+import type {
+  LimitUpRadarResponse, LimitUpRadarRefreshResponse, LimitUpRadarSector,
+} from '@/types'
 
 export interface LimitUpRadarParams {
   date?: string
@@ -7,6 +9,14 @@ export interface LimitUpRadarParams {
   group_mode?: 'all_watched_sectors' | 'primary'
   /** 板块排序主键，次级键各不相同，见后端 SECTOR_SORT_KEYS */
   sector_sort?: SectorSortKey
+  /**
+   * 是否要板块内的三张明细表（今日涨停/炸板/核心锚）。
+   *
+   * **只看汇总列时传 false。** 实测完整载荷 670KB / 1.31s，是「涨跌停分析」
+   * 首屏最大的一笔开销；而那张板块表只用汇总列，明细是点开某一行才看的。
+   * 要明细用 `fetchLimitUpRadarSector`，一次只取一个板块。
+   */
+  include_stock_lists?: boolean
 }
 
 export type SectorSortKey =
@@ -34,3 +44,8 @@ export const refreshLimitUpDetails = (date?: string) =>
 
 export const fetchRefreshStatus = () =>
   client.get<LimitUpRadarRefreshResponse>('/limit-up-radar/refresh/status').then((r) => r.data)
+
+/** 单个板块的完整明细。点开板块行时才调 —— 见 include_stock_lists 的说明 */
+export const fetchLimitUpRadarSector = (sectorId: number, date?: string) =>
+  client.get<LimitUpRadarSector>(`/limit-up-radar/sectors/${sectorId}`,
+    { params: date ? { date } : {} }).then((r) => r.data)

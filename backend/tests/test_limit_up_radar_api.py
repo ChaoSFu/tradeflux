@@ -279,3 +279,61 @@ def test_refresh_recomputes_scores_only_for_stocks_on_this_page(db, client):
     assert "002412" in scores and "ls" in scores["002412"]
     db.refresh(st)
     assert st.leader_score == 11.0 and st.risk_score == 22.0, "刷新不能改动 Stock 上的分数"
+
+
+_D = {"date": "2026-08-25"}
+
+
+class TestSummaryOnly:
+    """
+    **汇总和明细分开取。**
+
+    2026-09-07 实测：`?include_core=true` 完整载荷 670KB / 1.31s，是「涨跌停分析」
+    首屏最大的一笔开销；而那张板块表只用汇总列，明细是点开某一行才看的——为了
+    一次点开把 40 个板块的明细全拉过来。
+
+    这里的风险不是少给数据，是**剥的时候把汇总也剥错**：封板率、最高板、首封、
+    核心均幅全都由那三张明细表算出来，所以只能算完再剥，不能提前跳过构建。
+    """
+
+    def test_剥掉明细后汇总字段一个不少(self, db, client):
+        _seed_sector_with_limit_up(db)
+        full = client.get("/limit-up-radar", params={**_NO_FILTER, **_D}).json()
+        lite = client.get("/limit-up-radar",
+                          params={**_NO_FILTER, **_D, "include_stock_lists": "false"}).json()
+        assert full["sectors"], "先得有板块，否则这条测试什么都没测"
+
+        strip = {"today_limit_up_stocks", "broken_stocks", "core_stocks"}
+        for a, b in zip(full["sectors"], lite["sectors"]):
+            assert {k: v for k, v in a.items() if k not in strip} == \
+                   {k: v for k, v in b.items() if k not in strip}, \
+                "汇总字段全部由明细算出来，剥的时候不能顺手算错一个"
+        assert full["summary"] == lite["summary"]
+
+    def test_明细表确实空了(self, db, client):
+        _seed_sector_with_limit_up(db)
+        lite = client.get("/limit-up-radar",
+                          params={**_NO_FILTER, **_D, "include_stock_lists": "false"}).json()
+        for c in lite["sectors"]:
+            assert c["today_limit_up_stocks"] == []
+            assert c["broken_stocks"] == []
+            assert c["core_stocks"] == []
+
+    def test_默认仍然带明细(self, db, client):
+        """旧页面一行没改，默认必须跟以前完全一样。"""
+        _seed_sector_with_limit_up(db)
+        c = client.get("/limit-up-radar", params={**_NO_FILTER, **_D}).json()["sectors"][0]
+        assert c["today_limit_up_stocks"], "默认口径变了会静默改掉旧页面"
+
+    def test_单板块接口给完整明细(self, db, client):
+        _seed_sector_with_limit_up(db)
+        sid = (client.get("/limit-up-radar", params={**_NO_FILTER, **_D})
+               .json()["sectors"][0]["sector_id"])
+        one = client.get(f"/limit-up-radar/sectors/{sid}", params=_D).json()
+        assert one["sector_id"] == sid and one["today_limit_up_stocks"]
+
+    def test_没有涨停的板块给404不给空壳(self, db, client):
+        _seed_sector_with_limit_up(db)
+        assert client.get("/limit-up-radar/sectors/999999",
+                          params=_D).status_code == 404, \
+            "返回一个空板块，看的人会以为它今天真的没涨停"

@@ -1,4 +1,7 @@
+import { useQuery } from '@tanstack/react-query'
 import { cn } from '@/utils/cn'
+import { fetchLimitUpRadarSector } from '@/api/limitUpRadar'
+import { QueryState } from './QueryState'
 import type { SectorRow } from './sectorRows'
 
 const NUM = 'font-mono tabular-nums'
@@ -35,9 +38,24 @@ const TD = 'px-2 py-1 whitespace-nowrap'
  * 后端还留着它们，但这个页面一个都不用。
  */
 export function SectorDetailDrawer({ row }: { row: SectorRow }) {
-  const up = row.up
+  // **明细在这里才拉，一次一个板块。** 列表接口带 include_stock_lists=false
+  // 只要汇总——原来是为了一次点开，把 40 个板块的明细全拉过来（670KB / 1.3s）。
+  // 只有跌停侧的板块没有 sector_id，那就不发这个请求
+  const secId = row.up?.sector_id ?? null
+  const q = useQuery({
+    queryKey: ['lur-sector', secId],
+    queryFn: () => fetchLimitUpRadarSector(secId!),
+    enabled: secId !== null,
+    staleTime: 10 * 60 * 1000,
+  })
+  const up = q.data ?? null
+
   return (
     <div className="px-3 py-2.5 bg-bg-base/40 space-y-3 text-xs">
+      {secId !== null && (q.isPending || q.error) && (
+        <QueryState qs={[q]} rows={3}><span /></QueryState>
+      )}
+      {secId !== null && (
       <Block title="今日涨停" count={up?.today_limit_up_stocks.length ?? 0}>
         <table className="w-full text-[11px]" style={{ minWidth: 860 }}>
           <thead><tr>
@@ -70,8 +88,9 @@ export function SectorDetailDrawer({ row }: { row: SectorRow }) {
             ))}
           </tbody>
         </table>
-      </Block>
+      </Block>)}
 
+      {secId !== null && (
       <Block title="炸板" count={up?.broken_stocks.length ?? 0}>
         <table className="w-full text-[11px]" style={{ minWidth: 640 }}>
           <thead><tr>
@@ -97,7 +116,7 @@ export function SectorDetailDrawer({ row }: { row: SectorRow }) {
             ))}
           </tbody>
         </table>
-      </Block>
+      </Block>)}
 
       <Block title="今日跌停" count={row.downStocks.length}>
         <table className="w-full text-[11px]" style={{ minWidth: 480 }}>
@@ -123,6 +142,7 @@ export function SectorDetailDrawer({ row }: { row: SectorRow }) {
         </table>
       </Block>
 
+      {secId !== null && (
       <Block title="历史核心锚" count={up?.core_stocks.length ?? 0}>
         <table className="w-full text-[11px]" style={{ minWidth: 520 }}>
           <thead><tr>
@@ -146,7 +166,7 @@ export function SectorDetailDrawer({ row }: { row: SectorRow }) {
             ))}
           </tbody>
         </table>
-      </Block>
+      </Block>)}
     </div>
   )
 }
