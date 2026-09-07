@@ -32,6 +32,10 @@ import { Fragment, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Info, TrendingUp } from 'lucide-react'
 import { fetchLeaderCycle, type LeaderCycleItem, type LifecycleState } from '@/api/stocks'
+// 展示口径只有一份：中文名、分组、以及"当日判不出时显示什么"全在 lib/lifecycle
+import {
+  GROUP_META, LIFECYCLE_ZH, STATE_ORDER, groupOf, isStale, shownState,
+} from '@/lib/lifecycle'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 
@@ -52,81 +56,60 @@ const NUM = 'font-mono tabular-nums'
  * 是这个页面最不能容忍的失败：不可见比判断错更糟，判断错还能被看见并纠正。
  * 所以下面三个桶之外还有一个 unbucketed 兜底——它平时是 0，一旦非 0 就会亮出来。
  */
-const BUCKET: Record<Group, Bucketable[]> = {
-  core:    ['REPAIRING', 'CROSS_SUCCESS'],
-  // UNKNOWN / NO_CYCLE 也归这里。它们是**合法状态**，不是"没预料到的状态"——
-  // 放进 unbucketed 会让那个红色兜底 tab 长期亮着，警报天天响就等于没有警报。
-  // 归到"待观察"也符合语义：既没被剔除，今天也不可行动，等事实补齐
-  waiting: ['STREAKING', 'BROKEN', 'UNKNOWN', 'NO_CYCLE'],
-  dropped: ['CROSS_WEAKENING', 'CROSS_FAILED', 'FADED'],
-  all:     [],          // 不过滤
-  unbucketed: [],       // 动态：不属于上面任何一桶的
+// **由 lib/lifecycle 的 groupOf 派生，不手抄第二份状态清单。**
+// UNKNOWN / NO_CYCLE 归「待观察」（lib 里 pending → 这里并进 waiting）：
+// 它们是合法状态，不是"没预料到的状态"——放进 unbucketed 会让那个红色兜底
+// tab 长期亮着，而警报天天响就等于没有警报。
+const bucketOf = (st: string): Exclude<Group, 'all' | 'unbucketed'> => {
+  const g = groupOf(st)
+  return g === 'pending' ? 'waiting' : g
 }
-const BUCKETED = new Set<string>([...BUCKET.core, ...BUCKET.waiting, ...BUCKET.dropped])
-
-/**
- * 用来分组和展示的状态。
- *
- * **盘前跑日更时，当日 bar 还不是收盘终值，状态机按设计一律给 UNKNOWN**——
- * 那条规则是对的（上午 11 点的价格不该推动跨日生命周期）。但界面不该因此把
- * 已知的东西也丢掉：2026-09-06 实测，盘前更新后整页 59 只全变「数据不足」，
- * 昨天的分组全没了。
- *
- * 所以当日判不出来时退回 last_valid_state（后端一直保留着），并在标签上标明
- * 它是截至上一个已结算交易日的。**这不是拿旧值冒充新值**——它明确标注了日期，
- * 而"今天还没收盘"本来就不该改变昨天的结论。
- */
-const shownState = (r: LeaderCycleItem): LifecycleState =>
-  (r.lifecycle_state && r.lifecycle_state !== 'UNKNOWN'
-    ? r.lifecycle_state
-    : (r.last_valid_state ?? 'UNKNOWN'))
-
-/** 显示的是不是"截至上一个已结算交易日"的旧结论 */
-const isStale = (r: LeaderCycleItem) =>
-  r.lifecycle_state === 'UNKNOWN' && !!r.last_valid_state
+const BUCKET: Record<Exclude<Group, 'all' | 'unbucketed'>, Bucketable[]> = {
+  core: [], waiting: [], dropped: [],
+}
+STATE_ORDER.forEach((st) => BUCKET[bucketOf(st)].push(st))
+const BUCKETED = new Set<string>(STATE_ORDER)
 
 const COLS = ['股票', '状态', '主板块', '本轮', '60日', 'D+', '峰值回撤',
   '现价/MA5', '现价/MA10', '距阶段高', '距周期顶',
   'RS市场20', 'ΔRS 1日', 'ΔRS 3日', 'RS板块20', '量比5日', '换手']
 
 /**
- * 表格内的排序 / 分段顺序：**按生命周期推进的方向**排。
+ * 表格内的排序 / 分段顺序：按生命周期推进的方向排（STATE_ORDER 在 lib 里）。
  *
  * 一个 tab 里状态混着排，扫一眼看不出各有几只——「已剔除」里走弱、失败、结束
- * 交替出现时尤其明显。分段之后，每一段的规模一眼可见，而规模本身就是信息：
- * 46 只里有多少是刚走弱（还值得回头看）、多少已经周期结束（可以不看了）。
+ * 交替出现时尤其明显。分段之后每一段的规模一眼可见，而规模本身就是信息。
  */
-const STATE_ORDER: Bucketable[] = [
-  'STREAKING', 'BROKEN', 'REPAIRING', 'CROSS_SUCCESS',
-  'CROSS_WEAKENING', 'CROSS_FAILED', 'FADED', 'UNKNOWN', 'NO_CYCLE',
-]
 const orderOf = (st: string | null) => {
   const i = STATE_ORDER.indexOf((st ?? 'UNKNOWN') as Bucketable)
   return i < 0 ? STATE_ORDER.length : i     // 认不出的排最后，但不丢
 }
 
-/** 每个状态的交易含义。写在这里而不是让人猜——状态名本身不自解释 */
-const STATE_META: Record<string, { label: string; hint: string; tone: string }> = {
-  REPAIRING:       { label: '修复中',   tone: 'text-accent',
+/**
+ * 每个状态的**交易含义和配色**。中文名不在这里——那是 lib/lifecycle 的
+ * LIFECYCLE_ZH，一份就够；这里只放展示层特有的东西。
+ */
+const STATE_TONE: Record<string, { hint: string; tone: string }> = {
+  REPAIRING:       { tone: 'text-accent',
                      hint: '二波修复中，核心观察' },
-  CROSS_SUCCESS:   { label: '穿越成功', tone: 'text-up',
+  CROSS_SUCCESS:   { tone: 'text-up',
                      hint: '已完成二波价格结构确认，且趋势仍健康。不等于可以买' },
-  CROSS_WEAKENING: { label: '成功后走弱', tone: 'text-warn',
+  CROSS_WEAKENING: { tone: 'text-warn',
                      hint: '曾经穿越成功，但趋势已恶化——明确退出核心机会池' },
-  BROKEN:          { label: '刚断板',   tone: 'text-text-secondary',
+  BROKEN:          { tone: 'text-text-secondary',
                      hint: '第一段连板结束，结构还没演化。**最多 2 个交易日**'
                          + '（D+0/D+1），之后必须表态：修复中，或修复失败' },
-  STREAKING:       { label: '连板中',   tone: 'text-up',
+  STREAKING:       { tone: 'text-up',
                      hint: '尚未断板' },
-  CROSS_FAILED:    { label: '修复失败', tone: 'text-down',
+  CROSS_FAILED:    { tone: 'text-down',
                      hint: '本次修复失败：创断板后新低、连续收在 MA5 下，'
                          + '或断板满 2 个交易日仍未修复。不是终点——重新站回 MA5'
                          + '且 MA5 上行仍会回到修复中' },
-  FADED:           { label: '周期结束', tone: 'text-text-muted',
+  FADED:           { tone: 'text-text-muted',
                      hint: '当前这段周期生命周期结束，默认弱化' },
-  UNKNOWN:         { label: '数据不足', tone: 'text-text-muted',
+  UNKNOWN:         { tone: 'text-text-muted',
                      hint: '今天的价格事实不足以判断——不拿"破位/失败"顶替"不知道"' },
-  NO_CYCLE:        { label: '无周期',   tone: 'text-warn',
+  NO_CYCLE:        { tone: 'text-warn',
                      hint: '仍在东财召回的强势池里，但本地重算不出 ≥4 连板周期。'
                          + '可能是对方口径不同，也可能是我们算错了——列在这里而不是'
                          + '从池子里删掉，因为静默消失就永远查不出来' },
@@ -144,7 +127,8 @@ function StateTag({ r }: { r: LeaderCycleItem }) {
   const st = shownState(r)
   const stale = isStale(r)
   if (!st) return <span className="text-text-muted/50">—</span>
-  const m = STATE_META[st] ?? { label: st, tone: 'text-text-secondary', hint: '' }
+  const t = STATE_TONE[st] ?? { tone: 'text-text-secondary', hint: '' }
+  const m = { ...t, label: LIFECYCLE_ZH[st] ?? st }
   // 优先展示**入场原因**：状态可能已经持续几十天，"今天没事发生"没有信息量
   const why = (r.entry_reasons?.length ? r.entry_reasons : r.transition_reasons)
     ?.join('；')
@@ -255,11 +239,9 @@ export default function LeaderCyclePanel() {
                                         unbucketed: 0, all: all.length }
     all.forEach((r) => {
       const st = shownState(r)
-      const g = (['core', 'waiting', 'dropped'] as Group[])
-        .find((k) => (BUCKET[k] as string[]).includes(st))
-      // 落到 unbucketed 只有一种可能：出现了这里没列的新状态。那是 bug，
-      // 而不是"数据不足"——后者是合法状态，已经归进待观察了
-      c[g ?? 'unbucketed'] += 1
+      // 落到 unbucketed 只有一种可能：出现了 STATE_ORDER 里没有的新状态。
+      // 那是 bug，而不是"数据不足"——后者是合法状态，已经归进待观察了
+      c[BUCKETED.has(st) ? bucketOf(st) : 'unbucketed'] += 1
     })
     return c
   }, [all])
@@ -269,7 +251,8 @@ export default function LeaderCyclePanel() {
       group === 'all' ? all
       : group === 'unbucketed'
         ? all.filter((r) => !BUCKETED.has(shownState(r)))
-        : all.filter((r) => (BUCKET[group] as string[]).includes(shownState(r)))
+        : all.filter((r) => BUCKETED.has(shownState(r))
+                            && bucketOf(shownState(r)) === group)
     // 先按状态分段（段内顺序见 STATE_ORDER），段内今天刚变的在前——
     // 转强和转弱都是当天才需要动脑子的事
     return [...picked].sort((a, b) =>
@@ -424,7 +407,8 @@ export default function LeaderCyclePanel() {
               {rows.map((r, i) => {
                 const st = shownState(r)
                 const head = i === 0 || st !== shownState(rows[i - 1])
-                const m = STATE_META[st]
+                const m = { ...(STATE_TONE[st] ?? { tone: '', hint: '' }),
+                            label: LIFECYCLE_ZH[st] ?? st }
                 const n = rows.filter((x) => shownState(x) === st).length
                 return (
                   <Fragment key={r.code}>

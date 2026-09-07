@@ -2,6 +2,7 @@ import { useState, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { fetchStrongPool, fetchLimitMoves, fetchLeaderCycle } from '@/api/stocks'
+import { shownState } from '@/lib/lifecycle'
 import LeaderCyclePanel from '@/components/stockPool/LeaderCyclePanel'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag, RegulatoryTag, YesterdayLimitTag, SevereTargetTag } from '@/components/common/SectorTags'
@@ -152,7 +153,11 @@ function useLifecycleStates(): Map<string, string> {
   return useMemo(() => {
     const m = new Map<string, string>()
     for (const r of [...(data?.running ?? []), ...(data?.broken ?? [])]) {
-      m.set(r.code, r.lifecycle_state ?? 'UNKNOWN')
+      // shownState 处理"盘前当日判不出时退回 last_valid_state"。
+      // **跟 LeaderCyclePanel 共用 lib/lifecycle 里的那一份**——2026-09-06 实测：
+      // 只改了 Panel 没改这里，同一份数据在「强势股」tab 显示核心观察 8 只、
+      // 在「全部」tab 显示未分类 59 只
+      m.set(r.code, shownState(r))
     }
     // 在池里但识别不出周期的：给一个跟"数据不足"不同的值，两者都归「未分类」，
     // 但保留区分的可能（tooltip 里能说清是哪一种）
