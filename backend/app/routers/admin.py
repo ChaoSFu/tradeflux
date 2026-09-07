@@ -359,6 +359,22 @@ def get_update_status():
         return dict(_job)
 
 
+@router.get("/rss-stats")
+def get_rss_stats():
+    """
+    进程内存归因：**哪个接口涨得最多**。
+
+    单行日志只回答"刚才是谁"，这里回答"长期看谁最贵"。2026-09-07 那次整站超时
+    排查里，如果早有这张表，第一分钟就能看出 /leader-cycle/effect 是唯一一个百 MB
+    量级的接口——那次从外面采样猜了四次才定位。
+
+    只统计单次增量 ≥ 阈值（默认 20MB）的请求。RSS 会被并发请求和后台线程干扰，
+    所以这是**线索不是精确归因**；但量级差一个数量级时足够定位。
+    """
+    from ..rss_probe import stats
+    return stats()
+
+
 @router.get("/job-durations")
 def get_job_durations():
     """

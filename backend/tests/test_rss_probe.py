@@ -60,3 +60,59 @@ def test_读取本身要便宜(monkeypatch):
     for _ in range(1000):
         P._rss_mb()
     assert (time.monotonic() - t0) < 0.5, "1000 次读取应远快于 0.5 秒"
+
+
+class TestAggregate:
+    """
+    单行日志只回答"刚才是谁"，聚合回答"长期看谁最贵"。
+
+    2026-09-07 那次整站超时：从外面采样猜了四次都错，探针上线一轮就抓到
+    `/leader-cycle/effect` 单次 +405MB —— 而全站其余接口都在 20~40MB。
+    有这张表的话，第一分钟就能看出量级差了一个数量级。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        P._by_path.clear(); P._recent.clear()
+        P._peak_rss = 0.0
+        yield
+        P._by_path.clear(); P._recent.clear()
+
+    def _hit(self, app, monkeypatch, before, after, url="/ping"):
+        # 用完之后一直返回 after —— stats() 自己也要读一次 RSS，
+        # 拿 iter 会 StopIteration
+        vals = [before, after]
+        monkeypatch.setattr(P, "_rss_mb", lambda: vals.pop(0) if vals else after)
+        TestClient(app).get(url)
+
+    def test_按路径聚合并记住最贵的一次(self, app_with_probe, monkeypatch):
+        self._hit(app_with_probe, monkeypatch, 100.0, 150.0, "/ping?a=1")
+        self._hit(app_with_probe, monkeypatch, 150.0, 550.0, "/ping?a=2")
+        e = P.stats()["by_path"][0]
+        assert e["path"] == "/ping" and e["count"] == 2
+        assert e["max_mb"] == 400.0
+        assert e["worst_url"] == "/ping?a=2", "最贵那次的完整 URL 要留住"
+
+    def test_明细有界(self, app_with_probe, monkeypatch):
+        """**观测组件自己不能变成内存问题。**"""
+        for i in range(P.RECENT_MAX + 20):
+            self._hit(app_with_probe, monkeypatch, 100.0, 200.0)
+        assert len(P.stats()["recent"]) == P.RECENT_MAX
+
+    def test_超过危险线单独报(self, app_with_probe, monkeypatch, caplog):
+        """要在开始换页之前就能 grep 到，而不是等整站超时了才去翻。"""
+        monkeypatch.setattr(P, "DANGER_MB", 500.0)
+        with caplog.at_level(logging.WARNING, logger="tradeflux.rss"):
+            self._hit(app_with_probe, monkeypatch, 100.0, 600.0)
+        msgs = "\n".join(r.getMessage() for r in caplog.records)
+        assert "[RSS][DANGER]" in msgs and "/ping" in msgs
+        assert P.stats()["danger_hits"] == 1
+
+    def test_没到阈值不进聚合(self, app_with_probe, monkeypatch):
+        self._hit(app_with_probe, monkeypatch, 100.0, 105.0)
+        assert P.stats()["by_path"] == []
+
+    def test_拿不到RSS时当前值给None(self, monkeypatch):
+        """**不编一个 0。** 0 会被读成"进程只占 0MB"。"""
+        monkeypatch.setattr(P, "_rss_mb", lambda: None)
+        assert P.stats()["current_rss_mb"] is None

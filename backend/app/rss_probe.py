@@ -29,8 +29,10 @@
 """
 import logging
 import os
+import threading
 import time
-from typing import Optional
+from collections import deque
+from typing import Deque, Dict, List, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -39,6 +41,11 @@ logger = logging.getLogger("tradeflux.rss")
 #: 单个请求涨这么多 MB 才记。默认 20MB——日常浏览整页才 +70MB，
 #: 单个请求涨 20MB 已经值得看一眼了
 GROWTH_LOG_MB = float(os.environ.get("RSS_PROBE_MB", "20"))
+#: 超过这条线单独打一行 DANGER。这台机器 1.87G，另有约 500MB 被无关进程常驻，
+#: 到 700MB 就已经在换页边缘了——**要在开始卡之前就能 grep 到**
+DANGER_MB = float(os.environ.get("RSS_PROBE_DANGER_MB", "700"))
+#: 留多少条最近的跳变明细。够回溯一次故障，又不至于自己变成内存问题
+RECENT_MAX = 50
 _PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 
 
@@ -62,10 +69,15 @@ class RssProbeMiddleware(BaseHTTPMiddleware):
             if grew >= GROWTH_LOG_MB:
                 # 带上 query string——page_size=500 和 page_size=1 是两件事
                 q = request.url.query
-                logger.warning(
-                    "[RSS] +%.0fMB → %.0fMB  %.2fs  %s%s",
-                    grew, after, time.monotonic() - t0, request.url.path,
-                    f"?{q}" if q else "")
+                url = request.url.path + (f"?{q}" if q else "")
+                secs = time.monotonic() - t0
+                logger.warning("[RSS] +%.0fMB → %.0fMB  %.2fs  %s",
+                               grew, after, secs, url)
+                if after >= DANGER_MB:
+                    # 单独一行，方便只 grep DANGER 就看到"快撑不住了"
+                    logger.error("[RSS][DANGER] %.0fMB ≥ %.0fMB  触发者 %s",
+                                 after, DANGER_MB, url)
+                _record(request.url.path, url, grew, after, secs)
         return response
 
 
@@ -106,3 +118,58 @@ async def rss_heartbeat() -> None:
         except Exception:               # noqa: BLE001
             # 观测挂了不能带垮服务
             logger.exception("[RSS] 心跳异常")
+
+
+# ── 聚合：哪个接口最贵，长期看 ────────────────────────────────────────────
+#
+# journal 里的单行只回答"刚才是谁"。要回答"长期看谁最贵"，得有个累计。
+# 2026-09-07 那次排查里，如果早有这张表，第一分钟就能看出 /leader-cycle/effect
+# 是唯一一个百 MB 量级的接口，不必猜四次。
+#
+# 有界：按 path 聚合（不含 query），路由数量就是上界；明细只留最近 50 条。
+# **观测组件自己不能变成内存问题。**
+_lock = threading.Lock()
+_by_path: Dict[str, dict] = {}
+_recent: Deque[dict] = deque(maxlen=RECENT_MAX)
+_peak_rss = 0.0
+_danger_hits = 0
+
+
+def _record(path: str, url: str, grew: float, after: float, secs: float) -> None:
+    global _peak_rss, _danger_hits
+    with _lock:
+        e = _by_path.setdefault(path, {
+            "path": path, "count": 0, "total_mb": 0.0, "max_mb": 0.0,
+            "max_secs": 0.0, "worst_url": url, "last_at": None,
+        })
+        e["count"] += 1
+        e["total_mb"] += grew
+        if grew > e["max_mb"]:
+            e["max_mb"], e["worst_url"] = grew, url
+        e["max_secs"] = max(e["max_secs"], secs)
+        e["last_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _recent.append({"at": e["last_at"], "url": url,
+                        "grew_mb": round(grew, 1), "rss_mb": round(after, 1),
+                        "secs": round(secs, 2)})
+        _peak_rss = max(_peak_rss, after)
+        if after >= DANGER_MB:
+            _danger_hits += 1
+
+
+def stats() -> dict:
+    """给 /admin/rss-stats 用。**当前 RSS 拿不到就是 None**，不编。"""
+    with _lock:
+        top = sorted(_by_path.values(), key=lambda e: -e["max_mb"])[:20]
+        return {
+            "current_rss_mb": (lambda v: round(v, 1) if v is not None else None)(_rss_mb()),
+            "peak_rss_mb": round(_peak_rss, 1) or None,
+            "danger_threshold_mb": DANGER_MB,
+            "danger_hits": _danger_hits,
+            "growth_log_threshold_mb": GROWTH_LOG_MB,
+            "by_path": [{**e, "total_mb": round(e["total_mb"], 1),
+                         "max_mb": round(e["max_mb"], 1),
+                         "max_secs": round(e["max_secs"], 2)} for e in top],
+            "recent": list(reversed(_recent)),
+            "note": "只记录单次增量 ≥ 阈值的请求。RSS 会被别的请求和后台线程干扰，"
+                    "所以这里是线索不是精确归因——但量级差一个数量级时足够定位。",
+        }
