@@ -232,10 +232,36 @@ def get_ladder_members(db: Session, target: date, bucket: str,
              if ladder_bucket(bc) == bucket}
     if not codes:
         return [], []
-    names = {c: n for c, n in
-             db.query(Stock.code, Stock.name).filter(Stock.code.in_(codes)).all()}
-    rows = [{"code": c, "name": names.get(c), "board_count": bc}
-            for c, bc in codes.items()]
+
+    # ── 各项指标一律取**那一天那行快照**的值，不是 Stock 表的当前值 ──────
+    # 点开 7 月某天的格子，要看到的是它当时的「近60日涨停 5 次」，不是今天的。
+    # StockDailySnapshot 把这些滚动统计逐日落了库，就是为了历史查询能对得上。
+    # 走 Stock.* 会静默串期：数字看着正常，但描述的是另一个时点。
+    from ..models.sector import Sector
+    q = (db.query(StockDailySnapshot, Stock.code, Stock.name, Sector.name)
+         .join(Stock, Stock.id == StockDailySnapshot.stock_id)
+         .outerjoin(Sector, Sector.id == Stock.primary_sector_id)
+         .filter(StockDailySnapshot.date == target,
+                 Stock.code.in_(codes)))
+    rows = []
+    for snap, code, name, sector in q.all():
+        rows.append({
+            "code": code, "name": name,
+            # 主板块取的是**当前**归属（板块关系没有逐日落库），跟其余字段口径不同
+            "sector_name": sector,
+            "board_count": codes[code],
+            "pct_change": snap.pct_change,
+            "is_one_word": bool(snap.is_one_word_limit_up),
+            "turnover_rate": snap.turnover_rate,
+            "amount": snap.amount,
+            "board_count_60d": snap.board_count_60d,
+            "limit_up_days_10d": snap.limit_up_days_10d,
+            "limit_up_days_20d": snap.limit_up_days_20d,
+            "limit_up_days_60d": snap.limit_up_days_60d,
+            "pct_change_10d": snap.pct_change_10d,
+            "pct_change_20d": snap.pct_change_20d,
+            "pct_change_60d": snap.pct_change_60d,
+        })
     # 板数高的在前，同板按代码——**顺序稳定**，同一天点两次结果一样
     rows.sort(key=lambda r: (-r["board_count"], r["code"]))
     return rows, []

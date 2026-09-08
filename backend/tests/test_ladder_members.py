@@ -81,3 +81,43 @@ class TestMembersMatchCounts:
 
     def test_库里什么都没有时不报错(self, db):
         assert get_ladder_members(db, D[0], "3") == ([], ["没有任何涨停快照"])
+
+
+class TestPointInTimeFields:
+    """
+    **各项指标取那一天那行快照的值，不是 Stock 表的当前值。**
+
+    点开 7 月某天的格子，要看到的是它当时的「近60日涨停 5 次」，不是今天的。
+    走 Stock.* 会静默串期——数字看着完全正常，但描述的是另一个时点，而这种错
+    在界面上没有任何迹象。
+    """
+
+    def test_用当天快照的滚动统计(self, db):
+        st = Stock(code="600050", name="甲", market="SH",
+                   limit_up_days_60d=99, board_count_60d=99,   # Stock 上的“今天”值
+                   pct_change_60d=999.0)
+        db.add(st); db.flush()
+        db.add(StockDailySnapshot(
+            stock_id=st.id, date=D[1], close_price=10.0, board_count=4,
+            is_limit_up=True, is_settled=True,
+            limit_up_days_10d=2, limit_up_days_20d=3, limit_up_days_60d=5,
+            board_count_60d=6, pct_change_10d=11.0, pct_change_20d=22.0,
+            pct_change_60d=33.0, turnover_rate=8.5, pct_change=10.0))
+        db.commit()
+
+        m = get_ladder_members(db, D[1], "4")[0][0]
+        assert m["limit_up_days_60d"] == 5, "取到了 Stock 表的当前值 99，串期了"
+        assert m["board_count_60d"] == 6 and m["pct_change_60d"] == 33.0
+        assert m["turnover_rate"] == 8.5 and m["pct_change"] == 10.0
+
+    def test_那天没拿到换手就是None不是0(self, db):
+        _mk(db, "600051", "乙", D[2], 3)
+        db.commit()
+        m = get_ladder_members(db, D[2], "3")[0][0]
+        assert m["turnover_rate"] is None and m["amount"] is None, \
+            "用 0 顶替「不知道」，页面上就是「换手 0%」——那是个观测，不是缺失"
+
+    def test_没有主板块也不报错(self, db):
+        _mk(db, "600052", "丙", D[2], 3)
+        db.commit()
+        assert get_ladder_members(db, D[2], "3")[0][0]["sector_name"] is None

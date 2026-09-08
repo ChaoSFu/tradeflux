@@ -67,10 +67,28 @@ export const fetchHeightSeries = (days = 66) =>
     .then((r) => r.data)
 
 // ── 连板梯队明细：热力图点格子 ──────────────────────────────────────────────
+/**
+ * **除主板块外，每一项都是那一天那行快照的值**，不是今天的。
+ * 点开 7 月某天的格子，看到的必须是它当时的「近60日涨停 5 次」。
+ */
 export interface LadderMember {
   code: string
   name: string | null
+  /** 当前归属（板块关系没有逐日落库），跟其余字段口径不同 */
+  sector_name: string | null
   board_count: number
+  pct_change: number | null
+  is_one_word: boolean
+  /** null = 那天没拿到，**不是 0** */
+  turnover_rate: number | null
+  amount: number | null
+  board_count_60d: number | null
+  limit_up_days_10d: number | null
+  limit_up_days_20d: number | null
+  limit_up_days_60d: number | null
+  pct_change_10d: number | null
+  pct_change_20d: number | null
+  pct_change_60d: number | null
 }
 
 export interface LadderMembersResponse {

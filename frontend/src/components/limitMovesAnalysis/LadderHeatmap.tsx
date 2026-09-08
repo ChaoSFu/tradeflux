@@ -5,6 +5,16 @@ import { cn } from '@/utils/cn'
 import { fetchLadderMembers, type HeightPoint } from '@/api/marketTrend'
 import { QueryState } from './QueryState'
 
+const NUM = 'font-mono tabular-nums'
+const LTH = 'px-2 py-1 text-left font-medium text-text-muted whitespace-nowrap border-b border-bg-border'
+const LTD = 'px-2 py-1 whitespace-nowrap'
+const pct = (v: number | null, d = 2) =>
+  v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(d)}%`
+const tone = (v: number | null) =>
+  v === null ? 'text-text-muted' : v > 0 ? 'text-up' : v < 0 ? 'text-down' : ''
+/** 成交额（元）→ 亿。null = 那天没拿到，**不是 0** */
+const yi = (v: number | null) => (v === null ? '—' : `${(v / 1e8).toFixed(2)}亿`)
+
 const LABEL_W = 34
 
 /**
@@ -142,22 +152,64 @@ function LadderMembers({ date, lv, expected, onClose }: {
       <div className="mt-1.5">
         <QueryState qs={[q]} isEmpty={!members.length}
                     emptyText="这一档没有股票" rows={2}>
-          <div className="flex flex-wrap gap-x-3 gap-y-1">
-            {members.map((m) => (
-              <span key={m.code} className="text-[11px] whitespace-nowrap">
-                <span className="text-text-primary">{m.name ?? m.code}</span>
-                <span className="ml-1 font-mono tabular-nums text-text-muted">
-                  {m.code}
-                </span>
-                {/* 封顶档里混着 9 板 10 板，具体几板要看得见 */}
-                {String(m.board_count) !== lv && (
-                  <span className="ml-1 font-mono tabular-nums text-up/80">
-                    {m.board_count}板
-                  </span>
-                )}
-              </span>
-            ))}
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]" style={{ minWidth: 780 }}>
+              <thead>
+                <tr>
+                  {['股票', '主板块', '板数', '当日', '一字', '换手', '成交额',
+                    '10/20/60日涨停', '60日最高板', '10日', '20日', '60日']
+                    .map((h) => <th key={h} className={LTH}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {members.map((m) => (
+                  <tr key={m.code} className="border-b border-bg-border/40 last:border-0">
+                    <td className={LTD}>
+                      <span className="text-text-primary">{m.name ?? m.code}</span>
+                      <span className={cn('ml-1 text-text-muted', NUM)}>{m.code}</span>
+                    </td>
+                    <td className={cn(LTD, 'max-w-[8rem] truncate text-text-muted')}
+                        title={m.sector_name ?? ''}>{m.sector_name ?? '—'}</td>
+                    {/* 封顶档里混着 9 板 10 板，具体几板要看得见 */}
+                    <td className={cn(LTD, NUM, 'text-up font-medium')}>{m.board_count}</td>
+                    <td className={cn(LTD, NUM, tone(m.pct_change))}>{pct(m.pct_change)}</td>
+                    <td className={cn(LTD, NUM)}>{m.is_one_word ? '一字' : '—'}</td>
+                    {/* 涨停股换手 0% 不可能。历史行曾用 0 顶替「没取到」（见
+                        StockDailySnapshot.turnover_rate 的注释），所以照实显示
+                        这个 0，但标出来它多半是占位符——**不擅自改写成「未知」**，
+                        那是替数据下结论 */}
+                    <td className={cn(LTD, NUM,
+                      m.turnover_rate === 0 ? 'text-warn/70' : 'text-text-secondary')}
+                        title={m.turnover_rate === 0
+                          ? '历史行曾用 0 顶替「未取到」，这个 0 不一定是真的' : ''}>
+                      {m.turnover_rate === null ? '—' : `${m.turnover_rate.toFixed(1)}%`}
+                    </td>
+                    <td className={cn(LTD, NUM, 'text-text-secondary')}>{yi(m.amount)}</td>
+                    <td className={cn(LTD, NUM, 'text-text-secondary')}>
+                      {m.limit_up_days_10d ?? '—'}/{m.limit_up_days_20d ?? '—'}/
+                      {m.limit_up_days_60d ?? '—'}
+                    </td>
+                    <td className={cn(LTD, NUM)}>{m.board_count_60d ?? '—'}</td>
+                    <td className={cn(LTD, NUM, tone(m.pct_change_10d))}>
+                      {pct(m.pct_change_10d, 1)}
+                    </td>
+                    <td className={cn(LTD, NUM, tone(m.pct_change_20d))}>
+                      {pct(m.pct_change_20d, 1)}
+                    </td>
+                    <td className={cn(LTD, NUM, tone(m.pct_change_60d))}>
+                      {pct(m.pct_change_60d, 1)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
+          <p className="text-[10px] text-text-muted mt-1.5">
+            除主板块外，每一项都是<span className="text-text-secondary">那一天</span>
+            的快照值——点 7 月的格子看到的是它当时的近 60 日涨停次数，不是今天的。
+            主板块取当前归属（板块关系没有逐日落库）。换手/成交额为 — 表示那天没拿到，
+            不是 0。
+          </p>
         </QueryState>
       </div>
     </div>

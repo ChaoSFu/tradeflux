@@ -57,9 +57,25 @@ def get_height_series(
 
 
 class LadderMember(BaseModel):
+    """
+    **除主板块外，每一项都取那一天那行快照的值**，不是 Stock 表的当前值。
+    点开 7 月某天的格子，看到的必须是它当时的「近60日涨停 5 次」。
+    """
     code: str
     name: Optional[str] = None
+    sector_name: Optional[str] = None      # 当前归属（板块关系没有逐日落库）
     board_count: int
+    pct_change: Optional[float] = None
+    is_one_word: bool = False
+    turnover_rate: Optional[float] = None  # None = 那天没拿到，不是 0
+    amount: Optional[float] = None         # 成交额（元）
+    board_count_60d: Optional[int] = None
+    limit_up_days_10d: Optional[int] = None
+    limit_up_days_20d: Optional[int] = None
+    limit_up_days_60d: Optional[int] = None
+    pct_change_10d: Optional[float] = None
+    pct_change_20d: Optional[float] = None
+    pct_change_60d: Optional[float] = None
 
 
 class LadderMembersResponse(BaseModel):
