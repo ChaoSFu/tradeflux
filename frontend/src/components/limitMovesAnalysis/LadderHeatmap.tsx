@@ -1,6 +1,9 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronUp } from 'lucide-react'
-import type { HeightPoint } from '@/api/marketTrend'
+import { useQuery } from '@tanstack/react-query'
+import { ChevronDown, ChevronUp, X } from 'lucide-react'
+import { cn } from '@/utils/cn'
+import { fetchLadderMembers, type HeightPoint } from '@/api/marketTrend'
+import { QueryState } from './QueryState'
 
 const LABEL_W = 34
 
@@ -28,6 +31,8 @@ export function LadderHeatmap({ points }: { points: HeightPoint[] }) {
   }, [levels, points])
 
   const shown = open ? levels : levels.filter((lv) => rank(lv) >= 3)
+  // 点开的格子：哪天、哪一档。再点同一个格子收起
+  const [picked, setPicked] = useState<{ date: string; lv: string } | null>(null)
 
   if (!points.length) {
     return <div className="text-xs text-text-muted py-4 text-center">暂无数据</div>
@@ -54,14 +59,22 @@ export function LadderHeatmap({ points }: { points: HeightPoint[] }) {
               <div className="flex gap-px flex-1">
                 {points.map((p) => {
                   const n = p.ladder[lv] ?? 0
+                  const on = picked?.date === p.date && picked?.lv === lv
                   return (
-                    <div key={p.date} className="flex-1 rounded-[1px]"
+                    // 空格子不给点——点开必然是空列表，那不是信息
+                    <div key={p.date}
+                         onClick={n ? () => setPicked(
+                           on ? null : { date: p.date, lv }) : undefined}
+                         className={cn('flex-1 rounded-[1px]',
+                           n ? 'cursor-pointer hover:opacity-70' : '',
+                           on ? 'ring-1 ring-accent' : '')}
                          style={{
                            height: 13,
                            background: n === 0 ? '#1A1F30'
                              : `rgba(255,45,85,${0.15 + (n / rowMax[lv]) * 0.85})`,
                          }}
-                         title={`${p.date}  ${lv}板 ${n} 只`} />
+                         title={n ? `${p.date}  ${lv}板 ${n} 只 · 点开看是哪几只`
+                                  : `${p.date}  ${lv}板 0 只`} />
                   )
                 })}
               </div>
@@ -76,11 +89,77 @@ export function LadderHeatmap({ points }: { points: HeightPoint[] }) {
           </div>
         </div>
       </div>
+      {picked && (
+        <LadderMembers date={picked.date} lv={picked.lv}
+                       expected={points.find((p) => p.date === picked.date)
+                         ?.ladder[picked.lv] ?? 0}
+                       onClose={() => setPicked(null)} />
+      )}
+
       {!open && (
         <p className="text-[10px] text-text-muted">
           默认只显示 3 板以上。每行按自己的峰值着色（各板级只数量级差几十倍）。
+          点格子看当天这一档是哪几只。
         </p>
       )}
+    </div>
+  )
+}
+
+/**
+ * 点开的那个格子：当天该档位的股票。
+ *
+ * **列表长度必须等于格子里的数字**（后端同源，见 fetchLadderMembers）。对不上时
+ * 明说，不闷着——那种不一致正是"两套判定"的信号，藏起来只会让它活得更久。
+ */
+function LadderMembers({ date, lv, expected, onClose }: {
+  date: string; lv: string; expected: number; onClose: () => void
+}) {
+  const q = useQuery({
+    queryKey: ['ladder-members', date, lv],
+    queryFn: () => fetchLadderMembers(date, lv),
+    staleTime: 10 * 60 * 1000,
+  })
+  const members = q.data?.members ?? []
+  const mismatch = q.data && members.length !== expected
+
+  return (
+    <div className="mt-1.5 rounded bg-bg-elevated/60 px-2.5 py-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[11px] text-text-primary">
+          {date} · <span className="text-up font-medium">{lv}板</span>
+          <span className="text-text-muted ml-1.5">{expected} 只</span>
+        </span>
+        <button onClick={onClose} className="text-text-muted hover:text-text-secondary">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      {mismatch && (
+        <div className="text-[11px] text-warn mt-1">
+          明细 {members.length} 只跟格子上的 {expected} 只对不上——两边口径分叉了
+        </div>
+      )}
+      <div className="mt-1.5">
+        <QueryState qs={[q]} isEmpty={!members.length}
+                    emptyText="这一档没有股票" rows={2}>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            {members.map((m) => (
+              <span key={m.code} className="text-[11px] whitespace-nowrap">
+                <span className="text-text-primary">{m.name ?? m.code}</span>
+                <span className="ml-1 font-mono tabular-nums text-text-muted">
+                  {m.code}
+                </span>
+                {/* 封顶档里混着 9 板 10 板，具体几板要看得见 */}
+                {String(m.board_count) !== lv && (
+                  <span className="ml-1 font-mono tabular-nums text-up/80">
+                    {m.board_count}板
+                  </span>
+                )}
+              </span>
+            ))}
+          </div>
+        </QueryState>
+      </div>
     </div>
   )
 }

@@ -1,13 +1,13 @@
 """破局雷达 / Speculation Regime Radar 接口。"""
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..services.speculation_radar_service import (
-    compute_height_series, FRONTIER_WINDOW, LADDER_MAX,
+    compute_height_series, get_ladder_members, FRONTIER_WINDOW, LADDER_MAX,
 )
 
 router = APIRouter(prefix="/speculation-radar", tags=["speculation-radar"])
@@ -54,3 +54,40 @@ def get_height_series(
         warnings=warnings,
         scope_note="不含 ST 股（选股口径为「非ST」；ST 是 5% 板，与主板不可比）",
     )
+
+
+class LadderMember(BaseModel):
+    code: str
+    name: Optional[str] = None
+    board_count: int
+
+
+class LadderMembersResponse(BaseModel):
+    date: str
+    bucket: str
+    members: List[LadderMember]
+    warnings: List[str] = []
+
+
+@router.get("/ladder-members", response_model=LadderMembersResponse)
+def get_ladder_members_api(
+    date: str = Query(..., description="交易日 YYYY-MM-DD"),
+    bucket: str = Query(..., description='梯队档位，如 "5" 或 "8+"（封顶档）'),
+    days: int = Query(66, ge=5, le=250),
+    db: Session = Depends(get_db),
+):
+    """
+    某一天某个梯队档位里到底是哪几只票。热力图点格子用。
+
+    跟热力图的格子数**同源**（都走 `_build_by_date`）——列表长度必须等于格子里
+    的数字。两边各写一套查询，迟早出现"格子写 3 只、点开列出 4 只"。
+    """
+    from datetime import date as _date
+    try:
+        target = _date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"日期格式不对：{date}")
+    members, warns = get_ladder_members(db, target, bucket, days=days)
+    return LadderMembersResponse(date=date, bucket=bucket,
+                                 members=[LadderMember(**m) for m in members],
+                                 warnings=warns)

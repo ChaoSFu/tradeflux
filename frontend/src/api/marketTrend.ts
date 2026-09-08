@@ -65,3 +65,27 @@ export interface HeightSeriesResponse {
 export const fetchHeightSeries = (days = 66) =>
   client.get<HeightSeriesResponse>('/speculation-radar/height', { params: { days } })
     .then((r) => r.data)
+
+// ── 连板梯队明细：热力图点格子 ──────────────────────────────────────────────
+export interface LadderMember {
+  code: string
+  name: string | null
+  board_count: number
+}
+
+export interface LadderMembersResponse {
+  date: string
+  bucket: string
+  members: LadderMember[]
+  warnings: string[]
+}
+
+/**
+ * 某天某个梯队档位里是哪几只票。
+ *
+ * 跟热力图格子里的数字**同源**（后端都走 `_build_by_date`）——列表长度必须等于
+ * 那个数字。两边各写一套查询，迟早出现「格子写 3 只、点开列出 4 只」。
+ */
+export const fetchLadderMembers = (date: string, bucket: string, days = 66) =>
+  client.get<LadderMembersResponse>('/speculation-radar/ladder-members',
+    { params: { date, bucket, days } }).then((r) => r.data)

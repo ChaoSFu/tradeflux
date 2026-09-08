@@ -131,11 +131,18 @@ def _drop_carried_forward(
     return cleaned, warns
 
 
-def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint], List[str]]:
-    """
-    高度前沿曲线 + 连板梯队。返回 (序列, 警告)。
+def ladder_bucket(bc: int) -> str:
+    """连板数 → 梯队档位键。**热力图、明细两边共用这一处**，不能各写各的。"""
+    return str(min(bc, LADDER_MAX)) + ("+" if bc > LADDER_MAX else "")
 
-    只读 StockDailySnapshot，零外部请求。board_count 实测可回溯到 2026-06-02。
+
+def _build_by_date(db: Session, days: int):
+    """
+    (all_days, by_date, lu_count, warns)。`by_date[d][code] = 连板数`。
+
+    **热力图的格子数和点开的明细必须来自同一次计算**——两边各写一套查询，迟早
+    出现"格子写 3 只、点开列出 4 只"，而且没人能一眼说出哪个对。这个仓库为
+    「同一个市场事实两套判定函数」栽过 10 次。
     """
     # 先按「有涨停 **或** 有连板数」取候选日期，再在下面筛掉没有连板数据的那些。
     # 不能一步到位只查 board_count>0——那样"有涨停但没连板数据"的日子从没进过
@@ -148,7 +155,7 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
         .distinct().order_by(StockDailySnapshot.date.desc()).limit(days + FRONTIER_WINDOW).all()
     )]
     if not all_days:
-        return [], ["没有任何涨停快照，无法计算市场高度"]
+        return None
     all_days.sort()
 
     rows = (
@@ -189,7 +196,7 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
     # 现在保留完整交易日 spine，缺数据的那天 height=None 在曲线上留空洞，
     # 并统计上沿窗口的覆盖度：覆盖不满就不给突破结论。
     if not [d for d in all_days if by_date.get(d)]:
-        return [], ["加载到的交易日都没有连板数据，无法计算市场高度"]
+        return None
 
     by_date, warns = _drop_carried_forward(by_date, all_days)
 
@@ -207,6 +214,43 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
         warns.insert(0, f"{len(missing)} 个交易日有涨停但没有任何连板数据"
                         f"（历史回填行不写 board_count），曲线上留空洞、"
                         f"且这些天不参与上沿判定：{missing[0]}~{missing[-1]}")
+    return all_days, by_date, lu_count, warns
+
+
+def get_ladder_members(db: Session, target: date, bucket: str,
+                       days: int = 66) -> tuple[List[dict], List[str]]:
+    """
+    某一天某个梯队档位里到底是哪几只票。热力图点格子用。
+
+    走 `_build_by_date`，跟热力图的格子数同源——**列表长度必须等于格子里的数字**。
+    """
+    built = _build_by_date(db, days)
+    if built is None:
+        return [], ["没有任何涨停快照"]
+    _all_days, by_date, _lu, _warns = built
+    codes = {c: bc for c, bc in (by_date.get(target) or {}).items()
+             if ladder_bucket(bc) == bucket}
+    if not codes:
+        return [], []
+    names = {c: n for c, n in
+             db.query(Stock.code, Stock.name).filter(Stock.code.in_(codes)).all()}
+    rows = [{"code": c, "name": names.get(c), "board_count": bc}
+            for c, bc in codes.items()]
+    # 板数高的在前，同板按代码——**顺序稳定**，同一天点两次结果一样
+    rows.sort(key=lambda r: (-r["board_count"], r["code"]))
+    return rows, []
+
+
+def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint], List[str]]:
+    """
+    高度前沿曲线 + 连板梯队。返回 (序列, 警告)。
+
+    只读 StockDailySnapshot，零外部请求。board_count 实测可回溯到 2026-06-02。
+    """
+    built = _build_by_date(db, days)
+    if built is None:
+        return [], ["没有任何涨停快照，无法计算市场高度"]
+    all_days, by_date, lu_count, warns = built
 
     out: List[HeightPoint] = []
     for i, d in enumerate(all_days):
@@ -215,7 +259,7 @@ def compute_height_series(db: Session, days: int = 60) -> tuple[List[HeightPoint
         height = max(counts.values(), default=0)
         ladder: Dict[str, int] = {}
         for bc in counts.values():
-            key = str(min(bc, LADDER_MAX)) + ("+" if bc > LADDER_MAX else "")
+            key = ladder_bucket(bc)
             ladder[key] = ladder.get(key, 0) + 1
         # 上沿只看**之前**那些天，含当日就永远不可能"突破"自己。
         # **窗口不满 FRONTIER_WINDOW 天就没有上沿**——这不是保守，是不知道：
