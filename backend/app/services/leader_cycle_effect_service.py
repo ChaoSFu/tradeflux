@@ -50,6 +50,23 @@ HORIZONS = (1, 3, 5)
 MIN_N = 5
 
 
+def _trimmed_mean(vals: List[float]) -> Optional[float]:
+    """
+    去掉一个最高、一个最低，再取均值。
+
+    为什么不用中位数：中位数只看排在中间的那一两只，组里其余的涨跌完全不进结果；
+    为什么不用裸均值：一只涨停就能把 5 只的组拽红。截尾均值两头都挡一下。
+
+    **n < 3 算不出**——去掉两端就没剩下了。这时返回 None，界面显示「样本不足」，
+    **不退回裸均值**：那会让同一列里两种口径混着，而看的人分不出哪个是哪个。
+    n = 3 时剩一只，等于中位数，这是它该有的行为。
+    """
+    if len(vals) < 3:
+        return None
+    inner = sorted(vals)[1:-1]
+    return round(sum(inner) / len(inner), 2)
+
+
 def _states_by_date(snaps_by_code: Dict[str, list], days: List[date],
                     cal: List[date]) -> Dict[date, Dict[str, str]]:
     """
@@ -77,7 +94,8 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     """
     返回 {as_of, prev, formula_version, cohorts, history, notes}。
 
-    `cohorts` 是当日的：昨天状态 → 今天涨跌幅中位数 / 红盘率 / 样本数。
+    `cohorts` 是当日的：昨天状态 → 今天涨跌幅**截尾均值**（去掉一个最高一个
+    最低再平均）/ 红盘率 / 样本数。
     `history` 是累积的：过去 history_days 里处于该状态的所有股票日 →
     之后 T+1/T+3/T+5 的中位收益。
     """
@@ -219,11 +237,15 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
             cohorts.append({
                 "state": st,
                 "count": len(vals),
-                # 样本太少就不给中位数——个位数样本的中位数没有意义
-                "median_pct_change": round(median(vals), 2) if len(vals) >= 3 else None,
+                "trimmed_avg_pct_change": _trimmed_mean(vals),
                 "red_ratio": round(sum(1 for v in vals if v > 0) / len(vals), 3),
             })
-        cohorts.sort(key=lambda c: -c["count"])
+        # 按涨幅从高到低；同分看红盘率。**算不出的（样本不足）永远沉底**——
+        # 「不知道」不是「最低」，让它跟真的跌了的那组抢倒数第一是把空值当事实
+        cohorts.sort(key=lambda c: (
+            c["trimmed_avg_pct_change"] is None,
+            -(c["trimmed_avg_pct_change"] or 0.0),
+            -c["red_ratio"]))
 
     # ── 历史前瞻：过去 N 天所有该状态的股票日 → 之后 T+h ──────────────
     fwd: Dict[str, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))

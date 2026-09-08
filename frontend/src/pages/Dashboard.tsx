@@ -234,7 +234,8 @@ function SectorEffectCard({
 /**
  * 生命周期口径的赚钱效应。
  *
- * 上面一格是**当日**：昨天处于某状态的票，今天中位涨幅多少、红盘率多少。
+ * 上面一格是**当日**：昨天处于某状态的票，今天的去极值均涨幅、红盘率。
+ * 按涨幅从高到低排，同分看红盘率；算不出的（不足 3 只）沉底。
  * 下面一格是**历史**：过去 60 天处于该状态之后 T+1/T+3/T+5 普遍怎么走。
  *
  * 历史那部分刻意标成「线索」而不是结论——它没做同日同池对照，也没有置信区间。
@@ -325,15 +326,18 @@ function LifecycleEffect() {
             </p>
             <div className="flex items-baseline gap-1 mt-1.5">
               <span className={cn('text-xl font-mono font-bold',
-                c.median_pct_change === null ? 'text-text-muted'
-                  : c.median_pct_change >= 0 ? 'text-up' : 'text-down')}>
-                {pct(c.median_pct_change)}
+                c.trimmed_avg_pct_change === null ? 'text-text-muted'
+                  : c.trimmed_avg_pct_change >= 0 ? 'text-up' : 'text-down')}>
+                {pct(c.trimmed_avg_pct_change)}
               </span>
               <span className="text-xs text-text-muted">{c.count}只</span>
             </div>
             <div className="text-[11px] text-text-muted mt-1">
-              今日中位涨幅 · 红盘率 {rate(c.red_ratio)}
-              {c.median_pct_change === null && '（样本不足，不给中位数）'}
+              {/* 名字必须说清是哪个统计量——上面那张图是**均值**，两个数会差
+                  得很远，同屏摆着只差一个字就会读混 */}
+              <span title="去掉一个最高、一个最低之后的均值">今日去极值均涨幅</span>
+              {' · 红盘率 '}{rate(c.red_ratio)}
+              {c.trimmed_avg_pct_change === null && '（不足 3 只，去掉两端就没剩下了）'}
             </div>
           </div>
         ))}

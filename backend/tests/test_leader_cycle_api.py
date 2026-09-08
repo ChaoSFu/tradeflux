@@ -629,3 +629,80 @@ class TestSnapshotWindowScope:
         for day in c:
             assert f.get(day) == c[day], f"{day} 截断之后状态变了：{f.get(day)} != {c[day]}"
         assert c, "窗口压到 2 天之后还得算得出东西"
+
+
+class TestCohortTrimmedMean:
+    """
+    当日 cohort 用**截尾均值**：去掉一个最高、一个最低再平均。
+
+    中位数只看排中间的那一两只，组里其余的涨跌完全不进结果；裸均值一只涨停就能
+    把 5 只的组拽红。两头都挡一下。
+
+    这里最容易出的错是**名字撒谎**——字段一度叫 median_pct_change 而里面装的是
+    别的统计量。同一屏上方那张图是均值，标签只差一个字，读混的代价很实在。
+    """
+
+    def test_去掉一个最高一个最低(self):
+        from app.services.leader_cycle_effect_service import _trimmed_mean
+        # 去掉 -50 和 +50，剩 [1,2,3] → 2.0
+        assert _trimmed_mean([3.0, -50.0, 1.0, 50.0, 2.0]) == 2.0
+
+    def test_一只涨停拽不动整组(self):
+        from app.services.leader_cycle_effect_service import _trimmed_mean
+        vals = [10.0, 0.1, 0.2, 0.3, 0.4]
+        assert _trimmed_mean(vals) == 0.3, "裸均值会是 2.2——被那一只拽红了"
+
+    def test_不足3只算不出(self):
+        """**不退回裸均值。** 同一列里混两种口径，看的人分不出哪个是哪个。"""
+        from app.services.leader_cycle_effect_service import _trimmed_mean
+        assert _trimmed_mean([5.0, -5.0]) is None
+        assert _trimmed_mean([5.0]) is None
+        assert _trimmed_mean([]) is None
+
+    def test_三只时剩一只等于中位数(self):
+        from app.services.leader_cycle_effect_service import _trimmed_mean
+        assert _trimmed_mean([1.0, 7.0, 100.0]) == 7.0
+
+    def test_字段名不能再叫median(self):
+        import pathlib
+        from app.services import leader_cycle_effect_service as m
+        src = pathlib.Path(m.__file__).read_text(encoding="utf-8")
+        assert '"median_pct_change"' not in src, \
+            "字段里装的是截尾均值，名字必须说实话"
+        assert '"trimmed_avg_pct_change"' in src
+
+
+class TestCohortOrdering:
+    """卡片按涨幅从高到低；同分看红盘率；**算不出的沉底**。"""
+
+    def _sorted(self, rows):
+        rows = list(rows)
+        rows.sort(key=lambda c: (
+            c["trimmed_avg_pct_change"] is None,
+            -(c["trimmed_avg_pct_change"] or 0.0),
+            -c["red_ratio"]))
+        return [c["state"] for c in rows]
+
+    def test_按涨幅降序同分看红盘率(self):
+        rows = [
+            {"state": "A", "trimmed_avg_pct_change": 1.0, "red_ratio": 0.5},
+            {"state": "B", "trimmed_avg_pct_change": 3.0, "red_ratio": 0.6},
+            {"state": "C", "trimmed_avg_pct_change": 1.0, "red_ratio": 0.9},
+        ]
+        assert self._sorted(rows) == ["B", "C", "A"]
+
+    def test_算不出的沉底不跟真跌的抢倒数(self):
+        """「不知道」不是「最低」。"""
+        rows = [
+            {"state": "N", "trimmed_avg_pct_change": None, "red_ratio": 1.0},
+            {"state": "D", "trimmed_avg_pct_change": -8.0, "red_ratio": 0.1},
+        ]
+        assert self._sorted(rows) == ["D", "N"]
+
+    def test_排序规则跟服务里的一致(self):
+        import pathlib
+        from app.services import leader_cycle_effect_service as m
+        src = pathlib.Path(m.__file__).read_text(encoding="utf-8")
+        assert 'c["trimmed_avg_pct_change"] is None,' in src
+        assert '-(c["trimmed_avg_pct_change"] or 0.0),' in src
+        assert '-c["red_ratio"]' in src

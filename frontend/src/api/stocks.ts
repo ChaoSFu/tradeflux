@@ -153,8 +153,16 @@ export const fetchLeaderCycle = (tradeDate?: string) =>
 export interface LifecycleCohort {
   state: LifecycleState
   count: number
-  /** 样本 <3 时为 null —— 个位数样本的中位数没有意义 */
-  median_pct_change: number | null
+  /**
+   * 去掉一个最高、一个最低之后的均值。
+   *
+   * 中位数只看中间那一两只，其余涨跌不进结果；裸均值一只涨停就能把 5 只的组
+   * 拽红。截尾均值两头都挡一下。
+   *
+   * **样本 <3 时为 null**——去掉两端就没剩下了。这时不退回裸均值：同一列里
+   * 混两种口径，看的人分不出哪个是哪个。
+   */
+  trimmed_avg_pct_change: number | null
   red_ratio: number
 }
 
