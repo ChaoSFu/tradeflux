@@ -618,6 +618,10 @@ export interface W2SCandidate {
 
   last_refreshed_at: string | null
   formula_version: string
+  /** 修复关键位 = max(昨收, VWAP/MA5)。**后端算的**，前端不重算 */
+  repair_anchor: number | null
+  /** 现价离关键位还差几个点（正 = 已站上）。同状态内的排序就看它 */
+  repair_gap_pct: number | null
 }
 
 export interface W2SChecklistGroup {

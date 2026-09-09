@@ -256,7 +256,19 @@ export default function WeakToStrongRadar() {
     return [...candidates].sort((a, b) => {
       const p = STATE_PRIORITY[a.current_state] - STATE_PRIORITY[b.current_state]
       if (p !== 0) return p
-      return (b.leader_score ?? 0) - (a.leader_score ?? 0)
+      // 同状态内按「离修复关键位还差几个点」排，**不按 leader_score**。
+      //
+      // 结构态只有站上关键位才会从 WATCH 动起来，所以这个 gap 就是排队顺序：
+      // -0.3% 的票今天随时可能转强，-10% 的今天不可能。而 leader_score 是自造
+      // 的加权分，口径经不起推敲，不该决定用户先看谁。
+      //
+      // 算不出 gap 的（缺昨收/现价）沉底——不知道不是"离得最远"，但也没有理由
+      // 排在能算出来的前面。
+      const ga = a.repair_gap_pct, gb = b.repair_gap_pct
+      if (ga === null && gb === null) return 0
+      if (ga === null) return 1
+      if (gb === null) return -1
+      return gb - ga
     })
   }, [candidates])
 

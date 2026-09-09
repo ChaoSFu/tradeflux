@@ -141,7 +141,25 @@ def list_candidates(active_only: bool = True, db: Session = Depends(get_db)):
     q = db.query(WeakToStrongCandidate)
     if active_only:
         q = q.filter(WeakToStrongCandidate.is_active == True)  # noqa: E712
-    return q.order_by(WeakToStrongCandidate.last_refreshed_at.desc().nullslast()).all()
+    rows = q.order_by(WeakToStrongCandidate.last_refreshed_at.desc().nullslast()).all()
+    return [_with_repair_gap(r) for r in rows]
+
+
+def _with_repair_gap(cand: WeakToStrongCandidate) -> CandidateResponse:
+    """
+    补上「修复关键位」和「现价离它还差几个点」。
+
+    这两个数是这张表里**唯一能回答"谁最接近转强"**的字段：结构态只有站上关键位
+    才会从 WATCH 动起来，所以 gap 就是排队顺序。前端原来在同状态内按 leader_score
+    排——那是个自造的加权分，口径经不起推敲，不该决定用户先看谁。
+
+    anchor 走状态机导出的 sm.compute_repair_anchor，不在这里照公式再写一遍。
+    """
+    out = CandidateResponse.model_validate(cand, from_attributes=True)
+    out.repair_anchor = sm.compute_repair_anchor(cand.prev_close, cand.vwap, cand.ma5)
+    if out.repair_anchor and cand.price and out.repair_anchor > 0:
+        out.repair_gap_pct = round((cand.price / out.repair_anchor - 1) * 100, 2)
+    return out
 
 
 def _build_checklist(

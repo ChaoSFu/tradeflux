@@ -94,6 +94,24 @@ def classify_regulatory_risk(is_under_regulation: bool, days_since_regulation_li
     return LOW
 
 
+def compute_repair_anchor(
+    prev_close: Optional[float], vwap: Optional[float], ma5: Optional[float],
+) -> Optional[float]:
+    """
+    修复关键位 = max(昨收, VWAP)，VWAP 缺失（刚开盘还没成交）时退回 MA5。
+
+    VWAP 比 5 日线更能代表"今天这批买盘的平均成本"——站上它才谈得上转强。
+
+    **导出成公开函数**是为了让接口层能把这个数（以及"离它还差几个点"）发给前端，
+    而不是让前端照着公式再算一遍。同一个「什么叫收复关键位」的事实只能有一套
+    定义，这个仓库为「同一个事实两套判定」栽过十次。
+    """
+    if prev_close is None:
+        return None
+    anchor_ref = vwap if vwap is not None else ma5
+    return max(prev_close, anchor_ref) if anchor_ref is not None else prev_close
+
+
 def compute_structural_transition(
     *,
     structural_state: str,
@@ -124,8 +142,7 @@ def compute_structural_transition(
             "trigger_reasons": ["缺少现价数据，暂无法判断结构"],
         }
 
-    anchor_ref = vwap if vwap is not None else ma5
-    repair_anchor = max(prev_close, anchor_ref) if anchor_ref is not None else prev_close
+    repair_anchor = compute_repair_anchor(prev_close, vwap, ma5)
 
     state = structural_state
     trigger_reasons: list[str] = []

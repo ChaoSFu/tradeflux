@@ -365,3 +365,42 @@ def test_classify_regulatory_risk():
     assert classify_regulatory_risk(False, 8) == MEDIUM
     assert classify_regulatory_risk(False, 30) == LOW
     assert classify_regulatory_risk(False, None) == LOW
+
+
+class TestRepairAnchorShared:
+    """
+    「什么叫收复关键位」只能有一套定义。
+
+    接口层要把这个数（以及"离它还差几个点"）发给前端做排序，如果前端照公式再
+    算一遍，就是第二套定义——这个仓库为「同一个事实两套判定」栽过十次。
+    """
+
+    def test_优先用VWAP其次MA5(self):
+        from app.services.w2s_state_machine import compute_repair_anchor
+        assert compute_repair_anchor(10.0, 11.0, 9.0) == 11.0, "VWAP 在就用 VWAP"
+        assert compute_repair_anchor(10.0, None, 12.0) == 12.0, "没有 VWAP 退回 MA5"
+        assert compute_repair_anchor(10.0, None, None) == 10.0, "都没有就是昨收"
+
+    def test_永远不低于昨收(self):
+        """max(昨收, …)——跌破昨收就谈不上收复。"""
+        from app.services.w2s_state_machine import compute_repair_anchor
+        assert compute_repair_anchor(10.0, 8.0, 7.0) == 10.0
+
+    def test_没有昨收就是不知道(self):
+        from app.services.w2s_state_machine import compute_repair_anchor
+        assert compute_repair_anchor(None, 11.0, 9.0) is None
+
+    def test_状态机自己也走这个函数(self):
+        import pathlib
+        from app.services import w2s_state_machine as m
+        src = pathlib.Path(m.__file__).read_text(encoding="utf-8")
+        assert "repair_anchor = compute_repair_anchor(" in src
+        assert "anchor_ref = vwap if vwap is not None else ma5" not in src.split(
+            "def compute_repair_anchor")[-1].split("def compute_structural_transition")[-1]
+
+    def test_接口层不重算公式(self):
+        import pathlib
+        from app.routers import weak_to_strong_radar as r
+        src = pathlib.Path(r.__file__).read_text(encoding="utf-8")
+        assert "sm.compute_repair_anchor(" in src
+        assert "max(cand.prev_close" not in src, "接口层照公式再写一遍就是第二套定义"

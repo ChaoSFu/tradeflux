@@ -41,6 +41,11 @@ class CandidateResponse(BaseModel):
     day_amount: Optional[float] = None
     turnover_rate: Optional[float] = None
 
+    # 修复关键位，以及现价离它还差几个点（正=已站上）。**由后端算**——
+    # 前端照公式再算一遍就是第二套定义
+    repair_anchor: Optional[float] = None
+    repair_gap_pct: Optional[float] = None
+
     auction_gap: Optional[float] = None
     limit_price: Optional[float] = None
     limit_room: Optional[float] = None
