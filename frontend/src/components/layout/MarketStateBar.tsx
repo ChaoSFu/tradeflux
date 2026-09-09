@@ -1,38 +1,27 @@
 /**
- * MarketStateBar — 全局市场状态条（市场阶段/情绪温度/赚钱效应/涨跌停家数/建议仓位）
- * 复用到所有页面顶部。后续可在此扩展更多情绪温度关键指标。
+ * MarketStateBar — 全局市场状态条（赚钱效应 / 涨跌停家数 / 板块）。
+ * 复用到所有页面顶部。
+ *
+ * **2026-09-09 撤掉四项主观指标**：弱转强 Market Gate、市场阶段、情绪温度、
+ * 建议仓位。前三个由自造的情绪分/板块生命周期加权而来，最后一个是在那之上又
+ * 加一层映射——口径都经不起推敲，而摆在全局顶栏等于给它们最高的可信度。
+ *
+ * 这里只留能追到具体字段的市场事实：涨跌停家数、强势池当日涨跌幅、T-1 冻结群体
+ * 的次日反馈、成交额分布、板块排名。它们各自的来源在每个 Cell 上都说得出来。
  */
 import { useState, useMemo, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { fetchMarketState, fetchProfitEffect, fetchMarketHistory } from '@/api/marketState'
+import { fetchProfitEffect, fetchMarketHistory } from '@/api/marketState'
 import { fetchTurnoverOverview } from '@/api/turnover'
 import { fetchLimitMoves, fetchLimitMovesTrend, fetchStrongPool } from '@/api/stocks'
-import { fetchW2SMarketGate } from '@/api/weakToStrongRadar'
 import { fetchMarketEffectLatest } from '@/api/marketEffects'
-import type { W2SMarketState } from '@/types'
-import { Badge } from '@/components/ui/badge'
-import { Progress } from '@/components/ui/progress'
-import { MARKET_PHASE_LABELS, EMOTION_CYCLE_LABELS } from '@/utils/format'
 import { useSectorTags } from '@/hooks/useSectorTags'
 import { SectorTag } from '@/components/common/SectorTags'
 import { SectorSection, buildSectorGroups } from '@/components/common/SectorSection'
 import type { Stock } from '@/types'
 import { cn } from '@/utils/cn'
 
-const PHASE_BADGE: Record<string, 'up' | 'down' | 'warn' | 'dragon' | 'accent'> = {
-  bull_frenzy: 'dragon', warm: 'up', neutral: 'accent', caution: 'warn', bear_fear: 'down',
-}
-// 弱转强雷达自己的 Market Gate（指数趋势+涨跌家数广度+T-1冻结群体反馈），跟上面
-// "市场阶段"（板块生命周期/情绪分驱动）是完全不同的两套算法、不同的数据输入，
-// 会算出不一致的结论（是真实存在的情况，不是bug）——所以这里单独标"W2S 大盘闸门"
-// 而不是融进"市场阶段"里，避免两个不同结论被误当成同一件事的两种说法。
-const W2S_GATE_STYLE: Record<W2SMarketState, { dot: string; text: string; label: string }> = {
-  GREEN:  { dot: 'bg-safe',   text: 'text-safe',   label: '偏多，正常参与' },
-  YELLOW: { dot: 'bg-warn',   text: 'text-warn',   label: '中性，谨慎参与' },
-  ORANGE: { dot: 'bg-warn',   text: 'text-warn',   label: '偏弱，降低预期' },
-  RED:    { dot: 'bg-danger', text: 'text-danger', label: '弱势，暂停新增买入类信号' },
-}
 const pctColor = (v: number) => (v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-secondary')
 const pctSign = (v: number) => (v >= 0 ? `+${v.toFixed(2)}%` : `${v.toFixed(2)}%`)
 
@@ -57,11 +46,7 @@ function Cell({ label, children }: { label: string; children: React.ReactNode })
 }
 
 export function MarketStateBar() {
-  const { data: state } = useQuery({ queryKey: ['market-state'], queryFn: fetchMarketState })
   const { data: pe } = useQuery({ queryKey: ['profit-effect'], queryFn: fetchProfitEffect })
-  // 弱转强雷达页同源缓存 key（WeakToStrongRadar.tsx 里也是 ['w2s-market-gate']），
-  // 两处共享同一次请求；该接口本身全部读库不发外部请求，加这一路查询成本很低
-  const { data: w2sGate } = useQuery({ queryKey: ['w2s-market-gate'], queryFn: fetchW2SMarketGate })
   // 市场效应页同源缓存 key（MarketEffects.tsx 里也是 ['market-effect-latest']）
   const { data: effect } = useQuery({ queryKey: ['market-effect-latest'], queryFn: fetchMarketEffectLatest })
   // 大成交额赚钱效应（成交额概览页同源缓存 key，两处共享同一次请求）
@@ -208,8 +193,6 @@ export function MarketStateBar() {
   const groupToday: Record<string, any> = {}
   for (const g of ((pe as any)?.groups ?? [])) groupToday[g.key] = g
 
-  if (!state) return null
-
   return (
     <>
     <div className="card px-4 py-2.5 border-l-4 mb-4" style={{ borderLeftColor: regimeBorder }}>
@@ -241,47 +224,6 @@ export function MarketStateBar() {
             )}
           </div>
         )}
-        {/* 弱转强雷达 Market Gate（2026-08-24按用户要求提到公共卡片里显眼展示）：
-            RED 意味着弱转强雷达当天候选表100%会被硬性拦截、不会产生 BUYABLE 结果，
-            严重程度上等同于上面的"极端弱势"，同款醒目pill处理，可点击跳转雷达页；
-            GREEN/YELLOW/ORANGE 只是普通Cell，不需要同等视觉权重。文案明确写成
-            "W2S RED"而不是笼统的"弱转强闸门RED"——这只是W2S这一个策略自己的Market
-            Gate，不是全系统/全账户层面的交易许可，避免跟首部其它市场指标一起
-            被误读成"今天全账户都不能买"（2026-08-25按用户要求修正措辞）。 */}
-        {w2sGate && (
-          w2sGate.market_state === 'RED' ? (
-            <button
-              onClick={() => navigate('/weak-to-strong-radar')}
-              title="弱转强(W2S)策略的Market Gate：RED，今日W2S候选全部硬性拦截，不代表全系统/全账户禁止交易，点击查看详情"
-              className="text-xs font-bold px-2 py-1 rounded-md border whitespace-nowrap bg-danger text-white border-danger animate-pulse-slow shadow-[0_0_18px_-2px_#FF4560]"
-            >
-              ⛔ W2S RED · 暂停弱转强买入
-            </button>
-          ) : (
-            <button onClick={() => navigate('/weak-to-strong-radar')} className="shrink-0 text-left">
-              <Cell label="弱转强 · Market Gate">
-                <span className={cn('w-1.5 h-1.5 rounded-full', W2S_GATE_STYLE[w2sGate.market_state]?.dot)} />
-                <span className={cn('font-mono text-sm font-semibold', W2S_GATE_STYLE[w2sGate.market_state]?.text)}>
-                  {w2sGate.market_state}
-                </span>
-              </Cell>
-            </button>
-          )
-        )}
-        <Cell label="市场阶段">
-          <Badge variant={PHASE_BADGE[state.market_phase] ?? 'accent'}>
-            {MARKET_PHASE_LABELS[state.market_phase] ?? state.market_phase}
-          </Badge>
-          <span className="text-text-secondary text-xs">
-            {EMOTION_CYCLE_LABELS[state.emotion_cycle] ?? state.emotion_cycle}
-          </span>
-        </Cell>
-
-        <Cell label="情绪温度">
-          <span className="font-mono text-base text-accent">{state.emotional_temperature.toFixed(0)}</span>
-          <Progress value={state.emotional_temperature} className="w-20" />
-        </Cell>
-
         {/* 此前叫"赚钱效应"，但统计口径其实是当前 in_strong_pool 股票的当天涨跌幅，
             跟下面"短线赚亏效应"（market_effect_service 的T-1冻结群体反馈）是两套
             完全不同方法论的独立指标，共用一个名字会互相误导——改名成"强势股池
@@ -386,11 +328,6 @@ export function MarketStateBar() {
             </span>
           </Cell>
         )}
-
-        <Cell label="建议仓位">
-          <span className="font-mono text-base text-warn">{state.suggested_position_level.toFixed(0)}%</span>
-          <Progress value={state.suggested_position_level} className="w-16" color="#F59E0B" />
-        </Cell>
 
         <div className="ml-auto text-[10px] text-text-muted/70 self-center">⚠️ 仅供辅助分析，不构成投资建议</div>
       </div>
