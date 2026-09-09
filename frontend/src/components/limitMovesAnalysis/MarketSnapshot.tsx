@@ -22,7 +22,7 @@ export function MarketSnapshot({ items }: { items: Kpi[] }) {
     <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-10 gap-px
                     bg-bg-border rounded overflow-hidden">
       {items.map((k) => (
-        <div key={k.label} className="bg-bg-surface px-2.5 py-2" title={k.hint}>
+        <div key={k.label} className="bg-bg-elevated px-2.5 py-2" title={k.hint}>
           <div className="text-[10px] text-text-muted whitespace-nowrap">{k.label}</div>
           <div className="mt-0.5 flex items-baseline gap-0.5">
             <span className={cn('text-lg font-mono font-semibold tabular-nums',

@@ -71,7 +71,7 @@ function HeightTip({ active, payload }: { active?: boolean; payload?: TipPayload
   const p = active ? payload?.[0]?.payload._p : null
   if (!p) return null
   return (
-    <div className="bg-bg-surface border border-bg-border rounded px-2.5 py-1.5
+    <div className="bg-bg-elevated border border-bg-border rounded px-2.5 py-1.5
                     text-[11px] space-y-0.5 shadow-lg">
       <div className="text-text-primary font-medium">{p.date}</div>
       <div className="text-text-secondary">最高连板 <b className="text-up">{p.height}板</b></div>

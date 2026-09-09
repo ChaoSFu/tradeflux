@@ -24,7 +24,7 @@ const NAV = [
 
 export function V2Sidebar() {
   return (
-    <aside className="w-48 shrink-0 border-r border-bg-border bg-bg-surface flex flex-col">
+    <aside className="w-48 shrink-0 border-r border-bg-border bg-bg-elevated flex flex-col">
       <div className="px-4 py-4 border-b border-bg-border">
         <div className="text-accent font-semibold">TradeFlux</div>
         <div className="text-[11px] text-text-muted">决策链 V2</div>

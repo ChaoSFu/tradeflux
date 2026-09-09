@@ -21,7 +21,7 @@ export default function V2Layout() {
     <div className="flex h-screen overflow-hidden bg-bg-base">
       <V2Sidebar />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-        <header className="h-12 shrink-0 border-b border-bg-border bg-bg-surface
+        <header className="h-12 shrink-0 border-b border-bg-border bg-bg-elevated
                            flex items-center px-5">
           <h1 className="text-sm text-text-primary">{TITLES[pathname] ?? 'TradeFlux V2'}</h1>
           <span className="ml-3 text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent">

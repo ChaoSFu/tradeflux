@@ -116,7 +116,11 @@ export function LifecycleEffectChart({ series, history, todayEstimate }: {
                    tickLine={false} width={44}
                    tickFormatter={(v: number) => `${v > 0 ? '+' : ''}${v.toFixed(0)}%`} />
             <ReferenceLine y={0} stroke="#3A4258" />
-            <Tooltip content={<Tip present={present} />} />
+            {/* offset 拉开一点、允许溢出绘图区：贴着光标画会正好压在刚才
+                悬停的那几条线上 */}
+            <Tooltip content={<Tip present={present} />} offset={24}
+                     allowEscapeViewBox={{ x: false, y: true }}
+                     wrapperStyle={{ zIndex: 30 }} />
             <Area type="monotone" dataKey={L_MAIN} stroke={C_MAIN} fill="url(#gradLifeMain)"
                   strokeWidth={2} dot={false} activeDot={{ r: 4 }} connectNulls
                   hide={hidden.has(L_MAIN)} />
@@ -165,16 +169,30 @@ interface TipProps {
 function Tip({ active, label, payload, present }: TipProps) {
   if (!active || !payload?.length) return null
   const row = payload[0].payload
+  // **按赚钱效应从大到小。** 图例顺序是生命周期推进方向，那是为了看懂"这条线是
+  // 哪一档"；而悬停时要回答的是"这天谁涨得最多"，两件事排序依据不同。
+  // 空值沉底——「那天这组没有成员」不是「最低」
+  const rows = [...payload].sort((a, b) => {
+    const av = a.value, bv = b.value
+    if (av === null && bv === null) return 0
+    if (av === null) return 1
+    if (bv === null) return -1
+    return bv - av
+  })
   return (
-    <div className="bg-bg-surface border border-bg-border rounded px-2.5 py-1.5
-                    text-[11px] space-y-0.5 shadow-lg">
+    // 背景必须是**实心**的：这块浮在折线上面，透出来就看不清了。
+    // 这里原来写的是 `bg-bg-surface`——tailwind 配置里根本没有 surface 这个色阶，
+    // 那个类什么都不生成，于是 tooltip 一直是全透明的，线直接从底下穿过去。
+    // 同一个不存在的类当时还写在另外四处（V2 头部/侧栏、KPI 格子），一并改掉了。
+    <div className="bg-bg-elevated border border-bg-border rounded px-2.5 py-1.5
+                    text-[11px] space-y-0.5 shadow-xl shadow-black/50">
       <div className="text-text-primary font-medium">
         {label}
         {row.__est === 1 && (
           <span className="ml-1.5 text-warn font-normal">盘中估算 · 未收盘</span>
         )}
       </div>
-      {payload.map((p) => {
+      {rows.map((p) => {
         const n = row[`${p.dataKey}__n`]
         return (
           <div key={p.dataKey} className="flex items-center gap-1.5 whitespace-nowrap">
