@@ -39,7 +39,7 @@ is_active 置 False（不物理删除，保留历史）。
 """
 from __future__ import annotations
 
-from datetime import date as date_cls
+from datetime import date as date_cls, timedelta
 from typing import Optional
 
 from sqlalchemy import func as sqlfunc
@@ -129,20 +129,34 @@ def verify_setup_ma_squeeze(
     return yesterday_close < ma5 and yesterday_close > ma20
 
 
-def _recent_closes(db: Session, stock_id: int, as_of: date_cls, limit: int = 20) -> list[float]:
-    """最近 limit 个交易日的收盘价，按日期升序（用于算 MA），排除缺 close_price 的记录。"""
-    rows = (
-        db.query(StockDailySnapshot)
-        .filter(
-            StockDailySnapshot.stock_id == stock_id,
-            StockDailySnapshot.date <= as_of,
-            StockDailySnapshot.close_price.isnot(None),
-        )
-        .order_by(StockDailySnapshot.date.desc())
-        .limit(limit)
-        .all()
-    )
-    return [r.close_price for r in reversed(rows)]
+#: 往回取多少个自然日来覆盖 20 个交易日。20 个交易日约 28 自然日，
+#: 60 天留足停牌/长假的余量——宁可多取几行，也不能因为节假日少算 MA20
+_HIST_LOOKBACK_DAYS = 60
+
+
+def _recent_snapshots_bulk(
+    db: Session, stock_ids: list[int], as_of: date_cls,
+) -> dict[int, list[tuple]]:
+    """
+    {stock_id: [(date, close_price, pct_change), …]}，按日期升序，只到 as_of。
+
+    **一次查完，不在循环里逐只查。** 原来是每只票两条 SQL，两百只候选就是四百次
+    往返，这一步因此一直被排除在快速刷新路径之外。只取用得到的三列。
+    """
+    if not stock_ids:
+        return {}
+    lower = as_of - timedelta(days=_HIST_LOOKBACK_DAYS)
+    out: dict[int, list[tuple]] = {}
+    for sid, d, close, pct in (
+        db.query(StockDailySnapshot.stock_id, StockDailySnapshot.date,
+                 StockDailySnapshot.close_price, StockDailySnapshot.pct_change)
+        .filter(StockDailySnapshot.stock_id.in_(stock_ids),
+                StockDailySnapshot.date <= as_of,
+                StockDailySnapshot.date >= lower)
+        .order_by(StockDailySnapshot.stock_id, StockDailySnapshot.date).all()
+    ):
+        out.setdefault(sid, []).append((d, close, pct))
+    return out
 
 
 #: 已经撤掉的候选来源。带这些值的候选是按一套不存在的口径收进来的，
@@ -216,16 +230,15 @@ def discover_candidates(db: Session, as_of: date_cls) -> dict:
     verified_by_code: dict[str, str] = {}
     if all_codes:
         stocks = db.query(Stock).filter(Stock.code.in_(all_codes)).all()
+        # **一次批量取齐，不在循环里逐只查。** 原来每只票两条 SQL（近20日收盘 +
+        # 昨日快照），两百只就是四百次往返——这一步因此一直被排除在快速刷新之外。
+        recent = _recent_snapshots_bulk(db, [s.id for s in stocks], as_of)
         for stock in stocks:
-            closes = _recent_closes(db, stock.id, as_of, limit=20)
+            hist = recent.get(stock.id, [])
+            closes = [c for (_d, c, _p) in hist if c is not None][-20:]
             ma5 = compute_ma(closes, 5)
             ma20 = compute_ma(closes, 20)
-            yday = (
-                db.query(StockDailySnapshot)
-                .filter(StockDailySnapshot.stock_id == stock.id, StockDailySnapshot.date <= as_of)
-                .order_by(StockDailySnapshot.date.desc())
-                .first()
-            )
+            yday = hist[-1] if hist else None      # (date, close_price, pct_change)
             pct20_pctl = compute_pct20_percentile(stock.pct_change_20d, universe_pct20)
 
             # 来源池不再决定用哪条判据——三个池子里的票都拿同样两组形态条件筛，
@@ -233,10 +246,10 @@ def discover_candidates(db: Session, as_of: date_cls) -> dict:
             hit = verify_setup_pullback(
                 limit_up_days_20d=stock.limit_up_days_20d,
                 pct20_percentile=pct20_pctl,
-                yesterday_pct_change=(yday.pct_change if yday else None),
+                yesterday_pct_change=(yday[2] if yday else None),
             ) or verify_setup_ma_squeeze(
                 pct20_percentile=pct20_pctl,
-                yesterday_close=(yday.close_price if yday else None),
+                yesterday_close=(yday[1] if yday else None),
                 ma5=ma5, ma20=ma20,
             )
             if hit:

@@ -49,3 +49,40 @@ def test_vwap_no_longer_double_converts_lots_to_shares():
     # 确认*100真的已经被去掉。
     vwap = _compute_vwap(1_030_000.0, 100_000.0, low=10.0, high=10.6)
     assert vwap == 10.3  # 不是 0.103
+
+
+class TestRefreshRebuildsPool:
+    """
+    「刷新数据并重新评估」这个按钮以前只重新评估**已有**候选，不动候选池。
+
+    真实提问：「风语筑不属于任何股池，为什么还在？按了刷新还在。」
+    答案是那个按钮从来不做发现——但按钮上就写着"刷新数据"。**不匹配的地方
+    要么改行为要么改名字，不能留着让人猜。**
+
+    当初排除发现的理由是它要打两次东财选股接口；来源改成读本地股池之后这个理由
+    不成立了，所以改行为。
+    """
+
+    def test_刷新会跑候选发现(self):
+        import pathlib
+        from app.services import w2s_refresh_service as m
+        src = pathlib.Path(m.__file__).read_text(encoding="utf-8")
+        assert "discover_candidates" in src
+
+    def test_发现失败不阻断评估(self, db, monkeypatch):
+        """候选池没更新是遗憾，但已有候选的状态还是该刷新。"""
+        from app.services import w2s_candidate_service as cs
+        from app.services.w2s_refresh_service import run_refresh
+        monkeypatch.setattr(cs, "discover_candidates",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        r = run_refresh(db)
+        assert r["discovered"] == {"error": "boom"}
+        assert "refreshed" in r, "评估该照常返回"
+
+    def test_不再逐只查收盘价(self):
+        """277 个候选逐只查一次 MA5 的收盘价 = 277 次往返，刷新耗时的大头之一。"""
+        import pathlib
+        from app.services import w2s_refresh_service as m
+        src = pathlib.Path(m.__file__).read_text(encoding="utf-8")
+        assert "_recent_closes(" not in src
+        assert "_recent_snapshots_bulk(" in src

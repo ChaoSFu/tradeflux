@@ -28,7 +28,7 @@ from . import w2s_leader_gate_service as leader_gate
 from . import w2s_state_machine as sm
 from . import w2s_market_gate_service as market_gate
 from . import w2s_risk_service as risk
-from .w2s_candidate_service import compute_ma, _recent_closes
+from .w2s_candidate_service import compute_ma, _recent_snapshots_bulk
 
 AUCTION_CUTOFF_HOUR_MINUTE = (9, 25)  # 9:25 集合竞价结束
 
@@ -109,16 +109,42 @@ def _reset_intraday_session(cand: WeakToStrongCandidate, today: date_cls) -> Non
 
 def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
     """
-    执行一次快速刷新，返回 {"refreshed": n, "state_changed": n, "quote_missing": n, "duration_ms": int}。
+    执行一次快速刷新，返回 {"refreshed", "state_changed", "quote_missing",
+    "duration_ms", "discovered"}。
+
+    ## 现在会重建候选池（2026-09-09 改）
+
+    界面上那个按钮写的是「刷新数据并重新评估」，但它以前只重新评估**已有**候选，
+    不动候选池——用户按完之后发现该走的票还在，因为增删候选只发生在 daily_update
+    里。（真实提问："风语筑不属于任何股池，为什么还在？按了刷新还在。"）
+
+    当初把发现排除在这条路径之外，理由是**它要打两次东财选股接口**，那跟"快速
+    刷新只碰候选相关的少量请求"这条边界冲突。改成读本地三个股池之后这个理由不
+    成立了：发现现在是纯本地 DB 计算，零外部请求。既然按钮名字这么写，就该真的
+    做到——**不匹配的地方要么改行为，要么改名字，不能留着让人猜。**
+
+    发现失败不阻断评估：候选池没更新是个遗憾，但已有候选的状态还是该刷新。
     """
     started = datetime.now()
     now = now or started
     today = now.date()
 
+    stats_discovered = None
+    try:
+        from .w2s_candidate_service import discover_candidates
+        d = discover_candidates(db, today)
+        stats_discovered = {k: d.get(k) for k in
+                            ("source_raw", "verified", "new", "renewed", "expired",
+                             "legacy_dropped") if d.get(k) is not None}
+    except Exception as e:      # noqa: BLE001
+        stats_discovered = {"error": str(e)[:80]}
+        db.rollback()
+
     candidates = (
         db.query(WeakToStrongCandidate).filter(WeakToStrongCandidate.is_active == True).all()  # noqa: E712
     )
-    stats = {"refreshed": 0, "state_changed": 0, "quote_missing": 0, "duration_ms": 0}
+    stats = {"refreshed": 0, "state_changed": 0, "quote_missing": 0, "duration_ms": 0,
+             "discovered": stats_discovered}
     if not candidates:
         stats["duration_ms"] = int((datetime.now() - started).total_seconds() * 1000)
         return stats
@@ -181,6 +207,10 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
     market_gate_blocked = cfg.get_market_gate_blocked(db)
     stats["market_state"] = market_state
 
+    # MA5 的收盘价一次批量取齐。原来在下面的循环里逐只查，277 个候选就是 277 次
+    # 往返——刷新按钮的耗时大头之一，而且完全没必要
+    recent = _recent_snapshots_bulk(db, [c.stock_id for c in candidates], today)
+
     for cand in candidates:
         stock = stock_by_id.get(cand.stock_id)
         if stock is None:
@@ -218,7 +248,7 @@ def run_refresh(db: Session, now: Optional[datetime] = None) -> dict:
         leader_info = leader_score_cache.get(stock.code, {})
         leader_type = leader_info.get("leader_type", "undetermined")
 
-        closes = _recent_closes(db, stock.id, today, limit=5)
+        closes = [c for (_d, c, _p) in recent.get(stock.id, []) if c is not None][-5:]
         ma5 = compute_ma(closes, 5)
         vwap = _compute_vwap(quote.amount, quote.volume, low=quote.low, high=quote.high)
         # 涨停价/空间/压力止损/竞价Gap合理性校验都要用真实涨跌停规则（10/20/30/5），
