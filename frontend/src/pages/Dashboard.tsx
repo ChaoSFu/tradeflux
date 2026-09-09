@@ -11,7 +11,6 @@ import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { LifecycleEffectChart } from '@/components/charts/LifecycleEffectChart'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
-import { PhaseTag } from '@/components/common/PhaseTag'
 import { RiskBadge } from '@/components/common/RiskBadge'
 import { SectorSection, buildSectorGroups } from '@/components/common/SectorSection'
 import { SortTh, compareWithNullsLast, type SortState } from '@/components/common/SortTh'
@@ -347,15 +346,18 @@ function LifecycleEffect() {
       <LifecycleEvidence />
 
       {history.length > 0 && (
-        <div className="card p-3">
-          <div className="flex items-baseline gap-2 flex-wrap">
+        // **默认折叠。** 无对照、无区间的那张表是背景材料，不该跟做了对照和
+        // 区间的事件表抢同一屏；要看时点开
+        <details className="card p-3">
+          <summary className="flex items-baseline gap-2 flex-wrap cursor-pointer
+                              select-none list-none">
             <span className="text-xs text-text-secondary font-medium">
               按状态截面（近 60 个交易日）
             </span>
             <span className="text-[11px] text-warn">
               无对照、无区间 —— 只是线索，不是结论
             </span>
-          </div>
+          </summary>
           {/* 状态会**混路径**：「修复中」既可能来自刚断板（第一次转强），也可能
               来自修复失败（失败后再修复）——上面那张事件表里这两条方向相反。
               混回一行等于把拆开的信息又稀释掉，所以这张表在下面 */}
@@ -416,7 +418,7 @@ function LifecycleEffect() {
             上涨占比在 50% 附近 = 跟随机没区别，但它本来也不是超额——
             做了对照和区间的版本是上面那张事件表。
           </p>
-        </div>
+        </details>
       )}
     </div>
   )
@@ -495,6 +497,46 @@ function horizonCells(c: EvidenceCell | null | undefined, plain = false) {
   )
 }
 
+/** 折叠区里的紧凑表格：比主表一行矮一截，字号小一号 */
+const FTH = 'px-2 py-0.5 border-b border-bg-border'
+const FTD = 'px-2 py-0.5 whitespace-nowrap font-mono tabular-nums text-[11px]'
+
+/**
+ * 折叠区里那两张表共用的排序。**空值永远沉底**——「这一档没有样本」不是「最小」。
+ *
+ * 单独抽出来是因为它们跟主表用的是同一套交互（点列头、同列再点切升降），
+ * 而两张折叠表各写一遍必然慢慢分叉。
+ */
+function useFoldSort<K extends string>(initial: K) {
+  const [sort, setSort] = useState<SortState<K>>({ key: initial, dir: 'desc' })
+  const onSort = (k: K) =>
+    setSort((p) => (p.key === k ? { key: k, dir: p.dir === 'desc' ? 'asc' : 'desc' }
+                                : { key: k, dir: 'desc' }))
+  const sortBy = <T,>(rows: T[], value: (r: T, k: K) => number | string | null) => {
+    const key = sort.key
+    if (!key) return rows
+    return [...rows].sort((a, b) =>
+      compareWithNullsLast(value(a, key), value(b, key), sort.dir))
+  }
+  return { sort, onSort, sortBy }
+}
+
+const HORIZONS = [1, 3, 5, 10] as const
+type BalKey = 'event' | 'n' | '1' | '3' | '5' | '10'
+type ExecKey = 'event' | '1' | '3'
+
+/** 持有期比较那张表的排序取值。**没有那一格就是 null，沉底** */
+const balValue = (e: EvidenceEvent, k: BalKey): number | string | null => {
+  const b = e.excess_balanced
+  if (k === 'event') return evLabel(e)
+  if (k === 'n') return HORIZONS.map((h) => b?.[String(h)]?.n).find((x) => x != null) ?? null
+  return b?.[k]?.median ?? null
+}
+
+/** 次日开盘可执行那张表的排序取值 */
+const execValue = (e: EvidenceEvent, k: ExecKey): number | string | null =>
+  k === 'event' ? evLabel(e) : (e.exec_excess?.[k]?.median ?? null)
+
 function Fold({ title, note, children }: {
   title: string; note?: string; children: React.ReactNode
 }) {
@@ -528,6 +570,9 @@ function LifecycleEvidence() {
     staleTime: 30 * 60 * 1000,
   })
   const [sort, setSort] = useState<SortState<EvKey>>({ key: 'x1', dir: 'desc' })
+  // 两张折叠表各自的排序状态，跟主表互不影响
+  const bal = useFoldSort<BalKey>('1')
+  const exe = useFoldSort<ExecKey>('1')
   const onSort = (k: EvKey) =>
     setSort((p) => (p.key === k ? { key: k, dir: p.dir === 'desc' ? 'asc' : 'desc' }
                                 : { key: k, dir: 'desc' }))
@@ -583,8 +628,12 @@ function LifecycleEvidence() {
 
   const th = 'px-2 py-1 border-b border-bg-border'
   return (
-    <div className="card p-3">
-      <div className="flex items-baseline gap-2 flex-wrap">
+    // **默认折叠。** 这是研究性证据，不是每天开盘要扫的东西；摊开占大半屏，
+    // 把下面「按状态截面」和板块效应挤到折叠线以下。要看时点开，跟里面那三个
+    // 折叠区是同一个交互
+    <details className="card p-3">
+      <summary className="flex items-baseline gap-2 flex-wrap cursor-pointer
+                          select-none list-none">
         <span className="text-xs text-text-secondary font-medium">
           生命周期事件历史表现
         </span>
@@ -594,12 +643,13 @@ function LifecycleEvidence() {
           {data.generated_at &&
             ` · 评估于 ${data.generated_at.slice(0, 16).replace('T', ' ')}`}
         </span>
+        {/* **口径过期要在折叠状态下也看得见**——它不是细节，是"这些数字还算不算数" */}
         {data.stale_formula && (
           <span className="text-[11px] text-warn">
             产物口径 ≠ 当前 {data.current_formula_version}，旧证据不对应现在的规则
           </span>
         )}
-      </div>
+      </summary>
       <p className="text-[11px] text-warn/90 mt-1">
         样本来自「今天仍在强势池里的幸存者」，当时进不了池的票根本没有行——
         绝对水平偏高，只能做组间比较。
@@ -698,33 +748,33 @@ function LifecycleEvidence() {
         <div className="overflow-x-auto">
           <table className="w-full text-xs" style={{ minWidth: 480 }}>
             <thead>
-              <tr className="text-[10px] text-text-muted">
-                <th className={cn(th, 'text-left font-medium')}>事件</th>
-                {(data.horizons ?? [1, 3, 5, 10]).map((h) => (
-                  <th key={h} className={cn(th, 'text-left font-medium')}>T+{h}</th>
+              <tr className="text-[10px]">
+                <SortTh col={'event' as BalKey} label="事件" align="left"
+                        sort={bal.sort} onSort={bal.onSort} className={FTH} />
+                {HORIZONS.map((h) => (
+                  <SortTh key={h} col={String(h) as BalKey} label={`T+${h}`} align="left"
+                          sort={bal.sort} onSort={bal.onSort} className={FTH} />
                 ))}
-                <th className={cn(th, 'text-left font-medium')}>n</th>
+                <SortTh col={'n' as BalKey} label="n" align="left"
+                        sort={bal.sort} onSort={bal.onSort} className={FTH} />
               </tr>
             </thead>
             <tbody>
-              {(data.events ?? []).filter((e) => e.excess_balanced).map((e) => {
+              {bal.sortBy((data.events ?? []).filter((e) => e.excess_balanced),
+                          balValue).map((e) => {
                 const b = e.excess_balanced!
-                const n = (data.horizons ?? [1, 3, 5, 10])
-                  .map((h) => b[String(h)]?.n).find((x) => x != null)
+                const n = HORIZONS.map((h) => b[String(h)]?.n).find((x) => x != null)
                 return (
                   <tr key={e.event} className="border-b border-bg-border/40 last:border-0">
-                    <td className="px-2 py-1 text-text-primary whitespace-nowrap">
+                    <td className="px-2 py-0.5 text-text-primary whitespace-nowrap text-[11px]">
                       {evLabel(e)}
                     </td>
-                    {(data.horizons ?? [1, 3, 5, 10]).map((h) => (
-                      <td key={h} className="px-2 py-1 font-mono tabular-nums
-                                             text-text-secondary">
+                    {HORIZONS.map((h) => (
+                      <td key={h} className={cn(FTD, 'text-text-secondary')}>
                         {signed(b[String(h)]?.median)}
                       </td>
                     ))}
-                    <td className="px-2 py-1 font-mono tabular-nums text-text-muted">
-                      {n ?? '—'}
-                    </td>
+                    <td className={cn(FTD, 'text-text-muted')}>{n ?? '—'}</td>
                   </tr>
                 )
               })}
@@ -748,21 +798,23 @@ function LifecycleEvidence() {
         <div className="overflow-x-auto">
           <table className="w-full text-xs" style={{ minWidth: 420 }}>
             <thead>
-              <tr className="text-[10px] text-text-muted">
-                <th className={cn(th, 'text-left font-medium')}>事件</th>
-                <th className={cn(th, 'text-left font-medium')}>T+1 可执行超额</th>
-                <th className={cn(th, 'text-left font-medium')}>T+3</th>
+              <tr className="text-[10px]">
+                <SortTh col={'event' as ExecKey} label="事件" align="left"
+                        sort={exe.sort} onSort={exe.onSort} className={FTH} />
+                <SortTh col={'1' as ExecKey} label="T+1 可执行超额" align="left"
+                        sort={exe.sort} onSort={exe.onSort} className={FTH} />
+                <SortTh col={'3' as ExecKey} label="T+3" align="left"
+                        sort={exe.sort} onSort={exe.onSort} className={FTH} />
               </tr>
             </thead>
             <tbody>
-              {(data.events ?? []).map((e) => (
+              {exe.sortBy(data.events ?? [], execValue).map((e) => (
                 <tr key={e.event} className="border-b border-bg-border/40 last:border-0">
-                  <td className="px-2 py-1 text-text-primary whitespace-nowrap">
+                  <td className="px-2 py-0.5 text-text-primary whitespace-nowrap text-[11px]">
                     {evLabel(e)}
                   </td>
                   {(['1', '3'] as const).map((h) => (
-                    <td key={h} className="px-2 py-1 font-mono tabular-nums
-                                           text-text-secondary whitespace-nowrap">
+                    <td key={h} className={cn(FTD, 'text-text-secondary')}>
                       {signed(e.exec_excess?.[h]?.median)}
                       <span className="text-text-muted/60 ml-0.5">
                         {e.exec_excess?.[h] ? `(n${e.exec_excess[h]!.n})` : ''}
@@ -782,7 +834,7 @@ function LifecycleEvidence() {
       </Fold>
 
       <Fold title="口径与数据质量">
-        <ul className="text-[11px] text-text-muted space-y-1">
+        <ul className="text-[10px] text-text-muted/90 space-y-0.5 leading-relaxed">
           {(data.caveats ?? []).map((c, i) => (
             <li key={i} className="flex gap-1.5">
               <span className="text-text-muted/50 shrink-0">·</span><span>{c}</span>
@@ -806,26 +858,37 @@ function LifecycleEvidence() {
           </li>
         </ul>
       </Fold>
-    </div>
+    </details>
   )
 }
 
 
+/**
+ * 生命周期整块。**默认折叠**——它下面是一张十九列的表，摊开占大半屏；
+ * 这一页先回答「今天赚不赚钱」，具体是哪几只票要看时再点开。
+ *
+ * 「活跃股池 →」放在 summary 外面：它是跳转，点它不该顺带把卡片折叠状态也切了。
+ */
 function LifecycleSection() {
   return (
     <div className="space-y-2">
-      <div className="flex items-baseline gap-2 flex-wrap">
-        <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">
-          生命周期
-        </h2>
-        <span className="text-[11px] text-text-muted">
-          Price Lifecycle v1.1 · 只描述价格结构，不代表交易许可
-        </span>
+      <details className="space-y-2">
+        <summary className="flex items-baseline gap-2 flex-wrap cursor-pointer
+                            select-none list-none">
+          <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">
+            生命周期
+          </h2>
+          <span className="text-[11px] text-text-muted">
+            Price Lifecycle v1.1 · 只描述价格结构，不代表交易许可
+          </span>
+        </summary>
+        <div className="mt-2"><LeaderCyclePanel /></div>
+      </details>
+      <div className="flex">
         <Link to="/stocks" className="ml-auto text-[11px] text-accent">
           活跃股池 →
         </Link>
       </div>
-      <LeaderCyclePanel />
     </div>
   )
 }
@@ -834,7 +897,6 @@ function LifecycleSection() {
 export default function Dashboard() {
   const navigate = useNavigate()
   const [expandedSector, setExpandedSector] = useState<string | null>(null)
-  const [expandedActive, setExpandedActive] = useState<string | null>(null)
 
   const { data: state, isLoading: loadingState } = useQuery({
     queryKey: ['market-state'],
@@ -922,9 +984,6 @@ export default function Dashboard() {
 
   const toggleSector = (name: string) =>
     setExpandedSector((prev) => (prev === name ? null : name))
-
-  const toggleActive = (name: string) =>
-    setExpandedActive((prev) => (prev === name ? null : name))
 
   if (loadingState) return <LoadingSpinner />
 
@@ -1018,6 +1077,10 @@ export default function Dashboard() {
                   被叫「震荡龙头」，分出来的组回答不了任何问题。 */}
               <LifecycleEffect />
 
+              {/* 生命周期整块排在板块效应之前（2026-09-09 按用户要求）：
+                  先看池子里各状态是哪几只票，再看板块层面的赚钱/亏钱分布 */}
+              <LifecycleSection />
+
               {/* ── 板块赚钱 / 亏钱效应（并列） ── */}
               {pe.sectors.length > 0 && (() => {
                 const profitSectors = pe.sectors.filter((s: SectorProfitEffect) => s.avg_pct >= 0)
@@ -1062,58 +1125,6 @@ export default function Dashboard() {
             </>
           )}
         </div>
-      )}
-
-      <LifecycleSection />
-
-      {/* ── Active Sectors ── */}
-      <Card title="活跃板块" className="overflow-auto max-h-64">
-        {state?.active_sectors.length ? (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-            {state.active_sectors.map((s) => {
-              const active = expandedActive === s.sector_name
-              const hasMembers = sectorGroupMap.has(s.sector_name)
-              return (
-                <div
-                  key={s.sector_code}
-                  onClick={() => hasMembers && toggleActive(s.sector_name)}
-                  className={cn(
-                    'flex items-center justify-between gap-2 p-2 rounded bg-bg-elevated transition-colors',
-                    hasMembers && 'cursor-pointer hover:bg-bg-border',
-                    active && 'ring-1 ring-accent/50',
-                  )}
-                >
-                  <div>
-                    <div className="text-sm font-medium text-text-primary">{s.sector_name}</div>
-                    <div className="text-xs text-text-muted mt-0.5">
-                      强股 {s.strong_stock_count} · 连板高度 {s.board_height}
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <PhaseTag phase={s.phase} />
-                    <div className="text-xs font-mono text-accent mt-0.5">{s.emotion_score.toFixed(0)}</div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        ) : (
-          <EmptyHint
-            icon={Activity}
-            title="当前无扩张期板块"
-            hint={`市场处于「${MARKET_PHASE_LABELS[state?.market_phase ?? ''] ?? '弱势'}」，最强板块尚在启动/分歧阶段，未形成连板扩张梯队。`}
-          />
-        )}
-      </Card>
-
-      {/* 活跃板块展开：复用 SectorSection（与赚钱效应点击展开一致） */}
-      {expandedActive && sectorGroupMap.get(expandedActive) && (
-        <SectorSection
-          group={sectorGroupMap.get(expandedActive)!}
-          collapsed={false}
-          onToggle={() => setExpandedActive(null)}
-          onClickStock={(code) => navigate(`/stocks/${code}`)}
-        />
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
