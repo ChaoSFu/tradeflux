@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session
 from ..models.stock import Stock, StockDailySnapshot
 from ..models.weak_to_strong_radar import WeakToStrongCandidate, WeakToStrongDiscoveryRun
 from ..models.turnover_pool import TurnoverPoolDaily
+from .trading_calendar import get_trading_days
 from . import w2s_config_service as cfg
 
 
@@ -144,6 +145,24 @@ def _recent_closes(db: Session, stock_id: int, as_of: date_cls, limit: int = 20)
     return [r.close_price for r in reversed(rows)]
 
 
+#: 已经撤掉的候选来源。带这些值的候选是按一套不存在的口径收进来的，
+#: 下一次发现直接失活，不再占观察窗口
+LEGACY_SOURCES = frozenset({"prompt1", "prompt2", "both"})
+
+
+def _sessions_between(cal, a, b):
+    """
+    交易日历上 a 到 b 隔了几个交易日。**用日历数，不是每跑一次加一。**
+    拿不到日历或日期不在日历上返回 None——不知道就是不知道，调用方别失活。
+    """
+    if not cal or a is None or b is None:
+        return None
+    try:
+        return list(cal).index(b) - list(cal).index(a)
+    except ValueError:
+        return None
+
+
 def collect_source_pools(db: Session, as_of: date_cls) -> dict[str, set[str]]:
     """
     候选来源：**页面上看得见的那三个股池**，全部读库，零外部请求。
@@ -234,9 +253,9 @@ def discover_candidates(db: Session, as_of: date_cls) -> dict:
     _log_discovery_run(db, as_of, prompts, raw1_count=len(pools.get("strong", ())),
                        raw2_count=len(pools.get("limit_up", ())),
                        verified_count=stats["verified"])
-    if not verified_by_code:
-        db.commit()
-        return stats
+    # **不在这里提前 return。** 原来一个都没验证通过就直接返回，于是下面的
+    # 失活逻辑整段被跳过——池子空一周，候选就一周不会过期，界面上挂着一批
+    # 早该走的票。空集是"今天没有新候选"，不是"今天什么都不用做"。
 
     stock_by_code = {
         s.code: s for s in db.query(Stock).filter(Stock.code.in_(verified_by_code)).all()
@@ -270,14 +289,34 @@ def discover_candidates(db: Session, as_of: date_cls) -> dict:
                 stats["renewed"] += 1
         cand.stock_name = stock.name
 
-    # 本次未命中、之前是 active 的候选：miss 天数 +1，超窗口才失活
+    # ── 本次未命中的 active 候选 ──────────────────────────────────────────
     missed = (
         db.query(WeakToStrongCandidate)
         .filter(WeakToStrongCandidate.is_active == True, ~WeakToStrongCandidate.stock_code.in_(verified_by_code))  # noqa: E712
         .all()
     )
+    cal = get_trading_days(db, need_through=as_of) or []
     for cand in missed:
-        cand.consecutive_miss_days = (cand.consecutive_miss_days or 0) + 1
+        # **老来源的存量候选直接失活，不占观察窗口。**
+        # 2026-09-09 换来源之后实测：277 只候选里 217 只还挂着 prompt1/both——
+        # 它们是按一套**已经不存在的口径**收进来的。让它们再熬一个观察窗口，
+        # 界面上就有一周时间在展示"不属于任何股池"的票（603466 风语筑就是这么
+        # 被问出来的）。来源都撤了，候选资格自然也就没了。
+        if cand.candidate_source in LEGACY_SOURCES:
+            cand.is_active = False
+            stats["expired"] += 1
+            stats["legacy_dropped"] = stats.get("legacy_dropped", 0) + 1
+            continue
+
+        # **miss 天数从交易日历算，不是每跑一次加一。**
+        # 原来是 `+= 1`，于是它数的是"发现跑了几次"而不是"过了几天"：手动点
+        # 几次「更新数据」就涨几。实测 603466 last_seen=09-08、as_of=09-09，
+        # 实际只隔 1 个交易日，miss 却已经是 7——那天定时加手动一共跑了 7 次。
+        # 字段名和配置都写着 days，行为却跟运行频率绑定，两者必须对上。
+        gap = _sessions_between(cal, cand.last_seen_date, as_of)
+        if gap is None:
+            continue        # 拿不到日历 / 日期不在日历上：**不猜，也不失活**
+        cand.consecutive_miss_days = max(0, gap)
         if cand.consecutive_miss_days > window_days:
             cand.is_active = False
             stats["expired"] += 1

@@ -22,6 +22,9 @@ from app.models.regulatory import RegulatoryStatusDaily, RegulatoryUnusual
 from app.models.market_index import IndexDailySnapshot, SectorIndexDaily
 from app.models.leader_cycle import LeaderCycleSnapshot
 from app.models.turnover_pool import TurnoverPoolDaily
+from app.models.weak_to_strong_radar import (
+    WeakToStrongCandidate, WeakToStrongEvent, WeakToStrongDiscoveryRun,
+)
 
 _TABLES = [
     Stock.__table__, StockDailySnapshot.__table__,
@@ -34,6 +37,8 @@ _TABLES = [
     SectorIndexDaily.__table__,
     LeaderCycleSnapshot.__table__,
     TurnoverPoolDaily.__table__,
+    WeakToStrongCandidate.__table__, WeakToStrongEvent.__table__,
+    WeakToStrongDiscoveryRun.__table__,
 ]
 
 

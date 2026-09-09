@@ -155,3 +155,80 @@ class TestSourcePools:
         from app.services import w2s_candidate_service as m
         src = pathlib.Path(m.__file__).read_text(encoding="utf-8")
         assert "fetch_strong_pool_codes" not in src
+
+
+class TestMissDaysAndLegacy:
+    """
+    2026-09-09 用户提问「风语筑不属于任何股池，为什么在列表里」查出来的两件事。
+
+    答案是：它是老来源（prompt1，08-27 收进来的）存量候选，新来源没再命中它。
+    但顺着查出两个更值得修的问题——都在这里钉住。
+    """
+
+    def _cal(self, db, days):
+        from app.services.trading_calendar import _write_cache
+        _write_cache(db, days)
+
+    def _cand(self, db, code, *, source, last_seen, miss=0, active=True):
+        from app.models.weak_to_strong_radar import WeakToStrongCandidate
+        st = _stk(db, code)
+        c = WeakToStrongCandidate(
+            stock_id=st.id, stock_code=code, stock_name=st.name,
+            first_seen_date=last_seen, last_seen_date=last_seen,
+            consecutive_miss_days=miss, candidate_source=source, is_active=active)
+        db.add(c); db.commit()
+        return c
+
+    def test_miss天数按交易日历数不是按运行次数(self, db):
+        """
+        原来是每跑一次 +=1，于是它数的是"发现跑了几次"而不是"过了几天"——
+        手动点几次「更新数据」就涨几。实测 603466：last_seen 09-08、as_of 09-09，
+        实际只隔 1 个交易日，miss 却已经是 7。
+        """
+        from app.services.w2s_candidate_service import discover_candidates
+        days = [_d(2026, 9, i) for i in (7, 8, 9)]
+        self._cal(db, days)
+        c = self._cand(db, "600021", source="strong", last_seen=days[1], miss=6)
+        discover_candidates(db, days[2])
+        discover_candidates(db, days[2])      # 同一天再跑一次
+        db.refresh(c)
+        assert c.consecutive_miss_days == 1, "跑两次也只隔了一个交易日"
+        assert c.is_active is True
+
+    def test_老来源的存量候选直接失活(self, db):
+        """来源都撤了，候选资格自然也就没了——不该再占一个观察窗口。"""
+        from app.services.w2s_candidate_service import discover_candidates
+        days = [_d(2026, 9, i) for i in (7, 8, 9)]
+        self._cal(db, days)
+        legacy = self._cand(db, "600022", source="prompt1", last_seen=days[1])
+        fresh = self._cand(db, "600023", source="strong", last_seen=days[1])
+        stats = discover_candidates(db, days[2])
+        db.refresh(legacy); db.refresh(fresh)
+        assert legacy.is_active is False and stats.get("legacy_dropped") == 1
+        assert fresh.is_active is True, "新来源的候选照常走观察窗口"
+
+    def test_拿不到日历时不失活也不猜(self, db):
+        """**不知道就是不知道。** 没日历就别拿一个编出来的天数去踢候选。"""
+        from app.services.w2s_candidate_service import discover_candidates
+        c = self._cand(db, "600024", source="strong", last_seen=_d(2026, 9, 8), miss=3)
+        discover_candidates(db, _d(2026, 9, 9))
+        db.refresh(c)
+        assert c.consecutive_miss_days == 3 and c.is_active is True
+
+    def test_没有新候选时失活逻辑照常跑(self, db):
+        """
+        原来 `if not verified_by_code: return` 把失活逻辑整段跳过了——池子空一周，
+        候选就一周不会过期。**空集是"今天没有新候选"，不是"今天什么都不用做"。**
+        """
+        from app.services.w2s_candidate_service import discover_candidates
+        days = [_d(2026, 9, i) for i in range(1, 12)]
+        self._cal(db, days)
+        near = self._cand(db, "600025", source="strong", last_seen=days[7])
+        far = self._cand(db, "600026", source="strong", last_seen=days[0])
+        stats = discover_candidates(db, days[10])   # 三个池子都空
+        db.refresh(near); db.refresh(far)
+        assert stats["verified"] == 0
+        # 计数被更新了 = 失活逻辑确实跑了（原来这里整段被跳过）
+        assert near.consecutive_miss_days == 3 and near.is_active is True
+        assert far.consecutive_miss_days == 10 and far.is_active is False, \
+            "隔了 10 个交易日、窗口 7 天，该失活"
