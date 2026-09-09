@@ -33,7 +33,6 @@ type NavEntry     = NavLinkItem | NavGroupItem
 const NAV: NavEntry[] = [
   { type: 'link', to: '/', label: '主页', icon: Home },
   { type: 'link', to: '/market-trend', label: '大盘趋势', icon: TrendingUp },
-  { type: 'link', to: '/weak-to-strong-radar', label: '弱转强雷达', icon: Crosshair },
   {
     type: 'group',
     label: '活跃股分析',
@@ -41,6 +40,9 @@ const NAV: NavEntry[] = [
     children: [
       { type: 'link', to: '/limit-moves-analysis', label: '涨跌停分析', icon: Flame },
       { type: 'link', to: '/strong',      label: '强势股概览', icon: LayoutDashboard },
+      // 弱转强的候选池就是从强势股/涨停股/成交额这三个池子来的，放它们中间，
+      // 顺序跟数据流一致：先看池子，再看池子里谁在转强
+      { type: 'link', to: '/weak-to-strong-radar', label: '弱转强雷达', icon: Crosshair },
       { type: 'link', to: '/stocks',      label: '活跃股池',   icon: TrendingUp },
       { type: 'link', to: '/turnover',    label: '成交额概览', icon: Coins },
       { type: 'link', to: '/watchlist',   label: '重点监控',   icon: ShieldAlert },

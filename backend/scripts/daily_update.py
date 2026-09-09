@@ -2353,7 +2353,9 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             snap_count = upsert_sector_daily_snapshot(db, target_date)
             cand_stats = discover_candidates(db, target_date)
             log.info(
-                f"弱转强雷达：板块快照 {snap_count} 条；候选池 raw={cand_stats['prompt1_raw']}/{cand_stats['prompt2_raw']}，"
+                f"弱转强雷达：板块快照 {snap_count} 条；候选来源 "
+                f"强势{cand_stats.get('strong_raw', 0)}/涨停{cand_stats.get('limit_up_raw', 0)}"
+                f"/成交额{cand_stats.get('turnover_raw', 0)}（去重 {cand_stats.get('source_raw', 0)}），"
                 f"verified={cand_stats['verified']}（新增{cand_stats['new']}，续期{cand_stats['renewed']}，失活{cand_stats['expired']}）"
             )
         except Exception as e:

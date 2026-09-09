@@ -21,6 +21,7 @@ from app.models.app_config import AppConfig
 from app.models.regulatory import RegulatoryStatusDaily, RegulatoryUnusual
 from app.models.market_index import IndexDailySnapshot, SectorIndexDaily
 from app.models.leader_cycle import LeaderCycleSnapshot
+from app.models.turnover_pool import TurnoverPoolDaily
 
 _TABLES = [
     Stock.__table__, StockDailySnapshot.__table__,
@@ -32,6 +33,7 @@ _TABLES = [
     IndexDailySnapshot.__table__,
     SectorIndexDaily.__table__,
     LeaderCycleSnapshot.__table__,
+    TurnoverPoolDaily.__table__,
 ]
 
 
