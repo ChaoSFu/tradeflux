@@ -706,3 +706,66 @@ class TestCohortOrdering:
         assert 'c["trimmed_avg_pct_change"] is None,' in src
         assert '-(c["trimmed_avg_pct_change"] or 0.0),' in src
         assert '-c["red_ratio"]' in src
+
+
+class TestTodayEstimate:
+    """
+    今日盘中估算点。
+
+    **它最容易出的错是污染跨日统计**：盘中价一旦进了 px，上午的浮动就会冒充
+    当日结果，而所有的 series / cohorts / history 都跟着错。所以这里测的是
+    「它算得出来」和「它没有渗进别处」两件事。
+    """
+
+    def _setup(self, db, *, settle_today: bool):
+        from datetime import date as d
+        from app.services.trading_calendar import _write_cache
+        days = [d(2026, 9, i) for i in (1, 2, 3)]
+        _write_cache(db, days)
+        st = _stock(db, "600097")
+        closes = [10.0, 10.0, 12.0]          # 最后一天 +20%
+        for i, day in enumerate(days):
+            db.add(StockDailySnapshot(
+                stock_id=st.id, date=day, close_price=closes[i],
+                # 最后一天按参数决定结不结算
+                is_settled=(settle_today or i < len(days) - 1)))
+            db.add(LeaderCycleSnapshot(
+                stock_id=st.id, stock_code=st.code, date=day, board_count_60d=5,
+                cycle_start_date=days[0], cycle_peak_date=days[0], peak_board_count=5,
+                latest_close=closes[i], ma5=9.0, ma10=8.0, ma20=7.0, ma30=6.0,
+                data_fresh=True, bar_settled=True, days_since_break=i))
+        db.commit()
+        return days
+
+    def test_未收盘时给出估算点(self, db):
+        from app.services.leader_cycle_effect_service import compute_effect
+        days = self._setup(db, settle_today=False)
+        r = compute_effect(db, days[-1])
+        te = r["today_estimate"]
+        assert te and te["is_estimate"] is True
+        assert te["trade_date"] == "2026-09-03" and te["based_on"] == "2026-09-02"
+        one = next(iter(te["values"].values()))
+        assert one["avg"] == 20.0 and one["n"] == 1
+
+    def test_估算点不进series(self, db):
+        """**盘中价不能进跨日统计。** 进去了上午的浮动就冒充了当日结果。"""
+        from app.services.leader_cycle_effect_service import compute_effect
+        days = self._setup(db, settle_today=False)
+        r = compute_effect(db, days[-1])
+        assert "2026-09-03" not in {p["trade_date"] for p in r["series"]}
+
+    def test_收盘之后没有估算点(self, db):
+        """真值已经有了，就不该再挂一个估算。"""
+        from app.services.leader_cycle_effect_service import compute_effect
+        days = self._setup(db, settle_today=True)
+        r = compute_effect(db, days[-1])
+        assert r["today_estimate"] is None
+        assert "2026-09-03" in {p["trade_date"] for p in r["series"]}, \
+            "收盘之后这一天该以真实值进 series"
+
+    def test_估算这件事要写进notes(self, db):
+        from app.services.leader_cycle_effect_service import compute_effect
+        days = self._setup(db, settle_today=False)
+        r = compute_effect(db, days[-1])
+        assert any("盘中估算" in n for n in r["notes"]), \
+            "图上多一个点而不说它是估算，就是拿盘中价冒充收盘结果"

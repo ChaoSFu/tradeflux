@@ -6,7 +6,7 @@ import {
 import { format } from 'date-fns'
 import { cn } from '@/utils/cn'
 import { LIFECYCLE_ZH } from '@/lib/lifecycle'
-import type { LifecycleSeriesPoint } from '@/api/stocks'
+import type { LifecycleSeriesPoint, LifecycleTodayEstimate } from '@/api/stocks'
 import type { MarketHistoryPoint } from '@/types'
 
 /**
@@ -20,14 +20,24 @@ import type { MarketHistoryPoint } from '@/types'
  *
  * **均值不是中位数**:这条线要跟「强势股均涨幅」那条可比,而那条一直是均值。
  */
+/** 顺序按生命周期推进方向（跟 STATE_ORDER 一致），不是按颜色好看 */
 const LINES: { state: string; color: string; dash?: string }[] = [
   { state: 'STREAKING',       color: '#FF4560' },
+  { state: 'BROKEN',          color: '#FB923C', dash: '5 2' },
   { state: 'REPAIRING',       color: '#F59E0B', dash: '4 2' },
   { state: 'CROSS_SUCCESS',   color: '#E879F9' },
   { state: 'CROSS_WEAKENING', color: '#5EA6FF', dash: '3 3' },
   { state: 'CROSS_FAILED',    color: '#26C281', dash: '2 4' },
   { state: 'FADED',           color: '#737A96', dash: '1 3' },
 ]
+
+/**
+ * 默认亮着的三条：基线 + 两个核心观察状态。
+ *
+ * 七条全开会糊成一团，而每天真正要看的是「第一次转强」和「已完成二波」这两组
+ * 相对基线怎么走。其余的点图例就能加回来——**只是默认收起，不是没有**。
+ */
+const DEFAULT_ON = new Set(['REPAIRING', 'CROSS_SUCCESS'])
 const C_MAIN = '#5EA6FF'
 const L_MAIN = '强势股均涨幅'
 const zh = (st: string) => LIFECYCLE_ZH[st] ?? st
@@ -37,24 +47,36 @@ interface Row {
   [k: string]: string | number | null
 }
 
-export function LifecycleEffectChart({ series, history }: {
+export function LifecycleEffectChart({ series, history, todayEstimate }: {
   series: LifecycleSeriesPoint[]
   history: MarketHistoryPoint[]
+  /** 未收盘时的当日估算。**它不在 series 里**——盘中价不能进跨日统计 */
+  todayEstimate?: LifecycleTodayEstimate | null
 }) {
-  const [hidden, setHidden] = useState<Set<string>>(new Set())
+  // 默认收起 DEFAULT_ON 之外的线。用 zh(state) 作 key，跟图例/dataKey 一致
+  const [hidden, setHidden] = useState<Set<string>>(
+    () => new Set(LINES.filter((l) => !DEFAULT_ON.has(l.state)).map((l) => zh(l.state))))
   const toggle = useCallback((k: string) => setHidden((p) => {
     const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n
   }), [])
 
   // 只画实际出现过的状态。**没出现过就不给图例**——一条永远空着的线，
   // 跟"这个状态今天是 0"看起来一样
+  // 估算点也算「出现过」：只有它有数据的状态，图例上也该给得出来
   const present = useMemo(
-    () => LINES.filter((l) => series.some((p) => p.values[l.state])), [series])
+    () => LINES.filter((l) => series.some((p) => p.values[l.state])
+                          || !!todayEstimate?.values[l.state]),
+    [series, todayEstimate])
 
   const rows = useMemo<Row[]>(() => {
     const avgByDate = new Map(history.map((h) => [h.date.slice(0, 10), h.strong_pool_avg_pct]))
-    return series.map((p) => {
+    // 估算点拼在末尾。**它是另一种东西**（盘中价 vs 收盘价），所以带个标记，
+    // tooltip 上要说出来——不说就是拿盘中价冒充当日结果
+    const all: (LifecycleSeriesPoint & { __est?: true })[] =
+      todayEstimate ? [...series, { ...todayEstimate, __est: true as const }] : series
+    return all.map((p) => {
       const r: Row = { date: format(new Date(p.trade_date), 'MM/dd') }
+      r.__est = ('__est' in p && p.__est) ? 1 : 0
       r[L_MAIN] = avgByDate.get(p.trade_date) ?? null
       for (const l of present) {
         // 当天没有该状态的票 → **图上按 0 画**（产品决定：那一组当天没有贡献
@@ -67,7 +89,7 @@ export function LifecycleEffectChart({ series, history }: {
       }
       return r
     })
-  }, [series, history, present])
+  }, [series, history, present, todayEstimate])
 
   if (!series.length) {
     return <div className="h-64 flex items-center justify-center text-text-muted text-sm">
@@ -146,7 +168,12 @@ function Tip({ active, label, payload, present }: TipProps) {
   return (
     <div className="bg-bg-surface border border-bg-border rounded px-2.5 py-1.5
                     text-[11px] space-y-0.5 shadow-lg">
-      <div className="text-text-primary font-medium">{label}</div>
+      <div className="text-text-primary font-medium">
+        {label}
+        {row.__est === 1 && (
+          <span className="ml-1.5 text-warn font-normal">盘中估算 · 未收盘</span>
+        )}
+      </div>
       {payload.map((p) => {
         const n = row[`${p.dataKey}__n`]
         return (

@@ -278,7 +278,8 @@ function LifecycleSeries({ history }: { history: MarketHistoryPoint[] }) {
   if (q.error) {
     return <div className="text-center text-warn text-xs py-10">数据获取失败</div>
   }
-  return <LifecycleEffectChart series={q.data?.series ?? []} history={history} />
+  return <LifecycleEffectChart series={q.data?.series ?? []} history={history}
+                               todayEstimate={q.data?.today_estimate} />
 }
 
 
@@ -932,10 +933,9 @@ export default function Dashboard() {
 
       {/* 市场状态条已抽到全局 Layout（MarketStateBar），各页顶部统一展示 */}
 
-      <LifecycleSection />
-
       {/* ════════════════════════════════════════════════════════════════════════
-          赚钱效应模块
+          赚钱效应模块 —— **排在生命周期之前**（2026-09-09 按用户要求）：
+          先看今天整体赚不赚钱、各状态组走成什么样，再往下看具体是哪几只票。
       ════════════════════════════════════════════════════════════════════════ */}
       {pe && (
         <div className="space-y-4">
@@ -1003,7 +1003,8 @@ export default function Dashboard() {
                   <span className="text-[10px] text-text-muted">
                     每条线 = 昨天处于该状态的票，今天的<span className="text-text-secondary">平均</span>涨幅
                     <span className="text-text-muted/70">
-                      ；当天该组没有成员时按 0 画（悬停显示「无成员」）
+                      ；当天该组没有成员时按 0 画（悬停显示「无成员」）。
+                      未收盘时末点是<span className="text-warn">盘中估算</span>，不写库
                     </span>
                   </span>
                 </div>
@@ -1062,6 +1063,8 @@ export default function Dashboard() {
           )}
         </div>
       )}
+
+      <LifecycleSection />
 
       {/* ── Active Sectors ── */}
       <Card title="活跃板块" className="overflow-auto max-h-64">

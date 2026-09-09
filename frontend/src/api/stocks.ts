@@ -180,6 +180,20 @@ export interface LifecycleSeriesPoint {
   values: Record<string, { avg: number; n: number }>
 }
 
+/**
+ * 今日**盘中估算**：昨日各状态的票 × 今天的现价涨幅。
+ *
+ * **不写库、不进 series、不进任何跨日统计**——盘中价一旦掺进去，上午的浮动就会
+ * 冒充当日结果。收盘后这一天会以真实值进 series，估算点随之消失。
+ */
+export interface LifecycleTodayEstimate {
+  trade_date: string
+  /** 状态是按哪一天判的（= 上一个已收盘交易日） */
+  based_on: string
+  is_estimate: true
+  values: Record<string, { avg: number; n: number }>
+}
+
 export interface LifecycleEffectResponse {
   as_of: string | null
   prev: string | null
@@ -187,6 +201,8 @@ export interface LifecycleEffectResponse {
   cohorts: LifecycleCohort[]
   /** 逐日：昨天处于某状态的票，今天的平均涨幅 */
   series: LifecycleSeriesPoint[]
+  /** 未收盘时的当日估算；收盘后为 null（真实值已在 series 里） */
+  today_estimate: LifecycleTodayEstimate | null
   /** 历史前瞻。**只是线索不是结论**——没做同日同池对照，也没有置信区间 */
   history: LifecycleForward[]
   notes: string[]

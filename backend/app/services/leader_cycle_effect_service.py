@@ -123,7 +123,7 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     dates = [d for (d,) in db.query(LeaderCycleSnapshot.date).distinct()
              .order_by(LeaderCycleSnapshot.date).all()]
     if not dates:
-        return {"as_of": None, "prev": None, "cohorts": [], "history": [], "series": [],
+        return {"as_of": None, "prev": None, "cohorts": [], "history": [], "series": [], "today_estimate": None,
                 "formula_version": FORMULA_VERSION,
                 "notes": ["暂无生命周期快照", *base_notes]}
     as_of = trade_date or dates[-1]
@@ -138,7 +138,7 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
             .filter(LeaderCycleSnapshot.date >= lower,
                     LeaderCycleSnapshot.date <= as_of).all())
     if not rows:
-        return {"as_of": as_of, "prev": None, "cohorts": [], "history": [], "series": [],
+        return {"as_of": as_of, "prev": None, "cohorts": [], "history": [], "series": [], "today_estimate": None,
                 "formula_version": FORMULA_VERSION,
                 "notes": ["窗口内没有生命周期快照", *base_notes]}
 
@@ -152,7 +152,7 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     if not cal:
         # 没日历就没法判"相邻交易日"，状态机会停在原地——如实说，不硬算
         notes.append("拿不到交易日历，生命周期无法推进")
-        return {"as_of": as_of, "prev": None, "cohorts": [], "history": [], "series": [],
+        return {"as_of": as_of, "prev": None, "cohorts": [], "history": [], "series": [], "today_estimate": None,
                 "formula_version": FORMULA_VERSION, "notes": notes + base_notes}
 
     # ── 收盘价：只排除**最新日期上**未结算的行 ──────────────────────────
@@ -192,14 +192,19 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
                  StockDailySnapshot.date <= as_of))
     if pool_ids:
         q = q.filter(StockDailySnapshot.stock_id.in_(pool_ids))
+    live_px: Dict[str, float] = {}       # 当日未结算的盘中价，只给「今日估算」用
     for stock_id, d_, close, settled in q.all():
-        if d_ == as_of and settled is not True:
-            continue                       # 今天还没收盘，这一行是活价格
         code = sid.get(stock_id)
-        if code:
-            px[code][d_] = close
-            if settled is not True:
-                unsettled_kept += 1
+        if not code:
+            continue
+        if d_ == as_of and settled is not True:
+            # 今天还没收盘，这一行是活价格：**不进 px**（不能污染任何跨日统计），
+            # 但单独留一份，用来给界面算一个明确标注为「盘中估算」的当日点
+            live_px[code] = close
+            continue
+        px[code][d_] = close
+        if settled is not True:
+            unsettled_kept += 1
     if unsettled_kept:
         notes.append(
             f"历史里有 {unsettled_kept} 行快照没标 is_settled（该字段 2026-05-28 "
@@ -287,6 +292,33 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
         for d, per_state in sorted(daily.items())
     ]
 
+    # ── 今日盘中估算：**不落库、不进 series、不进任何统计** ────────────────
+    # 收盘之前 as_of 那天的行是活价格，上面已经把它挡在 px 之外——跨日统计一旦
+    # 掺进盘中价，上午的浮动就会冒充当日结果。
+    #
+    # 但界面上「今天各组走成什么样」本身是有用的，只要它被明确标成估算。所以
+    # 单独算一个点：昨天处于某状态的票 × 今天的**现价**涨幅。
+    # is_estimate=True 一路带到前端，让它在图上和 tooltip 里都说得出自己是估算。
+    today_estimate = None
+    if live_px and prev:
+        by_st: Dict[str, List[float]] = defaultdict(list)
+        for code, st in (states.get(prev) or {}).items():
+            base, cur = px.get(code, {}).get(prev), live_px.get(code)
+            if base and cur and base > 0:
+                by_st[st].append((cur / base - 1) * 100)
+        if by_st:
+            today_estimate = {
+                "trade_date": as_of.isoformat(),
+                "based_on": prev.isoformat(),
+                "is_estimate": True,
+                "values": {st: {"avg": round(sum(v) / len(v), 2), "n": len(v)}
+                           for st, v in by_st.items()},
+            }
+            notes.append(
+                f"曲线最后一点（{as_of}）是**盘中估算**：昨日各状态的票 × 今天的"
+                f"现价涨幅。今天还没收盘，这个点不写库、不进任何跨日统计，"
+                f"收盘后会被真实值取代。")
+
     return {"as_of": as_of, "prev": prev, "formula_version": FORMULA_VERSION,
             "cohorts": cohorts, "history": history, "series": series,
-            "notes": notes + base_notes}
+            "today_estimate": today_estimate, "notes": notes + base_notes}
