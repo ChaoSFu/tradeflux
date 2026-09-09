@@ -2,10 +2,12 @@ import { Fragment, useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchMarketState, fetchMarketHistory, fetchProfitEffect } from '@/api/marketState'
-import { fetchStrongPool, fetchLifecycleEffect, fetchLifecycleEvidence } from '@/api/stocks'
+import {
+  fetchStrongPool, fetchLifecycleEffect, fetchLifecycleEvidence, fetchLeaderCycle,
+} from '@/api/stocks'
 import type { EvidenceEvent, EvidenceCell } from '@/api/stocks'
 import { LIFECYCLE_ZH, STATE_ORDER } from '@/lib/lifecycle'
-import LeaderCyclePanel from '@/components/stockPool/LeaderCyclePanel'
+import LeaderCyclePanel, { LifecycleScopeNote } from '@/components/stockPool/LeaderCyclePanel'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
@@ -867,29 +869,39 @@ function LifecycleEvidence() {
  * 生命周期整块。**默认折叠**——它下面是一张十九列的表，摊开占大半屏；
  * 这一页先回答「今天赚不赚钱」，具体是哪几只票要看时再点开。
  *
- * 「活跃股池 →」放在 summary 外面：它是跳转，点它不该顺带把卡片折叠状态也切了。
+ * 折叠状态下**必须看起来像一张卡、且带口径说明**：之前只剩一行光秃秃的标题，
+ * 既不像可点的东西，也看不出底下还有六十只票的表——发现不了的功能等于没有。
+ * 所以这里跟「生命周期事件历史表现」用同一个形状：details.card + summary 里
+ * 放标题和口径。
+ *
+ * 口径文案走 LeaderCyclePanel 导出的那一份，**不在这里抄第二遍**；scope_note
+ * 复用 ['leader-cycle'] 这个 key，跟面板共享同一次请求，不多打接口。
  */
 function LifecycleSection() {
+  const { data } = useQuery({
+    queryKey: ['leader-cycle'], queryFn: () => fetchLeaderCycle(),
+    staleTime: 5 * 60 * 1000,
+  })
   return (
-    <div className="space-y-2">
-      <details className="space-y-2">
-        <summary className="flex items-baseline gap-2 flex-wrap cursor-pointer
-                            select-none list-none">
+    <details className="card p-3 space-y-2">
+      <summary className="cursor-pointer select-none list-none space-y-2">
+        <div className="flex items-baseline gap-2 flex-wrap">
           <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">
             生命周期
           </h2>
           <span className="text-[11px] text-text-muted">
             Price Lifecycle v1.1 · 只描述价格结构，不代表交易许可
           </span>
-        </summary>
-        <div className="mt-2"><LeaderCyclePanel /></div>
-      </details>
-      <div className="flex">
-        <Link to="/stocks" className="ml-auto text-[11px] text-accent">
-          活跃股池 →
-        </Link>
-      </div>
-    </div>
+          {/* stopPropagation：这是跳转，点它不该顺带把卡片折叠状态也切了 */}
+          <Link to="/stocks" onClick={(e) => e.stopPropagation()}
+                className="ml-auto text-[11px] text-accent">
+            活跃股池 →
+          </Link>
+        </div>
+        <LifecycleScopeNote scopeNote={data?.scope_note} />
+      </summary>
+      <LeaderCyclePanel hideScopeNote />
+    </details>
   )
 }
 

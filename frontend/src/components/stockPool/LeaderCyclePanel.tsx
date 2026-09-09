@@ -265,7 +265,33 @@ function MaPos({ close, ma }: { close: number | null; ma: number | null }) {
   )
 }
 
-export default function LeaderCyclePanel() {
+/**
+ * 口径说明。**单独抽出来是为了能在折叠状态下显示**：整块折起来之后只剩一行
+ * 标题，看不出底下还有六十只票的表——发现不了的功能等于没有。
+ */
+export function LifecycleScopeNote({ scopeNote }: { scopeNote?: string | null }) {
+  return (
+    <div className="flex items-start gap-2 text-[11px] text-text-secondary leading-relaxed">
+      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-text-muted" />
+      <div>
+        <span className="text-text-primary font-medium">口径：</span>
+        {scopeNote ?? '高标池 = 近60个交易日最高连板 ≥ 4'}
+        <span className="text-text-muted">
+          。生命周期状态由 <span className="text-text-primary">Price Lifecycle
+          v1.1</span> 从历史事实实时 replay 得出，<span className="text-text-primary">
+          不写入事实表</span>——阈值以后一定会改，冻进历史就再也回答不了
+          「新口径下当时该是什么状态」。它只描述<span className="text-text-primary">
+          价格结构</span>，不代表交易许可。
+        </span>
+      </div>
+    </div>
+  )
+}
+
+export default function LeaderCyclePanel({ hideScopeNote = false }: {
+  /** 口径由调用方渲染（折叠场景要把它留在 summary 里），这里跳过，避免重复 */
+  hideScopeNote?: boolean
+} = {}) {
   const [group, setGroup] = useState<Group>('core')
   // **段内排序。** 生命周期分段永远不混——点「峰值回撤」是让修复中那几只按回撤
   // 排、穿越成功那几只按回撤排，不是把两组揉成一张榜。段本身的顺序永远按
@@ -352,20 +378,9 @@ export default function LeaderCyclePanel() {
   return (
     <div className="space-y-3">
       <div className="card p-3 space-y-2">
-        <div className="flex items-start gap-2 text-[11px] text-text-secondary leading-relaxed">
-          <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-text-muted" />
-          <div>
-            <span className="text-text-primary font-medium">口径：</span>
-            {data?.scope_note ?? '高标池 = 近60个交易日最高连板 ≥ 4'}
-            <span className="text-text-muted">
-              。生命周期状态由 <span className="text-text-primary">Price Lifecycle
-              v1.1</span> 从历史事实实时 replay 得出，<span className="text-text-primary">
-              不写入事实表</span>——阈值以后一定会改，冻进历史就再也回答不了
-              「新口径下当时该是什么状态」。它只描述<span className="text-text-primary">
-              价格结构</span>，不代表交易许可。
-            </span>
-          </div>
-        </div>
+        {/* 折叠时口径要留在外面（见 LifecycleScopeNote 的注释），那种场景由
+            调用方渲染，这里就不重复一遍 */}
+        {!hideScopeNote && <LifecycleScopeNote scopeNote={data?.scope_note} />}
         {total > 0 && (
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] pt-1 border-t border-bg-border">
             <span className="text-text-muted">数据覆盖</span>
