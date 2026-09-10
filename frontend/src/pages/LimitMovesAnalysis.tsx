@@ -25,7 +25,7 @@ import {
 } from '@/api/stocks'
 import { fetchHeightSeries } from '@/api/marketTrend'
 import { fetchLimitUpRadar } from '@/api/limitUpRadar'
-import { fetchMarketEffectLatest } from '@/api/marketEffects'
+import { fetchMarketEffectLatest, fetchCohortSeries } from '@/api/marketEffects'
 import { QueryState, queryFailed } from '@/components/limitMovesAnalysis/QueryState'
 import { DataFreshnessBar, type SourceStatus } from '@/components/limitMovesAnalysis/DataFreshnessBar'
 import { MarketSnapshot, type Kpi } from '@/components/limitMovesAnalysis/MarketSnapshot'
@@ -35,6 +35,7 @@ import { LadderHeatmap } from '@/components/limitMovesAnalysis/LadderHeatmap'
 import { SectorLimitTable } from '@/components/limitMovesAnalysis/SectorLimitTable'
 import { LadderStockList } from '@/components/limitMovesAnalysis/LadderStockList'
 import { CohortFeedbackTable } from '@/components/limitMovesAnalysis/CohortFeedbackTable'
+import { CohortEffectChart } from '@/components/limitMovesAnalysis/CohortEffectChart'
 import { LimitHistoryChart } from '@/components/limitMovesAnalysis/LimitHistoryChart'
 import { AdvanceLadderPanel } from '@/components/limitMovesAnalysis/AdvanceLadderPanel'
 import { SectorContinuationPanel } from '@/components/limitMovesAnalysis/SectorContinuationPanel'
@@ -78,6 +79,13 @@ export default function LimitMovesAnalysis() {
     queryKey: ['lma-effect'],
     queryFn: fetchMarketEffectLatest,
     staleTime: 10 * 60 * 1000,
+  })
+  // 逐日曲线和下面那张表读的是同一份 cohorts_json（后端 market_effect_daily），
+  // 表是今天这一列，曲线是这一列沿日期铺开
+  const cohortSeries = useQuery({
+    queryKey: ['lma-cohort-series'],
+    queryFn: () => fetchCohortSeries(60),
+    staleTime: 30 * 60 * 1000,
   })
   const ladder = useQuery({
     queryKey: ['lma-advance-ladder'],
@@ -245,6 +253,13 @@ export default function LimitMovesAnalysis() {
               <SectorLimitTable rows={sectorRows}
                                 radarDate={radar.data?.trade_date ?? null}
                                 downDate={down.data?.trade_date ?? null} />
+            </QueryState>
+          </div>
+
+          <div className="card p-3">
+            <QueryState qs={[cohortSeries]} rows={3}
+                        isEmpty={!cohortSeries.data?.points.length}>
+              {cohortSeries.data && <CohortEffectChart data={cohortSeries.data} />}
             </QueryState>
           </div>
 

@@ -3,10 +3,12 @@ from sqlalchemy.orm import Session
 from datetime import date as date_cls
 
 from ..database import get_db
-from ..schemas.market_effect import MarketEffectDailyResponse, MarketEffectHistoryPoint, CohortMember
+from ..schemas.market_effect import (
+    MarketEffectDailyResponse, MarketEffectHistoryPoint, CohortMember, CohortSeriesResponse,
+)
 from ..models.market_effect import MarketEffectDaily
 from ..services.market_effect_service import (
-    get_or_compute, get_latest_trade_date, get_history,
+    get_or_compute, get_latest_trade_date, get_history, get_cohort_series,
     list_cohort_members, _prev_trading_date, COHORT_LABELS,
 )
 
@@ -55,6 +57,20 @@ def market_effect_history(
         )
         for r in rows
     ]
+
+
+@router.get("/cohort-series", response_model=CohortSeriesResponse)
+def cohort_series(
+    days: int = Query(60, ge=5, le=250),
+    db: Session = Depends(get_db),
+):
+    """
+    冻结群体的逐日曲线：每条线 = 一个「昨日群体」在各交易日的今日中位收益。
+
+    **必须注册在 `/{trade_date}` 之前**——那条路由的路径参数是 date，
+    "cohort-series" 落到它身上会被解析成 422，而不是走到这里。
+    """
+    return get_cohort_series(db, days)
 
 
 @router.get("/{trade_date}/cohorts/{cohort_type}/members", response_model=list[CohortMember])

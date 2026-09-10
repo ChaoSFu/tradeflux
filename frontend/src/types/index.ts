@@ -902,3 +902,27 @@ export interface LimitUpRadarRefreshResponse {
   error: string | null
   last_success_at: string | null
 }
+
+// ── 冻结群体逐日曲线（涨跌停分析页）──────────────────────────────────────────
+// 跟 CohortOutcome 读的是同一份 cohorts_json，字段也是同一个 median_pct_change
+export interface CohortSeriesValue {
+  /** null = 有效样本不足 / 当天这个群体没成员。**不是 0%**，图上要断开 */
+  median_pct_change: number | null
+  member_count: number
+  valid_count: number
+}
+
+export interface CohortSeriesPoint {
+  trade_date: string
+  /** true=收盘终值 / false=还有盘中行（这点是盘中价算的）/ null=不知道 */
+  is_settled: boolean | null
+  values: Partial<Record<CohortType, CohortSeriesValue>>
+}
+
+export interface CohortSeriesResponse {
+  as_of: string | null
+  formula_version: string
+  cohorts: { cohort_type: CohortType; label: string }[]
+  points: CohortSeriesPoint[]
+  notes: string[]
+}

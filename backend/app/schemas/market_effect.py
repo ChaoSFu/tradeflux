@@ -52,3 +52,30 @@ class MarketEffectHistoryPoint(BaseModel):
     quadrant: str
     lifecycle_state: str
     breadth_source: str
+
+
+class CohortSeriesValue(BaseModel):
+    """曲线上一天一组的取值。**median 为 None 就是断点**，前端不许填 0。"""
+    median_pct_change: Optional[float] = None
+    member_count: int
+    valid_count: int
+
+
+class CohortSeriesPoint(BaseModel):
+    trade_date: date
+    # True=收盘终值 / False=还有盘中行（这一点是盘中价算的）/ None=不知道
+    is_settled: Optional[bool] = None
+    values: dict[str, CohortSeriesValue]
+
+
+class CohortSeriesLegend(BaseModel):
+    cohort_type: str
+    label: str
+
+
+class CohortSeriesResponse(BaseModel):
+    as_of: Optional[date] = None
+    formula_version: str
+    cohorts: List[CohortSeriesLegend]
+    points: List[CohortSeriesPoint]
+    notes: List[str] = []

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from ..models.stock import StockDailySnapshot
 from ..models.market_index import MarketBreadthDaily
 from ..models.market_effect import MarketEffectDaily
+from .snapshot_settlement import settled_by_date
 
 FORMULA_VERSION = "market_effect_v0.1.0"
 LARGE_LOSS_THRESHOLD = -7.0  # % ，超过这个跌幅算「大亏」
@@ -366,7 +367,8 @@ def get_latest_trade_date(db: Session) -> Optional[date]:
     return row[0] if row else None
 
 
-def get_history(db: Session, days: int) -> list[MarketEffectDaily]:
+def recent_trade_dates(db: Session, days: int) -> list[date]:
+    """最近 days 个有快照的交易日，升序。"""
     latest = get_latest_trade_date(db)
     if latest is None:
         return []
@@ -381,4 +383,97 @@ def get_history(db: Session, days: int) -> list[MarketEffectDaily]:
         )
     ]
     all_dates.reverse()
-    return [get_or_compute(db, d) for d in all_dates]
+    return all_dates
+
+
+def get_history(db: Session, days: int) -> list[MarketEffectDaily]:
+    """
+    近 days 个交易日的效应行，升序。缺失的现算并落库（语义跟 get_or_compute 一致）。
+
+    **命中的行一次查出来**，不要按天循环调 get_or_compute——那是 60 次
+    `WHERE trade_date = ?`。这条路现在有两个页面在走（市场效应页的趋势图、
+    涨跌停分析页的逐日曲线），而这台机器只有 1.8G。
+    """
+    all_dates = recent_trade_dates(db, days)
+    if not all_dates:
+        return []
+    cached = {
+        r.trade_date: r
+        for r in db.query(MarketEffectDaily).filter(
+            MarketEffectDaily.trade_date.in_(all_dates),
+            # 版本对不上的行等于没有：跟 get_or_compute 一样重算
+            MarketEffectDaily.formula_version == FORMULA_VERSION,
+        )
+    }
+    return [cached.get(d) or compute_and_cache(db, d) for d in all_dates]
+
+
+# ─── 冻结群体的逐日曲线 ────────────────────────────────────────────────────────
+#
+# 「昨日群体·今日反馈」那张表是一天的截面，这里是同一批数字沿日期铺开。
+# **两者必须是同一个字段**（cohorts_json 里的 median_pct_change），否则曲线
+# 最后一点和它下面那张表会对不上——那就是同一个事实两套口径。
+
+def build_cohort_series(
+    rows: list[tuple[date, Optional[dict]]],
+    settled: dict[date, Optional[bool]],
+) -> dict:
+    """
+    纯函数：(交易日, cohorts_json) 列表 → 曲线载荷。
+
+    **median 缺失就是缺失**（valid_count 不足 / 当天这个群体一个成员都没有），
+    不填 0——0% 是"这群票不涨不跌"，跟"没有这群票"是两回事。member_count 和
+    valid_count 一起带出去，让前端能在 tooltip 里说清是哪一种。
+    """
+    points = []
+    seen: list[str] = []
+    for d, cohorts in rows:
+        values = {}
+        for ct in COHORT_LABELS:
+            c = (cohorts or {}).get(ct)
+            if not c:
+                continue
+            if ct not in seen:
+                seen.append(ct)
+            values[ct] = {
+                "median_pct_change": c.get("median_pct_change"),
+                "member_count": c.get("member_count") or 0,
+                "valid_count": c.get("valid_count") or 0,
+            }
+        points.append({
+            "trade_date": d,
+            # True=收盘终值 / False=还有盘中行 / None=不知道
+            "is_settled": settled.get(d),
+            "values": values,
+        })
+
+    as_of = points[-1]["trade_date"] if points else None
+    notes = [
+        "每条线 = 前一交易日收盘时冻结的那批票，在这一天的**中位涨跌幅**——"
+        "跟下面「昨日群体 · 今日反馈」表里的「今日中位收益」是同一个字段。",
+        "有效样本不足或当天这个群体没有成员时曲线断开，**不画成 0%**。",
+    ]
+    if as_of is not None and points[-1]["is_settled"] is False:
+        v = points[-1]["values"]
+        cov = ", ".join(
+            f"{COHORT_LABELS[ct]} {x['valid_count']}/{x['member_count']}"
+            for ct, x in v.items() if x["member_count"]
+        )
+        notes.append(
+            f"最后一点（{as_of}）**还没收盘**：用的是盘中价，而且只覆盖了部分成员"
+            + (f"（{cov}）" if cov else "")
+            + "，收盘后会变。")
+
+    return {
+        "as_of": as_of,
+        "formula_version": FORMULA_VERSION,
+        "cohorts": [{"cohort_type": ct, "label": COHORT_LABELS[ct]} for ct in seen],
+        "points": points,
+        "notes": notes,
+    }
+
+
+def get_cohort_series(db: Session, days: int) -> dict:
+    rows = get_history(db, days)
+    settled = settled_by_date(db, [r.trade_date for r in rows])
+    return build_cohort_series([(r.trade_date, r.cohorts_json) for r in rows], settled)
