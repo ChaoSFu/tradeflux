@@ -20,9 +20,16 @@ import type { CohortSeriesResponse, CohortType } from '@/types'
  *
  * 1. **中位数不是均值**。表头就叫「今日中位收益」，后端存的也是中位数。这跟
  *    强势股概览那张生命周期图（均值）不是一回事，图例上要说出来。
- * 2. **缺失就断开，不填 0**。有效样本不足、或者当天这个群体一只票都没有，
- *    后端给的是 null。填成 0 的话「这群票不涨不跌」和「没有这群票」在图上
- *    长得完全一样。
+ * 2. **缺口在图上按 0 接起来，但只在展示层**。有效样本不足、或者当天这个群体
+ *    一只票都没有，后端给的是 null；接口载荷里它一直是 null，别去动。
+ *
+ *    图上填 0 是产品决定（跟强势股概览那张生命周期图一致）：那一组当天没有
+ *    贡献赚钱效应。断开的版本试过——「昨日连板」整条线成了 6 段一点的碎片，
+ *    等于这条线不存在。
+ *
+ *    代价是 0 在图上跟「真的中位涨 0%」长得一样，所以**这笔账由 tooltip 还**：
+ *    悬停时缺失的那行显示「—」外加样本数（`0/46` = 这批票一个次日结果都没有，
+ *    `无成员` = 当天压根没有这批票），永远不会把 0 说成 0.00%。
  * 3. **未收盘的最后一点要标出来**。盘中那一点是用现价、而且只覆盖了部分成员
  *    算出来的（今天 28/48），不标就是让盘中浮动冒充当日结果。
  */
@@ -76,39 +83,17 @@ export function CohortEffectChart({ data }: { data: CohortSeriesResponse }) {
     const r: Row = { date: p.trade_date.slice(5).replace('-', '/'), __live: live ? 1 : 0 }
     for (const l of present) {
       const v = p.values[l.key]
-      // **拿不到就是 null**，Line 的 connectNulls={false} 会在这里断开
-      r[labelOf(l.key)] = v?.median_pct_change ?? null
-      r[`${labelOf(l.key)}__n`] = v ? v.valid_count : null
-      r[`${labelOf(l.key)}__m`] = v ? v.member_count : null
+      const key = labelOf(l.key)
+      // 画线用的值：缺失填 0，曲线才不会碎成一段一段
+      r[key] = v?.median_pct_change ?? 0
+      // **真值另存一份给 tooltip。** 填了 0 之后，光看 r[key] 已经分不出
+      // 「这天中位就是 0.00%」和「这天没算出来」，而这正是悬停要回答的
+      r[`${key}__raw`] = v?.median_pct_change ?? null
+      r[`${key}__n`] = v ? v.valid_count : null
+      r[`${key}__m`] = v ? v.member_count : null
     }
     return r
   }), [data.points, present, labelOf])
-
-  /**
-   * 前后都断开的孤立点。
-   *
-   * 断开（connectNulls={false}）+ 不画点（dot={false}）的组合有个坑：**一个
-   * 两侧都是 null 的点，折线画出来是一段零长度的路径，屏幕上什么都没有**。
-   * 本地实测「昨日连板」整条线是 6 段一点的碎片，看上去等于这条线不存在。
-   * 跌停股为 0 的日子会成片制造这种孤立点，生产上一样会遇到。
-   *
-   * 不能靠填 0 绕过去——那正是这张图拒绝做的事。给孤立点补一个圆点即可。
-   */
-  const isolated = useMemo(() => {
-    const out: Record<string, Set<number>> = {}
-    for (const l of present) {
-      const key = labelOf(l.key)
-      const set = new Set<number>()
-      rows.forEach((r, i) => {
-        if (r[key] === null || r[key] === undefined) return
-        const prev = i > 0 ? rows[i - 1][key] : null
-        const next = i < rows.length - 1 ? rows[i + 1][key] : null
-        if ((prev === null || prev === undefined) && (next === null || next === undefined)) set.add(i)
-      })
-      out[key] = set
-    }
-    return out
-  }, [rows, present, labelOf])
 
   // 未收盘的那些点从哪天开始。**只标最后一段**——中间某天没结算是数据问题，
   // 不是"盘中"，那种情况交给 tooltip 逐点说
@@ -139,7 +124,8 @@ export function CohortEffectChart({ data }: { data: CohortSeriesResponse }) {
           每条线 = 前一交易日收盘时冻结的那批票，这一天的
           <span className="text-text-secondary">中位涨跌幅</span>
           （跟下面那张表同一个字段，<span className="text-text-secondary">不是均值</span>）。
-          有效样本不足或当天没有成员时曲线断开，不画成 0%。
+          有效样本不足或当天没有成员时，曲线按 0 接过去，
+          <span className="text-text-secondary">悬停显示「—」和样本数</span>。
         </span>
       </div>
 
@@ -170,14 +156,9 @@ export function CohortEffectChart({ data }: { data: CohortSeriesResponse }) {
             {present.map((l) => (
               <Line key={l.key} type="monotone" dataKey={labelOf(l.key)} stroke={l.color}
                     strokeWidth={l.key === 'limit_up' || l.key === 'limit_down' ? 2 : 1.5}
-                    strokeDasharray={l.dash} activeDot={{ r: 3 }}
-                    dot={<IsolatedDot at={isolated[labelOf(l.key)]} color={l.color} />}
-                    connectNulls={false} hide={hidden.has(l.key)}
-                    // **必须关掉入场动画。** recharts 只在动画结束后才画 dot
-                    // （Line.renderDots 头一行就是 `if (isAnimationActive &&
-                    // !isAnimationFinished) return null`），而这张图上
-                    // isAnimationFinished 一直停在 false，孤立点永远画不出来。
-                    // 60 个点的曲线也不需要入场动画
+                    strokeDasharray={l.dash} activeDot={{ r: 3 }} dot={false}
+                    hide={hidden.has(l.key)}
+                    // 60 个点的曲线不需要入场动画，关掉渲染也更确定
                     isAnimationActive={false} />
             ))}
           </LineChart>
@@ -209,40 +190,31 @@ export function CohortEffectChart({ data }: { data: CohortSeriesResponse }) {
   )
 }
 
-/**
- * 只给孤立点画点。recharts 会把 cx/cy/index 注入进来（`dot` 元素的 props 由它补齐），
- * 所以这几个字段是可选的。**不能返回 null**——recharts 要一个合法元素。
- */
-function IsolatedDot({ at, color, cx, cy, index }: {
-  at?: Set<number>; color: string; cx?: number; cy?: number; index?: number
-}) {
-  if (cx == null || cy == null || index == null || !at?.has(index)) return <g />
-  return <circle cx={cx} cy={cy} r={2} fill={color} />
-}
-
 interface TipProps {
   active?: boolean
   label?: string
   payload?: { payload: Row }[]
-  /** 当前**可见**的线。不从 payload 取——recharts 会把值为 null 的线整条剔掉 */
+  /**
+   * 当前**可见**的线。不从 payload 取——payload 里的值已经是填过 0 的展示值，
+   * 而且 recharts 的排序/剔除规则跟这里要的不是一回事
+   */
   lines: { label: string; color: string }[]
 }
 
 function Tip({ active, label, payload, lines }: TipProps) {
   if (!active || !payload?.length) return null
   const row = payload[0].payload
-  // **每条可见的线都要出现**，包括这天没有值的。
-  //
-  // recharts 传进来的 payload 只含有值的线，照着渲染的话，断开那天的 tooltip 会
-  // 少几行——读的人分不清是"这条线今天没数据"还是"我没悬停到它"。而"为什么断"
-  // 恰恰是这张图最该回答的问题：0/46 说明这天这批票一个次日结果都没有。
+  // **读 __raw，不读画线用的那个值。** 曲线上缺失的点被填成了 0，照着渲染的话
+  // tooltip 会写「0.00%」——那就成了拿"没数据"冒充"不涨不跌"。图上填 0 是为了
+  // 线不碎，这笔账在这里还：缺失显示「—」，再把样本数摆出来说明为什么缺
+  // （0/46 = 这批票一个次日结果都没有，无成员 = 当天压根没有这批票）。
   //
   // 排序按中位收益从大到小（图例顺序是"哪一档"，悬停要答的是"这天谁最强"），
   // 空值沉底——「没有有效样本」不是「最低」。
   const rows = lines
     .map((l) => ({
       ...l,
-      value: (row[l.label] ?? null) as number | null,
+      value: row[`${l.label}__raw`] as number | null,
       n: row[`${l.label}__n`] as number | null,
       m: row[`${l.label}__m`] as number | null,
     }))
