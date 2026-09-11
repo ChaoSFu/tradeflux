@@ -61,12 +61,14 @@ GET https://fuyao.aicubes.cn/api/a-share/prices/historical
 - `data.timestamp` **不是市场时间**——收盘后仍跟着墙上时钟走（18:03→18:04→18:05 实测）。
   **不能拿它判断"今天收盘了没有"**
 - QPS 上限文档没写，只有错误码 `4001 频率超限 | 超过约定 QPS`
-- **文档之外还有 `429 request limit exceeded`**（2026-09-11 第一次见到）：在
-  `market-dumps/{kind}/download-url` 上，`daily-k-10d` → `daily-k` → `adjustment-factors`
-  背靠背连发，第一个成功、后两个 429。同一天日更刚对 `prices/historical` 打过
-  12 并发 × 16 次都没事。**原因未确认**，三种解释：连发太快 / 账号没有 daily-k 的
-  额度 / 按 key 跨端点共享配额。区分方法见 `scripts/probe_full_dump.py` 的提示。
-  确认之前**别对 fuyao 加自动重试**——如果是按天计数，重试就是在烧额度
+- **文档之外还有 `429 request limit exceeded`**：在 `market-dumps/{kind}/download-url` 上，
+  **连着问第二次必 429，跟问哪个 dump 无关**（2026-09-11 服务器实测两轮：先问 10d 则 10d 过、
+  daily-k 429；先问 daily-k 则 daily-k 过、10d 429）。所以它是**速率窗口**，不是没权限，
+  也不是额度用完。窗口至少几秒，精确长度未测。
+  - 对策：429 之后**别在几秒内重试**（必然还是 429，只会再占一次窗口）。`daily_k_dump`
+    遇到 429 直接用旧缓存；大文件下载 `download_dump_resumable` 两轮之间等 65 秒
+  - 同一天日更对 `prices/historical` 打 12 并发 × 16 次都没事——限流按端点分别设
+- `daily-k`（10 年全量）：2026-09-10 生成版 **172MB**
 - 计费/免费额度文档全无，需在 <https://fuyao.aicubes.cn/admin> 自查
 
 ### 1.4 实时行情 / 市场时间：腾讯

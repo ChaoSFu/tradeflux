@@ -77,6 +77,20 @@ class FuyaoError(RuntimeError):
     """fuyao 请求/响应层失败。跟"数据本身没有"是两回事，见 fetch_interval_returns。"""
 
 
+def _is_rate_limited(e: BaseException) -> bool:
+    """
+    fuyao 下载链接端点的速率窗口（2026-09-11 服务器实测）。
+
+    连着问两次下载链接，第二次必回 `code=429 request limit exceeded`——**跟问的是
+    哪个 dump 无关**：先问 10d 则 10d 过、daily-k 429；先问 daily-k 则 daily-k 过、
+    10d 429。所以 429 = 问得太快，不是没权限，也不是额度用完。窗口至少几秒。
+
+    文档里只写了 `4001 频率超限`，这个 429 在文档之外。
+    """
+    s = str(e)
+    return "code=429" in s or "request limit exceeded" in s
+
+
 def get_api_key() -> Optional[str]:
     """
     取 API Key。没配就是没启用，返回 None，不报错。
@@ -261,6 +275,103 @@ def _download_once(url: str, dest: Path, timeout: int) -> int:
     return written
 
 
+def download_dump_resumable(api_key: str, kind: str, dest: Path, *,
+                            url_gap: float = 65.0, max_rounds: int = 6,
+                            timeout: int = 120, progress=None) -> dict:
+    """
+    大文件（`daily-k` 全量，2026-09-11 实测 172MB）的**可续传**下载。返回
+    {"bytes", "rounds", "resumed", "seconds", "path_date", "errors"}。
+
+    `_download_once` 是给 1MB 的 10 日 dump 写的：断了就整个重来。放到 172MB 上
+    不行——S3 连 1MB 都中途掐断过（2026-08-26），172MB 要下好几分钟，断一次的
+    概率高得多；而重来一次就得重新要下载链接，那个端点**连着问第二次必 429**
+    （见 _is_rate_limited）。所以：
+
+    1. **断了从断点续**：`.part` 留着，下一轮用 `Range: bytes=<已有>-` 接着要。
+    2. **两轮之间等一个窗口**（url_gap，默认 65 秒）再要新链接。预签名链接只活
+       5 分钟，每轮都得重新要，紧跟着要必然 429。
+    3. **上游换了文件就扔掉半截**：生成日或总长一变，手上的半截属于旧文件，接到
+       新文件后面拼出来的是一个坏 parquet。`.part.json` 记下这半截属于哪个版本。
+    4. **服务器不认 Range、回了 200**：从头写，不追加。
+    5. **完工校验**：字节数对上总长，且 parquet footer 读得出来。**只读 footer**——
+       `dump_max_date` 那种整列 to_pylist 在这个文件上要吃掉约 470MB。
+    6. 轮次用完还没下完：**半截留着**，下次调用接着续，已经下的不白下。
+
+    跟 daily_k_dump 的分工：那边是 10 日 dump 的日更路径（缓存复用、旧缓存兜底），
+    这里只负责"把一个大文件可靠地搬下来"。全量 dump 真接入日更时再决定怎么合。
+    """
+    import pyarrow.parquet as pq
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    part_meta = dest.with_name(dest.name + ".part.json")
+    t0 = time.time()
+    errors: List[str] = []
+    resumed = 0
+    for rnd in range(max_rounds):
+        if rnd:
+            time.sleep(url_gap)
+        try:
+            url = _download_url(api_key, kind)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"第{rnd + 1}轮要链接: {type(e).__name__}: {str(e)[:80]}")
+            continue
+        if not url:
+            errors.append(f"第{rnd + 1}轮要链接: 接口没有返回链接")
+            continue
+        total = _remote_size(url)
+        if not total:
+            # 不知道总长就没法判断下完没有、也没法续——宁可这轮不下
+            errors.append(f"第{rnd + 1}轮问不出总长，无法校验完整性，这轮不下")
+            continue
+        pd = _path_date(url)
+        have = part.stat().st_size if part.exists() else 0
+        if have:
+            try:
+                old = json.loads(part_meta.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                old = {}
+            if old.get("path_date") != pd or old.get("total") != total or have > total:
+                part.unlink(missing_ok=True)
+                have = 0
+        part_meta.write_text(json.dumps({"path_date": pd, "total": total}), encoding="utf-8")
+
+        if have < total:
+            if have:
+                resumed += 1
+            try:
+                with httpx.Client(timeout=_timeouts(timeout), follow_redirects=True) as c:
+                    hdrs = {"Range": f"bytes={have}-"} if have else {}
+                    with c.stream("GET", url, headers=hdrs) as resp:
+                        resp.raise_for_status()
+                        if have and resp.status_code != 206:
+                            have = 0            # 不认 Range，回的是整个文件
+                        with open(part, "ab" if have else "wb") as f:
+                            for chunk in resp.iter_bytes(1 << 20):
+                                f.write(chunk)
+                                have += len(chunk)
+                                if progress:
+                                    progress(have, total)
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"第{rnd + 1}轮在 {have / 1048576:.1f}/{total / 1048576:.1f}MB 断开: "
+                              f"{type(e).__name__}: {str(e)[:60]}")
+                continue
+        if have != total:
+            errors.append(f"第{rnd + 1}轮短读 {have}/{total}")
+            continue
+        try:
+            pq.read_metadata(part)
+        except Exception as e:  # noqa: BLE001
+            part.unlink(missing_ok=True)
+            part_meta.unlink(missing_ok=True)
+            raise FuyaoError(f"下载完成但不是合法 parquet（{type(e).__name__}），已删除")
+        os.replace(part, dest)
+        part_meta.unlink(missing_ok=True)
+        return {"bytes": total, "rounds": rnd + 1, "resumed": resumed,
+                "seconds": round(time.time() - t0, 1), "path_date": pd, "errors": errors}
+    raise FuyaoError(f"{max_rounds} 轮仍没下完（半截已保留，下次接着续）：" + " | ".join(errors[-3:]))
+
+
 def _path_date(url: str) -> Optional[str]:
     m = re.search(r"/releases/(\d{8})/", url)
     return m.group(1) if m else None
@@ -361,6 +472,11 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {str(e)[:120]}"
             _errs.append(f"第{attempt + 1}次: {last_err}")
+            if _is_rate_limited(e):
+                # 下载链接端点连着问第二次必 429，窗口至少几秒。1.5 秒后重试**必然**
+                # 还是 429，只会再占一次窗口——直接去用手上的缓存（下面 stale 分支）。
+                # 不熔断整轮：几分钟后的下一个调用点，窗口可能已经过去了
+                break
         if attempt < retries:
             time.sleep(1.5)
     # 连接层失败（不可达/超时/DNS）才熔断整轮；业务错误（如 key 无效、dump 还没

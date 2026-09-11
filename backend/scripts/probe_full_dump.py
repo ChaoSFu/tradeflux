@@ -32,7 +32,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from app.services.fuyao_dump import (
-    _download_once, _download_url, _path_date, _remote_size, get_api_key, thscode_suffix,
+    _download_url, _path_date, _remote_size, download_dump_resumable, get_api_key, thscode_suffix,
 )
 
 KIND = "daily-k"
@@ -113,33 +113,37 @@ def step_size(key, only=None):
 # ── 2. 下载 ───────────────────────────────────────────────────────────────────
 
 def step_download(key):
-    print("== 2. 下载 daily-k（流式写盘，1MB 一块，不进内存）==")
+    print("== 2. 下载 daily-k（可续传：断了从断点接着下；两轮之间等 65 秒——"
+          "下载链接端点连着要必 429）==")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    url = _download_url(key, KIND)
-    size = _remote_size(url)
     free = shutil.disk_usage(DATA_DIR).free
-    old = PARQUET.stat().st_size if PARQUET.exists() else 0
-    # 临时文件 + 原子替换：替换前旧文件和新文件同时在盘上
-    need = (size or 0) + old + 300 * 1024 * 1024
-    if size is None:
-        print("  问不出文件大小，不冒险下载"); return
-    if free < need:
-        print(f"  磁盘不够：需要约 {need / 1024 / 1024:,.0f}MB，只剩 {free / 1024 / 1024:,.0f}MB"); return
-    tmp = PARQUET.with_suffix(".parquet.tmp")
-    t0 = time.time()
-    try:
-        written = _download_once(url, tmp, timeout=120)
-        os.replace(tmp, PARQUET)
-    finally:
-        tmp.unlink(missing_ok=True)
-    dt = time.time() - t0
+    # 第 1 步量过：172MB。**不为了查大小再去要一次下载链接**——那会占掉速率窗口，
+    # 紧接着的真下载就 429 了。1GB 的余量足够（文件 + 原子替换时的旧文件）
+    if free < 1024 ** 3:
+        print(f"  磁盘剩余 {free / 1024 / 1024:,.0f}MB，不到 1GB，不下"); return
+    if (PARQUET.with_name(PARQUET.name + ".part")).exists():
+        print("  发现上次没下完的半截，会先核对版本再接着续")
+
+    shown = {"pct": -10}
+
+    def _progress(have, total):
+        pct = int(have * 100 / total)
+        if pct >= shown["pct"] + 10:
+            shown["pct"] = pct - pct % 10
+            print(f"    {have / 1048576:6.1f} / {total / 1048576:.1f}MB  ({pct}%)", flush=True)
+
+    r = download_dump_resumable(key, KIND, PARQUET, progress=_progress)
     META.write_text(json.dumps({
-        "path_date": _path_date(url), "size": written,
+        "path_date": r["path_date"], "size": r["bytes"],
         "fetched_at": datetime.now(SH).isoformat(timespec="seconds"),
     }, ensure_ascii=False), encoding="utf-8")
-    print(f"  {written / 1024 / 1024:,.1f}MB，用时 {dt:.0f}s（{written / 1024 / 1024 / max(dt, 0.1):.1f}MB/s）")
+    mb = r["bytes"] / 1024 / 1024
+    print(f"  {mb:,.1f}MB，用时 {r['seconds']:.0f}s（{mb / max(r['seconds'], 0.1):.1f}MB/s），"
+          f"{r['rounds']} 轮，断点续传 {r['resumed']} 次")
+    for e in r["errors"]:
+        print(f"    · {e}")
     print(f"  → {PARQUET}")
-    print(f"  峰值内存 {_fmt(_peak_mb())}（应当只有几十 MB——流式下载不该吃内存）")
+    print(f"  峰值内存 {_fmt(_peak_mb())}（流式写盘，应当只有几十到一百多 MB）")
 
 
 # ── 3. 结构：只读 footer ──────────────────────────────────────────────────────
