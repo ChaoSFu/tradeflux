@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pyarrow as pa
+import pytest
 import pyarrow.parquet as pq
 
 from app.models.stock import Stock, StockDailySnapshot
@@ -31,6 +32,14 @@ def _write_archive(path, codes):
                     "low_price": [r[2] for r in rows], "close_price": [r[2] for r in rows],
                     "volume": [1e6] * len(rows), "turnover": [1e7] * len(rows)})
     pq.write_table(tbl, path, row_group_size=len(DAYS))
+
+
+@pytest.fixture(autouse=True)
+def _effects(monkeypatch):
+    """market_effect_daily 有 JSONB，SQLite 建不了——记下 heal 要重算哪些天即可。"""
+    calls = []
+    monkeypatch.setattr(fd, "refresh_effects", lambda db, dates: calls.append(list(dates)) or len(calls[-1]))
+    return calls
 
 
 def _stock(db, code):
@@ -72,3 +81,25 @@ def test_只补库里关注的票(db, tmp_path):
 def test_没有存档就直说(db, tmp_path):
     r = fd.heal(db, days=5, archive_path=tmp_path / "不存在.parquet", today=TODAY)
     assert "没有可用存档" in r["error"]
+
+
+def test_只统计时不动市场效应缓存(db, tmp_path, _effects):
+    _stock(db, "600984")
+    p = tmp_path / "a.parquet"
+    _write_archive(p, ["600984"])
+    fd.heal(db, days=5, apply=False, archive_path=p, today=TODAY)
+    assert _effects == []
+
+
+def test_写入后重算窗口里的每一天(db, tmp_path, _effects):
+    """
+    不只是新补的日子——08-14 之后那段库里早就齐了、只是缓存没动（09-10 缓存 28/48，
+    库里其实 48/48），所以窗口里的每一天都要重算。
+    """
+    _stock(db, "600984")
+    p = tmp_path / "a.parquet"
+    _write_archive(p, ["600984"])
+    r = fd.heal(db, days=5, apply=True, archive_path=p, today=TODAY)
+    assert len(_effects) == 1
+    assert _effects[0] == DAYS[-5:], "窗口 = 最近 5 个交易日，从旧到新"
+    assert r["effects_refreshed"] == 5 and r["effects_error"] is None

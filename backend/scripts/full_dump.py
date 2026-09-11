@@ -28,6 +28,7 @@ from app.services.fuyao_archive import (
     ARCHIVE_PATH, KIND_FULL, META_PATH, archive_max_date, read_archive_rows,
 )
 from app.services.fuyao_dump import download_dump_resumable, get_api_key, rows_to_bars
+from app.services.market_effect_service import recent_trade_dates, refresh_effects
 from app.services.snapshot_history import insert_history_bars
 
 SH = timezone(timedelta(hours=8))
@@ -73,6 +74,18 @@ def heal(db, days: int = 65, apply: bool = False, archive_path=ARCHIVE_PATH,
         added += a
         vol += v
 
+    # 快照变了，依赖它的市场效应缓存得跟着重算——那份缓存算出就不再更新，不重算
+    # 「昨日群体·今日反馈」就还停在补洞之前那份只含幸存者的样本上。
+    # 窗口里的每一天都算：不只是新补的日子，08-14 之后那段库里早就齐了、只是缓存没动
+    effects, effects_error = None, None
+    if apply and window:
+        try:
+            effects = refresh_effects(
+                db, [x for x in recent_trade_dates(db, len(window) + 10) if x >= min(window)])
+        except Exception as e:  # noqa: BLE001
+            db.rollback()
+            effects_error = f"{type(e).__name__}: {str(e)[:120]}"
+
     null_close = 0
     if window:
         null_close = db.query(func.count(StockDailySnapshot.id)).filter(
@@ -86,6 +99,7 @@ def heal(db, days: int = 65, apply: bool = False, archive_path=ARCHIVE_PATH,
         "added": added, "vol_filled": vol, "per_stock": counts,
         "names": {c: n for _, c, _, n in stocks},
         "null_close_rows": null_close, "seconds": round(time.time() - t0, 1),
+        "effects_refreshed": effects, "effects_error": effects_error,
     }
 
 
@@ -117,6 +131,11 @@ def cmd_heal(days: int, apply: bool):
     print(f"已有行补上成交量/额：{r['vol_filled']:,} 行（原为空的才补）")
     print(f"窗口里 close_price 为空的已有行：{r['null_close_rows']:,} 行"
           f"——不在这次处理范围（已有行一律不覆盖），单列出来是让你知道有多少")
+    if r["effects_refreshed"] is not None:
+        print(f"市场效应缓存已按补好的快照重算：{r['effects_refreshed']} 个交易日")
+    if r["effects_error"]:
+        print(f"⚠️ 市场效应重算失败：{r['effects_error']}——快照已补好，"
+              f"手动跑一次 python -m scripts.backfill_market_effects --force")
     print(f"\n耗时 {r['seconds']}s，进程峰值 {_peak_mb():,.0f}MB")
     if not r["applied"]:
         print("这是只统计。确认数字没问题后加 --apply 真的写入（别跟日更同时跑）")

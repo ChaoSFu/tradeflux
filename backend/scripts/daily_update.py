@@ -169,6 +169,7 @@ from app.services.fuyao_dump import (
     reset_dump_availability, dump_unavailable_reason,
 )
 from app.services.snapshot_history import insert_history_bars
+from app.services.market_effect_service import refresh_recent
 from app.services.screening_service import (
     StockWindowStats,
     compute_window_stats, get_active_criteria, derive_limit_close_price,
@@ -2077,6 +2078,21 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             if stale_snaps:
                 db.commit()
                 log.info(f"涨跌停对账：清除过期标记 {len(stale_snaps)} 只")
+
+        # ── 第4.2步：重算最近的市场效应 ──────────────────────────
+        # 市场效应按天缓存、算出就不再更新，而上面几步刚改了它依赖的快照：今天的
+        # 收盘值、4.06 补上的昨日群体次日结果、4.1 对账改掉的涨跌停标志。不重算，
+        # 「昨日群体·今日反馈」就一直停在第一次被请求那一刻，而且只含当天还留在
+        # 候选池里的票——生产核对 09-10 昨日涨停：缓存 +3.83%（28/48），全部 48 只
+        # 是 -1.04%，符号是反的。
+        # 放在弱转强之前：它的市场闸门读的也是这份效应。
+        try:
+            _t_eff = time.time()
+            _n_eff = refresh_recent(db, 12)
+            log.info(f"市场效应重算：最近 {_n_eff} 个交易日（{time.time() - _t_eff:.1f}s）")
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"市场效应重算失败（不影响主流程）: {type(e).__name__}: {e}")
+            db.rollback()
 
         # ── 第4.5步：补全涨跌停股板块关联 ────────────────────────
         # 对今日涨跌停但 stock_sector_relations 为空的股票，
