@@ -471,6 +471,8 @@ export interface CohortOutcome {
   label: string
   member_count: number
   valid_count: number
+  /** 有效样本里用当日行情补的只数：当天不在候选池、没有快照。旧缓存没有这个键 */
+  quote_count?: number
   median_pct_change: number | null
   red_ratio: number | null
   large_loss_ratio: number | null
@@ -515,6 +517,8 @@ export interface CohortMember {
   outcome_pct_change: number | null
   outcome_board_count: number | null
   has_outcome: boolean
+  /** snapshot = 当日快照；quote = 当天不在候选池、用当日行情补的 */
+  outcome_source?: 'snapshot' | 'quote' | null
 }
 
 export interface TurnoverStock {

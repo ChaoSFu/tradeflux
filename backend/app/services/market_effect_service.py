@@ -12,13 +12,13 @@
 """
 import statistics
 from datetime import date
-from typing import Optional
+from typing import Dict, List, NamedTuple, Optional, Set
 
 from sqlalchemy.orm import Session
 
 from ..models.stock import StockDailySnapshot
 from ..models.market_index import MarketBreadthDaily
-from ..models.market_effect import MarketEffectDaily
+from ..models.market_effect import CohortOutcomeQuote, MarketEffectDaily
 from .snapshot_settlement import settled_by_date
 
 FORMULA_VERSION = "market_effect_v0.1.0"
@@ -132,6 +132,64 @@ def _cohort_snapshots(db: Session, cohort_date: date, cohort_type: str) -> list[
     return q.all()
 
 
+def cohort_member_ids(db: Session, cohort_date: date) -> Set[int]:
+    """
+    cohort_date 收盘时冻结的**全部**群体成员（六个群体的并集）。
+
+    日更拿它决定要给哪些票补抓当日行情。判定走 _cohort_snapshots——跟统计用的是
+    同一个函数，否则补抓的范围和统计的范围迟早对不上。
+    """
+    return {m.stock_id for ct in COHORT_LABELS for m in _cohort_snapshots(db, cohort_date, ct)}
+
+
+class _Outcome(NamedTuple):
+    pct_change: float
+    is_limit_up: bool
+    board_count: Optional[int]   # 快照给的；行情补的没有板数，见 _advanced
+    source: str                  # "snapshot" | "quote"
+
+
+def _member_outcomes(db: Session, member_ids: List[int], outcome_date: date) -> Dict[int, _Outcome]:
+    """
+    群体成员在 outcome_date 的结果。**统计和下钻明细都走这里**——两边各查各的，
+    数字迟早对不上。
+
+    先用快照；快照没有这一行（当天不在候选池）或 pct_change 为空的，用日更顺手抓的
+    当日行情（cohort_outcome_quotes）。次日日更用收盘数据补上快照行之后，自然以
+    快照为准。两边都没有的就是没有——停牌、行情过期，不猜。
+    """
+    out: Dict[int, _Outcome] = {}
+    if not member_ids:
+        return out
+    for sid, pct, lu, bc in (
+            db.query(StockDailySnapshot.stock_id, StockDailySnapshot.pct_change,
+                     StockDailySnapshot.is_limit_up, StockDailySnapshot.board_count)
+            .filter(StockDailySnapshot.date == outcome_date,
+                    StockDailySnapshot.stock_id.in_(member_ids))):
+        if pct is not None:
+            out[sid] = _Outcome(pct, bool(lu), bc, "snapshot")
+    missing = [i for i in member_ids if i not in out]
+    if missing:
+        for sid, pct, lu in (
+                db.query(CohortOutcomeQuote.stock_id, CohortOutcomeQuote.pct_change,
+                         CohortOutcomeQuote.is_limit_up)
+                .filter(CohortOutcomeQuote.trade_date == outcome_date,
+                        CohortOutcomeQuote.stock_id.in_(missing))):
+            if pct is not None:
+                out[sid] = _Outcome(pct, bool(lu), None, "quote")
+    return out
+
+
+def _advanced(o: _Outcome, before: Optional[int]) -> bool:
+    """
+    晋级 = 板数比昨天高。快照有 board_count 就直接比；行情补的没有板数，但按定义
+    今天涨停就是昨天板数 +1、没涨停就是 0——等价于"今天涨停"。
+    """
+    if o.board_count is not None:
+        return o.board_count > (before or 0)
+    return o.is_limit_up
+
+
 def compute_cohort_outcome(db: Session, cohort_date: date, outcome_date: date, cohort_type: str) -> dict:
     members = _cohort_snapshots(db, cohort_date, cohort_type)
     member_count = len(members)
@@ -140,6 +198,9 @@ def compute_cohort_outcome(db: Session, cohort_date: date, outcome_date: date, c
         "label": COHORT_LABELS[cohort_type],
         "member_count": member_count,
         "valid_count": 0,
+        # 有效样本里有几只是用当日行情补的（不在候选池、当天没快照）。
+        # 摆出来让人知道这一格的来源，不是混在一起不说
+        "quote_count": 0,
         "median_pct_change": None,
         "red_ratio": None,
         "large_loss_ratio": None,
@@ -149,26 +210,22 @@ def compute_cohort_outcome(db: Session, cohort_date: date, outcome_date: date, c
     if member_count == 0:
         return result
 
-    member_ids = [m.stock_id for m in members]
     board_before = {m.stock_id: m.board_count for m in members}
-    outcome_snaps = (
-        db.query(StockDailySnapshot)
-        .filter(StockDailySnapshot.date == outcome_date, StockDailySnapshot.stock_id.in_(member_ids))
-        .all()
-    )
-    valid = [s for s in outcome_snaps if s.pct_change is not None]
+    outcomes = _member_outcomes(db, [m.stock_id for m in members], outcome_date)
+    valid = list(outcomes.items())
     result["valid_count"] = len(valid)
+    result["quote_count"] = sum(1 for _, o in valid if o.source == "quote")
     if not valid:
         return result
 
-    pct_changes = [s.pct_change for s in valid]
+    pct_changes = [o.pct_change for _, o in valid]
     result["median_pct_change"] = round(statistics.median(pct_changes), 2)
     result["red_ratio"] = round(sum(1 for p in pct_changes if p > 0) / len(pct_changes), 3)
     result["large_loss_ratio"] = round(sum(1 for p in pct_changes if p < LARGE_LOSS_THRESHOLD) / len(pct_changes), 3)
 
     if cohort_type in ("limit_up", "first_board", "multi_board"):
-        advanced = sum(1 for s in valid if s.board_count > board_before.get(s.stock_id, 0))
-        broken = sum(1 for s in valid if not s.is_limit_up)
+        advanced = sum(1 for sid, o in valid if _advanced(o, board_before.get(sid)))
+        broken = sum(1 for _, o in valid if not o.is_limit_up)
         result["advance_ratio"] = round(advanced / len(valid), 3)
         result["broken_ratio"] = round(broken / len(valid), 3)
 
@@ -184,29 +241,51 @@ def list_cohort_members(db: Session, cohort_date: date, outcome_date: date, coho
         return []
     member_ids = [m.stock_id for m in members]
     board_before = {m.stock_id: m.board_count for m in members}
-
-    outcome_by_id = {
-        s.stock_id: s
-        for s in db.query(StockDailySnapshot).filter(
-            StockDailySnapshot.date == outcome_date, StockDailySnapshot.stock_id.in_(member_ids)
-        )
-    }
+    outcomes = _member_outcomes(db, member_ids, outcome_date)
     stocks_by_id = {s.id: s for s in db.query(Stock).filter(Stock.id.in_(member_ids))}
 
     rows = []
     for m in members:
         stock = stocks_by_id.get(m.stock_id)
-        outcome = outcome_by_id.get(m.stock_id)
+        o = outcomes.get(m.stock_id)
+        before = board_before.get(m.stock_id)
+        after = None
+        if o is not None:
+            after = o.board_count if o.board_count is not None else (
+                (before or 0) + 1 if o.is_limit_up else 0)
         rows.append({
             "code": stock.code if stock else None,
             "name": stock.name if stock else None,
-            "board_count_before": board_before.get(m.stock_id),
-            "outcome_pct_change": outcome.pct_change if outcome else None,
-            "outcome_board_count": outcome.board_count if outcome else None,
-            "has_outcome": outcome is not None and outcome.pct_change is not None,
+            "board_count_before": before,
+            "outcome_pct_change": o.pct_change if o else None,
+            "outcome_board_count": after,
+            "has_outcome": o is not None,
+            "outcome_source": o.source if o else None,
         })
     rows.sort(key=lambda r: (r["outcome_pct_change"] is None, -(r["outcome_pct_change"] or 0)))
     return rows
+
+
+def save_outcome_quotes(db: Session, trade_date: date, rows, settled: Optional[bool],
+                        fetched_at) -> int:
+    """
+    存日更补抓的当日行情。rows: [(stock_id, close, pct, is_limit_up, is_limit_down)]。
+    按 (日期, 股票) upsert，每一跑覆盖上一跑——盘中是现价，收盘后那一跑是终值。
+    """
+    if not rows:
+        return 0
+    ids = [r[0] for r in rows]
+    existing = {q.stock_id: q for q in db.query(CohortOutcomeQuote).filter(
+        CohortOutcomeQuote.trade_date == trade_date, CohortOutcomeQuote.stock_id.in_(ids))}
+    for sid, close, pct, lu, ld in rows:
+        q = existing.get(sid)
+        if q is None:
+            q = CohortOutcomeQuote(trade_date=trade_date, stock_id=sid)
+            db.add(q)
+        q.close_price, q.pct_change, q.is_limit_up, q.is_limit_down = close, pct, lu, ld
+        q.is_settled, q.fetched_at = settled, fetched_at
+    db.commit()
+    return len(rows)
 
 
 # ─── 评分与状态（简化版：固定权重加权，非滚动分位标准化）───────────────────────

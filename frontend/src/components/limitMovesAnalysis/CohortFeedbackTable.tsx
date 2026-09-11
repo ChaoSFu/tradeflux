@@ -64,6 +64,8 @@ export function CohortFeedbackTable({ data }: { data: MarketEffectDailyResponse 
       <p className="text-[10px] text-text-muted">
         样本列 = 有次日结果的只数 / 群体总数。中位收益在有效样本不足时显示 —，
         <span className="text-text-secondary">不是 0%</span>。
+        当天掉出候选池的成员没有快照，用当日行情补齐（标「行情」）——不补的话只剩
+        还留在池子里的，中位收益会系统性偏高；次日以收盘快照为准。
       </p>
     </div>
   )
@@ -84,6 +86,13 @@ function CohortRow({ c, tradeDate, open, onToggle }: {
         <td className="px-2 py-1.5 text-text-primary whitespace-nowrap">{c.label}</td>
         <td className={cn('px-2 py-1.5', NUM, 'text-text-secondary')}>
           {c.valid_count}/{c.member_count}
+          {/* 来源要看得见：这几只当天不在候选池、没有快照，用的是当日行情 */}
+          {!!c.quote_count && (
+            <span className="ml-1 text-[10px] text-text-muted"
+                  title="当天不在候选池、没有快照，用当日行情补的只数；次日以收盘快照为准">
+              行情{c.quote_count}
+            </span>
+          )}
         </td>
         <td className={cn('px-2 py-1.5', NUM, tone(c.median_pct_change))}>
           {pct(c.median_pct_change)}
@@ -138,6 +147,10 @@ function CohortMembers({ tradeDate, cohortType }: {
                   <td className={cn('px-2 py-1', NUM, tone(m.outcome_pct_change))}>
                     {m.has_outcome ? pct(m.outcome_pct_change)
                       : <span className="text-text-muted/60">无次日数据</span>}
+                    {m.outcome_source === 'quote' && (
+                      <span className="ml-1 text-[10px] text-text-muted"
+                            title="当天不在候选池、没有快照，用的是当日行情">行情</span>
+                    )}
                   </td>
                   <td className={cn('px-2 py-1', NUM)}>{m.outcome_board_count ?? '—'}</td>
                 </tr>

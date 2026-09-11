@@ -169,7 +169,13 @@ from app.services.fuyao_dump import (
     reset_dump_availability, dump_unavailable_reason,
 )
 from app.services.snapshot_history import insert_history_bars
-from app.services.market_effect_service import refresh_recent
+from app.services.market_effect_service import (
+    refresh_recent, cohort_member_ids, save_outcome_quotes,
+    _prev_trading_date as _effect_prev_trading_date,
+)
+from app.services.fuyao_archive import (
+    ARCHIVE_PATH, archive_max_date, archive_mark_tried, archive_tried, read_archive_bars,
+)
 from app.services.screening_service import (
     StockWindowStats,
     compute_window_stats, get_active_criteria, derive_limit_close_price,
@@ -795,6 +801,88 @@ def _repair_today_bar_from_quotes(infos, klines_map, target_date, log, prefix=" 
     return repaired, rejected
 
 
+def _prefill_history_from_archive(db, infos, target_date: date, log, archive_path=None) -> int:
+    """
+    用 10 年存档给「库里历史不足、本来要逐股拉 65 天」的候选票补历史快照，返回补了
+    多少行。补够 60 根的就能走 DB 重建，不用再打逐股接口（用户 2026-09-11 要求）。
+
+    存档只到它生成的那天，之后的空当由 DB 重建组原有的两条路补：10 日 dump 接得上
+    就用 dump，接不上就按每只票各自的缺口逐股拉（gap+2 天）——不会留下看不见的洞。
+
+    存档是加速手段不是依赖：没有、读不了、里面没这只票，都静默退回逐股拉那条老路。
+    写入走 insert_history_bars，跟 10 日 dump 补历史、full_dump heal 同一套规则。
+    每只票对同一份存档只试一次（archive_tried），见 fuyao_archive 那段注释。
+    """
+    path = archive_path or ARCHIVE_PATH
+    d = archive_max_date(path)
+    if not infos or d is None:
+        return 0
+    tried = archive_tried(path)
+    wanted = {i.code: bool(i.is_st) for i in infos if i.code not in tried}
+    if not wanted:
+        return 0
+    sid_by_code = {c: sid for c, sid in
+                   db.query(Stock.code, Stock.id).filter(Stock.code.in_(list(wanted)))}
+    try:
+        # 65 个交易日 ≈ 97 个自然日，再放 20 天：长假 + 第一根要丢掉（没有前收）
+        bars_map = read_archive_bars(wanted, d - timedelta(days=65 * 3 // 2 + 20), path)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"存档补历史跳过（读存档失败：{type(e).__name__}: {e}）")
+        return 0
+    bars_map = {c: b[-65:] for c, b in bars_map.items()}     # 跟逐股全量拉的窗口一样长
+    added, _ = insert_history_bars(db, bars_map, sid_by_code, target_date)
+    archive_mark_tried(list(wanted), path)
+    missing = [c for c in wanted if c not in bars_map]
+    log.info(f"存档补历史：{len(bars_map)}/{len(wanted)} 只补 {added} 行（存档到 {d}）"
+             + (f"；存档里没有 {'、'.join(missing[:5])}{' 等' if len(missing) > 5 else ''}"
+                if missing else ""))
+    return added
+
+
+def _fetch_cohort_outcome_quotes(db, target_date: date, market_now, log) -> tuple:
+    """
+    昨日群体里、今天不在候选池的票，批量查一次当日行情存进 cohort_outcome_quotes。
+    返回 (需要补的只数, 存下的只数, 行情自身日期不对被拒的只数)。
+
+    只给市场效应算「今日反馈」用，**不写快照**（原因见 CohortOutcomeQuote）。
+    行情走 kline_bar_from_quote：日期不是 target_date 的一律拒掉，停牌、过期都照实
+    算缺失，不拿别的日子冒充今天。成员范围走 cohort_member_ids——跟统计同一个判定。
+    """
+    prev = _effect_prev_trading_date(db, target_date)
+    if prev is None:
+        return 0, 0, 0
+    members = cohort_member_ids(db, prev)
+    if not members:
+        return 0, 0, 0
+    have = {sid for (sid,) in db.query(StockDailySnapshot.stock_id).filter(
+        StockDailySnapshot.date == target_date,
+        StockDailySnapshot.stock_id.in_(list(members)),
+        StockDailySnapshot.pct_change.isnot(None))}
+    need = sorted(members - have)
+    if not need:
+        return 0, 0, 0
+    stocks = db.query(Stock.id, Stock.code, Stock.market, Stock.is_st).filter(Stock.id.in_(need)).all()
+    try:
+        quotes = fetch_stock_quotes_batch([(code, market_int(mkt, code)) for _, code, mkt, _ in stocks])
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"昨日群体行情补抓整体失败（{type(e).__name__}: {e}），今日反馈只含候选池里的票")
+        return len(need), 0, 0
+    rows, rejected = [], 0
+    for sid, code, _, is_st in stocks:
+        q = quotes.get(code)
+        if not q:
+            continue
+        bar = kline_bar_from_quote(q, code, bool(is_st), target_date)
+        if not bar:
+            if q.trade_date != target_date:
+                rejected += 1
+            continue
+        rows.append((sid, bar.close_price, bar.pct_change, bar.is_limit_up, bar.is_limit_down))
+    saved = save_outcome_quotes(db, target_date, rows, bar_is_settled(target_date, market_now),
+                                datetime.now(SH_TZ).replace(tzinfo=None))
+    return len(need), saved, rejected
+
+
 def _backfill_history_from_dump(db, target_date: date, fuyao_key, log,
                                 need_through: Optional[date] = None) -> int:
     """
@@ -1414,6 +1502,16 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
 
         # 分组：DB 历史足够的只拉今日，其余拉完整 65 日
         db_klines_map, db_group, full_group = _build_klines_from_db(candidates, db, target_date)
+        # 历史不足的先用 10 年存档补一次历史，补上了就重新分组——够 60 根的就走 DB
+        # 重建，不用逐股拉 65 天。分组判定只有 _build_klines_from_db 这一套，不在这里另写
+        if full_group:
+            try:
+                if _prefill_history_from_archive(db, full_group, target_date, log):
+                    db_klines_map, db_group, full_group = _build_klines_from_db(
+                        candidates, db, target_date)
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"存档补历史失败（退回逐股拉取）: {type(e).__name__}: {e}")
+                db.rollback()
         log.info(f"DB重建 {len(db_group)} 只（拉近2日），全量拉取 {len(full_group)} 只")
 
         # 全量拉取（新股 / 历史不足）。并发统一用 _KLINE_WORKERS——原来 full 用15、
@@ -2078,6 +2176,20 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             if stale_snaps:
                 db.commit()
                 log.info(f"涨跌停对账：清除过期标记 {len(stale_snaps)} 只")
+
+        # ── 第4.15步：昨日群体行情补全 ──────────────────────────
+        # 市场效应的「今日反馈」只看快照，而快照只有候选池里的票才有今天那一行。
+        # 昨日群体里掉出池子的（多半走弱的）要到明天才补上，于是今天的反馈只算了
+        # 幸存者——09-10 昨日涨停 +3.83%（28/48），全部 48 只其实是 -1.04%。
+        # 对这批票批量查一次行情，只存给市场效应用，不写快照。放在 4.2 重算之前。
+        try:
+            _need_q, _saved_q, _rej_q = _fetch_cohort_outcome_quotes(db, target_date, market_now, log)
+            if _need_q:
+                log.info(f"昨日群体行情补全：{_need_q} 只不在今日候选池，补上 {_saved_q} 只"
+                         + (f"（{_rej_q} 只行情自身日期不是 {target_date}，已拒绝）" if _rej_q else ""))
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"昨日群体行情补全失败（不影响主流程）: {type(e).__name__}: {e}")
+            db.rollback()
 
         # ── 第4.2步：重算最近的市场效应 ──────────────────────────
         # 市场效应按天缓存、算出就不再更新，而上面几步刚改了它依赖的快照：今天的

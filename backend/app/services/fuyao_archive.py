@@ -26,6 +26,7 @@ dump 和实时接口补最近几天。
 存档只到它生成的那天。之后几天的缺口归 10 日 dump，当日那一根归实时行情——
 跟现在的日更分工一样，这里不重新发明。
 """
+import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -134,3 +135,35 @@ def read_archive_bars(wanted: Dict[str, bool], since: date,
     的，since 就往前多放几天。
     """
     return rows_to_bars(read_archive_rows(set(wanted), since, path), wanted)
+
+
+# ── 这份存档已经试过哪些票 ─────────────────────────────────────────────────────
+#
+# 日更每跑一次，都可能有「库里历史不足」的候选票要靠存档补历史。存档不变，试过
+# 一次就给不出更多了：不在存档里的（存档生成后才上市的新股）、存档里历史不够 60 根
+# 的（次新股），再读一遍也是白花 2 秒 + 121MB。而新股上市头几天常连板，正好在
+# 候选池里一待几周——不记下来，每一跑都白读一次。
+# 以存档覆盖到的日期为版本：refresh 换了存档就清零重来。
+
+def _tried_path(path: Path) -> Path:
+    return path.with_name(path.stem + ".tried.json")
+
+
+def archive_tried(path: Path = ARCHIVE_PATH) -> Set[str]:
+    d = archive_max_date(path)
+    try:
+        data = json.loads(_tried_path(path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return set()
+    if d is None or data.get("archive_max") != d.isoformat():
+        return set()
+    return set(data.get("codes") or [])
+
+
+def archive_mark_tried(codes, path: Path = ARCHIVE_PATH) -> None:
+    d = archive_max_date(path)
+    if d is None or not codes:
+        return
+    tried = archive_tried(path) | set(codes)
+    _tried_path(path).write_text(json.dumps(
+        {"archive_max": d.isoformat(), "codes": sorted(tried)}, ensure_ascii=False), encoding="utf-8")

@@ -1,4 +1,6 @@
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime
+from sqlalchemy import (
+    Boolean, Column, Integer, String, Float, Date, DateTime, ForeignKey, UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
@@ -36,3 +38,30 @@ class MarketEffectDaily(Base):
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class CohortOutcomeQuote(Base):
+    """
+    昨日群体里、今天**不在候选池**的票，今天的行情（2026-09-11 新增）。
+
+    市场效应的「今日反馈」原来只看快照，而快照只有候选池里的票才有当天那一行——
+    掉出池子的（多半是走弱的）要到第二天日更补历史才有。于是当天的反馈只算了幸存者：
+    09-10 昨日涨停缓存 +3.83%（28/48），全部 48 只其实是 -1.04%，符号是反的。
+
+    日更对完涨跌停之后，对这批票批量查一次行情存在这里，**只给市场效应用**。
+    不写进快照表：那样板块统计这类「今天全市场」的数字都会跟着变。
+    次日日更用收盘数据补上快照行之后，市场效应以快照为准，这里的行自然不再起作用。
+    """
+    __tablename__ = "cohort_outcome_quotes"
+    __table_args__ = (UniqueConstraint("trade_date", "stock_id", name="uq_cohort_outcome_quote"),)
+
+    id = Column(Integer, primary_key=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
+    close_price = Column(Float, nullable=True)
+    pct_change = Column(Float, nullable=True)
+    is_limit_up = Column(Boolean, nullable=True)
+    is_limit_down = Column(Boolean, nullable=True)
+    # 抓行情那一刻收盘了没有（bar_is_settled）。盘中跑的是现价，收盘后跑的是终值
+    is_settled = Column(Boolean, nullable=True)
+    fetched_at = Column(DateTime, nullable=True)

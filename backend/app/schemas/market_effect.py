@@ -8,6 +8,8 @@ class CohortOutcome(BaseModel):
     label: str
     member_count: int
     valid_count: int
+    # 有效样本里用当日行情补的只数（不在候选池、当天没快照）。旧缓存行没有这个键 → 0
+    quote_count: int = 0
     median_pct_change: Optional[float] = None
     red_ratio: Optional[float] = None
     large_loss_ratio: Optional[float] = None
@@ -43,6 +45,8 @@ class CohortMember(BaseModel):
     outcome_pct_change: Optional[float] = None
     outcome_board_count: Optional[int] = None
     has_outcome: bool
+    # "snapshot" = 当日快照；"quote" = 不在候选池、用当日行情补的；None = 没有结果
+    outcome_source: Optional[str] = None
 
 
 class MarketEffectHistoryPoint(BaseModel):
