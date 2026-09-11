@@ -9,7 +9,7 @@ export interface SortState<K extends string> { key: K | ''; dir: SortDir }
  * 原本在 StockPool / LimitUpSectorRadar / SectorConfig 各抄了一份，第四份就该抽了。
  */
 export function SortTh<K extends string>({
-  col, label, sort, onSort, align = 'right', className, children,
+  col, label, sort, onSort, align = 'right', className, children, rowSpan,
 }: {
   col: K
   label?: string
@@ -18,10 +18,13 @@ export function SortTh<K extends string>({
   align?: 'left' | 'right'
   className?: string
   children?: React.ReactNode
+  /** 双行表头里跨两行的排序列。**别在外面再包一层 <th>**——它自己渲染的就是 th */
+  rowSpan?: number
 }) {
   const active = sort.key === col
   return (
     <th
+      rowSpan={rowSpan}
       onClick={() => onSort(col)}
       className={cn(
         'px-3 py-2 text-xs font-medium cursor-pointer select-none group whitespace-nowrap',

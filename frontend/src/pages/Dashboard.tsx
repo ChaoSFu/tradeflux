@@ -684,10 +684,11 @@ function LifecycleEvidence() {
               各自排一遍没有意义 */}
           <thead>
             <tr className="text-[10px]">
-              <th rowSpan={2} className={cn(th, 'text-left text-text-secondary/55')}>
-                <SortTh col={'event' as EvKey} label="事件" align="left"
-                        sort={sort} onSort={onSort} className="!px-0 !py-0 !border-0" />
-              </th>
+              {/* rowSpan 直接给 SortTh——它自己渲染的就是 th。原来外面再包一层 th，
+                  是 th 套 th（React 每次加载都报 validateDOMNesting），里面那层还得
+                  用 !px-0 !py-0 !border-0 把重复的内边距抵掉 */}
+              <SortTh rowSpan={2} col={'event' as EvKey} label="事件" align="left"
+                      sort={sort} onSort={onSort} className={th} />
               <th colSpan={5}
                   className="px-2 pt-1 pb-0.5 text-left text-[10px] font-medium
                              text-text-secondary border-b border-bg-border/40">T+1</th>
@@ -695,10 +696,8 @@ function LifecycleEvidence() {
                   className="px-2 pt-1 pb-0.5 text-left text-[10px] font-medium
                              text-text-secondary border-b border-bg-border/40
                              border-l border-l-bg-border">T+3</th>
-              <th rowSpan={2} className={cn(th, 'text-left text-text-secondary/55')}>
-                <SortTh col={'n' as EvKey} label="事件数" align="left"
-                        sort={sort} onSort={onSort} className="!px-0 !py-0 !border-0" />
-              </th>
+              <SortTh rowSpan={2} col={'n' as EvKey} label="事件数" align="left"
+                      sort={sort} onSort={onSort} className={th} />
             </tr>
             <tr className="text-[10px]">
               <SortTh col={'x1' as EvKey} label="超额" align="left"
