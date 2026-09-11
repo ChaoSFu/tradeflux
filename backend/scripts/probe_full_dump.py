@@ -16,6 +16,7 @@ probe_full_dump.py —— 在服务器上实测 fuyao 10 年全量 dump（`daily
 
     cd /opt/code/tradeflux/backend
     .venv/bin/python -m scripts.probe_full_dump              # 1. 只问大小，每个 dump 花 1 字节
+    .venv/bin/python -m scripts.probe_full_dump --kind daily-k   # 1'. 只问这一个（遇到 429 时用）
     .venv/bin/python -m scripts.probe_full_dump --download   # 2. 流式下载到 data/fuyao/，不占内存
     .venv/bin/python -m scripts.probe_full_dump --inspect    # 3. 只读 footer，看文件怎么排的
     .venv/bin/python -m scripts.probe_full_dump --trial      # 4. 按需读取，量峰值内存
@@ -73,15 +74,37 @@ def _fmt(v, unit="MB"):
 
 # ── 1. 大小 ───────────────────────────────────────────────────────────────────
 
-def step_size(key):
-    print("== 1. 三个 dump 的大小（每个只下 1 字节）==")
-    for kind in ("daily-k-10d", "daily-k", "adjustment-factors"):
+KINDS = ("daily-k-10d", "daily-k", "adjustment-factors")
+
+
+def step_size(key, only=None):
+    kinds = (only,) if only else KINDS
+    print(f"== 1. dump 大小（每个只下 1 字节）：{', '.join(kinds)} ==")
+    hit_429 = False
+    for i, kind in enumerate(kinds):
+        # **隔开问。** 第一版三个下载链接背靠背连发，结果 10d 成功、后两个 429——
+        # 分不清是"连发太快"还是"账号没有这两个 dump 的额度"。先把"太快"这个
+        # 解释排除掉
+        if i:
+            time.sleep(5)
         try:
             url = _download_url(key, kind)
             size = _remote_size(url) if url else None
             print(f"  {kind:20s} {_fmt(size and size / 1024 / 1024)}   生成日 {_path_date(url) if url else '—'}")
         except Exception as e:  # noqa: BLE001
-            print(f"  {kind:20s} 失败 {type(e).__name__}: {str(e)[:100]}")
+            msg = str(e)
+            hit_429 = hit_429 or "429" in msg or "limit" in msg.lower()
+            print(f"  {kind:20s} 失败 {type(e).__name__}: {msg[:100]}")
+    if hit_429:
+        # 三种解释，靠两次单独询问就能分开（2026-09-11 第一次见到 fuyao 429）
+        print("\n  429 有三种可能，隔一分钟以上**依次单独**问这两个就能分开：")
+        print("      --kind daily-k      然后再隔一分钟    --kind daily-k-10d")
+        print("    · daily-k 能过               → 只是连发太快")
+        print("    · daily-k 429、10d 能过      → 账号没有 daily-k 的额度，去 "
+              "https://fuyao.aicubes.cn/admin 看套餐")
+        print("    · 两个都 429                 → **整个 key 的配额用完了（跨端点共享）**，"
+              "日更自己的 10 日 dump 也在抢这份额度")
+        print("  **别连着重试**：如果是按天/按窗口计数，每试一次都在消耗额度")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     print(f"\n  {DATA_DIR} 所在磁盘剩余 {_fmt(shutil.disk_usage(DATA_DIR).free / 1024 / 1024)}")
     print(f"  当前可用内存 MemAvailable {_fmt(_mem_available_mb())}")
@@ -226,6 +249,7 @@ def main():
     ap.add_argument("--inspect", action="store_true")
     ap.add_argument("--trial", action="store_true")
     ap.add_argument("--force", action="store_true", help="可用内存不足时仍然跑 --trial")
+    ap.add_argument("--kind", choices=KINDS, help="第 1 步只问这一个 dump（遇到 429 时用）")
     a = ap.parse_args()
 
     if a.inspect:
@@ -237,7 +261,7 @@ def main():
         print("没配 FUYAO_API_KEY"); sys.exit(1)
     if a.download:
         step_download(key); return
-    step_size(key)
+    step_size(key, a.kind)
 
 
 if __name__ == "__main__":

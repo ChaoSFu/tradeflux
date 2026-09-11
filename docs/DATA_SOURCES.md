@@ -61,6 +61,12 @@ GET https://fuyao.aicubes.cn/api/a-share/prices/historical
 - `data.timestamp` **不是市场时间**——收盘后仍跟着墙上时钟走（18:03→18:04→18:05 实测）。
   **不能拿它判断"今天收盘了没有"**
 - QPS 上限文档没写，只有错误码 `4001 频率超限 | 超过约定 QPS`
+- **文档之外还有 `429 request limit exceeded`**（2026-09-11 第一次见到）：在
+  `market-dumps/{kind}/download-url` 上，`daily-k-10d` → `daily-k` → `adjustment-factors`
+  背靠背连发，第一个成功、后两个 429。同一天日更刚对 `prices/historical` 打过
+  12 并发 × 16 次都没事。**原因未确认**，三种解释：连发太快 / 账号没有 daily-k 的
+  额度 / 按 key 跨端点共享配额。区分方法见 `scripts/probe_full_dump.py` 的提示。
+  确认之前**别对 fuyao 加自动重试**——如果是按天计数，重试就是在烧额度
 - 计费/免费额度文档全无，需在 <https://fuyao.aicubes.cn/admin> 自查
 
 ### 1.4 实时行情 / 市场时间：腾讯
