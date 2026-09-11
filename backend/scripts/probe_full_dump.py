@@ -15,11 +15,13 @@ probe_full_dump.py —— 在服务器上实测 fuyao 10 年全量 dump（`daily
 用法（在服务器上，**分四步，每步看完再决定要不要下一步**）：
 
     cd /opt/code/tradeflux/backend
-    .venv/bin/python -m scripts.probe_full_dump              # 1. 只问大小，每个 dump 花 1 字节
-    .venv/bin/python -m scripts.probe_full_dump --kind daily-k   # 1'. 只问这一个（遇到 429 时用）
-    .venv/bin/python -m scripts.probe_full_dump --download   # 2. 流式下载到 data/fuyao/，不占内存
-    .venv/bin/python -m scripts.probe_full_dump --inspect    # 3. 只读 footer，看文件怎么排的
-    .venv/bin/python -m scripts.probe_full_dump --trial      # 4. 按需读取，量峰值内存
+    .venv/bin/python -m scripts.probe_full_dump                  # 1. 只问大小，每个 dump 花 1 字节
+    .venv/bin/python -m scripts.probe_full_dump --kind daily-k   # 1'. 只问这一个
+    .venv/bin/python -m scripts.probe_full_dump --download       # 2. 可续传下载到 data/fuyao/
+    .venv/bin/python -m scripts.probe_full_dump --inspect        # 3. 只读 footer，看文件怎么排的
+    .venv/bin/python -m scripts.probe_full_dump --trial          # 4. 按需读取，量峰值内存
+
+第 3、4 步只读本地文件，**不碰 fuyao**。
 """
 import argparse
 import json
@@ -36,10 +38,13 @@ from app.services.fuyao_dump import (
 )
 
 KIND = "daily-k"
+KINDS = ("daily-k-10d", "daily-k", "adjustment-factors")
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "fuyao"
 PARQUET = DATA_DIR / f"{KIND}.parquet"
 META = DATA_DIR / f"{KIND}.meta.json"
 SH = timezone(timedelta(hours=8))
+READ_COLS = ["thscode", "date_ms", "open_price", "high_price", "low_price",
+             "close_price", "volume", "turnover"]
 
 
 # ── 内存：只在 Linux 上有意义，拿不到就是 None，不是 0 ─────────────────────────
@@ -72,39 +77,47 @@ def _fmt(v, unit="MB"):
     return "—" if v is None else f"{v:,.0f}{unit}"
 
 
+# ── 日期列：兼容 int 毫秒 / timestamp / date 三种存法 ──────────────────────────
+# 10 日 dump 是 int 毫秒（Asia/Shanghai 零点），全量的没见过——别假设一样
+
+def _to_date(v):
+    if isinstance(v, datetime):
+        return (v.astimezone(SH) if v.tzinfo else v).date()
+    if isinstance(v, date):
+        return v
+    return datetime.fromtimestamp(v / 1000, tz=SH).date()
+
+
+def _date_bound(field_type, d: date):
+    """把「>= d」里的 d 转成跟这一列同类型的值，否则 pyarrow 的过滤直接报类型错。"""
+    import pyarrow as pa
+    if pa.types.is_timestamp(field_type):
+        return pa.scalar(datetime(d.year, d.month, d.day, tzinfo=SH), type=field_type)
+    if pa.types.is_date(field_type):
+        return pa.scalar(d, type=field_type)
+    return int(datetime(d.year, d.month, d.day, tzinfo=SH).timestamp() * 1000)
+
+
 # ── 1. 大小 ───────────────────────────────────────────────────────────────────
-
-KINDS = ("daily-k-10d", "daily-k", "adjustment-factors")
-
 
 def step_size(key, only=None):
     kinds = (only,) if only else KINDS
     print(f"== 1. dump 大小（每个只下 1 字节）：{', '.join(kinds)} ==")
     hit_429 = False
     for i, kind in enumerate(kinds):
-        # **隔开问。** 第一版三个下载链接背靠背连发，结果 10d 成功、后两个 429——
-        # 分不清是"连发太快"还是"账号没有这两个 dump 的额度"。先把"太快"这个
-        # 解释排除掉
         if i:
-            time.sleep(5)
+            time.sleep(5)       # 下载链接端点几秒内连着要会 429
         try:
             url = _download_url(key, kind)
             size = _remote_size(url) if url else None
             print(f"  {kind:20s} {_fmt(size and size / 1024 / 1024)}   生成日 {_path_date(url) if url else '—'}")
         except Exception as e:  # noqa: BLE001
             msg = str(e)
-            hit_429 = hit_429 or "429" in msg or "limit" in msg.lower()
+            hit_429 = hit_429 or "429" in msg
             print(f"  {kind:20s} 失败 {type(e).__name__}: {msg[:100]}")
     if hit_429:
-        # 三种解释，靠两次单独询问就能分开（2026-09-11 第一次见到 fuyao 429）
-        print("\n  429 有三种可能，隔一分钟以上**依次单独**问这两个就能分开：")
-        print("      --kind daily-k      然后再隔一分钟    --kind daily-k-10d")
-        print("    · daily-k 能过               → 只是连发太快")
-        print("    · daily-k 429、10d 能过      → 账号没有 daily-k 的额度，去 "
-              "https://fuyao.aicubes.cn/admin 看套餐")
-        print("    · 两个都 429                 → **整个 key 的配额用完了（跨端点共享）**，"
-              "日更自己的 10 日 dump 也在抢这份额度")
-        print("  **别连着重试**：如果是按天/按窗口计数，每试一次都在消耗额度")
+        # 2026-09-11 已确认：是下载链接端点的短速率窗口，不是额度问题
+        print("\n  429 = 下载链接要得太快（不是额度问题）。隔一两分钟单独问：--kind <名字>")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     print(f"\n  {DATA_DIR} 所在磁盘剩余 {_fmt(shutil.disk_usage(DATA_DIR).free / 1024 / 1024)}")
     print(f"  当前可用内存 MemAvailable {_fmt(_mem_available_mb())}")
@@ -113,12 +126,10 @@ def step_size(key, only=None):
 # ── 2. 下载 ───────────────────────────────────────────────────────────────────
 
 def step_download(key):
-    print("== 2. 下载 daily-k（可续传：断了从断点接着下；两轮之间等 65 秒——"
-          "下载链接端点连着要必 429）==")
+    print("== 2. 下载 daily-k（可续传：断了从断点接着下；两轮之间等 65 秒再要链接）==")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     free = shutil.disk_usage(DATA_DIR).free
-    # 第 1 步量过：172MB。**不为了查大小再去要一次下载链接**——那会占掉速率窗口，
-    # 紧接着的真下载就 429 了。1GB 的余量足够（文件 + 原子替换时的旧文件）
+    # 第 1 步量过：172MB。不为了查大小再去要一次下载链接——那会占掉速率窗口
     if free < 1024 ** 3:
         print(f"  磁盘剩余 {free / 1024 / 1024:,.0f}MB，不到 1GB，不下"); return
     if (PARQUET.with_name(PARQUET.name + ".part")).exists():
@@ -164,6 +175,42 @@ def _monotonic(stats):
     return len(s) == len(stats) and all(a[1] <= b[0] for a, b in zip(s, s[1:]))
 
 
+def _col_width(t) -> int:
+    """一行在内存里占几个字节（解码成普通 Arrow 数组之后）。"""
+    import pyarrow as pa
+    try:
+        return t.byte_width              # int64 / double / timestamp = 8，date32 = 4
+    except ValueError:
+        pass
+    if pa.types.is_large_string(t) or pa.types.is_large_binary(t):
+        return 8 + 16                    # 8 字节偏移 + 字符串本体按 16 字节估（"600519.SH" 9 个）
+    return 4 + 16                        # 4 字节偏移 + 16
+
+
+def _rowgroup_estimate(pf, cols=READ_COLS):
+    """
+    最大那个 row group 读起来多大：{rows, decoded_mb, compressed_mb}。
+    decoded_mb 按**行数 × 列类型宽度**算，是整块解码成 Arrow 之后的上界。
+
+    **不能用 footer 里的 total_uncompressed_size**：那是「编码后、压缩前」的大小，
+    字典编码 + RLE 之后小得离谱——合成文件 11 万行 × 8 列只报 0.2MB，而光 7 列
+    数值就要 6MB。thscode 这种每天重复 5545 次的列尤其如此。第一版拿它当内存
+    估计，保护就形同虚设，比没有保护还危险。
+    """
+    schema = pf.schema_arrow
+    names = schema.names
+    use = [c for c in cols if c in names]
+    width = sum(_col_width(schema.field(c).type) for c in use)
+    idx = [names.index(c) for c in use]
+    md = pf.metadata
+    rows = comp = 0
+    for i in range(md.num_row_groups):
+        rg = md.row_group(i)
+        rows = max(rows, rg.num_rows)
+        comp = max(comp, sum(rg.column(j).total_compressed_size for j in idx))
+    return {"rows": rows, "decoded_mb": rows * width / 1048576, "compressed_mb": comp / 1048576}
+
+
 def step_inspect():
     import pyarrow.parquet as pq
     print("== 3. 文件结构（只读 footer，不解码数据）==")
@@ -172,54 +219,86 @@ def step_inspect():
     pf = pq.ParquetFile(PARQUET)
     md = pf.metadata
     print(f"  行数 {md.num_rows:,}   row group {md.num_row_groups}   列 {pf.schema_arrow.names}")
+    print(f"  date_ms 的类型：{pf.schema_arrow.field('date_ms').type}")
     print(f"  created_by: {md.created_by}")
-    sizes = [md.row_group(i).total_byte_size for i in range(md.num_row_groups)]
     rows = [md.row_group(i).num_rows for i in range(md.num_row_groups)]
-    print(f"  每个 row group：{min(rows):,}~{max(rows):,} 行，解码后 "
-          f"{min(sizes) / 1024 / 1024:.1f}~{max(sizes) / 1024 / 1024:.1f}MB")
+    rge = _rowgroup_estimate(pf)
+    print(f"  每个 row group：{min(rows):,}~{max(rows):,} 行；要读的 {len(READ_COLS)} 列，最大一块"
+          f"压缩态 {rge['compressed_mb']:.1f}MB，整块解码后约 {rge['decoded_mb']:.0f}MB（行数×类型宽度估）")
 
     d = _rg_stats(pf, "date_ms")
     c = _rg_stats(pf, "thscode")
     dd = [x for x in d if x]
     if dd:
-        lo = min(x[0] for x in dd); hi = max(x[1] for x in dd)
-        to_d = lambda ms: datetime.fromtimestamp(ms / 1000, tz=SH).date()  # noqa: E731
-        print(f"  日期范围 {to_d(lo)} ~ {to_d(hi)}")
-    print(f"  date_ms 有统计信息的块：{len(dd)}/{len(d)}   按日期分块：{_monotonic(d)}")
-    print(f"  thscode 有统计信息的块：{sum(1 for x in c if x)}/{len(c)}   按代码分块：{_monotonic(c)}")
-    # 照现在 load_bars 的读法（read_table + 每列 to_pylist）会吃多少
-    est = md.num_rows * 8 * 60 / 1024 / 1024 / 1024
-    print(f"\n  照 load_bars 现在的读法（全表 to_pylist）估计要 ~{est:.1f}GB 内存 —— "
-          + ("不能用" if est > 0.5 else "勉强可以"))
+        print(f"  日期范围 {_to_date(min(x[0] for x in dd))} ~ {_to_date(max(x[1] for x in dd))}")
+    if md.num_row_groups < 2:
+        # 1 个块时"是否有序"恒为真，打出 True/True 是误导：任何过滤都跳不过它
+        print("  **只有 1 个 row group**——谈不上按什么分块，任何过滤都跳不过它：读几只票也要整块解码")
+    else:
+        print(f"  date_ms 有统计信息的块：{len(dd)}/{len(d)}   按日期分块：{_monotonic(d)}")
+        print(f"  thscode 有统计信息的块：{sum(1 for x in c if x)}/{len(c)}   按代码分块：{_monotonic(c)}")
+    full_gb = md.num_rows * 8 * 60 / 1024 / 1024 / 1024
+    print(f"\n  照 load_bars 现在的读法（全表 to_pylist）估计要 ~{full_gb:.1f}GB 内存 —— "
+          + ("不能用" if full_gb > 0.5 else "勉强可以"))
 
 
 # ── 4. 按需读取的峰值内存 ─────────────────────────────────────────────────────
 
+def trial_refusal(est_mb, avail_mb):
+    """
+    能不能在这台机器上跑按需读取。返回拒绝理由，None = 可以跑。
+
+    est_mb = 最大一块「压缩态 + 整块解码」的上界（见 _rowgroup_estimate）。Arrow 实际
+    多半按批解码、峰值更低，但这台机器没有容错余地——这个项目之前就因为内存打进
+    swap 整站超时过——所以按上界算，不许超过可用内存的一半。这条线是保守的经验值，
+    不是测出来的。
+    """
+    if avail_mb is None:
+        return "拿不到可用内存（不是 Linux？），判断不了"
+    if avail_mb < 500:
+        return f"可用内存只有 {avail_mb:.0f}MB，不到 500MB"
+    if est_mb > avail_mb * 0.5:
+        return f"最大一块读起来的上界约 {est_mb:.0f}MB，超过可用内存 {avail_mb:.0f}MB 的一半"
+    return None
+
+
 def _read(codes, since):
+    """
+    按需读取。**单线程、只预读 1 块**——默认的多线程加预读会同时解压好几块，
+    峰值是这里的好几倍。这也是将来生产上该用的读法，所以量的就是它。
+    """
     import pyarrow.compute as pc
     import pyarrow.dataset as ds
+    dset = ds.dataset(PARQUET, format="parquet")
     ths = [f"{c}.{thscode_suffix(c)}" for c in codes]
-    since_ms = int(datetime(since.year, since.month, since.day, tzinfo=SH).timestamp() * 1000)
+    flt = pc.field("thscode").isin(ths) & (
+        pc.field("date_ms") >= _date_bound(dset.schema.field("date_ms").type, since))
+    cols = [c for c in READ_COLS if c in dset.schema.names]
     t0 = time.time()
-    tbl = ds.dataset(PARQUET, format="parquet").to_table(
-        columns=["thscode", "date_ms", "open_price", "high_price", "low_price",
-                 "close_price", "volume", "turnover"],
-        filter=pc.field("thscode").isin(ths) & (pc.field("date_ms") >= since_ms))
+    tbl = ds.Scanner.from_dataset(dset, columns=cols, filter=flt, use_threads=False,
+                                  batch_readahead=1, fragment_readahead=1,
+                                  batch_size=65536).to_table()
     return tbl, time.time() - t0
 
 
 def step_trial(force: bool):
+    import pyarrow.parquet as pq
     print("== 4. 按需读取：峰值内存 ==")
     if not PARQUET.exists():
         print(f"  {PARQUET} 不存在，先跑 --download"); return
     avail = _mem_available_mb()
+    rge = _rowgroup_estimate(pq.ParquetFile(PARQUET))
+    est_mb = rge["compressed_mb"] + rge["decoded_mb"]
     # **基线峰值必须先记下来**：光是 import app（SQLAlchemy/pyarrow/配置）就要
-    # 两百多 MB，不减掉它，下面的"进程峰值"读不出读 dump 本身花了多少
+    # 几十到两百多 MB，不减掉它，读不出读 dump 本身花了多少
     base = _peak_mb()
     print(f"  开始前 MemAvailable {_fmt(avail)}，本进程 RSS {_fmt(_rss_mb())}，"
           f"基线峰值 {_fmt(base)}（import 的开销）")
-    if avail is not None and avail < 500 and not force:
-        print("  可用内存不到 500MB，不跑（加 --force 强制）"); return
+    print(f"  最大一块 {rge['rows']:,} 行：压缩态 {rge['compressed_mb']:.1f}MB + 整块解码约 "
+          f"{rge['decoded_mb']:.0f}MB = 读它的上界约 {est_mb:.0f}MB")
+    why = trial_refusal(est_mb, avail)
+    if why and not force:
+        print(f"  不跑：{why}。确认要跑加 --force"); return
 
     since = date.today() - timedelta(days=110)   # ≈ 75 个交易日，够一个 65 日窗口
     few = ["600519", "000001", "300750", "688981", "601127"]
@@ -248,13 +327,17 @@ def step_trial(force: bool):
 
 
 def main():
+    global PARQUET, META
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--download", action="store_true")
     ap.add_argument("--inspect", action="store_true")
     ap.add_argument("--trial", action="store_true")
-    ap.add_argument("--force", action="store_true", help="可用内存不足时仍然跑 --trial")
-    ap.add_argument("--kind", choices=KINDS, help="第 1 步只问这一个 dump（遇到 429 时用）")
+    ap.add_argument("--force", action="store_true", help="--trial 的内存检查不通过时仍然跑")
+    ap.add_argument("--kind", choices=KINDS, help="第 1 步只问这一个 dump")
+    ap.add_argument("--path", type=Path, help="--inspect / --trial 改读这个文件（本地测试用）")
     a = ap.parse_args()
+    if a.path:
+        PARQUET, META = a.path, a.path.with_suffix(".meta.json")
 
     if a.inspect:
         step_inspect(); return
