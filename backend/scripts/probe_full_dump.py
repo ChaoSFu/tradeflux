@@ -20,8 +20,9 @@ probe_full_dump.py —— 在服务器上实测 fuyao 10 年全量 dump（`daily
     .venv/bin/python -m scripts.probe_full_dump --download       # 2. 可续传下载到 data/fuyao/
     .venv/bin/python -m scripts.probe_full_dump --inspect        # 3. 只读 footer，看文件怎么排的
     .venv/bin/python -m scripts.probe_full_dump --trial          # 4. 按需读取，量峰值内存
+    .venv/bin/python -m scripts.probe_full_dump --scan           # 5. 流式扫一遍：顺序、行数、内存
 
-第 3、4 步只读本地文件，**不碰 fuyao**。
+第 3、4、5 步只读本地文件，**不碰 fuyao**。
 """
 import argparse
 import json
@@ -326,12 +327,105 @@ def step_trial(force: bool):
     print("  **把整段输出发给我**——A、B 两行「比基线」多出来的那个数，决定能不能在日更进程里直接读")
 
 
+# ── 5. 流式扫一遍：能不能在这台机器上一次性转换 ─────────────────────────────
+
+def step_scan(cap_mb: float):
+    """
+    逐批流式读完整个文件（8 列），回答决定转换方案的两件事：
+      · 是不是按 (代码, 日期) 全局有序——是，就能边读边写成"每块只含少数几只票"的
+        小块文件；不是，就得换别的办法
+      · 流式读完一遍要多少内存、多少时间——决定这个一次性转换能不能在这台机器上跑
+
+    背景（2026-09-11 --inspect）：2 个 row group、最大一块 763 万行、按代码分块。
+    按需读两只票也得啃一整块，所以**不能在日更里直接读这个文件**，得先转换一次。
+
+    为什么这一步不会把机器打挂：
+      · ParquetFile(buffer_size=8MB, pre_buffer=False) + iter_batches(use_threads=False)：
+        逐页读、逐批解码，不会把 553MB 的整块解出来
+      · 每批之后看 RSS，比开始时多出 cap_mb 就立刻停
+      · 单步最坏的尖峰 ≈ 一块的压缩数据（footer 里写着），开跑前核对它
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+    print("== 5. 流式扫一遍：顺序、行数、内存 ==")
+    if not PARQUET.exists():
+        print(f"  {PARQUET} 不存在，先跑 --download"); return
+    avail = _mem_available_mb()
+    pf = pq.ParquetFile(PARQUET, buffer_size=8 << 20, pre_buffer=False)
+    rge = _rowgroup_estimate(pf)
+    base = _rss_mb()
+    print(f"  开始前 MemAvailable {_fmt(avail)}，RSS {_fmt(base)}；单步最坏尖峰 ≈ 一块压缩态 "
+          f"{rge['compressed_mb']:.0f}MB；RSS 比开始多出 {cap_mb:.0f}MB 就停")
+    if avail is not None and rge["compressed_mb"] > avail * 0.5:
+        print("  不跑：一块的压缩数据就超过可用内存一半"); return
+
+    cols = [c for c in READ_COLS if c in pf.schema_arrow.names]
+    t0 = time.time()
+    rows = code_desc = date_bad = 0
+    per_code: dict = {}          # thscode -> [行数, 最早 ms, 最晚 ms]
+    prev = None                  # 上一批最后一行的 (thscode, date_ms)，用来接批与批的边界
+    peak = base
+    for rgi in range(pf.num_row_groups):
+        for b in pf.iter_batches(batch_size=65536, columns=cols, row_groups=[rgi],
+                                 use_threads=False):
+            n = b.num_rows
+            if not n:
+                continue
+            c, d = b.column("thscode"), b.column("date_ms")
+            if n > 1:
+                c0, c1, d0, d1 = c.slice(0, n - 1), c.slice(1), d.slice(0, n - 1), d.slice(1)
+                code_desc += pc.sum(pc.less(c1, c0)).as_py() or 0
+                date_bad += pc.sum(pc.and_(pc.equal(c1, c0), pc.less_equal(d1, d0))).as_py() or 0
+            first = (c[0].as_py(), d[0].as_py())
+            if prev is not None:
+                if first[0] < prev[0]:
+                    code_desc += 1
+                elif first[0] == prev[0] and first[1] <= prev[1]:
+                    date_bad += 1
+            prev = (c[n - 1].as_py(), d[n - 1].as_py())
+            g = pa.Table.from_batches([b.select(["thscode", "date_ms"])]).group_by("thscode").aggregate(
+                [("date_ms", "count"), ("date_ms", "min"), ("date_ms", "max")])
+            for code, cnt, mn, mx in zip(g["thscode"].to_pylist(), g["date_ms_count"].to_pylist(),
+                                         g["date_ms_min"].to_pylist(), g["date_ms_max"].to_pylist()):
+                e = per_code.get(code)
+                if e:
+                    e[0] += cnt; e[1] = min(e[1], mn); e[2] = max(e[2], mx)
+                else:
+                    per_code[code] = [cnt, mn, mx]
+            rows += n
+            rss = _rss_mb()
+            if rss is not None:
+                peak = max(peak or 0, rss)
+                if base is not None and rss - base > cap_mb:
+                    print(f"  ⚠️ 读到第 {rows:,} 行时 RSS 比开始多了 {rss - base:.0f}MB，超过上限，停")
+                    return
+    dt = time.time() - t0
+    if not per_code:
+        print("  文件里一行都没有"); return
+    counts = sorted(v[0] for v in per_code.values())
+    max_ms = max(v[2] for v in per_code.values())
+    active = sum(1 for v in per_code.values() if v[2] == max_ms)
+    ordered = code_desc == 0 and date_bad == 0
+    print(f"  扫完 {rows:,} 行，用时 {dt:.0f}s；共 {len(per_code):,} 只票")
+    print(f"  按 (代码, 日期) 全局有序：{'是' if ordered else '否'}"
+          f"（代码倒退 {code_desc} 处，同一代码日期没有递增 {date_bad} 处）")
+    print(f"  每只票行数：最少 {counts[0]:,}，中位 {counts[len(counts) // 2]:,}，最多 {counts[-1]:,}")
+    print(f"  数据一直到最后一天（{_to_date(max_ms)}）的票：{active:,} 只；其余是退市或停牌到更早")
+    delta = (peak - base) if (peak is not None and base is not None) else None
+    print(f"  RSS 峰值 {_fmt(peak)}（比开始多 {_fmt(delta)}），进程峰值 {_fmt(_peak_mb())}")
+    print("\n  **把整段输出发给我**——「全局有序」和「比开始多」这两个数决定一次性转换怎么做")
+
+
 def main():
     global PARQUET, META
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--download", action="store_true")
     ap.add_argument("--inspect", action="store_true")
     ap.add_argument("--trial", action="store_true")
+    ap.add_argument("--scan", action="store_true", help="流式扫一遍：顺序、行数、内存")
+    ap.add_argument("--cap", type=float, default=300.0,
+                    help="--scan 的内存上限：RSS 比开始时多出这么多 MB 就停（默认 300）")
     ap.add_argument("--force", action="store_true", help="--trial 的内存检查不通过时仍然跑")
     ap.add_argument("--kind", choices=KINDS, help="第 1 步只问这一个 dump")
     ap.add_argument("--path", type=Path, help="--inspect / --trial 改读这个文件（本地测试用）")
@@ -343,6 +437,8 @@ def main():
         step_inspect(); return
     if a.trial:
         step_trial(a.force); return
+    if a.scan:
+        step_scan(a.cap); return
     key = get_api_key()
     if not key:
         print("没配 FUYAO_API_KEY"); sys.exit(1)
