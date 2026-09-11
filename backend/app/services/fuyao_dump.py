@@ -565,6 +565,22 @@ def load_bars(path: Path, wanted: Dict[str, bool]) -> Dict[str, List[KLineBar]]:
             continue
         rows.setdefault(code, []).append((_ms_to_date(ms), o, h, lo, cl, vol, amt))
 
+    return rows_to_bars(rows, wanted)
+
+
+def rows_to_bars(rows: Dict[str, List[tuple]], wanted: Dict[str, bool]) -> Dict[str, List[KLineBar]]:
+    """
+    fuyao 原始行 → KLineBar。**10 日 dump 和 10 年存档共用这一个**（2026-09-11 抽出）。
+
+    rows: {6位代码: [(date, open, high, low, close, volume, amount), ...]}
+    wanted: {6位代码: is_st}
+
+    每根 bar 的涨跌幅由**相邻两行的收盘价**算出，prev_close 直接传给 build_kline_bar。
+    相邻 = 这只票自己的上一个成交日：停牌期间没有行，复牌那天的前收就是停牌前最后
+    一个收盘价——这正是 A 股涨跌停价的算法。**第一行被丢掉**（它没有前一行）。
+
+    走 build_kline_bar 是刻意的：涨停/炸板/一字板的判定全仓库只能有一套。
+    """
     out: Dict[str, List[KLineBar]] = {}
     for code, raw in rows.items():
         raw.sort(key=lambda r: r[0])

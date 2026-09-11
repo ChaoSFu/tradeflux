@@ -168,6 +168,7 @@ from app.services.fuyao_dump import (
     dump_cache_info, dump_last_access, thscode_suffix,
     reset_dump_availability, dump_unavailable_reason,
 )
+from app.services.snapshot_history import insert_history_bars
 from app.services.screening_service import (
     StockWindowStats,
     compute_window_stats, get_active_criteria, derive_limit_close_price,
@@ -834,68 +835,13 @@ def _backfill_history_from_dump(db, target_date: date, fuyao_key, log,
     if not bars_map:
         return 0
 
-    dates = sorted({b.date for bars in bars_map.values() for b in bars if b.date < target_date})
-    if not dates:
-        return 0
-    # 取整行而不只是键：2026-09-03 起要给已有行补 volume/amount 两个新字段
-    # （加列之前写下的行全是空的，而回填原本只建新行不碰已有行）
-    existing = {
-        (r.stock_id, r.date): r
-        for r in db.query(StockDailySnapshot)
-        .filter(StockDailySnapshot.date >= dates[0],
-                StockDailySnapshot.date <= dates[-1]).all()
-    }
-
-    added = backfilled_vol = 0
-    for code, bars in bars_map.items():
-        sid = sid_by_code.get(code)
-        if not sid:
-            continue
-        for bar in bars:
-            if bar.date >= target_date or (bar.close_price or 0) <= 0:
-                continue
-            if (sid, bar.date) in existing:
-                # 行已存在：**只补 volume/amount 这两个新字段**，其余一概不碰。
-                # 2026-09-03 加这两列之前写下的行全是空的，而回填原本只建新行、
-                # 不回填已有行，于是历史量能永远补不上（实测 08-24~09-02 每天
-                # 2550 行里只有 14 行有量）。
-                # 严格限制在"原来是 NULL 才写"——绝不覆盖已有值，那会让这个
-                # 补丁变成一次静默的历史重写。
-                row = existing[(sid, bar.date)]
-                if row is not None and row.volume is None and bar.volume is not None:
-                    row.volume = bar.volume
-                    row.amount = bar.amount
-                    row.volume_source = bar.volume_source
-                    backfilled_vol += 1
-                continue
-            db.add(StockDailySnapshot(
-                stock_id=sid, date=bar.date,
-                close_price=round(bar.close_price, 4),
-                pct_change=round(bar.pct_change or 0.0, 4),
-                open_price=(round(bar.open_price, 4) if bar.open_price else None),
-                high_price=(round(bar.high_price, 4) if bar.high_price else None),
-                low_price=(round(bar.low_price, 4) if bar.low_price else None),
-                turnover_rate=None,          # dump 不提供换手率，None＝不知道，不写0
-                # 成交量/成交额：dump 的 parquet 本来就有，2026-09-03 才接住。
-                # 来源标记必须一起写——dump 未复权、腾讯 qfq，复权会同时调整价和量
-                volume=bar.volume, amount=bar.amount, volume_source=bar.volume_source,
-                is_limit_up=bar.is_limit_up,
-                is_limit_down=bar.is_limit_down,
-                is_broken_board=bar.is_broken_board,
-                is_one_word_limit_up=bar.is_one_word_limit_up,
-                is_one_word_limit_down=bar.is_one_word_limit_down,
-                is_settled=True,             # dump 收盘后生成，历史日必然是终值
-            ))
-            # existing 现在是 {(sid,date): 行}，登记 None 即可——这一轮内不会再
-            # 回头给刚建的行补量能（它建出来就带着量）
-            existing[(sid, bar.date)] = None
-            added += 1
-            if added % 2000 == 0:
-                db.commit()
-    if added or backfilled_vol:
-        db.commit()
+    # 写入规则（只写历史日 / 已有行绝不覆盖、原为空的量额除外 / 只写 K 线原始字段）
+    # 统一在 snapshot_history.insert_history_bars——10 年存档补洞走的也是它，
+    # 两边写出来的行必须一模一样
+    added, backfilled_vol = insert_history_bars(db, bars_map, sid_by_code, target_date)
     if added:
-        log.info(f"历史快照补全：{added} 条（{len(bars_map)} 只股票 × {len(dates)} 个交易日，"
+        n_dates = len({b.date for bars in bars_map.values() for b in bars if b.date < target_date})
+        log.info(f"历史快照补全：{added} 条（{len(bars_map)} 只股票 × {n_dates} 个交易日，"
                  f"用已下载的 dump，零额外请求）")
     if backfilled_vol:
         # 单独报：这是给**已有行**补新加的量能字段，跟"新建行"是两回事，

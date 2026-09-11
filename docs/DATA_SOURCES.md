@@ -30,6 +30,23 @@ Header: X-api-key: <key>
 
 代码：`app/services/fuyao_dump.py`
 
+### 1.1b 10 年全量存档：`daily-k`（2026-09-11 接入）
+
+跟 10 日 dump 同一个下载端点，kind 换成 `daily-k`。**不天天下**：长期放在
+`backend/data/fuyao/daily-k.parquet`（已 gitignore；不放 /tmp——重启和 tmpfiles 会清）。
+
+服务器实测（`scripts/probe_full_dump.py`）：
+- 172MB，下载 341 秒（0.5MB/s）；10,275,240 行，2016-09-12 起，5,560 只票
+- **只有 2 个 row group**（parquet-mr / Spark 写的），最大一块 763 万行，按 (代码, 日期) 全局有序
+- 整块解码的上界约 681MB——**不能 read_table / to_pylist**（照 `load_bars` 的读法要 4.6GB，
+  `dump_max_date` 只读一列也要约 470MB）
+- 逐页流式读完一遍：2 秒，RSS 多 121MB。`app/services/fuyao_archive.py` 只用这一种读法，
+  存档覆盖到哪天只读 footer 统计
+
+用途：`scripts/full_dump.py heal` 给库里关注的股票补最近 65 个交易日的历史缺口，
+跟 10 日 dump 补历史走**同一个写入函数**（`snapshot_history.insert_history_bars`）。
+`status` 看存档覆盖到哪天，`refresh` 重下（可续传）。
+
 ### 1.2 区间涨幅：fuyao 单只历史 K 线
 
 ```
