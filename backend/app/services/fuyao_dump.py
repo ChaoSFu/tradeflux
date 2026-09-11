@@ -77,19 +77,6 @@ class FuyaoError(RuntimeError):
     """fuyao 请求/响应层失败。跟"数据本身没有"是两回事，见 fetch_interval_returns。"""
 
 
-def _is_rate_limited(e: BaseException) -> bool:
-    """
-    fuyao 下载链接端点的速率窗口（2026-09-11 服务器实测）。
-
-    连着问两次下载链接，第二次必回 `code=429 request limit exceeded`——**跟问的是
-    哪个 dump 无关**：先问 10d 则 10d 过、daily-k 429；先问 daily-k 则 daily-k 过、
-    10d 429。所以 429 = 问得太快，不是没权限，也不是额度用完。窗口至少几秒。
-
-    文档里只写了 `4001 频率超限`，这个 429 在文档之外。
-    """
-    s = str(e)
-    return "code=429" in s or "request limit exceeded" in s
-
 
 def get_api_key() -> Optional[str]:
     """
@@ -284,12 +271,13 @@ def download_dump_resumable(api_key: str, kind: str, dest: Path, *,
 
     `_download_once` 是给 1MB 的 10 日 dump 写的：断了就整个重来。放到 172MB 上
     不行——S3 连 1MB 都中途掐断过（2026-08-26），172MB 要下好几分钟，断一次的
-    概率高得多；而重来一次就得重新要下载链接，那个端点**连着问第二次必 429**
-    （见 _is_rate_limited）。所以：
+    概率高得多；而重来一次就得重新要下载链接，那个端点几秒内连着问会 429
+    （2026-09-11 探针实测）。所以：
 
     1. **断了从断点续**：`.part` 留着，下一轮用 `Range: bytes=<已有>-` 接着要。
-    2. **两轮之间等一个窗口**（url_gap，默认 65 秒）再要新链接。预签名链接只活
-       5 分钟，每轮都得重新要，紧跟着要必然 429。
+    2. **两轮之间等一会**（url_gap，默认 65 秒）再要新链接。预签名链接只活
+       5 分钟，每轮都得重新要。生产上 429 之后 1.5 秒重试就过了，65 秒是保守
+       取值——窗口到底多长没测过，而大文件一次也就几轮，多等不心疼。
     3. **上游换了文件就扔掉半截**：生成日或总长一变，手上的半截属于旧文件，接到
        新文件后面拼出来的是一个坏 parquet。`.part.json` 记下这半截属于哪个版本。
     4. **服务器不认 Range、回了 200**：从头写，不追加。
@@ -472,11 +460,9 @@ def daily_k_dump(api_key: str, kind: str = DUMP_KIND_10D,
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {str(e)[:120]}"
             _errs.append(f"第{attempt + 1}次: {last_err}")
-            if _is_rate_limited(e):
-                # 下载链接端点连着问第二次必 429，窗口至少几秒。1.5 秒后重试**必然**
-                # 还是 429，只会再占一次窗口——直接去用手上的缓存（下面 stale 分支）。
-                # 不熔断整轮：几分钟后的下一个调用点，窗口可能已经过去了
-                break
+            # 429（fuyao 文档之外的限流码）也照常重试。039231c 曾以为"1.5 秒后
+            # 必然还是 429"而改成直接放弃，那是读代码推出来的——生产日志里两次
+            # 「第1次: code=429」之后都**没有**第2次的记录，1.5 秒后那一次过了。已撤回
         if attempt < retries:
             time.sleep(1.5)
     # 连接层失败（不可达/超时/DNS）才熔断整轮；业务错误（如 key 无效、dump 还没

@@ -600,46 +600,44 @@ def test_stale访问会带出旧到什么程度(_clean_cache, monkeypatch):
     assert la["stale_through"] == "2026-08-27" and la["need_through"] == "2026-08-28"
 
 
-# ── 下载链接端点的速率窗口（2026-09-11 服务器实测）──────────────────────────────
+# ── fuyao 的 429（2026-09-11）─────────────────────────────────────────────────
 #
-# 连着问两次下载链接，第二次必回 code=429 request limit exceeded，跟问哪个 dump
-# 无关（先问 10d 则 10d 过；先问 daily-k 则 daily-k 过）。429 = 问得太快。
+# 探针：几秒内连着要两次下载链接，第二次 429，跟要哪个 dump 无关。
+# 生产日志：日更里「第1次: code=429」出现两次，后面都没有第2次——1.5 秒后重试过了。
 
 _429 = "取下载链接失败 code=429 request limit exceeded"
 
 
-def test_下载链接429不在同一次调用里重试(_clean_cache, monkeypatch):
+def test_下载链接429照常重试_生产上一秒半后就过了(_clean_cache, monkeypatch):
+    """
+    039231c 曾把 429 改成"不重试、直接用旧缓存"，理由是"1.5 秒后必然还是 429"。
+    那是读代码推出来的，生产日志推翻了它。这条测试钉住撤回后的行为。
+    """
     fd = _clean_cache
     fd.reset_dump_availability()
     _seed_cache(fd, fd.DUMP_KIND_10D,
                 [("600984.SH", date(2026, 9, 8), 1, 1, 1, 1),
                  ("600984.SH", date(2026, 9, 9), 1, 1, 1, 1)],
-                {"max_trade_date": "2026-09-09", "size": 1, "path_date": "20260909"})
-    calls, slept = [], []
-    monkeypatch.setattr(fd, "_download_url",
-                        lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(RuntimeError(_429)))
-    monkeypatch.setattr(fd.time, "sleep", lambda s: slept.append(s))
-    with fd.daily_k_dump("k", need_through=date(2026, 9, 10), retries=2) as p:
-        assert p == fd._data_path(fd.DUMP_KIND_10D), "应当退回手上的旧缓存"
-    assert calls == [1], "429 之后 1.5 秒重试必然还是 429，不该再问"
-    assert slept == []
-    la = fd.dump_last_access()
-    assert la["mode"] == "stale"
-    assert any("429" in e for e in la["errors"]), "日志里要看得见是 429"
-    assert fd.dump_unavailable_reason() is None, "429 是问太快不是路不通，不熔断整轮"
-
-
-def test_下载链接429且无缓存则只问一次就放弃(_clean_cache, monkeypatch):
-    fd = _clean_cache
-    fd.reset_dump_availability()
+                {"max_trade_date": "2026-09-09", "size": 1077889, "path_date": "20260910"})
+    seq = iter([RuntimeError(_429), "https://x/releases/20260910/f.parquet"])
     calls = []
-    monkeypatch.setattr(fd, "_download_url",
-                        lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(RuntimeError(_429)))
+
+    def _url(*a, **k):
+        calls.append(1)
+        v = next(seq)
+        if isinstance(v, Exception):
+            raise v
+        return v
+    monkeypatch.setattr(fd, "_download_url", _url)
+    monkeypatch.setattr(fd, "_remote_size", lambda *a, **k: 1077889)
     monkeypatch.setattr(fd.time, "sleep", lambda *_: None)
-    with pytest.raises(fd.FuyaoError, match="429"):
-        with fd.daily_k_dump("k", retries=2):
-            pass
-    assert calls == [1]
+    with fd.daily_k_dump("k", need_through=date(2026, 9, 10), retries=2):
+        pass
+    assert len(calls) == 2, "429 之后要重试，不是直接放弃"
+    la = fd.dump_last_access()
+    assert la["mode"] == "unchanged", "重试拿到了链接，走的是正常路径而不是旧缓存兜底"
+    assert any("429" in e for e in la["errors"]), "第1次的 429 仍要留痕"
+    assert fd.dump_unavailable_reason() is None
 
 
 def _parquet_bytes(n=200):
