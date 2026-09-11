@@ -32,12 +32,13 @@ const LINES: { state: string; color: string; dash?: string }[] = [
 ]
 
 /**
- * 默认亮着的三条：基线 + 两个核心观察状态。
+ * 默认亮着的三条：刚断板 → 修复中 → 穿越成功（用户 2026-09-11 定）。
  *
- * 七条全开会糊成一团，而每天真正要看的是「第一次转强」和「已完成二波」这两组
- * 相对基线怎么走。其余的点图例就能加回来——**只是默认收起，不是没有**。
+ * 这三条是断板之后的同一条链路：断了、在修、修成了。每天要看的就是这条链路上
+ * 每一环今天赚不赚钱。基线「强势股均涨幅」也默认收起——七条全开会糊成一团。
+ * 其余的点图例就能加回来，**只是默认收起，不是没有**。
  */
-const DEFAULT_ON = new Set(['REPAIRING', 'CROSS_SUCCESS'])
+const DEFAULT_ON = new Set(['BROKEN', 'REPAIRING', 'CROSS_SUCCESS'])
 const C_MAIN = '#5EA6FF'
 const L_MAIN = '强势股均涨幅'
 const zh = (st: string) => LIFECYCLE_ZH[st] ?? st
@@ -53,9 +54,9 @@ export function LifecycleEffectChart({ series, history, todayEstimate }: {
   /** 未收盘时的当日估算。**它不在 series 里**——盘中价不能进跨日统计 */
   todayEstimate?: LifecycleTodayEstimate | null
 }) {
-  // 默认收起 DEFAULT_ON 之外的线。用 zh(state) 作 key，跟图例/dataKey 一致
+  // 默认收起 DEFAULT_ON 之外的线，基线也收起。用 zh(state) 作 key，跟图例/dataKey 一致
   const [hidden, setHidden] = useState<Set<string>>(
-    () => new Set(LINES.filter((l) => !DEFAULT_ON.has(l.state)).map((l) => zh(l.state))))
+    () => new Set([L_MAIN, ...LINES.filter((l) => !DEFAULT_ON.has(l.state)).map((l) => zh(l.state))]))
   const toggle = useCallback((k: string) => setHidden((p) => {
     const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n
   }), [])
