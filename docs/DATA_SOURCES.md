@@ -229,7 +229,10 @@ GET https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=90.BK0832&klt=10
 - **不能走 `fetch_index_kline()`**：那个函数是腾讯优先的（为 5 个固定指数定的），
   而腾讯根本没有 BK 板块码，会先拿到畸形数据再在兜底里抛
   `'list' object has no attribute 'get'`——**不是"板块拉不到"，是走错了路**
-- push2his 限流很凶（见坑 13），所以只用于一次性回填；日常增量走 clist 的 `f2`
+- push2his 限流很凶（见坑 13）：2026-09-12 实测约 2 秒一个、连取 20 个就被掐，至少封
+  二十分钟，**浏览器也一样**（不是请求头 / 参数的问题）；生产服务器的出口则被它长期拒绝。
+  所以只用于一次性回填，走「本机慢速导出 → 服务器收件箱 → 页面导入」的固定流程（见
+  `docs/DATA_AUDIT.md` 第五节，缺哪些板块由数据体检列出）；日常增量走 clist 的 `f2`
   字段（板块指数点位），零新增请求
 
 代码：`app/services/eastmoney_fetcher.fetch_sector_kline()` /

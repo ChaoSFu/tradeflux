@@ -59,7 +59,9 @@ from .intraday_context_service import (
 from .leader_cycle_state_service import replay_price_lifecycle
 from .limit_up_detail_fetcher import fetch_broken_board_pool, fetch_limit_up_pool
 from .market_effect_service import _cohort_snapshots
-from .trading_calendar import get_trading_days, last_n_trading_days, prev_trading_day
+from .trading_calendar import (
+    calendar_status, get_trading_days, last_n_trading_days, prev_trading_day,
+)
 from .w2s_config_service import KEY_PULLBACK_MIN_PCT, get_numeric
 # 私有函数，但它就是"实时涨跌分布"这件事的唯一实现，不另写一份
 from .windvane_service import _fetch_updown
@@ -210,21 +212,9 @@ def _last_weekday_before(d: date) -> date:
     return x
 
 
-def _calendar_status(cal: Optional[List[date]], d: date) -> dict:
-    """
-    交易日历（fuyao）只到拉取当天、不含未来日：盘中 d 还没进日历是常态，**不等于「非交易日」**。
-    但日历最后一天和 d 之间如果还夹着工作日，就是日历落后了——前一交易日可能算错，
-    T-1 的事实（高标周期、昨日涨停、板块昨日表现）不能再当成 T-1 用。
-    """
-    weekday = d.weekday() < 5
-    if not cal:
-        return {"last": None, "behind": None, "is_trading_day": None if weekday else False}
-    last = cal[-1]
-    if d <= last:
-        return {"last": last, "behind": False, "is_trading_day": d in set(cal)}
-    gap = [last + timedelta(days=i) for i in range(1, (d - last).days)]
-    return {"last": last, "behind": any(x.weekday() < 5 for x in gap),
-            "is_trading_day": None if weekday else False}
+# 挪到了 trading_calendar.calendar_status（数据体检也要用同一份判断），这里保留原名。
+# T-1 的事实（高标周期、昨日涨停、板块昨日表现）在日历落后时不能再当 T-1 用
+_calendar_status = calendar_status
 
 
 # ── 个股 ──────────────────────────────────────────────────────────────────────

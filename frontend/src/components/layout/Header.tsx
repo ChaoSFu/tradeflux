@@ -17,8 +17,9 @@ function formatSecs(secs: number): string {
 import {
   Download, CheckCircle, XCircle,
   ChevronDown, ChevronUp, Settings2, Layers, AlertTriangle, SlidersHorizontal,
-  LogIn, LogOut, User, Lock, RefreshCw,
+  LogIn, LogOut, User, Lock, RefreshCw, Stethoscope,
 } from 'lucide-react'
+import { fetchAuditReport } from '@/api/dataAudit'
 import { cn } from '@/utils/cn'
 import { useAuthStore } from '@/store/auth'
 import { LoginModal } from '@/components/auth/LoginModal'
@@ -542,6 +543,36 @@ export function DataUpdateMenu({ onRequestLogin }: { onRequestLogin: () => void 
   )
 }
 
+// ── 数据体检入口：有可补的缺口时亮红点 ─────────────────────────────────────────
+// 报告由每次日更后的体检生成，公开只读；这里 5 分钟拉一次，跟页面共用同一份缓存
+
+function DataHealthLink() {
+  const { data } = useQuery({
+    queryKey: ['data-audit-report'],
+    queryFn: fetchAuditReport,
+    refetchInterval: 5 * 60_000,
+    staleTime: 60_000,
+  })
+  const todo = data?.summary?.todo ?? 0
+  return (
+    <NavLink
+      to="/data-health"
+      title={todo ? `数据体检：${todo} 项待处理` : '数据体检'}
+      className={({ isActive }) => cn(
+        'relative p-1.5 rounded transition-colors',
+        isActive ? 'text-accent bg-accent/10' : 'text-text-muted hover:text-text-primary hover:bg-bg-elevated',
+      )}
+    >
+      <Stethoscope className="w-3.5 h-3.5" />
+      {todo > 0 && (
+        <span className="absolute -top-0.5 -right-1 min-w-[14px] h-[14px] px-0.5 rounded-full bg-danger text-[9px] font-semibold leading-[14px] text-white text-center">
+          {todo}
+        </span>
+      )}
+    </NavLink>
+  )
+}
+
 // ── Header ────────────────────────────────────────────────────────────────────
 
 export function Header({ title }: { title: string }) {
@@ -561,6 +592,8 @@ export function Header({ title }: { title: string }) {
           只是Header这一层不再重复渲染）。 */}
       <div className="flex items-center gap-3">
         <DataUpdateMenu onRequestLogin={() => setShowLogin(true)} />
+
+        <DataHealthLink />
 
         {isLoggedIn && (
           <NavLink

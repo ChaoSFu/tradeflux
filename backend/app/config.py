@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # 「还没跑过」，不返回空表——空表看起来像「跑过了但什么都没有」
     LIFECYCLE_EVIDENCE_PATH: str = "data/lifecycle_evidence.json"
 
+    # 数据体检页面上给出的 scp 命令里用的服务器登录名。只是提示文案，不参与任何认证
+    DATA_AUDIT_SSH_USER: str = "admin"
+
     @property
     def cors_origins_list(self) -> List[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",")]

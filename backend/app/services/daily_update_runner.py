@@ -40,6 +40,35 @@ BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__
 SCRIPT_PATH = os.path.join(BACKEND_DIR, "scripts", "daily_update.py")
 
 
+def _stream(cmd: List[str], on_line: Optional[Callable[[str], None]]) -> int:
+    """在 backend 目录下跑 cmd，stdout / stderr 合流逐行回调，返回退出码。"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = BACKEND_DIR + os.pathsep + env.get("PYTHONPATH", "")
+    env.setdefault("PYTHONUNBUFFERED", "1")     # 不缓冲，UI 才看得到实时进度
+    proc = subprocess.Popen(
+        cmd, cwd=BACKEND_DIR, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        if on_line and line.strip():
+            on_line(line)
+    return proc.wait()
+
+
+def run_script_subprocess(args: List[str], *,
+                          on_line: Optional[Callable[[str], None]] = None) -> int:
+    """
+    子进程跑 `python <args...>`（cwd=backend），逐行回调输出，**返回退出码**。
+
+    给数据体检这类「退出码本身就是结果」的任务用（3 = 日更正在跑、什么都没动）；
+    日更要的是汇总 dict，走下面的 run_daily_update_subprocess。
+    """
+    return _stream([sys.executable, *args], on_line)
+
+
 def run_daily_update_subprocess(
     target_date: date,
     *,
@@ -63,22 +92,8 @@ def run_daily_update_subprocess(
     if skip_boards:
         cmd.append("--skip-boards")
 
-    env = dict(os.environ)
-    env["PYTHONPATH"] = BACKEND_DIR + os.pathsep + env.get("PYTHONPATH", "")
-    env.setdefault("PYTHONUNBUFFERED", "1")     # 不缓冲，UI 才看得到实时进度
-
     try:
-        proc = subprocess.Popen(
-            cmd, cwd=BACKEND_DIR, env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
-        )
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            if on_line and line.strip():
-                on_line(line)
-        code = proc.wait()
+        code = _stream(cmd, on_line)
         if code != 0:
             raise RuntimeError(f"daily_update 子进程退出码 {code}")
         try:

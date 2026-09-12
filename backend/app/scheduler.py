@@ -55,6 +55,18 @@ def _do_update(log_path: str, today: date) -> dict:
     t2 = datetime.now().isoformat(timespec="seconds")
     record_job_duration("board_meta", t1, t2)
     _log(log_path, "SCHED", "✅ 板块行情同步完成")
+
+    # 数据体检：日更和板块同步刚跑完，趁热查一遍各表的缺口（只读、子进程）。只能当天
+    # 补的数据（监管快照、成交额前列……）过了今天就补不回来，所以要紧跟在日更后面查。
+    # 父进程这时正拿着日更的锁，所以传 --no-lock；体检失败只记日志，不影响日更结果
+    try:
+        from app.services.data_audit_service import run_audit_subprocess  # type: ignore
+        code = run_audit_subprocess(["run", "--save", "--no-lock", "--quiet"],
+                                    on_line=lambda ln: _log(log_path, "AUDIT", ln))
+        _log(log_path, "SCHED", "✅ 数据体检完成" if code == 0
+             else f"⚠️ 数据体检退出码 {code}（不影响日更）")
+    except Exception as exc:  # noqa: BLE001
+        _log(log_path, "SCHED", f"⚠️ 数据体检失败（不影响日更）: {exc}")
     return result
 
 
@@ -204,13 +216,36 @@ def _run_weekly_full_board_sync() -> None:
                 pass
 
 
+def _run_weekly_data_audit() -> None:
+    """
+    周六 11:00 再体检一次（在 10:00 板块全量同步之后）。每次日更后本来就会体检；这一次
+    兜的是「周中哪天日更整个没跑、体检也就没触发」。检测只读，自己在子进程里探锁，
+    日更 / 补数正在跑就跳过（退出码 3）。
+    """
+    backend_dir = os.path.dirname(os.path.dirname(__file__))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    log_dir = os.path.join(backend_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"data_audit_{date.today().isoformat()}.log")
+    try:
+        from app.services.data_audit_service import run_audit_subprocess  # type: ignore
+        code = run_audit_subprocess(["run", "--save"], on_line=lambda ln: _log(log_path, "AUDIT", ln))
+        _log(log_path, "SCHED", "✅ 数据体检（周度）完成" if code == 0
+             else f"⚠️ 数据体检（周度）退出码 {code}")
+    except Exception as exc:  # noqa: BLE001
+        _log(log_path, "SCHED", f"❌ 数据体检（周度）失败: {exc}")
+        logger.exception("数据体检（周度）异常")
+
+
 def create_scheduler() -> BackgroundScheduler:
     """
-    创建并配置后台调度器。三个定时任务：
+    创建并配置后台调度器。四个定时任务：
     - 盘后 15:30 触发每日数据更新，jitter=3600（±1h 内随机）
     - 盘前 09:27 触发每日数据更新，jitter=60（9:26:00~9:28:00，集合竞价后、开盘前随机）
     - 周六 10:00 触发板块全量同步（周度兜底，见 BACKEND.md §0.3）
-    三者共享同一把文件锁互斥；max_instances=1；每日更新失败后 10 分钟自动重试
+    - 周六 11:00 数据体检（周度兜底；平时每次日更跑完都会接着体检一次）
+    前三者共享同一把文件锁互斥；max_instances=1；每日更新失败后 10 分钟自动重试
     最多 3 次，周度兜底失败不重试（下周还会再跑，非关键路径）。
     """
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
@@ -260,5 +295,20 @@ def create_scheduler() -> BackgroundScheduler:
         name="板块全量同步（周度兜底）",
         replace_existing=True,
         misfire_grace_time=3600 * 6,  # 错过 6 小时内仍可补跑（非关键路径，宽松些）
+    )
+    # 数据体检（周度兜底）：只读，平时每次日更之后已经体检过
+    scheduler.add_job(
+        _run_weekly_data_audit,
+        trigger=CronTrigger(
+            day_of_week="sat",
+            hour=11,
+            minute=0,
+            timezone="Asia/Shanghai",
+        ),
+        max_instances=1,
+        id="weekly_data_audit",
+        name="数据体检（周度）",
+        replace_existing=True,
+        misfire_grace_time=3600 * 6,
     )
     return scheduler
