@@ -95,6 +95,12 @@ def _fetch_one(code: str, days: int):
 
 def _sector_codes(api: str, scope: str) -> list:
     """板块列表从**生产 API** 取，不依赖本地数据库——本地库跟线上不是一份数据。"""
+    if scope == "missing":
+        # 生产上最新一份数据体检报告里「板块指数日线」那项列出的缺口（历史不足 / 有洞）
+        from app.services.data_audit_service import sector_export_codes
+        r = httpx.get(f"{api}/api/admin/data-audit", timeout=30)
+        r.raise_for_status()
+        return sector_export_codes(r.json().get("report"))
     r = httpx.get(f"{api}/api/sectors", timeout=30)
     r.raise_for_status()
     items = r.json().get("items") or []
@@ -114,7 +120,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default="sector_klines.jsonl")
     ap.add_argument("--api", default=DEFAULT_API, help="取板块列表的生产地址")
-    ap.add_argument("--scope", choices=["all", "evidence"], default="all")
+    ap.add_argument("--scope", choices=["all", "evidence", "missing"], default="all",
+                    help="missing = 生产数据体检报告里缺历史 / 有洞的关注板块")
     ap.add_argument("--days", type=int, default=300)
     ap.add_argument("--delay", type=float, default=15,
                     help="每次请求间隔秒。实测约 2 秒一个、连取 20 个就会被限流；"
@@ -147,7 +154,7 @@ def main():
     print(f"{len(codes)} 个板块，间隔 {args.delay}s + 抖动，"
           f"预计 {len(codes) * args.delay / 60:.0f} 分钟\n")
 
-    ok = fail = bars_total = streak = 0
+    ok = fail = no_data = bars_total = streak = 0
     stopped = False
     # 取数见 _fetch_one：每次新连接 + ut + 浏览器请求头（2026-09-12 实测能过，见那里的说明）
     with open(args.out, "a" if args.resume else "w", encoding="utf-8") as f:
@@ -155,13 +162,16 @@ def main():
             if i:
                 time.sleep(args.delay * random.uniform(0.8, 1.4))
             rows, kind, detail = _fetch_one(code, args.days)
+            if kind == "no_data":
+                # 合法 JSON 但没有序列：这个板块本来就没有指数日线，不是被拦——不算连续失败。
+                # 写一条空记录：导入时记下来，数据体检就不再把它当缺口；--resume 也不会再取它
+                print(f"  {code} 无数据（该板块没有指数日线）")
+                f.write(json.dumps({"code": code, "rows": []}) + "\n")
+                no_data += 1
+                streak = 0
+                continue
             if kind != "ok":
                 fail += 1
-                if kind == "no_data":
-                    # 合法 JSON 但没有序列：这个板块本来就没有指数日线，不是被拦——不算连续失败
-                    print(f"  {code} 无数据（该板块没有指数日线）")
-                    streak = 0
-                    continue
                 print(f"  {code} 失败（{kind}）: {detail}")
                 streak += 1
                 if streak >= args.stop_after_failures:
@@ -179,6 +189,8 @@ def main():
                 print(f"  已完成 {ok}/{len(codes)}，累计 {bars_total} 根")
 
     print(f"\n成功 {ok} 个板块，共 {bars_total} 根，写入 {args.out}")
+    if no_data:
+        print(f"无数据 {no_data} 个（东财没有这些板块的指数日线，已写空记录，导入时会记下）")
     if fail:
         print(f"失败 {fail} 个。加 --resume 重跑会只补这些（已导出的跳过、追加写）")
     if stopped:

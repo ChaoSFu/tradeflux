@@ -22,6 +22,7 @@ import SpeculationRadar from '@/pages/SpeculationRadar'
 import LimitUpSectorRadar from '@/pages/LimitUpSectorRadar'
 import WeakToStrongRadarGuide from '@/pages/WeakToStrongRadarGuide'
 import PreTradeCheck from '@/pages/PreTradeCheck'
+import DataHealth from '@/pages/DataHealth'
 
 // ── V2：独立路由树，跟 V1 完全并行 ──────────────────────────────────────
 // 2026-09-12 起 V2 冻结：不再维护，只维护 V1 界面。代码和 /v2 路由暂时保留（删不删另说），V1 不要 import @/v2。
@@ -56,6 +57,8 @@ export default function App() {
           <Route path="review" element={<DailyReview />} />
           <Route path="trade-journal" element={<TradeJournal />} />
           <Route path="pre-trade-check" element={<PreTradeCheck />} />
+          {/* 数据体检：谁都能看，补数按钮要登录（后端接口本身也要登录） */}
+          <Route path="data-health" element={<DataHealth />} />
           {/* ── 涨跌停分析：四合一整合页 ─────────────────────────────
               旧的四个页面**没有删**，挪到 /legacy/* 继续可访问。整合页有没有
               漏掉东西，只有对着原页面才看得出来；redirect 如果同时让原页面

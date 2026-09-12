@@ -117,3 +117,23 @@ def last_n_trading_days(days: List[date], upto: date, n: int) -> List[date]:
     """截至 upto（含）的最近 n 个交易日，升序。不足 n 个就有多少给多少。"""
     sel = [x for x in days if x <= upto]
     return sel[-n:] if n > 0 else []
+
+
+def calendar_status(cal: Optional[List[date]], d: date) -> dict:
+    """
+    交易日历（fuyao）只到拉取当天、不含未来日：盘中 d 还没进日历是常态，**不等于「非交易日」**。
+    但日历最后一天和 d 之间如果还夹着工作日，就是日历落后了——前一交易日可能算错，
+    T-1 的事实不能再当成 T-1 用。
+
+    返回 {"last": 日历最后一天, "behind": 是否落后, "is_trading_day": True / False / None（说不准）}。
+    买入检查和数据体检共用这一份判断（原在 pre_trade_check_service，2026-09-12 挪到这里）。
+    """
+    weekday = d.weekday() < 5
+    if not cal:
+        return {"last": None, "behind": None, "is_trading_day": None if weekday else False}
+    last = cal[-1]
+    if d <= last:
+        return {"last": last, "behind": False, "is_trading_day": d in set(cal)}
+    gap = [last + timedelta(days=i) for i in range(1, (d - last).days)]
+    return {"last": last, "behind": any(x.weekday() < 5 for x in gap),
+            "is_trading_day": None if weekday else False}
