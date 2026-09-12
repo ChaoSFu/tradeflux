@@ -97,9 +97,10 @@ def main():
         elif added == 0:
             print("⚠️ 一行都没写。检查文件内容，别让『导入成功』掩盖『其实没写』")
         else:
-            print("\n下一步：回填生命周期快照，RS_sector 才会用上真板块指数序列")
-            print("  python scripts/backfill_leader_cycle_snapshots.py "
-                  "--days 60 --overwrite --include-today")
+            # 2026-09-12 核对：生命周期快照的 RS_sector 走东财板块区间涨幅（rs_sector_source=vendor），
+            # 不读这张表。导入只是把板块指数历史补齐备用，**不用**再回填生命周期快照
+            print("\n已写入。现在还没有页面读板块指数日线（RS_sector 用的是东财板块区间涨幅），"
+                  "不用再回填生命周期快照")
     finally:
         db.close()
 

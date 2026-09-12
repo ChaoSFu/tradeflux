@@ -27,8 +27,10 @@ clist 调用里顺手写（f2 字段，零新增请求，走的是没被拦的 p
 
 ## 礼貌
 
-默认 1.5 秒间隔 + 抖动，失败退避。**别把自己家的 IP 也打进去**——真被封了就
-连这条路都没了。308 个板块约 10 分钟。
+开发机这边的 push2his 也按频率限流：2026-09-12 实测约 2 秒一个、连取 20 个就被掐
+（浏览器控制台里也一样），封禁至少二十分钟。所以默认 15 秒一个 + 抖动，连续失败 5 次
+就停手，过一阵加 `--resume` 接着导。**别把自己家的 IP 也打进去**——真被封了就连这条
+路都没了。300 个板块约 75 分钟。
 """
 import argparse
 import json
@@ -36,15 +38,59 @@ import os
 import random
 import sys
 import time
-from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx
 
-from app.services.eastmoney_fetcher import HEADERS, KLINE_URL, _parse_sector_klines
+from app.services.eastmoney_fetcher import KLINE_URL, _parse_sector_klines
 
 DEFAULT_API = "http://47.250.165.189"
+
+
+# 东财行情页请求 push2his 时自带的公开参数（不是账号凭据）+ 浏览器本来就会带的请求头
+_UT = "fa5fd1943c7b386f172d6893dbfba10b"
+# 跟浏览器里那条能通的请求（2026-09-12 从 DevTools 复制）一模一样的一整套请求头。
+# 当天一度以为「带不带 ut、请求头全不全」决定能不能过；后来浏览器自己也是连取 20 个就被掐——
+# 真正起作用的是频率限流。这套头只是让请求跟网页发的一致，不是通关钥匙，别指望靠改头提速
+_PAGE_HEADERS = {
+    "Accept": "*/*", "Accept-Language": "zh-CN,zh;q=0.9", "Referer": "https://quote.eastmoney.com/",
+    "Sec-Fetch-Dest": "script", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Site": "same-site",
+    "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"),
+    "sec-ch-ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+    "sec-ch-ua-mobile": "?0", "sec-ch-ua-platform": '"macOS"',
+}
+
+
+def _fetch_one(code: str, days: int):
+    """
+    像东财行情页一样取一个板块：每次新建连接、带 ut 和浏览器请求头。返回 (rows, kind, detail)。
+
+    失败分类跟 fetch_sector_kline_detailed 一致：blocked 被拦（被掐连接、403/429/451/503、
+    返回的不是 JSON，算连续失败）/ no_data 板块本来没有指数日线（不算）/ error 拿到了但解析不出。
+    """
+    try:
+        with httpx.Client(headers=_PAGE_HEADERS, timeout=20, follow_redirects=True) as c:
+            r = c.get(KLINE_URL, params={
+                "secid": f"90.{code}", "ut": _UT,
+                "fields1": "f1,f2,f3,f4,f5,f6",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+                "klt": 101, "fqt": 1, "end": "20500101", "lmt": days,
+            })
+    except Exception as e:  # noqa: BLE001
+        return [], "blocked", f"{type(e).__name__}: {str(e)[:80]}"
+    if r.status_code in (403, 429, 451, 503):
+        return [], "blocked", f"HTTP {r.status_code}"
+    try:
+        payload = r.json()
+    except ValueError:
+        return [], "blocked", f"不是 JSON：{r.text[:60]!r}"
+    raw = (payload.get("data") or {}).get("klines") or []
+    if not raw:
+        return [], "no_data", "data.klines 为空"
+    rows = _parse_sector_klines(raw)   # 跟服务端同一套解析
+    return (rows, "ok", "") if rows else ([], "error", f"拿到 {len(raw)} 行但解析不出")
 
 
 def _sector_codes(api: str, scope: str) -> list:
@@ -70,9 +116,14 @@ def main():
     ap.add_argument("--api", default=DEFAULT_API, help="取板块列表的生产地址")
     ap.add_argument("--scope", choices=["all", "evidence"], default="all")
     ap.add_argument("--days", type=int, default=300)
-    ap.add_argument("--delay", type=float, default=1.5,
-                    help="每次请求间隔秒。别调小——把自己的 IP 也打进去就没退路了")
+    ap.add_argument("--delay", type=float, default=15,
+                    help="每次请求间隔秒。实测约 2 秒一个、连取 20 个就会被限流；"
+                         "别调小——把自己的 IP 也打进去就没退路了")
     ap.add_argument("--codes", help="逗号分隔，直接指定板块码，跳过 API")
+    ap.add_argument("--stop-after-failures", type=int, default=5,
+                    help="连续失败这么多次就停手——多半是被限流了，接着打只会把自己的 IP 也打死")
+    ap.add_argument("--resume", action="store_true",
+                    help="接着上次的 --out 往下导：文件里已有的板块跳过，追加写（失败的会重试）")
     args = ap.parse_args()
 
     codes = ([c.strip() for c in args.codes.split(",") if c.strip()]
@@ -80,36 +131,47 @@ def main():
     if not codes:
         print("没有拿到板块列表")
         return
+    if args.resume and os.path.exists(args.out):
+        done = set()
+        with open(args.out, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    done.add(json.loads(line)["code"])
+                except (ValueError, KeyError):
+                    pass
+        codes = [c for c in codes if c not in done]
+        print(f"--resume：{args.out} 里已有 {len(done)} 个板块，这次只导剩下的 {len(codes)} 个")
+        if not codes:
+            print("没有剩下的，不发请求")
+            return
     print(f"{len(codes)} 个板块，间隔 {args.delay}s + 抖动，"
           f"预计 {len(codes) * args.delay / 60:.0f} 分钟\n")
 
-    end = date.today().strftime("%Y%m%d")
-    ok = fail = bars_total = 0
-    # 每次新建 Client：这条路不追求快，追求"别被当成爬虫"
-    with open(args.out, "w", encoding="utf-8") as f:
+    ok = fail = bars_total = streak = 0
+    stopped = False
+    # 取数见 _fetch_one：每次新连接 + ut + 浏览器请求头（2026-09-12 实测能过，见那里的说明）
+    with open(args.out, "a" if args.resume else "w", encoding="utf-8") as f:
         for i, code in enumerate(codes):
             if i:
                 time.sleep(args.delay * random.uniform(0.8, 1.4))
-            try:
-                with httpx.Client(headers=HEADERS, timeout=20,
-                                  follow_redirects=True) as c:
-                    resp = c.get(KLINE_URL, params={
-                        "secid": f"90.{code}",
-                        "fields1": "f1,f2,f3,f4,f5,f6",
-                        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-                        "lmt": args.days, "klt": 101, "fqt": 1, "end": end,
-                    })
-                raw = ((resp.json().get("data") or {}).get("klines")) or []
-                rows = _parse_sector_klines(raw)   # **跟服务端同一套解析**，不另写
-            except Exception as e:  # noqa: BLE001
-                print(f"  {code} 失败: {type(e).__name__}: {str(e)[:60]}")
+            rows, kind, detail = _fetch_one(code, args.days)
+            if kind != "ok":
                 fail += 1
+                if kind == "no_data":
+                    # 合法 JSON 但没有序列：这个板块本来就没有指数日线，不是被拦——不算连续失败
+                    print(f"  {code} 无数据（该板块没有指数日线）")
+                    streak = 0
+                    continue
+                print(f"  {code} 失败（{kind}）: {detail}")
+                streak += 1
+                if streak >= args.stop_after_failures:
+                    print(f"\n连续失败 {streak} 次，停手——多半是被限流了，别硬打。过一阵接着导：")
+                    print(f"  python scripts/export_sector_klines.py --out {args.out} --resume")
+                    stopped = True
+                    break
                 time.sleep(3)          # 失败就多歇一会，别硬打
                 continue
-            if not rows:
-                print(f"  {code} 无数据（该板块可能没有指数日线）")
-                fail += 1
-                continue
+            streak = 0
             f.write(json.dumps({"code": code, "rows": rows}, ensure_ascii=False) + "\n")
             ok += 1
             bars_total += len(rows)
@@ -118,7 +180,9 @@ def main():
 
     print(f"\n成功 {ok} 个板块，共 {bars_total} 根，写入 {args.out}")
     if fail:
-        print(f"失败 {fail} 个。**重跑会覆盖文件**，要续传请改 --out 另存再合并")
+        print(f"失败 {fail} 个。加 --resume 重跑会只补这些（已导出的跳过、追加写）")
+    if stopped:
+        return
     print(f"\n下一步：把 {args.out} 传到服务器，然后跑")
     print(f"  python scripts/import_sector_klines.py {args.out}")
 
