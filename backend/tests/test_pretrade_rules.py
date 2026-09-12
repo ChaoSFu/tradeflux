@@ -266,3 +266,16 @@ def test_停牌的高标不算进反馈_但要列出来():
                                   {"name": "乙", "board_prev": 3, "pct": -8.9}]
     t = [x for x in _texts(_run(c)) if "高标" in x]
     assert t and "拿不到：甲" in t[0] and "甲(6板)" not in t[0]
+
+
+# ── 2026-09-12 生产：仓位 100%、没填失效价，只得到一句「风险算不出来」 ─────────────
+
+def test_没填失效价_仓位超过压力损失算出的上限也要BLOCKED():
+    res = _run(inp=_inp(planned_stop=None, position_pct=100.0))
+    assert res["decision"]["verdict"] == "BLOCKED"
+    assert any(i["key"] == "position" and i["level"] == "FAIL" for i in res["decision"]["vetoes"])
+
+
+def test_没填失效价_仓位在压力上限以内只提示算不准():
+    res = _run(inp=_inp(planned_stop=None, position_pct=10.0))
+    assert res["decision"]["verdict"] == "WAIT" and not res["decision"]["vetoes"]

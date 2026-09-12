@@ -314,3 +314,59 @@ def test_慢了或失败了记WARNING_缓存命中单独标(caplog):
     assert r.levelno == logging.WARNING
     assert "涨停池=缓存" in m and "慢[涨跌分布8.8s]" in m and "没回" in m and "未知[板块]" in m
     assert "个股源 腾讯0.4 行情0.3" in m
+
+
+# ── 2026-09-12 生产日志：周六实时检查被涨停池 ConnectTimeout 拖了 20 秒 ─────────────
+
+def _live_setup(db, monkeypatch, now):
+    svc._live_cache.clear()
+    _seed(db)
+    monkeypatch.setattr(svc, "now_sh", lambda: now)
+    monkeypatch.setattr(svc, "get_trading_days", lambda *a, **k: CAL)
+    monkeypatch.setattr(svc, "get_intraday_context", lambda code, market, as_of, live, **k: _fake_ctx(code, as_of))
+    monkeypatch.setattr(svc, "get_quote_contexts", lambda items, as_of: {c: _fake_ctx(c, as_of) for c, _, _ in items})
+
+
+def test_非交易日做实时检查_不去取全市场实时数(db, monkeypatch):
+    _live_setup(db, monkeypatch, datetime(2026, 9, 12, 12, 27, 49))       # 周六
+    for name in ("_limit_touch_live", "_breadth_live", "_cohort_quotes"):
+        monkeypatch.setattr(svc, name, lambda *a, **k: pytest.fail("非交易日不该取"))
+    ctx = svc.build_context(db, "me", "600354", None)
+    assert ctx["is_trading_day"] is False
+    assert "不是交易日" in ctx["market"]["limit_touch"]["meta"]["notes"][0]
+    svc._live_cache.clear()
+
+
+def test_全市场某一路太慢_过时不候_晚到的结果照样进缓存(db, monkeypatch, caplog):
+    import time as _t
+    _live_setup(db, monkeypatch, datetime(2026, 9, 11, 10, 0, 0))
+    monkeypatch.setattr(svc, "LIVE_SOURCE_BUDGET_S", 0.2)
+
+    def slow_pool(d):
+        _t.sleep(0.8)
+        return {"touched": 30, "codes": [], "meta": {"quality": ic.EXACT}}
+
+    monkeypatch.setattr(svc, "_limit_touch_live", slow_pool)
+    monkeypatch.setattr(svc, "_breadth_live", lambda: {"up": 1, "meta": {"quality": ic.EXACT}})
+    monkeypatch.setattr(svc, "_cohort_quotes", lambda codes, prev_d, d: {"meta": {"quality": ic.EXACT}})
+    caplog.set_level(logging.INFO, logger="tradeflux.pretrade")
+    t = _t.perf_counter()
+    ctx = svc.build_context(db, "me", "600354", None)
+    assert _t.perf_counter() - t < 0.7, "不能被最慢的一路拖住"
+    touch = ctx["market"]["limit_touch"]
+    assert touch["touched"] is None and "没回" in touch["meta"]["notes"][0]
+    assert "失败[" in caplog.records[-1].getMessage()
+    _t.sleep(1.0)
+    assert ("touch", date(2026, 9, 11)) in svc._live_cache, "晚到的结果进缓存，下次直接用"
+    svc._live_cache.clear()
+
+
+def test_指数的同一句说明不重复(db):
+    d = AS_OF.date()
+    intr = {}
+    for code, _, _ in svc.CORE_INDEXES:
+        c = ic.IntradayContext(code=code, as_of=AS_OF, trade_date=d)
+        c.notes.append("2026-09-12 还没有分钟数据（没开盘或不是交易日）")
+        intr[code] = c
+    mk = svc._market_block(db, False, AS_OF, d, PREV, intr, [])
+    assert mk["indexes_meta"]["notes"] == ["2026-09-12 还没有分钟数据（没开盘或不是交易日）"]

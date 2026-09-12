@@ -39,6 +39,27 @@ function nowLocalSec() {
 }
 /** datetime-local 可能不带秒；后端要的是完整时刻 */
 const withSeconds = (s: string) => (s.length === 16 ? `${s}:00` : s)
+/** 落在开盘前 / 午休 / 收盘后的时刻，挪进最近的交易时段——一键改日期时用 */
+function clampSession(hms: string) {
+  if (hms < '09:30:00') return '09:45:00'
+  if (hms > '11:30:00' && hms < '13:00:00') return '13:00:00'
+  if (hms > '15:00:00') return '14:55:00'
+  return hms
+}
+const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六']
+const weekdayOf = (ymd: string) => { const [y, m, d] = ymd.split('-').map(Number); return new Date(y, m - 1, d).getDay() }
+/**
+ * 切到「历史时刻」的默认值。之前直接填今天：周末打开就落在非交易日，满屏「未知」（2026-09-12 生产）。
+ * 有后端日历就用前一交易日；还没拿到日历时至少避开周末。
+ */
+function defaultHistorical(ctx?: { is_trading_day: boolean | null; prev_trade_date: string | null }) {
+  const now = nowLocalSec()
+  if (ctx?.is_trading_day === false && ctx.prev_trade_date) return `${ctx.prev_trade_date}T${clampSession(now.slice(11))}`
+  const d = new Date()
+  if (d.getDay() !== 0 && d.getDay() !== 6) return now
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${clampSession(now.slice(11))}`
+}
 const num = (s: string) => (s.trim() === '' || Number.isNaN(Number(s)) ? null : Number(s))
 const pctTxt = (v: number | null | undefined) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
 
@@ -142,7 +163,7 @@ export default function PreTradeCheck() {
               <div className="flex gap-1">
                 {(['LIVE', 'HISTORICAL'] as const).map((m) => (
                   <button key={m} type="button"
-                          onClick={() => { setMode(m); if (m === 'HISTORICAL' && !asOf) setAsOf(nowLocalSec()) }}
+                          onClick={() => { setMode(m); if (m === 'HISTORICAL' && !asOf) setAsOf(defaultHistorical(ctx)) }}
                           className={cn('rounded border px-1.5 text-[11px] leading-5',
                             mode === m ? 'border-accent/50 bg-accent/15 text-accent' : 'border-bg-border text-text-muted hover:text-text-secondary')}>
                     {m === 'LIVE' ? '此刻' : '历史时刻'}
@@ -200,6 +221,19 @@ export default function PreTradeCheck() {
               </button>
             )}
           </div>
+          {ctx?.is_trading_day === false && (
+            <div className="flex flex-wrap items-center gap-2 rounded border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">
+              <span>
+                {ctx.trade_date}（周{WEEKDAY[weekdayOf(ctx.trade_date)]}）不是交易日：这个时刻下不了单，也没有行情，下面的「未知」都是因为这个。
+              </span>
+              {ctx.prev_trade_date && (
+                <button type="button" className="rounded border border-warn/50 px-2 py-0.5 hover:bg-warn/20"
+                        onClick={() => { setMode('HISTORICAL'); setAsOf(`${ctx.prev_trade_date}T${clampSession(ctx.as_of.slice(11, 19))}`) }}>
+                  改成前一交易日 {ctx.prev_trade_date} {clampSession(ctx.as_of.slice(11, 19))}
+                </button>
+              )}
+            </div>
+          )}
           {ctxQ.isPending && <div className="text-xs text-text-muted">正在取 as_of 那一刻的行情、板块、个股和交易记录……</div>}
           {ctxQ.isError && <div className="text-xs text-danger">取数失败：{(ctxQ.error as Error).message}</div>}
           {ctx && (
@@ -241,7 +275,7 @@ export default function PreTradeCheck() {
                     {ctx.data_quality.map((r) => (
                       <tr key={r.module} className="border-t border-bg-border/40">
                         <td className="py-1 pr-2 whitespace-nowrap text-text-secondary">{r.module}</td>
-                        <td className="py-1 pr-2"><QualityBadge q={r.quality} /></td>
+                        <td className="py-1 pr-2 whitespace-nowrap"><QualityBadge q={r.quality} /></td>
                         <td className="py-1 pr-2 whitespace-nowrap text-text-muted">{r.source}</td>
                         <td className="py-1 pr-2 whitespace-nowrap font-mono text-text-muted">{r.observed_at?.replace('T', ' ') ?? '—'}</td>
                         <td className="py-1 text-text-muted">{r.notes.join('；')}</td>

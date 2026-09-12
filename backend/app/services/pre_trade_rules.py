@@ -535,6 +535,18 @@ def check_risk(ctx: dict, inp: dict) -> dict:
         return _module("risk", "风险与仓位", items)
     if stop is None:
         items.append(_item("stop", "WARN", "没填计划失效价——风险算不出来", group="unmet"))
+        # 不用失效价也能卡住上限：真实上限 = 预算 ÷ max(结构止损, 压力损失) ≤ 预算 ÷ 压力损失。
+        # 连这个都超了，填什么失效价都救不回来（2026-09-12 生产：100% 仓位只得了一句「算不出来」）
+        cap = budget / stress * 100
+        halved = "（连续亏损已减半）" if cl >= LOSS_STREAK_HALVE else ""
+        if pos is not None and pos > cap + 1e-9:
+            items.append(_item("position", "FAIL",
+                               f"计划仓位 {pos:g}% 超过上限：就算不算失效价，只按压力损失 {stress:g}% 算，"
+                               f"风险预算 {budget:g}%{halved} 最多容纳 {cap:.1f}% 仓位",
+                               evidence={"max_position_pct": round(cap, 1)}))
+        elif pos is not None:
+            items.append(_item("position", "INFO",
+                               f"只按压力损失 {stress:g}% 算，仓位上限 {cap:.1f}%；填了失效价才算得准"))
     elif stop >= price:
         items.append(_item("stop", "FAIL", f"失效价 {stop} 不低于买入价 {price}——不是有效的失效条件"))
     else:

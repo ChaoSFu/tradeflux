@@ -28,7 +28,7 @@ const Q_ZH: Record<string, string> = { EXACT: '精确', APPROX: '近似', STALE:
 
 export function QualityBadge({ q }: { q: Quality | string }) {
   return (
-    <span className={cn('rounded border px-1 text-[10px] leading-4', Q_STYLE[q] ?? Q_STYLE.UNKNOWN)}
+    <span className={cn('whitespace-nowrap rounded border px-1 text-[10px] leading-4', Q_STYLE[q] ?? Q_STYLE.UNKNOWN)}
           title={q}>
       {Q_ZH[q] ?? q}
     </span>

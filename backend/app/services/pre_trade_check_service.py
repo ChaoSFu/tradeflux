@@ -79,6 +79,22 @@ SLOW_SOURCE_S = 3.0         # 单路超过这个也点名
 _PHASES = ("个股", "指数高标", "涨停池", "涨跌分布", "昨日涨停", "板块")
 _HIT_ZH = {"touch": "涨停池", "breadth": "涨跌分布", "cohort": "昨日涨停"}
 _FAIL_WORDS = ("失败", "没回", "异常")
+LIVE_SOURCE_BUDGET_S = 6.0  # 全市场三路实时数最多等这么久（2026-09-12 生产：周六涨停池 ConnectTimeout 等满 20 秒）
+_LIVE_SRC = {"touch": "东财涨停池", "breadth": "东财涨跌分布", "cohort": "实时行情"}
+
+
+def _unknown_live(k: str, note: str) -> dict:
+    """全市场某一路这次没取到：形状跟取到时一样，只是 UNKNOWN。"""
+    out: Dict[str, Any] = {"meta": _meta(_LIVE_SRC[k], quality=UNKNOWN, notes=[note])}
+    if k == "touch":
+        out.update(touched=None, codes=[])
+    return out
+
+
+def _gave_up_note(e: Exception) -> str:
+    if isinstance(e, TimeoutError):
+        return f"{LIVE_SOURCE_BUDGET_S:g} 秒没回，这次不等了（晚到的结果会进缓存）"
+    return f"取数异常（{type(e).__name__}）"
 
 
 def setup_file_log(log_dir: Optional[Path] = None) -> Optional[logging.Handler]:
@@ -364,7 +380,7 @@ def _market_block(db, live, as_of, d, prev_d, intr, high_boards, live_facts=None
         hb.append({**h, "pct": c.pct if c else None, "quality": c.quality if c else UNKNOWN})
     return {
         "indexes": indexes,
-        "indexes_meta": _meta("实时行情" if live else "腾讯分钟价", quality=_worst(i["quality"] for i in indexes), notes=notes[:3]),
+        "indexes_meta": _meta("实时行情" if live else "腾讯分钟价", quality=_worst(i["quality"] for i in indexes), notes=list(dict.fromkeys(notes))[:3]),
         "breadth": breadth, "limit_touch": touch, "prev_cohort": cohort,
         "high_boards": hb, "prev_day": _prev_day_market(db, prev_d),
     }
@@ -567,12 +583,13 @@ def _discipline_block(db, owner, code, as_of, cal) -> dict:
 
 # ── 汇总 ──────────────────────────────────────────────────────────────────────
 
-def _result_or(fut, fallback, name: str = ""):
+def _result_or(fut, fallback, name: str = "", timeout: Optional[float] = None):
     try:
-        return fut.result()
+        return fut.result(timeout=timeout)
     except Exception as e:  # noqa: BLE001
-        # 各路自己都兜底了，走到这里是没想到的异常（比如那次时区 TypeError）：必须留痕
-        logger.warning("取数异常 %s: %r", name, e)
+        if not isinstance(e, TimeoutError):     # 超时会在检查那一行记「失败[…没回]」，这里不重复
+            # 各路自己都兜底了，走到这里是没想到的异常（比如那次时区 TypeError）：必须留痕
+            logger.warning("取数异常 %s: %r", name, e)
         return fallback(e)
 
 
@@ -623,13 +640,17 @@ def build_context(db: Session, owner: Optional[str], code: str, as_of: Optional[
     # 外部请求一起发。之前是一段接一段：最慢的东财涨跌分布要等 7 路分钟数据全取完才开始
     timings: Dict[str, Any] = {}
     hits: set = set()
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    # 非交易日做实时检查：全市场的实时数没有意义，东财的池子周末还可能连不上——直接不取
+    trading_day = cal_st["is_trading_day"] is not False
+    ex = ThreadPoolExecutor(max_workers=5)
+    try:
+        t_submit = monotonic()
         f_stock = ex.submit(_timed, timings, "个股", get_intraday_context, code, market, as_of, live=live)
         f_others = (ex.submit(_timed, timings, "指数高标", get_quote_contexts, others, as_of) if live
                     else ex.submit(_timed, timings, "指数高标", get_intraday_contexts, others, as_of,
                                    live=False, detail=False))
         f_live = {}
-        if live:
+        if live and trading_day:
             f_live = {"touch": ex.submit(_timed, timings, "涨停池", _cached_live, ("touch", d),
                                          lambda: _limit_touch_live(d), hits),
                       "breadth": ex.submit(_timed, timings, "涨跌分布", _cached_live, ("breadth", d),
@@ -638,7 +659,21 @@ def build_context(db: Session, owner: Optional[str], code: str, as_of: Optional[
                                           lambda: _cohort_quotes(cohort_codes, prev_d, d), hits)}
         sctx = _result_or(f_stock, lambda e: _failed_ctx(code, as_of, e), "个股")
         intr = _result_or(f_others, lambda e: {}, "指数高标")
-        live_facts = {k: _result_or(f, lambda e: None, k) for k, f in f_live.items()} or None
+        live_facts = None
+        if live and not trading_day:
+            live_facts = {k: _unknown_live(k, f"{d} 不是交易日，不取实时数据") for k in _LIVE_SRC}
+        elif live:
+            # 全市场三路从发出算起最多等 LIVE_SOURCE_BUDGET_S 秒：没回来的这次不等，线程自己跑完——
+            # 取到了照样进缓存，下一次检查直接用
+            live_facts = {}
+            for k, f in f_live.items():
+                left = max(0.05, LIVE_SOURCE_BUDGET_S - (monotonic() - t_submit))
+                live_facts[k] = _result_or(f, lambda e, k=k: _unknown_live(k, _gave_up_note(e)),
+                                           _HIT_ZH[k], timeout=left)
+                timings.setdefault(_HIT_ZH[k], round(monotonic() - t_submit, 2))
+    finally:
+        ex.shutdown(wait=False)             # 不等还在跑的慢线程
+    timings = dict(timings)                 # 快照：慢线程晚到的耗时不再改这次的记录
 
     structure = replay_structure(sctx, pullback)
     sh = intr.get("000001")
