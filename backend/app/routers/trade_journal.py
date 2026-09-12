@@ -84,7 +84,12 @@ def create_entry(
 
     entry = TradeJournal(owner=username, **body.model_dump())
 
-    # 自动带入交易当下的市场环境快照（失败不阻塞记录）
+    # 自动带入市场环境快照（失败不阻塞记录）。
+    #
+    # ⚠️ 现有行为，2026-09-11 标注：这里取的是 get_current_market_state()——**录入那一刻**
+    # 的状态，不是 trade_time 那一刻的。晚上补录一笔 09:46 的买入，存进去的是晚上的市场
+    # 状态。本轮不改（不为这个重构 Journal），但它不能拿来复盘"当时的市场"：要看某个
+    # 时刻的真实环境，用买入检查（/pre-trade-check）的 as_of 模式。
     try:
         ms = get_current_market_state(db)
         entry.mkt_temperature = ms.emotional_temperature

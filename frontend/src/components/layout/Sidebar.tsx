@@ -22,6 +22,7 @@ import {
   Zap,
   Mountain,
   Archive,
+  ClipboardCheck,
 } from 'lucide-react'
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
@@ -71,6 +72,8 @@ const NAV: NavEntry[] = [
       { type: 'link', to: '/sector-emotion', label: '情绪板块', icon: Activity  },
     ],
   },
+  // 买入前的纪律对账：放在「看市场」和「复盘」之间，跟决策的先后一致
+  { type: 'link', to: '/pre-trade-check', label: '买入检查', icon: ClipboardCheck },
   { type: 'link', to: '/review',  label: '日复盘',     icon: BookOpen },
   // 交易复盘：入口常显;未登录时页面展示功能介绍,数据仍受登录保护
   { type: 'link', to: '/trade-journal', label: '交易复盘', icon: NotebookPen },

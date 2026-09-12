@@ -130,6 +130,11 @@ function CandidateRow({
         <td className="px-2 py-2 whitespace-nowrap">
           <div className="font-mono text-accent">{cand.stock_code}</div>
           <div className="text-text-primary font-medium">{cand.stock_name}</div>
+          {/* 行本身点击是展开，入口要拦住冒泡 */}
+          <Link to={`/pre-trade-check?code=${cand.stock_code}`} onClick={(e) => e.stopPropagation()}
+                className="text-[10px] text-text-muted hover:text-accent underline decoration-dotted underline-offset-2">
+            买入检查
+          </Link>
         </td>
         <td className="px-2 py-2 max-w-[180px]">
           {cand.sector_name ? (

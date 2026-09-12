@@ -23,6 +23,8 @@ from app.models.market_index import IndexDailySnapshot, SectorIndexDaily
 from app.models.leader_cycle import LeaderCycleSnapshot
 from app.models.turnover_pool import TurnoverPoolDaily
 from app.models.market_effect import CohortOutcomeQuote
+from app.models.trade_journal import TradeJournal
+from app.models.pre_trade_check import PreTradeCheck
 from app.models.weak_to_strong_radar import (
     WeakToStrongCandidate, WeakToStrongEvent, WeakToStrongDiscoveryRun,
 )
@@ -41,6 +43,7 @@ _TABLES = [
     WeakToStrongCandidate.__table__, WeakToStrongEvent.__table__,
     WeakToStrongDiscoveryRun.__table__,
     CohortOutcomeQuote.__table__,
+    TradeJournal.__table__, PreTradeCheck.__table__,
 ]
 
 

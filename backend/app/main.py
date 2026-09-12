@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .database import init_db
-from .routers import stocks, sectors, reviews, market_state, screening, admin, auth, watchlist, market_index, trade_journal, market_effects, turnover, weak_to_strong_radar, limit_up_radar, speculation_radar, leader_cycle
+from .routers import stocks, sectors, reviews, market_state, screening, admin, auth, watchlist, market_index, trade_journal, market_effects, turnover, weak_to_strong_radar, limit_up_radar, speculation_radar, leader_cycle, pre_trade_check
 
 
 _scheduler = None  # 全局暴露，供 admin router 查询状态
@@ -14,6 +14,10 @@ async def lifespan(app: FastAPI):
     global _scheduler
     # ── 启动 ──────────────────────────────────────────────────────────────
     init_db()
+
+    # 买入检查的实战日志：backend/logs/pre_trade_check.log（一次取数一行各路耗时和数据质量）
+    from .services.pre_trade_check_service import setup_file_log
+    setup_file_log()
 
     # 启动内置调度器（与服务同生同死，重启自动清旧启动新）
     from .scheduler import create_scheduler
@@ -77,6 +81,7 @@ app.include_router(weak_to_strong_radar.router, prefix=settings.API_PREFIX)
 app.include_router(limit_up_radar.router, prefix=settings.API_PREFIX)
 app.include_router(speculation_radar.router, prefix=settings.API_PREFIX)
 app.include_router(leader_cycle.router, prefix=settings.API_PREFIX)
+app.include_router(pre_trade_check.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/health")

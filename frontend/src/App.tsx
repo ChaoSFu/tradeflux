@@ -21,6 +21,7 @@ import WeakToStrongRadar from '@/pages/WeakToStrongRadar'
 import SpeculationRadar from '@/pages/SpeculationRadar'
 import LimitUpSectorRadar from '@/pages/LimitUpSectorRadar'
 import WeakToStrongRadarGuide from '@/pages/WeakToStrongRadarGuide'
+import PreTradeCheck from '@/pages/PreTradeCheck'
 
 // ── V2：独立路由树，跟 V1 完全并行 ──────────────────────────────────────
 // 共用同一个后端、同一份 React Query 缓存、同一个 auth store；
@@ -53,6 +54,7 @@ export default function App() {
           <Route path="weak-to-strong-radar/guide" element={<WeakToStrongRadarGuide />} />
           <Route path="review" element={<DailyReview />} />
           <Route path="trade-journal" element={<TradeJournal />} />
+          <Route path="pre-trade-check" element={<PreTradeCheck />} />
           {/* ── 涨跌停分析：四合一整合页 ─────────────────────────────
               旧的四个页面**没有删**，挪到 /legacy/* 继续可访问。整合页有没有
               漏掉东西，只有对着原页面才看得出来；redirect 如果同时让原页面

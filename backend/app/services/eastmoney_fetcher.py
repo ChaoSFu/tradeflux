@@ -2771,3 +2771,107 @@ def _fetch_index_kline_tencent(secid: str, days: int = 70, timeout: int = 15) ->
         })
         prev_close = close
     return out
+
+
+# ── 分钟 K（2026-09-11 买入检查新增）──────────────────────────────────────────
+#
+# 仓库此前只有日 K。买入检查要回答「as_of 那一刻结构走到哪了」，得有分钟数据，
+# 而且**时间边界必须卡死**——as_of 之后的任何一笔成交都不能进来。
+#
+# 两个源都按 bar **结束**的时刻标时间（2026-09-11 实测）：
+#   · 腾讯 day/query：'0931 11.04 108986 125348899.00' = 09:31:00 那一刻的价、
+#     累计量（手）、累计额（元）；'0930' 那行是开盘价。只有价，没有分钟内高低
+#   · 新浪 getKLineData：'2026-09-11 09:31:00' 覆盖 09:30~09:31，有 OHLC，量是股
+# 所以调用方过滤一律按 dt <= as_of：bar 没结束，里面就混着 as_of 之后的成交。
+#
+# 能回溯多远（实测）：腾讯 day/query 5 个交易日（整天）；新浪 scale=1 最多 1023 根
+# ≈ 4 天多（最早那天从中间截断）；新浪 scale=5 1023 根 ≈ 22 个交易日。再往前没有。
+
+@dataclass
+class MinuteBar:
+    dt: datetime                     # bar **结束**时刻（北京时间，naive）
+    close: float
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    volume: Optional[float] = None   # 这一根的成交量（股）
+    amount: Optional[float] = None   # 这一根的成交额（元）
+
+
+TENCENT_MINUTE_DAYS_URL = "https://web.ifzq.gtimg.cn/appstock/app/day/query"
+SINA_MINUTE_KLINE_URL = "https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData"
+
+
+def _parse_tencent_minute_day(day_str, rows) -> List[MinuteBar]:
+    """'HHMM price cum_vol(手) cum_amt' → 每分钟一根，量额换成本分钟增量（股 / 元）。"""
+    try:
+        d = datetime.strptime(str(day_str), "%Y%m%d").date()
+    except (TypeError, ValueError):
+        return []
+    out: List[MinuteBar] = []
+    prev_vol = prev_amt = 0.0
+    for row in rows or []:
+        parts = str(row).split()
+        if len(parts) < 2 or len(parts[0]) != 4 or not parts[0].isdigit():
+            continue
+        price = _num_or_none(parts[1])
+        if not price or price <= 0:
+            continue
+        cum_vol = _num_or_none(parts[2]) if len(parts) > 2 else None
+        cum_amt = _num_or_none(parts[3]) if len(parts) > 3 else None
+        vol = amt = None
+        if cum_vol is not None:
+            vol = max(cum_vol - prev_vol, 0.0) * 100      # 手 → 股
+            prev_vol = cum_vol
+        if cum_amt is not None:
+            amt = max(cum_amt - prev_amt, 0.0)
+            prev_amt = cum_amt
+        out.append(MinuteBar(dt=datetime(d.year, d.month, d.day, int(parts[0][:2]), int(parts[0][2:])),
+                             close=price, volume=vol, amount=amt))
+    return out
+
+
+def fetch_minute_days_tencent(code: str, market: int,
+                              timeout: int = 10) -> Dict[date, Tuple[Optional[float], List[MinuteBar]]]:
+    """
+    腾讯最近 5 个交易日的 1 分钟数据：{交易日: (昨收, bars)}。
+    昨收取接口给的 prec（官方昨收，除权日也对）。失败抛异常，由调用方降级。
+    """
+    sym = f"{quote_prefix(code, market)}{code}"
+    with httpx.Client(headers=HEADERS, timeout=timeout, follow_redirects=True) as c:
+        resp = c.get(TENCENT_MINUTE_DAYS_URL, params={"code": sym})
+    body = json_or_explain(resp, "腾讯分钟 ")
+    node = (body.get("data") or {}).get(sym) or {}
+    out: Dict[date, Tuple[Optional[float], List[MinuteBar]]] = {}
+    for dd in node.get("data") or []:
+        bars = _parse_tencent_minute_day(dd.get("date"), dd.get("data"))
+        if bars:
+            out[bars[0].dt.date()] = (_num_or_none(dd.get("prec")), bars)
+    return out
+
+
+def fetch_minute_bars_sina(code: str, market: int, scale: int = 1, datalen: int = 1023,
+                           timeout: int = 10) -> List[MinuteBar]:
+    """
+    新浪分钟 K（有 OHLC），按时间升序。scale=1 约 4 天多，scale=5 约 22 个交易日。
+    dt = bar 结束时刻；volume 是股。失败抛异常，由调用方降级。
+    """
+    sym = f"{quote_prefix(code, market)}{code}"
+    with httpx.Client(headers=SINA_HEADERS, timeout=timeout, follow_redirects=True) as c:
+        resp = c.get(SINA_MINUTE_KLINE_URL, params={
+            "symbol": sym, "scale": scale, "ma": "no", "datalen": datalen})
+    rows = json_or_explain(resp, "新浪分钟K ")
+    out: List[MinuteBar] = []
+    for r in rows or []:
+        try:
+            dt = datetime.strptime(str(r.get("day", "")), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        close = _num_or_none(r.get("close"))
+        if not close or close <= 0:
+            continue
+        out.append(MinuteBar(dt=dt, close=close, open=_num_or_none(r.get("open")),
+                             high=_num_or_none(r.get("high")), low=_num_or_none(r.get("low")),
+                             volume=_num_or_none(r.get("volume")), amount=_num_or_none(r.get("amount"))))
+    out.sort(key=lambda b: b.dt)
+    return out

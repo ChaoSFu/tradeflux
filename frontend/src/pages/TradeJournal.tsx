@@ -9,6 +9,7 @@ import { fetchTradeJournal, createTradeEntry, deleteTradeEntry, type TradeJourna
 import { LoadingRows } from '@/components/common/LoadingSpinner'
 import { LoginModal } from '@/components/auth/LoginModal'
 import { useAuthStore } from '@/store/auth'
+import { Link } from 'react-router-dom'
 import { cn } from '@/utils/cn'
 import { format } from 'date-fns'
 import { Lock, Plus, Trash2, BookOpen, AlertTriangle, NotebookPen, ScanSearch, ShieldAlert, LineChart } from 'lucide-react'
@@ -192,6 +193,13 @@ function Journal() {
   )
 }
 
+function reviewHref(t: TradeJournalEntry) {
+  const q = new URLSearchParams({ code: t.stock_code ?? '', as_of: t.trade_time.slice(0, 19), price: String(t.price) })
+  if (t.position_pct != null) q.set('position_pct', String(t.position_pct))
+  if (t.planned_stop != null) q.set('planned_stop', String(t.planned_stop))
+  return `/pre-trade-check?${q.toString()}`
+}
+
 function Row({ t, onDelete }: { t: TradeJournalEntry; onDelete: () => void }) {
   const isExit = EXIT_ACTIONS.has(t.action)
   const actionColor = t.action === '买入' ? 'text-up' : 'text-down'
@@ -226,13 +234,20 @@ function Row({ t, onDelete }: { t: TradeJournalEntry; onDelete: () => void }) {
       </td>
       <td className="px-2.5 py-2 whitespace-nowrap text-text-muted">
         {t.mkt_phase ? (
-          <span title={`温度 ${t.mkt_temperature} · 建议仓位 ${t.mkt_suggested_position}%`}>
+          <span title={`录入这条记录时自动带入的市场状态，不一定是成交那一刻的（晚上补录就是晚上的状态）· 温度 ${t.mkt_temperature} · 建议仓位 ${t.mkt_suggested_position}%`}>
             {PHASE_ZH[t.mkt_phase] ?? t.mkt_phase}
             {t.mkt_suggested_position != null && <span className="font-mono ml-1 opacity-70">{t.mkt_suggested_position}%</span>}
           </span>
         ) : '—'}
       </td>
-      <td className="px-2.5 py-2">
+      <td className="px-2.5 py-2 whitespace-nowrap">
+        {t.action === '买入' && t.stock_code && (
+          // 按这笔的成交时刻复盘：只用那一刻能知道的信息
+          <Link to={reviewHref(t)} title="用买入检查按这笔的成交时刻复盘"
+                className="mr-1 text-[11px] text-text-muted hover:text-accent underline decoration-dotted underline-offset-2">
+            复盘买点
+          </Link>
+        )}
         <button onClick={onDelete} className="p-1 rounded text-text-muted hover:text-down hover:bg-bg-elevated transition-colors" title="删除">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
