@@ -24,6 +24,7 @@ import WeakToStrongRadarGuide from '@/pages/WeakToStrongRadarGuide'
 import PreTradeCheck from '@/pages/PreTradeCheck'
 
 // ── V2：独立路由树，跟 V1 完全并行 ──────────────────────────────────────
+// 2026-09-12 起 V2 冻结：不再维护，只维护 V1 界面。代码和 /v2 路由暂时保留（删不删另说），V1 不要 import @/v2。
 // 共用同一个后端、同一份 React Query 缓存、同一个 auth store；
 // V1 的路由、页面、组件一行没动
 import V2Layout from '@/v2/layout/V2Layout'
