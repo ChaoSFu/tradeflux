@@ -434,6 +434,15 @@ def _sector_block(db, live, as_of, d, prev_d, stock, thesis_id, sctx, touch_code
             StockDailySnapshot.stock_id.in_(member_ids))}
         out["sector_max_board_prev"] = db.query(func.max(StockDailySnapshot.board_count)).filter(
             StockDailySnapshot.date == prev_d, StockDailySnapshot.stock_id.in_(member_ids)).scalar()
+        # 板块昨日最高标（≥2 板）是谁：「高标晋级」这条理由要拿它们对照截至 as_of 的触板（v3）
+        smax = out["sector_max_board_prev"]
+        top_ids = set()
+        if smax and smax >= 2:
+            top_ids = {sid for (sid,) in db.query(StockDailySnapshot.stock_id).filter(
+                StockDailySnapshot.date == prev_d, StockDailySnapshot.board_count == smax,
+                StockDailySnapshot.stock_id.in_(member_ids))}
+        out["top_board_prev"] = None if smax is None else [
+            {"code": m[1], "name": m[2], "board": smax} for m in members if m[0] in top_ids]
         days = last_n_trading_days(cal, prev_d, 5) if cal else [prev_d]
         per_day = dict(db.query(StockDailySnapshot.date, func.count(StockDailySnapshot.id))
                        .filter(StockDailySnapshot.stock_id.in_(member_ids), StockDailySnapshot.date.in_(days),
@@ -481,6 +490,9 @@ def _sector_block(db, live, as_of, d, prev_d, stock, thesis_id, sctx, touch_code
                 "rank": next((n + 1 for n, (c, _) in enumerate(ordered) if c == stock.code), None),
                 "total": len(ordered),
                 "leader_gap": round(ordered[0][1].pct_change - mine.pct_change, 2) if mine else None,
+                # 成交额板块内第几：「容量核心」这条理由的事实（v3）
+                "amount_rank": next((n + 1 for n, (c, _) in enumerate(
+                    sorted(today.items(), key=lambda kv: -(kv[1].amount or 0))) if c == stock.code), None),
             }
             if sctx.pct is not None:
                 out["stock_pct"], out["stock_vs_sector"] = sctx.pct, round(sctx.pct - median, 2)
@@ -744,8 +756,6 @@ def build_context(db: Session, owner: Optional[str], code: str, as_of: Optional[
         "rule_version": rules.RULE_VERSION, "pullback_min_pct": pullback,
         # 问题原文和默认参数由后端下发：前端不另抄一份，改问题只改 pre_trade_rules 一处
         "manual_questions": [{"key": k, "text": q} for k, q in rules.MANUAL_QUESTIONS],
-        "reason_fields": [{"key": k, "label": lb, "placeholder": ph} for k, lb, ph in rules.REASON_FIELDS],
-        "invalidation_types": [{"key": k, "label": lb, "hint": h} for k, lb, h in rules.INVALIDATION_TYPES],
         "journal_entry": journal_entry,
         "defaults": {"account_risk_budget_pct": rules.DEFAULT_ACCOUNT_RISK_BUDGET_PCT,
                      "stress_loss_pct": rules.DEFAULT_STRESS_LOSS_PCT,
@@ -756,6 +766,8 @@ def build_context(db: Session, owner: Optional[str], code: str, as_of: Optional[
         "leader": leader, "discipline": discipline, "data_quality": data_quality,
         "timings": timings,
     })
+    # 计划候选项：只按事实标状态，不替用户选（用的都是上面已经按 as_of 截好的事实）
+    out["plan_options"] = rules.plan_options(out)
     _log_context(log_tag, out)
     return out
 
@@ -773,7 +785,7 @@ def evaluate_and_save(db: Session, owner: str, req) -> dict:
         owner=owner, stock_code=req.stock_code, stock_name=(ctx.get("stock") or {}).get("name"),
         as_of=datetime.fromisoformat(ctx["as_of"]), mode=ctx["mode"],
         intended_price=req.intended_price, position_pct=req.position_pct, planned_stop=req.planned_stop,
-        reason=req.reason or None, thesis_sector=thesis.get("name"),
+        reason=res["decision"].get("plan_summary") or req.reason or None, thesis_sector=thesis.get("name"),
         verdict=res["decision"]["verdict"], rule_version=rules.RULE_VERSION,
         facts_json=ctx, checks_json=_jsonable(res), manual_answers_json=answers,
         data_quality_json=ctx["data_quality"])

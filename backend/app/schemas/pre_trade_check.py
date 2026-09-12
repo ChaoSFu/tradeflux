@@ -27,6 +27,18 @@ class ManualAnswers(BaseModel):
     why_now: str = ""
     invalidation_type: Optional[Literal["price", "structure", "sector", "time"]] = None
     invalidation_text: str = ""
+    # v3：结构化计划——稳定英文代码（见 pre_trade_rules 的代码表），统计用它；中文只是显示。
+    # 只有选了 OTHER / CUSTOM 才需要 *_other 文字。上面的 why_* / invalidation_* 保留，兼容 v2 客户端
+    sector_reason_codes: List[str] = Field(default_factory=list, max_length=2)
+    stock_reason_codes: List[str] = Field(default_factory=list, max_length=2)
+    entry_trigger_code: Optional[str] = None
+    invalidation_codes: List[str] = Field(default_factory=list, max_length=2)
+    sector_reason_other: str = ""
+    stock_reason_other: str = ""
+    entry_trigger_other: str = ""
+    invalidation_other: str = ""
+    second_trade_codes: List[str] = Field(default_factory=list, max_length=2)
+    reentry_fact_codes: List[str] = Field(default_factory=list, max_length=2)
 
 
 class EvaluateRequest(BaseModel):
@@ -80,6 +92,7 @@ class Decision(BaseModel):
     unknowns: List[CheckItem]
     positives: List[CheckItem]
     dimensions: List[Dimension] = []       # v2 起才有；v1 的存档没有
+    plan_summary: Optional[str] = None     # v3 起：人能看懂的一行计划
 
 
 class EvaluateResponse(BaseModel):

@@ -107,8 +107,6 @@ export default function PreTradeCheck() {
   const payload: EvaluatePayload = useMemo(() => ({
     stock_code: code, as_of: asOfParam,
     intended_price: num(price), position_pct: num(position), planned_stop: num(stop),
-    reason: [answers.why_sector && `板块：${answers.why_sector}`, answers.why_stock && `个股：${answers.why_stock}`,
-             answers.why_now && `时机：${answers.why_now}`].filter(Boolean).join('｜'),
     thesis_sector_id: sectorId ?? ctx?.sector.thesis?.id ?? null, manual_answers: answers, journal_id: journalId,
     ...(num(budget) != null ? { account_risk_budget_pct: num(budget)! } : {}),
     ...(num(stress) != null ? { stress_loss_pct: num(stress)! } : {}),
@@ -137,8 +135,12 @@ export default function PreTradeCheck() {
 
   const beforeEntry = ctx ? ctx.as_of.slice(11, 16) < ctx.defaults.earliest_normal_entry : false
   const answeredAll = ctx ? ctx.manual_questions.every((q) => answers[q.key as keyof ManualAnswers] !== null) : false
-  const planDone = !!(answers.why_sector.trim() && answers.why_stock.trim() && answers.why_now.trim() && answers.invalidation_type
-    && (answers.invalidation_type === 'price' ? num(stop) != null : answers.invalidation_text.trim()))
+  // v3：点选本身就是完整计划；只有选了「其他 / 自定义」才要补一句
+  const withText = (codes: string[], text: string, free = 'OTHER') => !codes.includes(free) || text.trim() !== ''
+  const planDone = answers.sector_reason_codes.length > 0 && withText(answers.sector_reason_codes, answers.sector_reason_other)
+    && answers.stock_reason_codes.length > 0 && withText(answers.stock_reason_codes, answers.stock_reason_other)
+    && !!answers.entry_trigger_code && withText([answers.entry_trigger_code], answers.entry_trigger_other)
+    && answers.invalidation_codes.length > 0 && withText(answers.invalidation_codes, answers.invalidation_other, 'CUSTOM')
   const dqShown = dqOpen ?? ctx?.mode !== 'LIVE'      // 实时要快：数据来源表默认收起；复盘默认展开
   const dqCounts = (ctx?.data_quality ?? []).reduce<Record<string, number>>((m, r) => ({ ...m, [r.quality]: (m[r.quality] ?? 0) + 1 }), {})
 
@@ -315,7 +317,8 @@ export default function PreTradeCheck() {
                          asOfBeforeEntry={beforeEntry} earliest={ctx.defaults.earliest_normal_entry}
                          recent={ctx.discipline.recent_same_stock ?? []}
                          todayBuys={ctx.discipline.today_buys ?? []}
-                         maxTrades={ctx.defaults.max_trades_per_day} />
+                         maxTrades={ctx.defaults.max_trades_per_day}
+                         secondOptions={ctx.plan_options?.second_trade} reentryOptions={ctx.plan_options?.reentry} />
       )}
 
       {ctx && (
@@ -325,7 +328,7 @@ export default function PreTradeCheck() {
             {evalM.isPending ? '检查中……' : '开始检查'}
           </button>
           {!answeredAll && <span className="text-xs text-text-muted">还有问题没回答——没回答不等于回答了「否」，到不了 READY</span>}
-          {!planDone && <span className="text-xs text-text-muted">理由或失效条件没写全，到不了 READY</span>}
+          {!planDone && <span className="text-xs text-text-muted">计划没选全（板块 / 个股 / 入场触发 / 失效条件），到不了 READY</span>}
           {evalM.isError && <span className="text-xs text-danger">检查失败：{(evalM.error as Error).message}</span>}
           {stale && <span className="text-xs text-warn">输入改过了，下面是改之前的结论——重新检查</span>}
         </div>

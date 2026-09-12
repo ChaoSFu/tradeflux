@@ -69,7 +69,7 @@ def test_基线全部满足才是READY_而且说清楚不是买入信号():
     res = _run()
     assert res["decision"]["verdict"] == "READY", res["decision"]
     assert "不是买入信号" in res["decision"]["summary"]
-    assert res["decision"]["rule_version"] == "pretrade_v2"
+    assert res["decision"]["rule_version"] == "pretrade_v3"
 
 
 def test_结果里没有任何分数():
@@ -364,3 +364,130 @@ def test_不属于高标二波要说清楚():
     ctx["leader"]["lifecycle"] = None
     ctx["leader"]["board_count_60d"] = 3
     assert any("不属于「高标二波」" in t and "60 日最高 3 板" in t for t in _texts(_run(ctx)))
+
+
+# ── pretrade_v3（2026-09-12）：点选的结构化计划 ─────────────────────────────────
+
+def _plan(**over):
+    """只点选、一个字不打的计划。"""
+    ans = {"why_sector": "", "why_stock": "", "why_now": "", "invalidation_type": None, "invalidation_text": "",
+           "sector_reason_codes": ["MAINLINE_STRENGTHENING"], "stock_reason_codes": ["INDEPENDENT_SETUP"],
+           "entry_trigger_code": "SECOND_BREAKOUT_AFTER_L1", "invalidation_codes": ["BREAK_L1"],
+           "sector_reason_other": "", "stock_reason_other": "", "entry_trigger_other": "", "invalidation_other": ""}
+    ans.update(over)
+    return _inp(planned_stop=None, answers=ans)
+
+
+def _unmet_keys(res):
+    return {i["key"] for i in res["decision"]["unmet"]}
+
+
+def test_只点选不打字_计划完整就能READY():
+    res = _run(inp=_plan())
+    assert res["decision"]["verdict"] == "READY", res["decision"]["summary"]
+
+
+def test_没选板块理由_到不了READY():
+    res = _run(inp=_plan(sector_reason_codes=[]))
+    assert res["decision"]["verdict"] == "WAIT" and "plan_sector" in _unmet_keys(res)
+
+
+def test_没选个股理由_到不了READY():
+    res = _run(inp=_plan(stock_reason_codes=[]))
+    assert res["decision"]["verdict"] == "WAIT" and "plan_stock" in _unmet_keys(res)
+
+
+def test_没选入场触发_到不了READY():
+    res = _run(inp=_plan(entry_trigger_code=None))
+    assert res["decision"]["verdict"] == "WAIT" and "plan_trigger" in _unmet_keys(res)
+
+
+def test_没选失效条件_到不了READY():
+    res = _run(inp=_plan(invalidation_codes=[]))
+    assert res["decision"]["verdict"] == "WAIT" and "invalidation" in _unmet_keys(res)
+
+
+def test_选了其他但没写是什么_到不了READY_写了就行():
+    assert _run(inp=_plan(stock_reason_codes=["OTHER"]))["decision"]["verdict"] == "WAIT"
+    assert _run(inp=_plan(stock_reason_codes=["OTHER"], stock_reason_other="龙头换手"))["decision"]["verdict"] == "READY"
+    assert _run(inp=_plan(invalidation_codes=["CUSTOM"]))["decision"]["verdict"] == "WAIT"
+
+
+def test_系统只标事实_不替你选():
+    opts = R.plan_options(_ctx())
+    trig = {o["code"]: o for o in opts["trigger"]["options"]}
+    assert trig["SECOND_BREAKOUT_AFTER_L1"]["suggested"] is True
+    assert all("selected" not in o for g in opts.values() for o in g["options"])
+    assert "plan_trigger" in _unmet_keys(_run(inp=_plan(entry_trigger_code=None))), "有事实支持也不会被自动选上"
+
+
+def test_选了二波核心_但60日最高只有3连板_明确冲突():
+    ctx = _ctx()
+    ctx["leader"]["lifecycle"] = None
+    ctx["leader"]["board_count_60d"] = 3
+    res = _run(ctx, _plan(stock_reason_codes=["HISTORICAL_HIGH_LEADER"]))
+    assert res["decision"]["verdict"] == "BLOCKED"
+    assert any("60 日最高只有 3 连板" in i["text"] for i in res["decision"]["vetoes"])
+    assert {o["code"]: o for o in R.plan_options(ctx)["stock"]["options"]}["HISTORICAL_HIGH_LEADER"]["conflict_reason"]
+
+
+def test_选了二次突破_但第一波还在形成_明确冲突():
+    ctx = _ctx()
+    ctx["intraday"]["structure"].update(state="REPAIRING", status="PARTIAL", l1=None, breakout_at=None)
+    res = _run(ctx, _plan(invalidation_codes=["SECTOR_WEAKENING"]))
+    assert any("第一波还在形成，H1 尚未确认" in i["text"] for i in res["decision"]["vetoes"])
+
+
+def test_数据拿不到时不制造冲突():
+    ctx = _ctx()
+    ctx["sector"]["stock_vs_sector"] = None
+    res = _run(ctx, _plan(stock_reason_codes=["OUTPERFORM_SECTOR"]))
+    assert res["decision"]["verdict"] != "BLOCKED"
+    assert any("强于板块" in i["text"] and "没法核对" in i["text"] for i in res["decision"]["unknowns"])
+
+
+def test_计划摘要是人能看懂的():
+    s = R.plan_summary(_ctx(), _plan(sector_reason_codes=["MAINLINE_STRENGTHENING", "HIGH_BOARD_ADVANCING"],
+                                     invalidation_codes=["BREAK_L1", "SECTOR_WEAKENING"]))
+    assert s == "板块：主线加强 / 高标晋级｜个股：独立Setup｜时机：二次突破｜失效：跌破L1 11.47 / 板块转弱"
+
+
+def test_选了跌破VWAP_没填失效价_用VWAP算风险():
+    res = _run(inp=_plan(invalidation_codes=["BREAK_VWAP"]))
+    assert res["decision"]["verdict"] == "READY"
+    assert any("按「跌破VWAP」11.2" in t for t in _texts(res))
+
+
+def test_失效条件此刻就已成立_直接否决():
+    ctx = _ctx()
+    ctx["intraday"]["vwap"] = 11.6
+    res = _run(ctx, _plan(invalidation_codes=["BREAK_VWAP"]))
+    assert any("现在就成立" in i["text"] for i in res["decision"]["vetoes"])
+
+
+def test_还没有L1时_跌破L1不能当失效条件():
+    ctx = _ctx()
+    ctx["intraday"]["structure"].update(state="REPAIRING", status="PARTIAL", l1=None, breakout_at=None)
+    opt = {o["code"]: o for o in R.plan_options(ctx)["invalidation"]["options"]}["BREAK_L1"]
+    assert opt["available"] is False and opt["ref_price"] is None
+    res = _run(ctx, _plan(entry_trigger_code="VWAP_PULLBACK_REATTACK"))
+    assert "invalidation" in _unmet_keys(res)
+
+
+def test_1到2_用昨日板数和触板核对():
+    ctx = _ctx()
+    assert _run(ctx, _plan(entry_trigger_code="ONE_TO_TWO_CONFIRM"))["decision"]["verdict"] == "BLOCKED"   # 昨日 0 板
+    ctx["leader"]["board_prev"] = 1
+    ctx["market"]["limit_touch"] = {"touched": 40, "codes": ["600354"]}
+    trig = {o["code"]: o for o in R.plan_options(ctx)["trigger"]["options"]}
+    assert trig["ONE_TO_TWO_CONFIRM"]["suggested"] is True and trig["TWO_TO_THREE_CONFIRM"]["conflict_reason"]
+
+
+def test_第2笔和快速重入_点选就行_其他要写():
+    ctx = _ctx()
+    ctx["discipline"]["today_buys"] = [{"trade_time": "2026-09-11T09:31:00", "stock_code": "000001", "stock_name": "甲"}]
+    ctx["discipline"]["recent_same_stock"] = [{"trade_time": "2026-09-09T10:00:00", "action": "卖出", "price": 11.0}]
+    ok = _run(ctx, _plan(second_trade_codes=["BETTER_SETUP"], reentry_fact_codes=["SECTOR_RESTRENGTHENED"]))
+    assert ok["decision"]["verdict"] != "BLOCKED" and "trade_count" not in _unmet_keys(ok)
+    bad = _run(ctx, _plan(second_trade_codes=["BETTER_SETUP"], reentry_fact_codes=["OTHER"]))
+    assert any(i["key"] == "reentry" for i in bad["decision"]["vetoes"])

@@ -158,7 +158,7 @@ def test_检查结果连同规则版本一起存下来(client, db):
     body = r.json()
     assert body["mode"] == "HISTORICAL" and body["decision"]["verdict"] in ("READY", "WAIT", "BLOCKED")
     row = db.query(PreTradeCheck).one()
-    assert row.rule_version == "pretrade_v2" and row.verdict == body["decision"]["verdict"]
+    assert row.rule_version == "pretrade_v3" and row.verdict == body["decision"]["verdict"]
     assert row.facts_json["as_of"] == "2026-09-11T09:46:37"
     hist = client.get("/pre-trade-check/history").json()
     assert [h["id"] for h in hist] == [row.id]
@@ -417,3 +417,54 @@ def test_实时板块内排名(db, monkeypatch):
     sctx = ic.IntradayContext(code="600354", as_of=AS_OF, trade_date=D, prev_close=11.45, price=11.53)
     rk = svc._sector_block(db, True, AS_OF, D, PREV, me, None, sctx, [], CAL)["live"]["ranking"]
     assert (rk["rank"], rk["total"], rk["top"][0]["code"], rk["leader_gap"]) == (3, 3, "600371", 9.1)
+
+
+# ── pretrade_v3：结构化计划的存档、兼容、as_of ─────────────────────────────────────
+
+V3_PLAN = {"sector_reason_codes": ["MAINLINE_STRENGTHENING"], "stock_reason_codes": ["INDEPENDENT_SETUP"],
+           "entry_trigger_code": "VWAP_PULLBACK_REATTACK", "invalidation_codes": ["SECTOR_WEAKENING"]}
+
+
+def test_结构化计划存代码_reason写人能看懂的摘要(client, db):
+    _seed(db)
+    cid = client.post("/pre-trade-check/evaluate",
+                      json={**BODY, "manual_answers": {**BODY["manual_answers"], **V3_PLAN}}).json()["id"]
+    db.expire_all()
+    row = db.get(PreTradeCheck, cid)
+    assert row.reason == "板块：主线加强｜个股：独立Setup｜时机：VWAP回踩转强｜失效：板块转弱"
+    assert row.manual_answers_json["entry_trigger_code"] == "VWAP_PULLBACK_REATTACK"
+
+
+def test_老客户端只传三句文字_照样判(client, db):
+    _seed(db)
+    legacy = {**BODY["manual_answers"], "why_sector": "农业", "why_stock": "老核心", "why_now": "回踩转强",
+              "invalidation_type": "structure", "invalidation_text": "跌回均价下方"}
+    r = client.post("/pre-trade-check/evaluate", json={**BODY, "manual_answers": legacy}).json()
+    assert r["decision"]["rule_version"] == "pretrade_v3"
+    assert not {"plan_sector", "plan_stock", "plan_trigger", "invalidation"} & {i["key"] for i in r["decision"]["unmet"]}
+
+
+def test_v2旧存档只有文字理由_照样能读(client, db):
+    old = PreTradeCheck(owner="me", stock_code="600354", as_of=AS_OF, mode="HISTORICAL", verdict="WAIT",
+                        rule_version="pretrade_v2", facts_json={}, data_quality_json=[],
+                        manual_answers_json={"why_sector": "农业", "why_stock": "老核心", "why_now": "回踩"},
+                        checks_json={"modules": [], "decision": {
+                            "verdict": "WAIT", "summary": "旧", "rule_version": "pretrade_v2", "vetoes": [],
+                            "unmet": [], "cautions": [], "unknowns": [], "positives": []}})
+    db.add(old)
+    db.commit()
+    r = client.get(f"/pre-trade-check/{old.id}")
+    assert r.status_code == 200 and r.json()["decision"]["rule_version"] == "pretrade_v2"
+
+
+def test_候选项只标事实_历史模式不看as_of之后(client, db):
+    st = _stock(db)
+    db.add(StockDailySnapshot(stock_id=st.id, date=PREV, close_price=11.45, board_count=0, board_count_60d=3,
+                              is_settled=True))
+    db.add(StockDailySnapshot(stock_id=st.id, date=AS_OF.date(), close_price=12.6, board_count=1, board_count_60d=6,
+                              is_settled=True))
+    db.commit()
+    ctx = client.get("/pre-trade-check/context?stock_code=600354&as_of=2026-09-11T09:46:37").json()
+    hl = {o["code"]: o for o in ctx["plan_options"]["stock"]["options"]}["HISTORICAL_HIGH_LEADER"]
+    assert hl["suggested"] is False and "3 连板" in (hl["conflict_reason"] or ""), "as_of 当天那行（6 连板）不能用"
+    assert all("selected" not in o for g in ctx["plan_options"].values() for o in g["options"])

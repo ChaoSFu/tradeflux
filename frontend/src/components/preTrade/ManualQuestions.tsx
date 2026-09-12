@@ -1,5 +1,6 @@
 import { cn } from '@/utils/cn'
-import type { JournalRow, ManualAnswers } from '@/api/preTradeCheck'
+import type { JournalRow, ManualAnswers, PlanOptionGroup } from '@/api/preTradeCheck'
+import { ChipGroup } from './ChipGroup'
 
 type YesNoKey = 'q1' | 'q2' | 'q3' | 'q4' | 'q5' | 'q6' | 'q7' | 'q8' | 'a_plus'
 
@@ -28,7 +29,7 @@ const hm = (iso: string) => iso.slice(5, 16).replace('T', ' ')
  * 没回答不等于答了「否」，到不了 READY。
  */
 export function ManualQuestions({ questions, answers, onChange, asOfBeforeEntry, earliest,
-                                  recent, todayBuys, maxTrades }: {
+                                  recent, todayBuys, maxTrades, secondOptions, reentryOptions }: {
   questions: { key: string; text: string }[]
   answers: ManualAnswers
   onChange: (a: ManualAnswers) => void
@@ -37,6 +38,8 @@ export function ManualQuestions({ questions, answers, onChange, asOfBeforeEntry,
   recent: JournalRow[]
   todayBuys: JournalRow[]
   maxTrades: number
+  secondOptions?: PlanOptionGroup
+  reentryOptions?: PlanOptionGroup
 }) {
   const set = (k: YesNoKey, v: boolean) => onChange({ ...answers, [k]: v })
   const textCls = 'w-full bg-bg-elevated border border-bg-border rounded-lg px-2.5 py-1.5 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/50 resize-none'
@@ -76,19 +79,22 @@ export function ManualQuestions({ questions, answers, onChange, asOfBeforeEntry,
             今天第 2 笔（第一笔：{hm(todayBuys[0].trade_time)} {todayBuys[0].stock_name ?? todayBuys[0].stock_code}）。
             第二笔门槛更高——这笔比第一笔多了什么证据？
           </span>
-          <textarea rows={2} className={textCls} value={answers.second_trade_note}
-                    onChange={(e) => onChange({ ...answers, second_trade_note: e.target.value })} />
+          <ChipGroup options={secondOptions?.options ?? []} max={secondOptions?.max ?? 2}
+                     selected={answers.second_trade_codes} onChange={(v) => onChange({ ...answers, second_trade_codes: v })}
+                     otherValue={answers.second_trade_note} otherPlaceholder="多出的证据是什么？"
+                     onOtherChange={(v) => onChange({ ...answers, second_trade_note: v })} inputCls={textCls} />
         </label>
       )}
       {recent.length > 0 && (
         <label className="block space-y-1">
           <span className="text-xs text-warn">
             最近交易过这只票（{hm(recent[0].trade_time)} {recent[0].action} {recent[0].price}）。
-            快速重入必须写出<b>新的市场事实</b>，不写会直接 BLOCKED：
+            快速重入必须说出<b>新的市场事实</b>，没有会直接 BLOCKED：
           </span>
-          <textarea rows={2} className={textCls} value={answers.new_market_fact}
-                    placeholder="跟上次相比，市场 / 板块 / 个股发生了什么新的变化？"
-                    onChange={(e) => onChange({ ...answers, new_market_fact: e.target.value })} />
+          <ChipGroup options={reentryOptions?.options ?? []} max={reentryOptions?.max ?? 2}
+                     selected={answers.reentry_fact_codes} onChange={(v) => onChange({ ...answers, reentry_fact_codes: v })}
+                     otherValue={answers.new_market_fact} otherPlaceholder="跟上次相比，发生了什么新的变化？"
+                     onOtherChange={(v) => onChange({ ...answers, new_market_fact: v })} inputCls={textCls} />
         </label>
       )}
     </div>

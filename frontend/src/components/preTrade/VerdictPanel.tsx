@@ -59,6 +59,9 @@ export function VerdictPanel({ decision, asOf, mode, savedId }: {
           ))}
         </div>
       )}
+      {decision.plan_summary && (
+        <p className="text-xs text-text-secondary"><span className="text-text-muted">你的计划：</span>{decision.plan_summary}</p>
+      )}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Group title="做得好的地方" items={decision.positives} empty="—" />
         <Group title="需要警惕" items={decision.cautions} empty="没有" />

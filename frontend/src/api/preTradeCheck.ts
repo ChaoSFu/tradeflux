@@ -38,6 +38,8 @@ export interface Dimension {
 export interface Decision {
   verdict: Verdict
   dimensions?: Dimension[]
+  /** v3：人能看懂的一行计划 */
+  plan_summary?: string | null
   summary: string
   rule_version: string
   vetoes: CheckItem[]
@@ -83,8 +85,8 @@ export interface PreTradeContext {
   calendar: { last: string | null; behind: boolean | null }
   rule_version: string
   manual_questions: { key: string; text: string }[]
-  reason_fields: { key: ReasonKey; label: string; placeholder: string }[]
-  invalidation_types: { key: InvalidationType; label: string; hint: string }[]
+  /** 计划候选项（v3）：只标事实状态，不替用户选 */
+  plan_options?: Record<PlanGroup, PlanOptionGroup>
   /** 从交易记录进来复盘时：当时写的理由（跟复盘时补写的分开放） */
   journal_entry: { id: number; stock_code: string | null; trade_time: string; action: string; price: number
                    reason: string | null; emotion_tag: string | null; note: string | null } | null
@@ -113,28 +115,50 @@ export interface PreTradeContext {
   data_quality: DataQualityRow[]
 }
 
-export type InvalidationType = 'price' | 'structure' | 'sector' | 'time'
-export type ReasonKey = 'why_sector' | 'why_stock' | 'why_now'
-
+/** pretrade_v3：计划全部是点选的稳定代码（中文只是显示），只有选了 OTHER / CUSTOM 才打字 */
 export interface ManualAnswers {
   q1: boolean | null; q2: boolean | null; q3: boolean | null; q4: boolean | null
   q5: boolean | null; q6: boolean | null; q7: boolean | null; q8: boolean | null
   a_plus: boolean | null
-  new_market_fact: string
-  second_trade_note: string
-  // pretrade_v2：买入理由三句 + 失效条件（失效 ≠ 止损价）
-  why_sector: string
-  why_stock: string
-  why_now: string
-  invalidation_type: InvalidationType | null
-  invalidation_text: string
+  new_market_fact: string          // 快速重入：选了「其他」时写
+  second_trade_note: string        // 第 2 笔：选了「其他」时写
+  sector_reason_codes: string[]
+  stock_reason_codes: string[]
+  entry_trigger_code: string | null
+  invalidation_codes: string[]
+  sector_reason_other: string
+  stock_reason_other: string
+  entry_trigger_other: string
+  invalidation_other: string
+  second_trade_codes: string[]
+  reentry_fact_codes: string[]
 }
 
 export const EMPTY_ANSWERS: ManualAnswers = {
   q1: null, q2: null, q3: null, q4: null, q5: null, q6: null, q7: null, q8: null,
   a_plus: null, new_market_fact: '', second_trade_note: '',
-  why_sector: '', why_stock: '', why_now: '', invalidation_type: null, invalidation_text: '',
+  sector_reason_codes: [], stock_reason_codes: [], entry_trigger_code: null, invalidation_codes: [],
+  sector_reason_other: '', stock_reason_other: '', entry_trigger_other: '', invalidation_other: '',
+  second_trade_codes: [], reentry_fact_codes: [],
 }
+
+/**
+ * 计划的一个候选项。suggested / conflict_reason 是系统按事实标的，**没有 selected**——
+ * 选不选永远由用户点。
+ */
+export interface PlanOption {
+  code: string
+  label: string
+  desc: string
+  suggested: boolean
+  suggestion_reason: string | null
+  available: boolean
+  conflict_reason: string | null
+  fact: string | null
+  ref_price: number | null
+}
+export interface PlanOptionGroup { max: number; options: PlanOption[] }
+export type PlanGroup = 'sector' | 'stock' | 'trigger' | 'invalidation' | 'second_trade' | 'reentry'
 
 export interface EvaluatePayload {
   stock_code: string
