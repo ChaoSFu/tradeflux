@@ -10,6 +10,7 @@
     .venv/bin/python -m scripts.data_audit fix sector_index --file sector_klines_xxx.jsonl [--apply]
                                                                  # 导入收件箱 data/inbox/ 里的板块日线文件
     .venv/bin/python -m scripts.data_audit export-script > export.js # 板块指数导出脚本（已填好缺数据的板块）
+    .venv/bin/python -m scripts.data_audit export-script --codes     # 只打印缺数据的板块码，给 export_sector_klines.py --codes
 
 每类缺口的补法都固定成三步：试跑（列出将补什么）→ 确认（--apply）→ 自动复查。
 补数拿日更那把锁，跟日更 / 板块全量同步互斥；检测只探一下锁（日更写到一半去查，会把
@@ -307,6 +308,9 @@ def cmd_export(a) -> int:
         finally:
             db.close()
     codes = svc.sector_export_codes(rep)
+    if a.codes:
+        print(",".join(codes))
+        return 0
     js = svc.render_export_script(codes)
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
@@ -333,6 +337,8 @@ def main() -> int:
     f.add_argument("--file", help="sector_index 专用：收件箱里的文件名")
     e = sub.add_parser("export-script", help="生成板块指数导出脚本")
     e.add_argument("--out")
+    e.add_argument("--codes", action="store_true",
+                   help="只打印缺数据的板块码（逗号分隔），给 export_sector_klines.py --codes 用")
     a = ap.parse_args()
     return {"run": cmd_run, "fix": cmd_fix, "export-script": cmd_export}[a.cmd](a)
 

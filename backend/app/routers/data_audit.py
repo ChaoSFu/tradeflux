@@ -4,7 +4,8 @@
 报告是 scripts/data_audit.py 在子进程里生成、落盘的文件，这里只读文件。「立即检测 /
 试跑 / 确认补上 / 导入」也都是起子进程——检测要读 10 年存档，不能在常驻进程里跑（坑 18）。
 
-读报告、下载导出脚本公开（跟 /admin/update/last 一样）；会起任务或列服务器文件的都要登录。
+**全部要登录**（用户 2026-09-12 定的：这是管理功能，没登录的人看不到）。报告里还有服务器
+路径和 scp 登录名，本来也不该公开。
 """
 import re
 import threading
@@ -18,7 +19,8 @@ from app.auth import require_auth
 from app.services import data_audit_service as svc
 from app.services.daily_update_runner import run_script_subprocess
 
-router = APIRouter(prefix="/admin/data-audit", tags=["data-audit"])
+router = APIRouter(prefix="/admin/data-audit", tags=["data-audit"],
+                   dependencies=[Depends(require_auth)])
 
 _FILE_RE = re.compile(r"^[\w.\-]+\.jsonl$")
 _MAX_LOG = 400
@@ -107,13 +109,12 @@ def get_job():
 
 
 @router.post("/run")
-def run_now(_: str = Depends(require_auth)):
+def run_now():
     return _start("audit", ["run", "--save"])
 
 
 @router.post("/fix/{check_id}")
-def fix(check_id: str, apply: bool = False, file: Optional[str] = None,
-        _: str = Depends(require_auth)):
+def fix(check_id: str, apply: bool = False, file: Optional[str] = None):
     """一键补：apply=false 试跑（只列出将补什么），apply=true 真的补，补完自动复查。"""
     if check_id not in svc.FIXABLE:
         raise HTTPException(status_code=404, detail=f"「{check_id}」没有一键补法")
@@ -141,5 +142,5 @@ def export_script():
 
 
 @router.get("/inbox")
-def inbox(_: str = Depends(require_auth)):
+def inbox():
     return {"dir": str(svc.INBOX_DIR), "files": svc.list_inbox()}

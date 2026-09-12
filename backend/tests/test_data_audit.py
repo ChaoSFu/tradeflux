@@ -257,13 +257,15 @@ def _wait_job():
 
 class Test接口:
     def test_没检测过(self, client):
-        assert client.get("/admin/data-audit").json() == {"report": None}
-        assert client.get("/admin/data-audit/sector-index/export-script").status_code == 404
+        assert client.get("/admin/data-audit", headers=_auth()).json() == {"report": None}
+        r = client.get("/admin/data-audit/sector-index/export-script", headers=_auth())
+        assert r.status_code == 404
 
-    def test_会起任务或列文件的都要登录(self, client):
-        assert client.post("/admin/data-audit/run").status_code == 401
-        assert client.post("/admin/data-audit/fix/index_daily").status_code == 401
-        assert client.get("/admin/data-audit/inbox").status_code == 401
+    def test_全部要登录_没登录的人什么都读不到(self, client):
+        # 管理功能：报告里有服务器路径和 scp 登录名，读也要登录
+        for method, path in [("get", ""), ("get", "/job"), ("get", "/sector-index/export-script"),
+                             ("get", "/inbox"), ("post", "/run"), ("post", "/fix/index_daily")]:
+            assert getattr(client, method)(f"/admin/data-audit{path}").status_code == 401, path
 
     def test_参数校验(self, client):
         assert client.post("/admin/data-audit/fix/calendar", headers=_auth()).status_code == 404
@@ -275,7 +277,7 @@ class Test接口:
         _bars(db, "BK0002", DAYS[-5:])
         db.commit()
         svc.save_report(svc.run_audit(db, now=AFTER_CLOSE, only={"sector_index"}))
-        r = client.get("/admin/data-audit/sector-index/export-script")
+        r = client.get("/admin/data-audit/sector-index/export-script", headers=_auth())
         assert r.status_code == 200 and 'const ALL = ["BK0002"];' in r.text
 
     def test_任务在子进程里跑_试跑不带apply(self, client, monkeypatch):

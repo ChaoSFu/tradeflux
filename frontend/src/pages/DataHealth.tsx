@@ -1,22 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  AlertTriangle, CheckCircle, ChevronDown, ChevronUp, Clock, Copy, Check as CheckIcon,
-  ExternalLink, Inbox, Lock, Play, RefreshCw, Stethoscope, XCircle,
+  AlertTriangle, CheckCircle, ChevronDown, ChevronUp, Clock, Code, Copy, Check as CheckIcon,
+  Inbox, Play, RefreshCw, Stethoscope, XCircle,
 } from 'lucide-react'
 import {
-  EXPORT_SCRIPT_URL, fetchAuditJob, fetchAuditReport, fetchExportScript, fetchInbox, runAudit, runFix,
+  fetchAuditJob, fetchAuditReport, fetchExportScript, fetchInbox, runAudit, runFix,
 } from '@/api/dataAudit'
 import type { AuditCheck, AuditItem, AuditJob, AuditReport, AuditStatus } from '@/api/dataAudit'
 import { triggerUpdate } from '@/api/admin'
 import { Card } from '@/components/ui/card'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
-import { LoginModal } from '@/components/auth/LoginModal'
-import { useAuthStore } from '@/store/auth'
 import { cn } from '@/utils/cn'
 
-// 数据体检：各张按日写的表缺了什么、为什么缺、怎么补。
-// 检测只读（每次日更后自动跑一次，周六再兜一次）；补数一律登录后先试跑、再确认，补完后端自动复查。
+// 数据体检：各张按日写的表缺了什么、为什么缺、怎么补。管理功能——路由走 ProtectedRoute，
+// 没登录进不来，后端接口也全部要登录。
+// 检测只读（每次日更后自动跑一次，周六再兜一次）；补数一律先试跑、再确认，补完后端自动复查。
 
 const STATUS_META: Record<AuditStatus, { label: string; cls: string; icon: React.ElementType }> = {
   error:   { label: '检测出错', cls: 'text-danger bg-danger/10 border-danger/30', icon: XCircle },
@@ -61,27 +60,14 @@ function StatusBadge({ status }: { status: AuditStatus }) {
 }
 
 function ActionButton({
-  children, onClick, disabled, primary, locked, onLogin, title,
+  children, onClick, disabled, primary, title,
 }: {
   children: React.ReactNode
   onClick: () => void
   disabled?: boolean
   primary?: boolean
-  locked?: boolean
-  onLogin?: () => void
   title?: string
 }) {
-  if (locked) {
-    return (
-      <button
-        onClick={onLogin}
-        className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded text-warn bg-warn/10 border border-warn/30 hover:bg-warn/20 transition-colors"
-        title="登录后才能操作"
-      >
-        <Lock className="w-3 h-3" />需要登录
-      </button>
-    )
-  }
   return (
     <button
       onClick={onClick}
@@ -232,18 +218,17 @@ function Details({ c }: { c: AuditCheck }) {
 }
 
 function ExportSteps({
-  c, report, running, isLoggedIn, onLogin, start,
+  c, report, running, start,
 }: {
   c: AuditCheck
   report: AuditReport
   running: boolean
-  isLoggedIn: boolean
-  onLogin: () => void
   start: Start
 }) {
   const n = c.items?.length ?? 0
   const [copied, setCopied] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [showScript, setShowScript] = useState(false)
   // 预先拉好脚本：点「复制」时同步写剪贴板（http 站点只能用 execCommand，它要求在点击的当下执行）
   const { data: script } = useQuery({
     queryKey: ['data-audit-export-script', report.updated_at ?? report.generated_at],
@@ -254,7 +239,6 @@ function ExportSteps({
   const { data: inbox } = useQuery({
     queryKey: ['data-audit-inbox'],
     queryFn: fetchInbox,
-    enabled: isLoggedIn,
     refetchInterval: 30_000,
   })
   const scp = `scp ~/Desktop/sector_klines_*.jsonl ${report.ssh_user}@${window.location.hostname}:${report.inbox_dir}/`
@@ -263,7 +247,7 @@ function ExportSteps({
     if (!text) { setErr('脚本还没加载好，稍等一下再点'); return }
     copyText(text)
       .then(() => { setCopied(key); setErr(null); setTimeout(() => setCopied(null), 2500) })
-      .catch((e: Error) => setErr(`复制失败（${e.message}）——可以点「新标签页打开」手动全选复制`))
+      .catch((e: Error) => { setErr(`复制失败（${e.message}）——点「展开脚本」手动全选复制`); setShowScript(true) })
   }
 
   const CopyBtn = ({ k, text }: { k: string; text?: string }) => (
@@ -282,9 +266,21 @@ function ExportSteps({
         <li>
           复制导出脚本（已填好这 {n} 个板块）
           <CopyBtn k="script" text={script} />
-          <a href={EXPORT_SCRIPT_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 ml-2 text-[11px] text-accent">
-            新标签页打开<ExternalLink className="w-3 h-3" />
-          </a>
+          <button
+            onClick={() => setShowScript((v) => !v)}
+            className="inline-flex items-center gap-0.5 ml-2 text-[11px] text-accent"
+          >
+            <Code className="w-3 h-3" />{showScript ? '收起脚本' : '展开脚本'}
+          </button>
+          {showScript && (
+            <textarea
+              readOnly
+              value={script ?? '加载中…'}
+              onFocus={(e) => e.currentTarget.select()}
+              rows={8}
+              className="mt-1.5 w-full rounded bg-bg-base border border-bg-border p-2 font-mono text-[10px] leading-snug text-text-secondary"
+            />
+          )}
         </li>
         <li>
           打开
@@ -307,9 +303,7 @@ function ExportSteps({
         <li>
           收件箱里的文件：先试跑导入看数字，再确认导入（已有行一律不覆盖；导完文件挪进 done/，并自动复查这一项）。
           <div className="mt-1.5 space-y-1.5">
-            {!isLoggedIn ? (
-              <ActionButton locked onLogin={onLogin} onClick={() => {}}>需要登录</ActionButton>
-            ) : !inbox ? (
+            {!inbox ? (
               <span className="text-text-muted">加载中…</span>
             ) : inbox.files.length === 0 ? (
               <span className="inline-flex items-center gap-1 text-text-muted"><Inbox className="w-3 h-3" />还没有文件</span>
@@ -342,14 +336,12 @@ function ExportSteps({
 }
 
 function FixArea({
-  c, report, job, running, isLoggedIn, onLogin, start, onRerun,
+  c, report, job, running, start, onRerun,
 }: {
   c: AuditCheck
   report: AuditReport
   job?: AuditJob
   running: boolean
-  isLoggedIn: boolean
-  onLogin: () => void
   start: Start
   onRerun: () => void
 }) {
@@ -367,26 +359,18 @@ function FixArea({
 
       {f.kind === 'server' && (
         <div className="mt-2 flex items-center gap-2 flex-wrap">
-          <ActionButton
-            locked={!isLoggedIn}
-            onLogin={onLogin}
-            disabled={running}
-            title="只列出将补什么，不写库"
-            onClick={() => start(() => runFix(c.id, false))}
-          >
+          <ActionButton disabled={running} title="只列出将补什么，不写库" onClick={() => start(() => runFix(c.id, false))}>
             <Play className="w-3 h-3" />试跑
           </ActionButton>
-          {isLoggedIn && (
-            <ActionButton
-              primary
-              disabled={running}
-              onClick={() => {
-                if (window.confirm(`确认补「${c.title}」？会写数据库，补完自动复查。`)) start(() => runFix(c.id, true))
-              }}
-            >
-              确认补上
-            </ActionButton>
-          )}
+          <ActionButton
+            primary
+            disabled={running}
+            onClick={() => {
+              if (window.confirm(`确认补「${c.title}」？会写数据库，补完自动复查。`)) start(() => runFix(c.id, true))
+            }}
+          >
+            确认补上
+          </ActionButton>
           {mine && (
             <span className={cn('text-[11px]', job!.status === 'error' ? 'text-danger' : 'text-text-muted')}>
               {job!.status === 'running' ? `${job!.apply ? '补数' : '试跑'}中…（日志在上面）` : `上次${job!.apply ? '补数' : '试跑'}：${job!.message}`}
@@ -397,14 +381,14 @@ function FixArea({
 
       {f.kind === 'rerun_update' && (
         <div className="mt-2">
-          <ActionButton locked={!isLoggedIn} onLogin={onLogin} onClick={onRerun}>
+          <ActionButton onClick={onRerun}>
             <RefreshCw className="w-3 h-3" />重跑今天的日更
           </ActionButton>
         </div>
       )}
 
       {f.kind === 'local_export' && (
-        <ExportSteps c={c} report={report} running={running} isLoggedIn={isLoggedIn} onLogin={onLogin} start={start} />
+        <ExportSteps c={c} report={report} running={running} start={start} />
       )}
     </div>
   )
@@ -415,8 +399,6 @@ function CheckCard(props: {
   report: AuditReport
   job?: AuditJob
   running: boolean
-  isLoggedIn: boolean
-  onLogin: () => void
   start: Start
   onRerun: () => void
 }) {
@@ -469,11 +451,9 @@ function Group({
 
 export default function DataHealth() {
   const qc = useQueryClient()
-  const { isLoggedIn } = useAuthStore()
-  const [showLogin, setShowLogin] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const { data: report, isLoading } = useQuery({
+  const { data: report, isLoading, error } = useQuery({
     queryKey: ['data-audit-report'],
     queryFn: fetchAuditReport,
     staleTime: 30_000,
@@ -496,7 +476,6 @@ export default function DataHealth() {
   }, [job, qc])
 
   const start: Start = (fn) => {
-    if (!isLoggedIn) { setShowLogin(true); return }
     fn()
       .then((r) => {
         setNotice(r.ok ? null : r.message)
@@ -505,7 +484,6 @@ export default function DataHealth() {
       .catch((e: Error) => setNotice(e.message))
   }
   const onRerun = () => {
-    if (!isLoggedIn) { setShowLogin(true); return }
     triggerUpdate()
       .then((r) => setNotice(r.ok ? '今天的日更已启动，进度看顶栏「数据更新」；跑完会自动再体检一次' : r.message))
       .catch((e: Error) => setNotice(e.message))
@@ -519,32 +497,22 @@ export default function DataHealth() {
     .sort((a, b) => rank[a.status] - rank[b.status])
   const expired = checks.filter((c) => c.status === 'expired')
   const ok = checks.filter((c) => c.status === 'ok')
-  const cardProps = {
-    report: report!, job, running, isLoggedIn, start, onRerun,
-    onLogin: () => setShowLogin(true),
-  }
+  const cardProps = { report: report!, job, running, start, onRerun }
   const s = report?.summary
 
   return (
     <div className="space-y-4 max-w-5xl">
-      {showLogin && <LoginModal onClose={() => setShowLogin(false)} />}
-
       <Card
         title="数据体检"
         action={
-          <ActionButton
-            locked={!isLoggedIn}
-            onLogin={() => setShowLogin(true)}
-            disabled={running}
-            onClick={() => start(runAudit)}
-          >
+          <ActionButton disabled={running} onClick={() => start(runAudit)}>
             <Stethoscope className="w-3 h-3" />{running && job?.kind === 'audit' ? '检测中…' : '立即检测'}
           </ActionButton>
         }
       >
         <p className="text-xs text-text-secondary leading-relaxed">
           每次日更跑完会自动体检一次，周六 11:00 再兜一次。检测只读，不改任何数据；
-          要补的缺口登录后先「试跑」看将补什么，再「确认」，补完自动复查。
+          要补的缺口先「试跑」看将补什么，再「确认」，补完自动复查。
         </p>
         {report && (
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-muted">
@@ -566,9 +534,14 @@ export default function DataHealth() {
       </Card>
 
       {isLoading && <LoadingSpinner />}
-      {!isLoading && !report && (
+      {error && (
         <Card>
-          <p className="text-xs text-text-muted">还没检测过。登录后点「立即检测」，或者等今天日更跑完自动体检。</p>
+          <p className="text-xs text-danger">读取报告失败：{(error as Error).message}（登录过期的话，重新登录一次）</p>
+        </Card>
+      )}
+      {!isLoading && !error && !report && (
+        <Card>
+          <p className="text-xs text-text-muted">还没检测过。点「立即检测」，或者等今天日更跑完自动体检。</p>
         </Card>
       )}
 

@@ -92,8 +92,6 @@ export const runFix = (checkId: string, apply: boolean, file?: string) =>
     params: { apply, file },
   }).then((r) => r.data)
 
-export const EXPORT_SCRIPT_URL = '/api/admin/data-audit/sector-index/export-script'
-
 export const fetchExportScript = () =>
   client.get<string>('/admin/data-audit/sector-index/export-script', {
     responseType: 'text',

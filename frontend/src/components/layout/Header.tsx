@@ -593,7 +593,8 @@ export function Header({ title }: { title: string }) {
       <div className="flex items-center gap-3">
         <DataUpdateMenu onRequestLogin={() => setShowLogin(true)} />
 
-        <DataHealthLink />
+        {/* 数据体检是管理功能：没登录看不到（跟板块配置一样），接口本身也要登录 */}
+        {isLoggedIn && <DataHealthLink />}
 
         {isLoggedIn && (
           <NavLink
