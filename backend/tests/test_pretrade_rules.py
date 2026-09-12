@@ -47,7 +47,9 @@ def _ctx():
 def _inp(**over):
     base = {"intended_price": 11.53, "position_pct": 10.0, "planned_stop": 11.0, "reason": "修复确认",
             "answers": {**{f"q{i}": False for i in range(1, 9)}, "q9": True, "a_plus": None,
-                        "new_market_fact": "", "second_trade_note": ""},
+                        "new_market_fact": "", "second_trade_note": "",
+                        "why_sector": "农业主线", "why_stock": "板块内最早修复", "why_now": "回踩不破后再突破 H1",
+                        "invalidation_type": "price", "invalidation_text": ""},
             "account_risk_budget_pct": 1.5, "stress_loss_pct": 8.0}
     answers = over.pop("answers", {})
     base.update(over)
@@ -67,7 +69,7 @@ def test_基线全部满足才是READY_而且说清楚不是买入信号():
     res = _run()
     assert res["decision"]["verdict"] == "READY", res["decision"]
     assert "不是买入信号" in res["decision"]["summary"]
-    assert res["decision"]["rule_version"] == "pretrade_v1"
+    assert res["decision"]["rule_version"] == "pretrade_v2"
 
 
 def test_结果里没有任何分数():
@@ -151,11 +153,13 @@ def test_上一笔刚盈利后快速重入是高风险警告():
 def test_F_最强买不到所以买它_BLOCKED():
     res = _run(inp=_inp(answers={"q1": True}))
     assert res["decision"]["verdict"] == "BLOCKED"
-    assert any("最强的那只买不到" in t for t in _texts(res, "FAIL"))
+    assert any("最强的那只现在能买" in t for t in _texts(res, "FAIL"))   # v2 换成反事实问法
 
 
-def test_没有明确失效条件_BLOCKED():
-    assert _run(inp=_inp(answers={"q9": False}))["decision"]["verdict"] == "BLOCKED"
+def test_没写失效条件_到不了READY():
+    res = _run(inp=_inp(planned_stop=None, answers={"invalidation_type": None}))
+    assert res["decision"]["verdict"] == "WAIT"
+    assert any(i["key"] == "invalidation" for i in res["decision"]["unmet"])
 
 
 def test_没回答的问题不等于回答了否():
@@ -208,7 +212,7 @@ def test_整个模块拿不到数据_降到WAIT而不是BLOCKED():
 # ── 市场与板块 ────────────────────────────────────────────────────────────────
 
 def test_系统性下跌日不开新仓():
-    ctx = _ctx(); ctx["market"]["indexes"][1]["pct"] = -3.2
+    ctx = _ctx(); ctx["market"]["indexes"][0]["pct"] = -3.2       # 上证：主板票自己的盘子
     assert _run(ctx)["decision"]["verdict"] == "BLOCKED"
 
 
@@ -279,3 +283,84 @@ def test_没填失效价_仓位超过压力损失算出的上限也要BLOCKED():
 def test_没填失效价_仓位在压力上限以内只提示算不准():
     res = _run(inp=_inp(planned_stop=None, position_pct=10.0))
     assert res["decision"]["verdict"] == "WAIT" and not res["decision"]["vetoes"]
+
+
+# ── pretrade_v2（2026-09-12 生产试用 + 评审）──────────────────────────────────────
+
+def _dims(res):
+    return {d["key"]: d["verdict"] for d in res["decision"]["dimensions"]}
+
+
+def test_基线三个维度都是READY():
+    assert set(_dims(_run()).values()) == {"READY"}
+
+
+def test_三个维度分开给结论_总体取最严():
+    ctx = _ctx()
+    ctx["intraday"]["structure"].update(state="REPAIRING", status="PARTIAL", l1=None, breakout_at=None)
+    ans = {f"q{i}": True for i in (1, 2, 4, 7, 8)}
+    res = _run(ctx, _inp(planned_stop=None, position_pct=100.0, answers=ans))
+    assert _dims(res) == {"setup": "WAIT", "execution": "BLOCKED", "risk": "BLOCKED"}
+    assert res["decision"]["verdict"] == "BLOCKED"
+    assert "客观交易条件本身是 WAIT" in res["decision"]["summary"]
+
+
+def test_失效条件可以不是价格_仓位按压力损失卡():
+    res = _run(inp=_inp(planned_stop=None, position_pct=10.0,
+                        answers={"invalidation_type": "structure", "invalidation_text": "跌回分时均价下方"}))
+    assert res["decision"]["verdict"] == "READY"
+    assert any("≤ 上限 18.8%" in t for t in _texts(res, "PASS"))
+
+
+def test_选了结构失效但没写具体条件_到不了READY():
+    res = _run(inp=_inp(planned_stop=None, position_pct=10.0, answers={"invalidation_type": "structure"}))
+    assert res["decision"]["verdict"] == "WAIT"
+
+
+def test_买入理由没写全_到不了READY():
+    res = _run(inp=_inp(answers={"why_now": ""}))
+    assert res["decision"]["verdict"] == "WAIT"
+    assert any("为什么是现在" in i["text"] for i in res["decision"]["unmet"])
+
+
+def test_主板票不被创业板指单独否决():
+    ctx = _ctx()
+    ctx["market"]["indexes"] = [{"name": "上证指数", "pct": -0.4}, {"name": "深证成指", "pct": -0.8},
+                                {"name": "创业板指", "pct": -3.4}]
+    res = _run(ctx)
+    assert res["decision"]["verdict"] == "WAIT"
+    assert any("情绪可能传导" in t for t in _texts(res, "WARN"))
+
+
+def test_创业板票看创业板指():
+    ctx = _ctx()
+    ctx["stock"]["code"] = "300750"
+    ctx["market"]["indexes"] = [{"name": "上证指数", "pct": -0.4}, {"name": "创业板指", "pct": -3.4}]
+    assert _run(ctx)["decision"]["verdict"] == "BLOCKED"
+
+
+def test_第一波还在走_H1只是候选():
+    ctx = _ctx()
+    ctx["intraday"]["structure"].update(state="REPAIRING", status="PARTIAL", l1=None, breakout_at=None)
+    t = [x for x in _texts(_run(ctx)) if "H1" in x]
+    assert any("H1 还没确认" in x for x in t) and not any("H1 已确认" in x for x in t)
+
+
+def test_板块内排名_告诉你谁比它强():
+    ctx = _ctx()
+    ctx["sector"]["live"]["ranking"] = {"top": [{"code": "600371", "name": "万向德农", "pct": 9.8}],
+                                        "rank": 8, "total": 50, "leader_gap": 9.1}
+    assert any("排第 8 / 50" in t and "落后领涨 9.1" in t for t in _texts(_run(ctx)))
+
+
+def test_20日跑输板块要警惕():
+    ctx = _ctx()
+    ctx["leader"]["rs_sector_20"] = -6.0
+    assert any("跑输板块" in t for t in _texts(_run(ctx), "WARN"))
+
+
+def test_不属于高标二波要说清楚():
+    ctx = _ctx()
+    ctx["leader"]["lifecycle"] = None
+    ctx["leader"]["board_count_60d"] = 3
+    assert any("不属于「高标二波」" in t and "60 日最高 3 板" in t for t in _texts(_run(ctx)))

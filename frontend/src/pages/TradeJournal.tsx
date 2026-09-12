@@ -194,7 +194,8 @@ function Journal() {
 }
 
 function reviewHref(t: TradeJournalEntry) {
-  const q = new URLSearchParams({ code: t.stock_code ?? '', as_of: t.trade_time.slice(0, 19), price: String(t.price) })
+  const q = new URLSearchParams({ code: t.stock_code ?? '', as_of: t.trade_time.slice(0, 19), price: String(t.price),
+                                  journal_id: String(t.id) })
   if (t.position_pct != null) q.set('position_pct', String(t.position_pct))
   if (t.planned_stop != null) q.set('planned_stop', String(t.planned_stop))
   return `/pre-trade-check?${q.toString()}`

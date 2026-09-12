@@ -1,7 +1,7 @@
 import { cn } from '@/utils/cn'
 import type { JournalRow, ManualAnswers } from '@/api/preTradeCheck'
 
-type YesNoKey = 'q1' | 'q2' | 'q3' | 'q4' | 'q5' | 'q6' | 'q7' | 'q8' | 'q9' | 'a_plus'
+type YesNoKey = 'q1' | 'q2' | 'q3' | 'q4' | 'q5' | 'q6' | 'q7' | 'q8' | 'a_plus'
 
 function YesNo({ value, onChange, bad }: {
   value: boolean | null; onChange: (v: boolean) => void; bad: boolean
@@ -24,7 +24,7 @@ function YesNo({ value, onChange, bad }: {
 const hm = (iso: string) => iso.slice(5, 16).replace('T', ' ')
 
 /**
- * 一票否决的人工问题。**系统不猜你的心理**——前 8 个答「是」、第 9 个答「否」直接 BLOCKED；
+ * 一票否决的人工问题。**系统不猜你的心理**——8 题答「是」都直接 BLOCKED（失效条件在「你的计划」里写）；
  * 没回答不等于答了「否」，到不了 READY。
  */
 export function ManualQuestions({ questions, answers, onChange, asOfBeforeEntry, earliest,
@@ -44,14 +44,14 @@ export function ManualQuestions({ questions, answers, onChange, asOfBeforeEntry,
     <div className="card p-4 space-y-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="text-xs font-semibold text-text-primary">我买它的主要原因是不是……</span>
-        <span className="text-[11px] text-text-muted">前 8 题答「是」、第 9 题答「否」都会直接 BLOCKED</span>
+        <span className="text-[11px] text-text-muted">答「是」就直接 BLOCKED</span>
       </div>
       <div className="divide-y divide-bg-border/40">
         {questions.map((q, i) => (
           <div key={q.key} className="flex items-center justify-between gap-3 py-1.5">
             <span className="text-sm text-text-secondary">{i + 1}. {q.text}</span>
             <YesNo value={answers[q.key as YesNoKey]} onChange={(v) => set(q.key as YesNoKey, v)}
-                   bad={q.key !== 'q9'} />
+                   bad />
           </div>
         ))}
         {asOfBeforeEntry && (

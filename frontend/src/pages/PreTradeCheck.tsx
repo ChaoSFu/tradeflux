@@ -26,6 +26,7 @@ import { VerdictPanel } from '@/components/preTrade/VerdictPanel'
 import { CheckModules } from '@/components/preTrade/CheckModules'
 import { ManualQuestions } from '@/components/preTrade/ManualQuestions'
 import { OutcomePanel } from '@/components/preTrade/OutcomePanel'
+import { PlanInputs } from '@/components/preTrade/PlanInputs'
 import { QualityBadge } from '@/components/preTrade/levels'
 
 const inputCls = 'w-full bg-bg-elevated border border-bg-border rounded-lg px-2.5 py-1.5 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/50'
@@ -65,6 +66,8 @@ const pctTxt = (v: number | null | undefined) => (v == null ? '—' : `${v > 0 ?
 
 export default function PreTradeCheck() {
   const [params] = useSearchParams()
+  // 从交易记录「复盘买点」进来：带出当时写的理由
+  const journalId = params.get('journal_id') ? Number(params.get('journal_id')) : null
   const isLoggedIn = useAuthStore((s) => s.isLoggedIn)
   const [showLogin, setShowLogin] = useState(false)
 
@@ -76,7 +79,7 @@ export default function PreTradeCheck() {
   const [price, setPrice] = useState(params.get('price') ?? '')
   const [position, setPosition] = useState(params.get('position_pct') ?? '')
   const [stop, setStop] = useState(params.get('planned_stop') ?? '')
-  const [reason, setReason] = useState('')
+  const [dqOpen, setDqOpen] = useState<boolean | null>(null)
   const [sectorId, setSectorId] = useState<number | null>(null)
   const [budget, setBudget] = useState('')
   const [stress, setStress] = useState('')
@@ -92,8 +95,8 @@ export default function PreTradeCheck() {
   useEffect(() => { setAnswers(EMPTY_ANSWERS); setResult(null); setSectorId(null) }, [code, mode, asOf])
 
   const ctxQ = useQuery({
-    queryKey: ['pretrade-context', code, asOfParam ?? 'live', sectorId],
-    queryFn: () => fetchPreTradeContext({ stock_code: code, as_of: asOfParam, sector_id: sectorId }),
+    queryKey: ['pretrade-context', code, asOfParam ?? 'live', sectorId, journalId],
+    queryFn: () => fetchPreTradeContext({ stock_code: code, as_of: asOfParam, sector_id: sectorId, journal_id: journalId }),
     enabled: codeOk && asOfOk,
     staleTime: mode === 'LIVE' ? 60_000 : Infinity,
     retry: false,
@@ -104,10 +107,12 @@ export default function PreTradeCheck() {
   const payload: EvaluatePayload = useMemo(() => ({
     stock_code: code, as_of: asOfParam,
     intended_price: num(price), position_pct: num(position), planned_stop: num(stop),
-    reason, thesis_sector_id: sectorId ?? ctx?.sector.thesis?.id ?? null, manual_answers: answers,
+    reason: [answers.why_sector && `板块：${answers.why_sector}`, answers.why_stock && `个股：${answers.why_stock}`,
+             answers.why_now && `时机：${answers.why_now}`].filter(Boolean).join('｜'),
+    thesis_sector_id: sectorId ?? ctx?.sector.thesis?.id ?? null, manual_answers: answers, journal_id: journalId,
     ...(num(budget) != null ? { account_risk_budget_pct: num(budget)! } : {}),
     ...(num(stress) != null ? { stress_loss_pct: num(stress)! } : {}),
-  }), [code, asOfParam, price, position, stop, reason, sectorId, ctx, answers, budget, stress])
+  }), [code, asOfParam, price, position, stop, sectorId, ctx, answers, budget, stress, journalId])
 
   const evalM = useMutation({
     mutationFn: evaluatePreTrade,
@@ -132,6 +137,10 @@ export default function PreTradeCheck() {
 
   const beforeEntry = ctx ? ctx.as_of.slice(11, 16) < ctx.defaults.earliest_normal_entry : false
   const answeredAll = ctx ? ctx.manual_questions.every((q) => answers[q.key as keyof ManualAnswers] !== null) : false
+  const planDone = !!(answers.why_sector.trim() && answers.why_stock.trim() && answers.why_now.trim() && answers.invalidation_type
+    && (answers.invalidation_type === 'price' ? num(stop) != null : answers.invalidation_text.trim()))
+  const dqShown = dqOpen ?? ctx?.mode !== 'LIVE'      // 实时要快：数据来源表默认收起；复盘默认展开
+  const dqCounts = (ctx?.data_quality ?? []).reduce<Record<string, number>>((m, r) => ({ ...m, [r.quality]: (m[r.quality] ?? 0) + 1 }), {})
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -197,11 +206,6 @@ export default function PreTradeCheck() {
           <div><label className={labelCls}>单笔风险预算 %</label><input value={budget} onChange={(e) => setBudget(e.target.value)} placeholder={String(ctx?.defaults.account_risk_budget_pct ?? 1.5)} className={inputCls} /></div>
           <div><label className={labelCls}>压力损失 %</label><input value={stress} onChange={(e) => setStress(e.target.value)} placeholder={String(ctx?.defaults.stress_loss_pct ?? 8)} className={inputCls} /></div>
         </div>
-        <div>
-          <label className={labelCls}>买入理由</label>
-          <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)}
-                    placeholder="为什么是它、为什么是现在？" className={cn(inputCls, 'resize-none')} />
-        </div>
       </div>
 
       {/* ── 事实概览：as_of 那一刻取到了什么、从哪来、准不准 ─────────────── */}
@@ -244,7 +248,7 @@ export default function PreTradeCheck() {
                   <div className="font-mono text-base text-text-primary">
                     {ctx.intraday.price ?? '—'} <span className="text-xs">{pctTxt(ctx.intraday.pct)}</span>
                   </div>
-                  <div className="text-text-muted">均价 {ctx.intraday.vwap?.toFixed(2) ?? '—'} · 结构 {ctx.intraday.structure?.status ?? '—'}</div>
+                  <div className="text-text-muted">均价 {ctx.intraday.vwap?.toFixed(2) ?? '—'} · 结构 {ctx.intraday.structure?.phase_zh ?? ctx.intraday.structure?.status ?? '—'}</div>
                 </div>
                 <div>
                   <div className="text-text-muted">核心指数</div>
@@ -269,8 +273,20 @@ export default function PreTradeCheck() {
                   ) : <div className="text-text-muted">{ctx.discipline.reason}</div>}
                 </div>
               </div>
-              <div className="overflow-x-auto">
+              <button type="button" onClick={() => setDqOpen(!dqShown)}
+                      className="text-[11px] text-text-muted hover:text-accent">
+                数据来源与质量：{Object.entries(dqCounts).map(([q, n]) => `${({ EXACT: '精确', APPROX: '近似', STALE: '过时', UNKNOWN: '未知' } as Record<string, string>)[q] ?? q} ${n}`).join(' · ')}
+                <span className="ml-1 underline decoration-dotted underline-offset-2">{dqShown ? '收起' : '展开'}</span>
+              </button>
+              {dqShown && <div className="overflow-x-auto">
                 <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="text-left text-text-muted/70">
+                      <th className="py-1 pr-2 font-normal">模块</th><th className="py-1 pr-2 font-normal">质量</th>
+                      <th className="py-1 pr-2 font-normal">来源</th><th className="py-1 pr-2 font-normal">数据时点</th>
+                      <th className="py-1 font-normal">说明</th>
+                    </tr>
+                  </thead>
                   <tbody>
                     {ctx.data_quality.map((r) => (
                       <tr key={r.module} className="border-t border-bg-border/40">
@@ -283,10 +299,15 @@ export default function PreTradeCheck() {
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </div>}
             </>
           )}
         </div>
+      )}
+
+      {ctx && (
+        <PlanInputs ctx={ctx} answers={answers} onChange={setAnswers} historical={ctx.mode === 'HISTORICAL'}
+                    code={code} inputCls={inputCls} />
       )}
 
       {ctx && (
@@ -304,6 +325,7 @@ export default function PreTradeCheck() {
             {evalM.isPending ? '检查中……' : '开始检查'}
           </button>
           {!answeredAll && <span className="text-xs text-text-muted">还有问题没回答——没回答不等于回答了「否」，到不了 READY</span>}
+          {!planDone && <span className="text-xs text-text-muted">理由或失效条件没写全，到不了 READY</span>}
           {evalM.isError && <span className="text-xs text-danger">检查失败：{(evalM.error as Error).message}</span>}
           {stale && <span className="text-xs text-warn">输入改过了，下面是改之前的结论——重新检查</span>}
         </div>
@@ -329,15 +351,27 @@ export default function PreTradeCheck() {
           <div className="text-xs font-semibold text-text-primary">最近的检查</div>
           <div className="divide-y divide-bg-border/40">
             {histQ.data!.map((h) => (
-              <button key={h.id} onClick={() => openSaved(h.id)}
-                      className="flex w-full items-center gap-3 py-1.5 text-left text-xs hover:bg-bg-elevated/40">
-                <span className="w-10 font-mono text-text-muted">#{h.id}</span>
-                <span className="w-28 text-text-primary">{h.stock_name ?? h.stock_code}</span>
-                <span className="w-40 font-mono text-text-muted">{h.as_of.replace('T', ' ')}</span>
-                <span className="w-10 text-text-muted">{h.mode === 'LIVE' ? '实时' : '复盘'}</span>
-                <span className={cn('font-semibold', VERDICT_TONE[h.verdict])}>{h.verdict}</span>
-                <span className="ml-auto text-text-muted">{h.rule_version}</span>
-              </button>
+              <div key={h.id} className="flex w-full items-center gap-3 py-1.5 text-xs">
+                <button onClick={() => openSaved(h.id)} className="flex flex-1 items-center gap-3 text-left hover:bg-bg-elevated/40">
+                  <span className="w-10 font-mono text-text-muted">#{h.id}</span>
+                  <span className="w-28 text-text-primary">{h.stock_name ?? h.stock_code}</span>
+                  <span className="w-40 font-mono text-text-muted">{h.as_of.replace('T', ' ')}</span>
+                  <span className="w-10 text-text-muted">{h.mode === 'LIVE' ? '实时' : '复盘'}</span>
+                  <span className={cn('font-semibold', VERDICT_TONE[h.verdict])}>{h.verdict}</span>
+                </button>
+                {(h.revisions?.length ?? 0) > 0 && (
+                  // 同一时刻反复检查是一次复盘的几个版本：最新的是结论，前面的点开能看当时怎么答的
+                  <span className="flex items-center gap-1 text-[11px] text-text-muted">
+                    改过 {h.revisions.length} 次：
+                    {h.revisions.map((r) => (
+                      <button key={r.id} onClick={() => openSaved(r.id)} className={cn('hover:underline', VERDICT_TONE[r.verdict])}>
+                        #{r.id}
+                      </button>
+                    ))}
+                  </span>
+                )}
+                <span className="text-text-muted">{h.rule_version}</span>
+              </div>
             ))}
           </div>
         </div>

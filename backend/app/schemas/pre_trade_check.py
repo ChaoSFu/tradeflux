@@ -1,6 +1,6 @@
 """买入检查的请求 / 响应结构（2026-09-11）。"""
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +21,12 @@ class ManualAnswers(BaseModel):
     a_plus: Optional[bool] = None          # 09:45 前才问：是否有事前写好的 A+ 例外
     new_market_fact: str = ""              # 5 日内重入才要：新的市场事实
     second_trade_note: str = ""            # 今天第 2 笔才要：比第一笔多出的证据
+    # v2：买入理由三句 + 失效条件（失效 ≠ 止损价）。q9 不再使用，留着兼容旧客户端
+    why_sector: str = ""
+    why_stock: str = ""
+    why_now: str = ""
+    invalidation_type: Optional[Literal["price", "structure", "sector", "time"]] = None
+    invalidation_text: str = ""
 
 
 class EvaluateRequest(BaseModel):
@@ -31,6 +37,7 @@ class EvaluateRequest(BaseModel):
     planned_stop: Optional[float] = Field(None, gt=0)
     reason: str = ""
     thesis_sector_id: Optional[int] = None
+    journal_id: Optional[int] = None       # 从交易记录复盘时带上
     manual_answers: ManualAnswers = ManualAnswers()
     account_risk_budget_pct: float = Field(DEFAULT_ACCOUNT_RISK_BUDGET_PCT, gt=0, le=10)
     stress_loss_pct: float = Field(DEFAULT_STRESS_LOSS_PCT, ge=1, le=40)
@@ -55,6 +62,14 @@ class CheckModule(BaseModel):
     meta: dict = {}
 
 
+class Dimension(BaseModel):
+    key: str                               # setup | execution | risk
+    title: str
+    verdict: str
+    lead: str
+    counts: dict = {}
+
+
 class Decision(BaseModel):
     verdict: str                           # READY | WAIT | BLOCKED
     summary: str
@@ -64,6 +79,7 @@ class Decision(BaseModel):
     cautions: List[CheckItem]
     unknowns: List[CheckItem]
     positives: List[CheckItem]
+    dimensions: List[Dimension] = []       # v2 起才有；v1 的存档没有
 
 
 class EvaluateResponse(BaseModel):
@@ -89,3 +105,4 @@ class HistoryItem(BaseModel):
     intended_price: Optional[float] = None
     created_at: Optional[datetime] = None
     has_outcome: bool = False
+    revisions: List[dict] = []             # 同一只票同一历史时刻之前的几次检查（旧→新之前）

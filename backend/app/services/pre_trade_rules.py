@@ -1,8 +1,19 @@
 """
-买入检查的规则（纯函数，2026-09-11 新增）。rule_version = pretrade_v1。
+买入检查的规则（纯函数，2026-09-11 新增）。当前 rule_version = pretrade_v2。
 
 输入：上下文事实（pre_trade_check_service 取的，已经按 as_of 截好）+ 用户输入。
 输出：八个模块的逐项证据 + READY / WAIT / BLOCKED。
+
+## 版本
+
+- pretrade_v1（2026-09-11）：首版。
+- pretrade_v2（2026-09-12，生产试用 + 一轮评审之后）：
+  · 结论分三个维度——客观交易条件 / 执行纪律 / 风险与仓位，总体取最严的那个（总体口径不变）
+  · 失效条件可以不是价格（结构 / 板块 / 时间）；原第 9 题「有没有失效条件」改成直接写出来
+  · 买入理由拆成板块 / 个股 / 时机三句，没写全到不了 READY
+  · q1、q2 换成更难自欺的问法（答「是」仍是一票否决）
+  · 指数按个股所在的盘子看，别的指数只作背景（主板票不再被创业板指单独否决）
+  · 没填失效价也按「预算 ÷ 压力损失」卡仓位（c4fb481 已上线，这里补记版本）
 
 ## 这里没有分数
 
@@ -27,7 +38,7 @@ READY ≠ 买入信号，≠ 预测上涨。结构确认没完成，永远到不
 from datetime import datetime, time
 from typing import Dict, List, Optional
 
-RULE_VERSION = "pretrade_v1"
+RULE_VERSION = "pretrade_v2"
 
 # ── 纪律阈值（v1 设定，不是统计出来的）──────────────────────────────────────
 EARLIEST_NORMAL_ENTRY = time(9, 45)      # 09:45 前不开普通新仓
@@ -50,18 +61,42 @@ LOSS_STREAK_BLOCK = 3                    # 连续 3 笔亏损：暂停主动进�
 DEFAULT_ACCOUNT_RISK_BUDGET_PCT = 1.5    # 单笔最多亏掉账户的 1.5%
 DEFAULT_STRESS_LOSS_PCT = 8.0            # 压力损失：不假设止损价一定成交（T+1/跳空/跌停）
 
+# 8 题都是「答是 = 一票否决」。q1 / q2 在 v2 换了问法：
+#   q1 用反事实（最强的那只要是能买，我还选它吗）——比直接问「是不是买不到才买它」更难自欺
+#   q2 问的是「身份替代了今天的证据」，不是「它以前是不是龙头」——高标二波本来就以此为前提，不能一刀切
 MANUAL_QUESTIONS = [
-    ("q1", "最强的那只买不到，所以买它？"),
-    ("q2", "因为它以前是龙头？"),
+    ("q1", "要是最强的那只现在能买，我就不会选它？"),
+    ("q2", "主要是冲它以前是龙头——今天的走势和板块证据其实不强？"),
     ("q3", "因为我刚刚在它身上赚过？"),
     ("q4", "板块 / 高标正在明显走弱，我却想博修复？"),
     ("q5", "个股明显弱于板块，我仍想买？"),
     ("q6", "Setup 已经被破坏，我想补仓降低成本？"),
     ("q7", "我只是怕踏空 / 怕空仓？"),
     ("q8", "我想把上一笔亏损赚回来？"),
-    ("q9", "我是否有明确的失效条件？"),
 ]
-IMPULSE_KEYS = [k for k, _ in MANUAL_QUESTIONS[:8]]
+IMPULSE_KEYS = [k for k, _ in MANUAL_QUESTIONS]
+
+# 买入理由三句（v2）：写不出来就是还没想清楚。失效条件单独写，见 INVALIDATION_TYPES
+REASON_FIELDS = [
+    ("why_sector", "为什么是这个板块", "主线是什么？板块今天在赚钱吗？"),
+    ("why_stock", "为什么是这只", "它在板块里什么位置？凭什么是它不是别的？"),
+    ("why_now", "为什么是现在", "哪个结构信号出现了？"),
+]
+# 失效 ≠ 止损价：短线的失效常常是结构 / 板块 / 时间，不一定是一个价（v2）
+INVALIDATION_TYPES = [
+    ("price", "价格", "跌破「计划失效价」"),
+    ("structure", "结构", "如：跌回分时均价下方 / 第二次上攻失败"),
+    ("sector", "板块", "如：板块龙头炸板 / 板块翻绿"),
+    ("time", "时间", "如：10:30 前没突破 H1 就走"),
+]
+_INV_ZH = {k: label for k, label, _ in INVALIDATION_TYPES}
+
+# 三个维度（v2）：同样是 BLOCKED，「机会不成熟」「执行错了」「仓位错了」要分得出来
+DIMENSIONS = [
+    ("setup", "客观交易条件", ("market", "sector", "leader", "intraday")),
+    ("execution", "执行纪律", ("time", "discipline", "manual")),
+    ("risk", "风险与仓位", ("risk",)),
+]
 
 LIFECYCLE_ZH = {
     "STREAKING": "连板中", "BROKEN": "刚断板", "REPAIRING": "修复中", "CROSS_SUCCESS": "穿越成功",
@@ -112,6 +147,18 @@ def _hm(iso: Optional[str]) -> str:
     return iso[11:16] if iso and len(iso) >= 16 else "—"
 
 
+def _relevant_indexes(code: str) -> set:
+    """
+    指数按个股所在的盘子看：主板票看上证 + 深证成指，创业板票看创业板指 + 深证成指，科创板看上证。
+    别的指数只作背景——主板票不该被创业板指单独一票否决（v2）。
+    """
+    if code.startswith(("300", "301")):
+        return {"创业板指", "深证成指"}
+    if code.startswith("688"):
+        return {"上证指数"}
+    return {"上证指数", "深证成指"}
+
+
 def _why(meta: Optional[dict], default: str) -> str:
     notes = (meta or {}).get("notes") or []
     return notes[0] if notes else default
@@ -128,14 +175,24 @@ def check_market(ctx: dict) -> dict:
         items.append(_item("index", "UNKNOWN",
                            f"核心指数截至 as_of 的涨跌拿不到：{_why(mk.get('indexes_meta'), '分钟数据不可用')}"))
     else:
-        worst = min(idx, key=lambda i: i["pct"])
-        txt = "、".join(f"{i['name']} {_pct(i['pct'])}" for i in idx)
+        names = _relevant_indexes(str((ctx.get("stock") or {}).get("code") or ""))
+        rel = [i for i in idx if i.get("name") in names] or idx
+        bg = [i for i in idx if i not in rel]
+        worst = min(rel, key=lambda i: i["pct"])
+        txt = "、".join(f"{i['name']} {_pct(i['pct'])}" for i in rel)
+        if bg:
+            txt += "（" + "、".join(f"{i['name']} {_pct(i['pct'])}" for i in bg) + " 只作背景）"
         if worst["pct"] <= INDEX_CRASH_PCT:
             items.append(_item("index", "FAIL", f"系统性下跌：{txt}（{worst['name']} ≤ {INDEX_CRASH_PCT}%，不开新仓）"))
         elif worst["pct"] <= INDEX_WEAK_PCT:
             items.append(_item("index", "WARN", f"指数明显走弱：{txt}"))
         else:
             items.append(_item("index", "PASS", f"指数没有明显走弱：{txt}"))
+        crash_bg = [i for i in bg if i["pct"] <= INDEX_CRASH_PCT]
+        if crash_bg and worst["pct"] > INDEX_CRASH_PCT:
+            items.append(_item("index_other", "WARN",
+                               "、".join(f"{i['name']} {_pct(i['pct'])}" for i in crash_bg)
+                               + " 大跌：不是这只票的盘子，但情绪可能传导"))
 
     br = mk.get("breadth") or {}
     up, down = br.get("up"), br.get("down")
@@ -286,8 +343,10 @@ def check_leader(ctx: dict) -> dict:
     items: List[dict] = []
     lc = ld.get("lifecycle")
     if not lc:
+        n60 = ld.get("board_count_60d")
         items.append(_item("lifecycle", "INFO",
-                           "没有生命周期状态：不在高标周期快照里（只覆盖曾 ≥4 连板的强势池股票）"))
+                           "不属于「高标二波」：高标周期池只收曾经 ≥4 连板的票"
+                           + (f"（它 60 日最高 {n60} 板）" if n60 is not None else "") + "，没有生命周期状态可看"))
     else:
         shown = lc["state"] if lc.get("state") not in (None, "UNKNOWN") else lc.get("last_valid_state")
         zh = LIFECYCLE_ZH.get(shown or "UNKNOWN", shown)
@@ -317,6 +376,23 @@ def check_leader(ctx: dict) -> dict:
             items.append(_item("rs_market", "WARN", f"20 日跑输大盘 {rs:+.1f} 个点{chg}"))
         else:
             items.append(_item("rs_market", "PASS", f"20 日跑赢大盘 {rs:+.1f} 个点{chg}"))
+
+    rss = ld.get("rs_sector_20")
+    if rss is not None:         # 只有高标周期池里的票有；跑赢大盘不等于是板块里的强者
+        if rss < 0:
+            items.append(_item("rs_sector", "WARN", f"20 日跑输板块 {rss:+.1f} 个点：跑赢大盘不等于是板块里的强者"))
+        else:
+            items.append(_item("rs_sector", "PASS", f"20 日跑赢板块 {rss:+.1f} 个点"))
+
+    rk = ((ctx.get("sector") or {}).get("live") or {}).get("ranking") or {}
+    if rk.get("top"):           # 实时才有：板块里谁比它强，一眼看到
+        top = "、".join(f"{t['name']} {_pct(t['pct'])}" for t in rk["top"])
+        pos = f"排第 {rk['rank']} / {rk['total']}" if rk.get("rank") else f"不在今天有行情的 {rk['total']} 只里"
+        if rk.get("rank") == 1:
+            items.append(_item("sector_rank", "PASS", f"板块内领涨（{pos}）：{top}"))
+        else:
+            gap = f"，落后领涨 {rk['leader_gap']:.1f} 个点" if rk.get("leader_gap") is not None else ""
+            items.append(_item("sector_rank", "INFO", f"板块内{pos}{gap}；领涨：{top}"))
 
     bp, smax = ld.get("board_prev"), ld.get("sector_max_board_prev")
     if bp is not None and smax is not None:
@@ -369,13 +445,19 @@ def check_intraday(ctx: dict, inp: dict) -> dict:
         if st.get("state") == "FAILED":
             items.append(_item("failed", "WARN", f"{_hm(st.get('failed_at'))} 跌破修复关键位，结构失效", group="unmet"))
         elif st.get("first_repair_at"):
+            # 第一波还在创新高时 H1 只是候选：回落 ≥ 阈值之后才确认（v2 改了说法，状态机没变）
             if st.get("h1") is not None and st.get("state") in ("PULLBACK", "CONFIRMED"):
-                items.append(_item("h1", "PASS", f"已形成修复高点 H1 = {st['h1']}（{_hm(st.get('h1_at'))}）"))
+                items.append(_item("h1", "PASS", f"H1 已确认 = {st['h1']}（{_hm(st.get('h1_at'))}，之后回落了"
+                                                 f" ≥{st.get('pullback_min_pct')}%）"))
             elif st.get("state") == "REPAIRING":
-                items.append(_item("h1", "WARN", f"第一波修复还在走，H1 暂为 {st.get('h1')}，尚未出现有效回踩"
-                                                 f"（≥{st.get('pullback_min_pct')}%）", group="unmet"))
-            if st.get("state") in ("PULLBACK", "CONFIRMED") and st.get("l1") is not None:
-                items.append(_item("l1", "PASS", f"回踩形成 L1 = {st['l1']}（{_hm(st.get('l1_at'))}），没有跌破关键位"))
+                items.append(_item("h1", "WARN",
+                                   f"第一波还在走：H1 还没确认——{st.get('h1')} 只是目前的最高收盘，价格还在创新高就不算 H1；"
+                                   f"回落 ≥{st.get('pullback_min_pct')}% 才确认", group="unmet"))
+            if st.get("state") == "PULLBACK" and st.get("l1") is not None:
+                items.append(_item("l1", "INFO", f"回踩中：L1 候选 = {st['l1']}（{_hm(st.get('l1_at'))}），还没跌破关键位"
+                                                 f"——再突破 H1 之前 L1 都可能更低"))
+            elif st.get("state") == "CONFIRMED" and st.get("l1") is not None:
+                items.append(_item("l1", "PASS", f"L1 = {st['l1']}（{_hm(st.get('l1_at'))}），回踩没跌破关键位"))
             if st.get("state") == "CONFIRMED":
                 items.append(_item("breakout", "PASS",
                                    f"{_hm(st.get('breakout_at'))} 再次突破 H1——结构确认完成（仍然只是结构满足，不是买入指令）"))
@@ -498,22 +580,37 @@ def check_manual(inp: dict) -> dict:
     ans = inp.get("answers") or {}
     items: List[dict] = []
     unanswered = [q for k, q in MANUAL_QUESTIONS if ans.get(k) is None]
-    for k, q in MANUAL_QUESTIONS[:8]:
+    for k, q in MANUAL_QUESTIONS:
         if ans.get(k) is True:
             items.append(_item(k, "FAIL", f"{q} —— 是：一票否决"))
     if all(ans.get(k) is False for k in IMPULSE_KEYS):
-        items.append(_item("impulse", "PASS", "8 个冲动问题都答了「否」"))
-    q9 = ans.get("q9")
-    if q9 is False:
-        items.append(_item("q9", "FAIL", "没有明确的失效条件 —— 一票否决"))
-    elif q9 is True:
-        if inp.get("planned_stop") is None:
-            items.append(_item("q9", "WARN", "说有失效条件，但没填计划失效价", group="unmet"))
-        else:
-            items.append(_item("q9", "PASS", f"有明确的失效条件（失效价 {inp['planned_stop']}）"))
+        items.append(_item("impulse", "PASS", f"{len(IMPULSE_KEYS)} 个冲动问题都答了「否」"))
     if unanswered:
         items.append(_item("unanswered", "WARN", f"还有 {len(unanswered)} 个问题没回答", group="unmet"))
-    return _module("manual", "一票否决（人工回答）", items)
+
+    missing = [label for key, label, _ in REASON_FIELDS if not (ans.get(key) or "").strip()]
+    if missing:
+        items.append(_item("reasons", "WARN", f"买入理由没写全：缺「{'」「'.join(missing)}」——一句话写不出来，就是还没想清楚",
+                           group="unmet"))
+    else:
+        items.append(_item("reasons", "PASS", "板块、个股、时机三句理由都写了"))
+
+    itype = ans.get("invalidation_type")
+    itext = (ans.get("invalidation_text") or "").strip()
+    stop = inp.get("planned_stop")
+    if itype == "price" or (itype is None and stop is not None):
+        if stop is None:
+            items.append(_item("invalidation", "WARN", "选了价格失效，但没填计划失效价", group="unmet"))
+        else:
+            items.append(_item("invalidation", "PASS", f"失效条件（价格）：跌破 {stop}" + (f"，{itext}" if itext else "")))
+    elif itype in _INV_ZH:
+        if itext:
+            items.append(_item("invalidation", "PASS", f"失效条件（{_INV_ZH[itype]}）：{itext}"))
+        else:
+            items.append(_item("invalidation", "WARN", f"选了{_INV_ZH[itype]}失效，但没写具体是什么事实", group="unmet"))
+    else:
+        items.append(_item("invalidation", "WARN", "没写失效条件：什么事实出现代表你错了？", group="unmet"))
+    return _module("manual", "动机与计划（人工）", items)
 
 
 # ── 8. 风险与仓位 ────────────────────────────────────────────────────────────
@@ -534,19 +631,33 @@ def check_risk(ctx: dict, inp: dict) -> dict:
         items.append(_item("price", "UNKNOWN", "没有计划价，也拿不到 as_of 价，风险算不出来"))
         return _module("risk", "风险与仓位", items)
     if stop is None:
-        items.append(_item("stop", "WARN", "没填计划失效价——风险算不出来", group="unmet"))
         # 不用失效价也能卡住上限：真实上限 = 预算 ÷ max(结构止损, 压力损失) ≤ 预算 ÷ 压力损失。
         # 连这个都超了，填什么失效价都救不回来（2026-09-12 生产：100% 仓位只得了一句「算不出来」）
         cap = budget / stress * 100
         halved = "（连续亏损已减半）" if cl >= LOSS_STREAK_HALVE else ""
+        ans = inp.get("answers") or {}
+        itype = ans.get("invalidation_type")
+        non_price = itype in ("structure", "sector", "time") and (ans.get("invalidation_text") or "").strip()
+        if non_price:       # 失效条件本来就不是价格：不缺失效价，仓位按压力损失算（v2）
+            items.append(_item("stop", "INFO", f"失效条件是{_INV_ZH[itype]}，不是价格：不用失效价，仓位按压力损失 {stress:g}% 算"))
+        else:
+            items.append(_item("stop", "WARN", "没填计划失效价——风险算不出来", group="unmet"))
+        basis = f"风险预算 {budget:g}%{halved} ÷ 压力损失 {stress:g}%"
         if pos is not None and pos > cap + 1e-9:
             items.append(_item("position", "FAIL",
                                f"计划仓位 {pos:g}% 超过上限：就算不算失效价，只按压力损失 {stress:g}% 算，"
                                f"风险预算 {budget:g}%{halved} 最多容纳 {cap:.1f}% 仓位",
                                evidence={"max_position_pct": round(cap, 1)}))
-        elif pos is not None:
+        elif non_price and pos is not None:
+            items.append(_item("position", "PASS", f"计划仓位 {pos:g}% ≤ 上限 {cap:.1f}%（{basis}）",
+                               evidence={"max_position_pct": round(cap, 1)}))
+        elif non_price:
+            items.append(_item("position", "WARN", f"没填计划仓位；按 {basis}，最多 {cap:.1f}%",
+                               group="unmet", evidence={"max_position_pct": round(cap, 1)}))
+        else:           # 仓位没填也把保守上限亮出来
             items.append(_item("position", "INFO",
-                               f"只按压力损失 {stress:g}% 算，仓位上限 {cap:.1f}%；填了失效价才算得准"))
+                               f"只按压力损失 {stress:g}% 算，仓位上限 {cap:.1f}%；填了失效价才算得准",
+                               evidence={"max_position_pct": round(cap, 1)}))
     elif stop >= price:
         items.append(_item("stop", "FAIL", f"失效价 {stop} 不低于买入价 {price}——不是有效的失效条件"))
     else:
@@ -583,6 +694,35 @@ def check_risk(ctx: dict, inp: dict) -> dict:
 
 # ── 结论 ──────────────────────────────────────────────────────────────────────
 
+def _verdict_of(items: List[dict], modules: List[dict]) -> str:
+    if any(i["level"] == "FAIL" for i in items):
+        return "BLOCKED"
+    if any(i["group"] in ("unmet", "caution") for i in items) or any(m["status"] == "UNKNOWN" for m in modules):
+        return "WAIT"
+    return "READY"
+
+
+def _dimension(key: str, title: str, mods: List[dict]) -> dict:
+    """一个维度自己的结论 + 最主要的一两条原因（没有分数，只是把同一批项分组）。"""
+    items = [i for m in mods for i in m["items"]]
+    v = _verdict_of(items, mods)
+    if v == "BLOCKED":
+        pick = [i for i in items if i["level"] == "FAIL"]
+    elif v == "WAIT":
+        pick = ([i for i in items if i["group"] == "unmet" and i["level"] != "FAIL"]
+                + [i for i in items if i["group"] == "caution"])
+    else:
+        pick = []
+    texts = [i["text"] for i in pick[:2]]
+    if v == "WAIT" and not pick:
+        texts = [f"「{m['title']}」整块拿不到数据" for m in mods if m["status"] == "UNKNOWN"]
+    lead = ("；".join(texts) + (f"……共 {len(pick)} 项" if len(pick) > 2 else "")) if texts else "没发现冲突"
+    return {"key": key, "title": title, "verdict": v, "lead": lead,
+            "counts": {"fail": sum(1 for i in items if i["level"] == "FAIL"),
+                       "unmet": sum(1 for i in items if i["group"] == "unmet" and i["level"] != "FAIL"),
+                       "caution": sum(1 for i in items if i["group"] == "caution")}}
+
+
 def decide(modules: List[dict]) -> dict:
     items = [dict(i, module=m["key"]) for m in modules for i in m["items"]]
     vetoes = [i for i in items if i["level"] == "FAIL"]
@@ -591,10 +731,15 @@ def decide(modules: List[dict]) -> dict:
     unknowns = [i for i in items if i["group"] == "unknown"]
     positives = [i for i in items if i["group"] == "positive"]
     blind = [m["title"] for m in modules if m["status"] == "UNKNOWN"]
+    by_key = {m["key"]: m for m in modules}
+    dims = [_dimension(k, t, [by_key[x] for x in keys if x in by_key]) for k, t, keys in DIMENSIONS]
 
     if vetoes:
         verdict = "BLOCKED"
-        summary = f"有 {len(vetoes)} 项违反硬纪律。先处理这些，再谈买点。"
+        blocked = [d["title"] for d in dims if d["verdict"] == "BLOCKED"]
+        others = [f"{d['title']}本身是 {d['verdict']}" for d in dims if d["verdict"] != "BLOCKED"]
+        summary = (f"{'、'.join(blocked)}有硬性否决" + (f"；{'，'.join(others)}" if others else "")
+                   + "。先处理这些，再谈买点。")
     elif unmet or cautions or blind:
         verdict = "WAIT"
         parts = []
@@ -612,7 +757,7 @@ def decide(modules: List[dict]) -> dict:
         verdict = "READY"
         summary = ("READY FOR MANUAL DECISION：市场、主线、个股、结构与风险没有明显冲突。"
                    "这不是买入信号；是否执行、买多少，仍由你决定。")
-    return {"verdict": verdict, "summary": summary, "rule_version": RULE_VERSION,
+    return {"verdict": verdict, "summary": summary, "rule_version": RULE_VERSION, "dimensions": dims,
             "vetoes": vetoes, "unmet": unmet, "cautions": cautions,
             "unknowns": unknowns, "positives": positives}
 

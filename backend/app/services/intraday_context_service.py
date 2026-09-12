@@ -55,6 +55,14 @@ STRUCTURE_STATUS = {
     STRUCT_READY: "NOT_CONFIRMED",
     STRUCT_FAILED: "NOT_CONFIRMED",
 }
+# 结构阶段的名字（2026-09-12）：第一波还在创新高时 H1 只是候选，不能叫 H1。状态机本身不变
+STRUCTURE_PHASE = {
+    STRUCT_WATCH: "WAIT_REPAIR", STRUCT_READY: "WAIT_REPAIR", STRUCT_REPAIRING: "IMPULSE_FORMING",
+    STRUCT_PULLBACK: "PULLBACK_FORMING", STRUCT_CONFIRMED: "SECOND_BREAKOUT", STRUCT_FAILED: "SETUP_FAILED",
+}
+PHASE_ZH = {"WAIT_REPAIR": "等待修复", "IMPULSE_FORMING": "第一波进行中（H1 未确认）",
+            "PULLBACK_FORMING": "回踩中（H1 已确认）", "SECOND_BREAKOUT": "二次突破确认",
+            "SETUP_FAILED": "结构破坏", "UNKNOWN": "无法判断"}
 
 
 logger = logging.getLogger("tradeflux.pretrade")
@@ -340,7 +348,7 @@ def replay_structure(ctx: IntradayContext, pullback_min_pct: float) -> dict:
     价格点用每根的**收盘价**：H1 = 修复阶段的最高收盘，再突破 = 收盘价站上 H1。
     这跟雷达拿实时快照喂状态机是同一个口径，不用分钟内的最高最低去"抢"突破。
     """
-    base = {"status": UNKNOWN, "state": None, "anchor": None, "pullback_min_pct": pullback_min_pct,
+    base = {"status": UNKNOWN, "state": None, "phase": "UNKNOWN", "phase_zh": PHASE_ZH["UNKNOWN"], "anchor": None, "pullback_min_pct": pullback_min_pct,
             "first_repair_at": None, "h1": None, "h1_at": None, "l1": None, "l1_at": None,
             "breakout_at": None, "failed_at": None, "transitions": []}
     if not ctx.bars or not ctx.prev_close:
@@ -387,6 +395,7 @@ def replay_structure(ctx: IntradayContext, pullback_min_pct: float) -> dict:
 
     base.update({
         "status": STRUCTURE_STATUS.get(state, UNKNOWN), "state": state,
+        "phase": STRUCTURE_PHASE.get(state, "UNKNOWN"), "phase_zh": PHASE_ZH[STRUCTURE_PHASE.get(state, "UNKNOWN")],
         "anchor": compute_repair_anchor(ctx.prev_close, vwap, None),
         "first_repair_at": first_repair.isoformat() if first_repair else None,
         "h1": rh, "h1_at": h1_at.isoformat() if (h1_at and rh is not None) else None,

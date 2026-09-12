@@ -5,7 +5,7 @@
 被行情源限流会连带拖垮日更。
 """
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -24,11 +24,12 @@ def get_context(
     stock_code: str = Query(..., min_length=6, max_length=6),
     as_of: Optional[datetime] = Query(None, description="不传 = LIVE（此刻）"),
     sector_id: Optional[int] = Query(None, description="本次交易逻辑板块"),
+    journal_id: Optional[int] = Query(None, description="从交易记录复盘时带上：显示当时写的理由"),
     username: str = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     try:
-        return svc.build_context(db, username, stock_code, as_of, sector_id)
+        return svc.build_context(db, username, stock_code, as_of, sector_id, journal_id=journal_id)
     except ValueError as e:
         raise HTTPException(422, str(e))
 
@@ -51,11 +52,18 @@ def history(
     q = db.query(PreTradeCheck).filter(PreTradeCheck.owner == username)
     if stock_code:
         q = q.filter(PreTradeCheck.stock_code == stock_code)
-    rows = q.order_by(PreTradeCheck.created_at.desc(), PreTradeCheck.id.desc()).limit(limit).all()
+    rows = q.order_by(PreTradeCheck.created_at.desc(), PreTradeCheck.id.desc()).limit(limit * 5).all()
+    # 同一只票、同一个历史时刻反复检查（改答案、改仓位）是一次复盘的几个版本，不是几笔交易：
+    # 合并成一条，最新的是结论，前面的留作修改记录；以后统计只算最新那次（2026-09-12 评审）
+    groups: Dict[tuple, List[PreTradeCheck]] = {}
+    for r in rows:
+        groups.setdefault((r.stock_code, r.as_of) if r.mode == "HISTORICAL" else ("live", r.id), []).append(r)
     return [HistoryItem(id=r.id, stock_code=r.stock_code, stock_name=r.stock_name, as_of=r.as_of,
                         mode=r.mode, verdict=r.verdict, rule_version=r.rule_version,
                         intended_price=r.intended_price, created_at=r.created_at,
-                        has_outcome=r.outcome_json is not None) for r in rows]
+                        has_outcome=r.outcome_json is not None,
+                        revisions=[{"id": x.id, "verdict": x.verdict, "created_at": x.created_at} for x in rest])
+            for r, *rest in list(groups.values())[:limit]]
 
 
 def _own(db: Session, check_id: int, username: str) -> PreTradeCheck:

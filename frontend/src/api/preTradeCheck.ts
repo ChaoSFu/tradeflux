@@ -26,8 +26,18 @@ export interface CheckModule {
   unknown: number
 }
 
+/** 三个维度各自的结论（v2）：客观交易条件 / 执行纪律 / 风险与仓位 */
+export interface Dimension {
+  key: 'setup' | 'execution' | 'risk'
+  title: string
+  verdict: Verdict
+  lead: string
+  counts: Record<string, number>
+}
+
 export interface Decision {
   verdict: Verdict
+  dimensions?: Dimension[]
   summary: string
   rule_version: string
   vetoes: CheckItem[]
@@ -73,6 +83,11 @@ export interface PreTradeContext {
   calendar: { last: string | null; behind: boolean | null }
   rule_version: string
   manual_questions: { key: string; text: string }[]
+  reason_fields: { key: ReasonKey; label: string; placeholder: string }[]
+  invalidation_types: { key: InvalidationType; label: string; hint: string }[]
+  /** 从交易记录进来复盘时：当时写的理由（跟复盘时补写的分开放） */
+  journal_entry: { id: number; stock_code: string | null; trade_time: string; action: string; price: number
+                   reason: string | null; emotion_tag: string | null; note: string | null } | null
   defaults: {
     account_risk_budget_pct: number
     stress_loss_pct: number
@@ -86,7 +101,8 @@ export interface PreTradeContext {
     price: number | null; pct: number | null; prev_close: number | null; open: number | null
     high: number | null; low: number | null; vwap: number | null; amount: number | null
     source: string; quality: Quality | string; observed_at: string | null; notes: string[]
-    structure?: { status: string; state: string | null; h1: number | null; l1: number | null; anchor: number | null }
+    structure?: { status: string; state: string | null; phase?: string; phase_zh?: string
+                  h1: number | null; l1: number | null; anchor: number | null }
   }
   market: { indexes: { code: string; name: string; pct: number | null; quality: string }[] }
   sector: { thesis: { id: number; name: string } | null; options: SectorOption[] }
@@ -97,18 +113,27 @@ export interface PreTradeContext {
   data_quality: DataQualityRow[]
 }
 
+export type InvalidationType = 'price' | 'structure' | 'sector' | 'time'
+export type ReasonKey = 'why_sector' | 'why_stock' | 'why_now'
+
 export interface ManualAnswers {
   q1: boolean | null; q2: boolean | null; q3: boolean | null; q4: boolean | null
   q5: boolean | null; q6: boolean | null; q7: boolean | null; q8: boolean | null
-  q9: boolean | null
   a_plus: boolean | null
   new_market_fact: string
   second_trade_note: string
+  // pretrade_v2：买入理由三句 + 失效条件（失效 ≠ 止损价）
+  why_sector: string
+  why_stock: string
+  why_now: string
+  invalidation_type: InvalidationType | null
+  invalidation_text: string
 }
 
 export const EMPTY_ANSWERS: ManualAnswers = {
-  q1: null, q2: null, q3: null, q4: null, q5: null, q6: null, q7: null, q8: null, q9: null,
+  q1: null, q2: null, q3: null, q4: null, q5: null, q6: null, q7: null, q8: null,
   a_plus: null, new_market_fact: '', second_trade_note: '',
+  why_sector: '', why_stock: '', why_now: '', invalidation_type: null, invalidation_text: '',
 }
 
 export interface EvaluatePayload {
@@ -119,6 +144,7 @@ export interface EvaluatePayload {
   planned_stop?: number | null
   reason?: string
   thesis_sector_id?: number | null
+  journal_id?: number | null
   manual_answers: ManualAnswers
   account_risk_budget_pct?: number
   stress_loss_pct?: number
@@ -147,6 +173,8 @@ export interface PreTradeHistoryItem {
   intended_price: number | null
   created_at: string | null
   has_outcome: boolean
+  /** 同一只票同一历史时刻之前的几次检查 */
+  revisions: { id: number; verdict: Verdict; created_at: string | null }[]
 }
 
 export interface PriceRet { price: number | null; ret: number | null; date?: string }
@@ -169,7 +197,8 @@ const SLOW = { timeout: 45_000 }
 const clean = (o: Record<string, unknown>) =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null && v !== undefined && v !== ''))
 
-export const fetchPreTradeContext = (p: { stock_code: string; as_of?: string | null; sector_id?: number | null }) =>
+export const fetchPreTradeContext = (p: { stock_code: string; as_of?: string | null; sector_id?: number | null
+                                          journal_id?: number | null }) =>
   client.get<PreTradeContext>('/pre-trade-check/context', { params: clean(p), ...SLOW }).then((r) => r.data)
 
 export const evaluatePreTrade = (body: EvaluatePayload) =>

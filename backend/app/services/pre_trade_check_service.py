@@ -280,9 +280,12 @@ def _limit_touch_from_db(db: Session, d: date, as_of: datetime) -> dict:
     if last is not None and last < as_of:
         quality = STALE
         notes.append(f"明细最后刷新在 {last:%H:%M}，早于 as_of，之后才触板的票不在里面")
+    elif last is not None:
+        # 数据时点写 as_of，入库时间放说明里：看到 17:39 不要误以为用了未来信息（2026-09-12 评审）
+        notes.append(f"明细 {last:%m-%d %H:%M} 入库（盘后数据），只用了 as_of 之前发生的触板事件")
     return {"touched": len(touched), "max_board": max(touched.values(), default=None) or None,
             "broken_now": None, "codes": sorted(touched),
-            "meta": _meta("涨停明细 + 炸板明细（库）", last, quality, notes)}
+            "meta": _meta("涨停明细 + 炸板明细（库）", as_of, quality, notes)}
 
 
 def _limit_touch_live(d: date) -> dict:
@@ -469,6 +472,16 @@ def _sector_block(db, live, as_of, d, prev_d, stock, thesis_id, sctx, touch_code
                            "down": sum(1 for p in pcts if p < 0), "flat": sum(1 for p in pcts if p == 0),
                            "median_pct": median, "limit_up_now": lu_now, "limit_down_now": ld_now,
                            "meta": _meta("成分股实时行情（等权）", now_sh(), EXACT)}
+            # 板块里谁比它强：跑赢大盘不等于是板块里的强者（2026-09-12 评审）
+            names = {c: n for _, c, n, _, _ in members}
+            ordered = sorted(today.items(), key=lambda kv: -kv[1].pct_change)
+            mine = today.get(stock.code)
+            out["live"]["ranking"] = {
+                "top": [{"code": c, "name": names.get(c) or c, "pct": round(q.pct_change, 2)} for c, q in ordered[:3]],
+                "rank": next((n + 1 for n, (c, _) in enumerate(ordered) if c == stock.code), None),
+                "total": len(ordered),
+                "leader_gap": round(ordered[0][1].pct_change - mine.pct_change, 2) if mine else None,
+            }
             if sctx.pct is not None:
                 out["stock_pct"], out["stock_vs_sector"] = sctx.pct, round(sctx.pct - median, 2)
             prev_today = [today[c] for c in prev_limit_codes if c in today]
@@ -529,6 +542,18 @@ def _journal_row(t: TradeJournal) -> dict:
     return {"id": t.id, "stock_code": t.stock_code, "stock_name": t.stock_name, "action": t.action,
             "trade_time": t.trade_time.isoformat(), "price": t.price, "position_pct": t.position_pct,
             "realized_pnl": t.realized_pnl, "pnl_pct": t.pnl_pct}
+
+
+def _journal_entry(db, owner: Optional[str], journal_id: Optional[int]) -> Optional[dict]:
+    """从交易记录进来复盘：带出当时写的理由，跟复盘时补写的分开放——事后的解释不能冒充当时的想法。"""
+    if not journal_id or not owner:
+        return None
+    t = db.query(TradeJournal).filter(TradeJournal.id == journal_id, TradeJournal.owner == owner).first()
+    if t is None:
+        return None
+    return {"id": t.id, "stock_code": t.stock_code, "trade_time": t.trade_time.isoformat(), "action": t.action,
+            "price": t.price, "position_pct": t.position_pct, "planned_stop": t.planned_stop,
+            "reason": t.reason, "emotion_tag": t.emotion_tag, "note": t.note}
 
 
 def _discipline_block(db, owner, code, as_of, cal) -> dict:
@@ -609,7 +634,8 @@ def _failed_ctx(code: str, as_of: datetime, e: Exception) -> IntradayContext:
 
 
 def build_context(db: Session, owner: Optional[str], code: str, as_of: Optional[datetime],
-                  thesis_sector_id: Optional[int] = None, log_tag: str = "context") -> dict:
+                  thesis_sector_id: Optional[int] = None, journal_id: Optional[int] = None,
+                  log_tag: str = "context") -> dict:
     t0 = perf_counter()
     now = now_sh()
     live = as_of is None
@@ -690,6 +716,7 @@ def build_context(db: Session, owner: Optional[str], code: str, as_of: Optional[
         leader["meta"]["quality"] = STALE
         leader["meta"]["notes"].append(f"交易日历只到 {cal_st['last']}，{prev_d} 不一定是真正的前一交易日")
     discipline = _discipline_block(db, owner, code, as_of, cal)
+    journal_entry = _journal_entry(db, owner, journal_id)
 
     cal_note = ([f"日历只到 {cal_st['last']}，之后还有工作日没入库：前一交易日按 {prev_d} 算，可能是旧的"]
                 if cal_st["behind"] else [] if cal else ["拿不到交易日历，前一交易日按库里最近一天的快照算"])
@@ -717,6 +744,9 @@ def build_context(db: Session, owner: Optional[str], code: str, as_of: Optional[
         "rule_version": rules.RULE_VERSION, "pullback_min_pct": pullback,
         # 问题原文和默认参数由后端下发：前端不另抄一份，改问题只改 pre_trade_rules 一处
         "manual_questions": [{"key": k, "text": q} for k, q in rules.MANUAL_QUESTIONS],
+        "reason_fields": [{"key": k, "label": lb, "placeholder": ph} for k, lb, ph in rules.REASON_FIELDS],
+        "invalidation_types": [{"key": k, "label": lb, "hint": h} for k, lb, h in rules.INVALIDATION_TYPES],
+        "journal_entry": journal_entry,
         "defaults": {"account_risk_budget_pct": rules.DEFAULT_ACCOUNT_RISK_BUDGET_PCT,
                      "stress_loss_pct": rules.DEFAULT_STRESS_LOSS_PCT,
                      "earliest_normal_entry": rules.EARLIEST_NORMAL_ENTRY.strftime("%H:%M"),
@@ -731,7 +761,8 @@ def build_context(db: Session, owner: Optional[str], code: str, as_of: Optional[
 
 
 def evaluate_and_save(db: Session, owner: str, req) -> dict:
-    ctx = build_context(db, owner, req.stock_code, req.as_of, req.thesis_sector_id, log_tag="evaluate")
+    ctx = build_context(db, owner, req.stock_code, req.as_of, req.thesis_sector_id,
+                        journal_id=req.journal_id, log_tag="evaluate")
     answers = req.manual_answers.model_dump()
     inp = {"intended_price": req.intended_price, "position_pct": req.position_pct,
            "planned_stop": req.planned_stop, "reason": req.reason, "answers": answers,

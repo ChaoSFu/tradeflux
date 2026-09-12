@@ -37,7 +37,7 @@ export function VerdictPanel({ decision, asOf, mode, savedId }: {
     <div className="card p-4 space-y-4">
       <div className={cn('rounded-lg border px-4 py-3', STYLE[decision.verdict])}>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <span className="text-lg font-bold tracking-wide">{LABEL[decision.verdict]}</span>
+          <span className="text-lg font-bold tracking-wide"><span className="mr-2 text-xs font-normal opacity-80">总体</span>{LABEL[decision.verdict]}</span>
           <span className="text-[11px] opacity-80">
             {mode === 'LIVE' ? '实时' : '历史复盘'} · as_of {asOf.replace('T', ' ')} · {decision.rule_version}
             {savedId != null && ` · 已存档 #${savedId}`}
@@ -45,6 +45,20 @@ export function VerdictPanel({ decision, asOf, mode, savedId }: {
         </div>
         <p className="mt-1.5 text-sm text-text-primary">{decision.summary}</p>
       </div>
+      {(decision.dimensions?.length ?? 0) > 0 && (
+        // 同样是 BLOCKED：机会不成熟？执行错了？仓位错了？三个维度分开看（v2）
+        <div className="grid gap-2 md:grid-cols-3">
+          {decision.dimensions!.map((d) => (
+            <div key={d.key} className={cn('rounded-lg border px-3 py-2', STYLE[d.verdict])}>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs font-semibold text-text-primary">{d.title}</span>
+                <span className="text-xs font-bold">{d.verdict}</span>
+              </div>
+              <p className="mt-1 text-[11px] leading-snug text-text-secondary">{d.lead}</p>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Group title="做得好的地方" items={decision.positives} empty="—" />
         <Group title="需要警惕" items={decision.cautions} empty="没有" />

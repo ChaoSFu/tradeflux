@@ -158,7 +158,7 @@ def test_检查结果连同规则版本一起存下来(client, db):
     body = r.json()
     assert body["mode"] == "HISTORICAL" and body["decision"]["verdict"] in ("READY", "WAIT", "BLOCKED")
     row = db.query(PreTradeCheck).one()
-    assert row.rule_version == "pretrade_v1" and row.verdict == body["decision"]["verdict"]
+    assert row.rule_version == "pretrade_v2" and row.verdict == body["decision"]["verdict"]
     assert row.facts_json["as_of"] == "2026-09-11T09:46:37"
     hist = client.get("/pre-trade-check/history").json()
     assert [h["id"] for h in hist] == [row.id]
@@ -370,3 +370,50 @@ def test_指数的同一句说明不重复(db):
         intr[code] = c
     mk = svc._market_block(db, False, AS_OF, d, PREV, intr, [])
     assert mk["indexes_meta"]["notes"] == ["2026-09-12 还没有分钟数据（没开盘或不是交易日）"]
+
+
+# ── pretrade_v2：历史记录合并、交易记录的当时理由、实时板块排名 ─────────────────────
+
+def test_同一时刻反复检查合并成一条_保留修改记录(client, db):
+    _seed(db)
+    ids = []
+    for q1 in (False, True):
+        body = {**BODY, "manual_answers": {**BODY["manual_answers"], "q1": q1}}
+        ids.append(client.post("/pre-trade-check/evaluate", json=body).json()["id"])
+    items = client.get("/pre-trade-check/history").json()
+    assert len(items) == 1 and items[0]["id"] == ids[1] and items[0]["verdict"] == "BLOCKED"
+    assert [r["id"] for r in items[0]["revisions"]] == [ids[0]]
+
+
+def test_从交易记录复盘_带出当时写的理由_别人的看不到(client, db):
+    _seed(db)
+    mine = TradeJournal(owner="me", stock_code="600354", stock_name="x", action="买入",
+                        trade_time=AS_OF, price=11.53, reason="当时的理由")
+    other = TradeJournal(owner="他", stock_code="600354", stock_name="x", action="买入",
+                         trade_time=AS_OF, price=11.53, reason="别人的")
+    db.add_all([mine, other])
+    db.commit()
+    q = "/pre-trade-check/context?stock_code=600354&as_of=2026-09-11T09:46:37"
+    assert client.get(f"{q}&journal_id={mine.id}").json()["journal_entry"]["reason"] == "当时的理由"
+    assert client.get(f"{q}&journal_id={other.id}").json()["journal_entry"] is None
+
+
+def test_实时板块内排名(db, monkeypatch):
+    from app.models.sector import Sector, StockSectorRelation
+    from app.services.eastmoney_fetcher import StockQuote
+    sec = Sector(code="BK002", name="农业")
+    db.add(sec)
+    db.flush()
+    me = _stock(db)
+    me.primary_sector_id = sec.id
+    for st in [me, _stock(db, "600371"), _stock(db, "600359")]:
+        db.add(StockSectorRelation(stock_id=st.id, sector_id=sec.id))
+    db.flush()
+    D = AS_OF.date()
+    qs = {"600354": StockQuote(code="600354", name="", price=11.53, pct_change=0.7, prev_close=11.45, trade_date=D),
+          "600371": StockQuote(code="600371", name="", price=10.0, pct_change=9.8, prev_close=9.1, trade_date=D),
+          "600359": StockQuote(code="600359", name="", price=5.0, pct_change=3.0, prev_close=4.85, trade_date=D)}
+    monkeypatch.setattr(svc, "fetch_stock_quotes_batch", lambda items, **k: qs)
+    sctx = ic.IntradayContext(code="600354", as_of=AS_OF, trade_date=D, prev_close=11.45, price=11.53)
+    rk = svc._sector_block(db, True, AS_OF, D, PREV, me, None, sctx, [], CAL)["live"]["ranking"]
+    assert (rk["rank"], rk["total"], rk["top"][0]["code"], rk["leader_gap"]) == (3, 3, "600371", 9.1)
