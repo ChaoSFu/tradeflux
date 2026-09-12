@@ -1,6 +1,8 @@
 # 数据体检运维手册
 
 > 2026-09-12 上线。页面：「数据体检」（顶栏听诊器图标，有可补的缺口时亮红点，数字 = 待处理项数）。
+> **管理功能，只有登录后才看得到**：图标只在登录后显示，页面没登录进不来，接口也全部要登录
+> （报告里有服务器路径和 scp 登录名）。
 > 代码：`backend/app/services/data_audit_service.py`（检测）、`backend/scripts/data_audit.py`（命令行 / 补数）、
 > `backend/app/routers/data_audit.py`（接口）、`backend/app/services/templates/sector_kline_console.js`（板块导出脚本模板）。
 
@@ -96,8 +98,11 @@ cd /opt/code/tradeflux/backend
 备用 Python 路线（Python 没被挡时）：
 
 ```bash
-python scripts/export_sector_klines.py --scope missing --out sectors.jsonl            # 默认 15 秒一个；连续失败 5 次停手
-python scripts/export_sector_klines.py --scope missing --out sectors.jsonl --resume   # 过一阵接着导
+# 服务器上：打印缺数据的板块码（逗号分隔）
+.venv/bin/python -m scripts.data_audit export-script --codes
+# 能连通的机器上：把上一步的输出贴给 --codes（默认 15 秒一个；连续失败 5 次停手）
+python scripts/export_sector_klines.py --codes <板块码> --out sectors.jsonl
+python scripts/export_sector_klines.py --codes <板块码> --out sectors.jsonl --resume   # 过一阵接着导
 ```
 
 ## 六、加一个检测项

@@ -95,12 +95,6 @@ def _fetch_one(code: str, days: int):
 
 def _sector_codes(api: str, scope: str) -> list:
     """板块列表从**生产 API** 取，不依赖本地数据库——本地库跟线上不是一份数据。"""
-    if scope == "missing":
-        # 生产上最新一份数据体检报告里「板块指数日线」那项列出的缺口（历史不足 / 有洞）
-        from app.services.data_audit_service import sector_export_codes
-        r = httpx.get(f"{api}/api/admin/data-audit", timeout=30)
-        r.raise_for_status()
-        return sector_export_codes(r.json().get("report"))
     r = httpx.get(f"{api}/api/sectors", timeout=30)
     r.raise_for_status()
     items = r.json().get("items") or []
@@ -120,13 +114,13 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default="sector_klines.jsonl")
     ap.add_argument("--api", default=DEFAULT_API, help="取板块列表的生产地址")
-    ap.add_argument("--scope", choices=["all", "evidence", "missing"], default="all",
-                    help="missing = 生产数据体检报告里缺历史 / 有洞的关注板块")
+    ap.add_argument("--scope", choices=["all", "evidence"], default="all")
     ap.add_argument("--days", type=int, default=300)
     ap.add_argument("--delay", type=float, default=15,
                     help="每次请求间隔秒。实测约 2 秒一个、连取 20 个就会被限流；"
                          "别调小——把自己的 IP 也打进去就没退路了")
-    ap.add_argument("--codes", help="逗号分隔，直接指定板块码，跳过 API")
+    ap.add_argument("--codes", help="逗号分隔，直接指定板块码，跳过 API。只补缺的：在服务器上跑 "
+                                    "python -m scripts.data_audit export-script --codes，把输出贴过来")
     ap.add_argument("--stop-after-failures", type=int, default=5,
                     help="连续失败这么多次就停手——多半是被限流了，接着打只会把自己的 IP 也打死")
     ap.add_argument("--resume", action="store_true",

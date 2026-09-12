@@ -57,8 +57,8 @@ export default function App() {
           <Route path="review" element={<DailyReview />} />
           <Route path="trade-journal" element={<TradeJournal />} />
           <Route path="pre-trade-check" element={<PreTradeCheck />} />
-          {/* 数据体检：谁都能看，补数按钮要登录（后端接口本身也要登录） */}
-          <Route path="data-health" element={<DataHealth />} />
+          {/* 数据体检：管理功能，没登录看不到（后端接口也全部要登录） */}
+          <Route path="data-health" element={<ProtectedRoute><DataHealth /></ProtectedRoute>} />
           {/* ── 涨跌停分析：四合一整合页 ─────────────────────────────
               旧的四个页面**没有删**，挪到 /legacy/* 继续可访问。整合页有没有
               漏掉东西，只有对着原页面才看得出来；redirect 如果同时让原页面
