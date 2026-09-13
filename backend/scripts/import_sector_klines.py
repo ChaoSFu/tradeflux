@@ -23,8 +23,11 @@ SectorIndexDaily。**零外部请求。**
 
 ## 三条纪律
 
-1. **绝不覆盖已有行**。已有行可能是 sync_boards 每天写的真实收盘，导入的是
+1. **绝不覆盖已有的值**。已有行可能是 sync_boards 每天写的真实收盘，导入的是
    前复权序列，两者口径不同——不能让导入的值盖掉当日权威值。
+   唯一会动已有行的情形：那一行的开高低 / 量 / 额是**空的**（sync_boards 在
+   2026-09-13 之前只写收盘和涨跌幅），而且两边收盘对得上——那就只补空字段。
+   收盘对不上说明不是同一口径，一个字段都不动，计进 mismatch。
 2. **日期与数值都要校验**。解析不出来的行跳过并计数，不写脏数据。
 3. **报出实际写了多少**，别让"导入成功"掩盖"其实一行没写"。
 
@@ -39,16 +42,28 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from sqlalchemy import or_
+
 from app.database import SessionLocal
 from app.models.market_index import SectorIndexDaily
+
+# 已有行里允许补的空字段
+FILLABLE = ("open", "high", "low", "volume", "amount", "pct_change")
+# 已有行的收盘跟文件差多少以内算「同一口径」
+CLOSE_TOLERANCE = 0.0005
 
 
 def import_file(db, path: str, dry_run: bool = False) -> dict:
     """
-    导入一个导出文件。返回 {"sectors", "added", "skipped_exist", "bad", "no_data": [板块码]}。
-    命令行和数据体检页面的「试跑导入 / 确认导入」走的都是这一个函数。
+    导入一个导出文件。命令行和数据体检页面的「试跑导入 / 确认导入」走的都是这一个函数。
+
+    返回 {"sectors", "added", "filled", "mismatch", "skipped_exist", "bad", "no_data": [板块码]}：
+      added          库里没有的日子，新增
+      filled         库里有、开高低 / 量 / 额有空的，收盘对得上，只补了空字段
+      mismatch       库里有空字段，但收盘对不上，没动
+      skipped_exist  库里有且不缺，跳过
     """
-    added = skipped_exist = bad = sectors = 0
+    added = filled = mismatch = skipped_exist = bad = sectors = 0
     no_data = []
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -67,6 +82,9 @@ def import_file(db, path: str, dry_run: bool = False) -> dict:
                 continue
             have = {d for (d,) in db.query(SectorIndexDaily.date)
                     .filter(SectorIndexDaily.sector_code == code).all()}
+            gaps = {row.date: row for row in db.query(SectorIndexDaily).filter(
+                SectorIndexDaily.sector_code == code,
+                or_(*[getattr(SectorIndexDaily, k).is_(None) for k in FILLABLE]))}
             n = 0
             for r in rows:
                 try:
@@ -79,9 +97,22 @@ def import_file(db, path: str, dry_run: bool = False) -> dict:
                     bad += 1
                     continue
                 if d in have:
-                    # **绝不覆盖**：已有行可能是 sync_boards 写的当日权威收盘，
-                    # 而导入的是前复权序列，口径不同
-                    skipped_exist += 1
+                    row = gaps.get(d)
+                    fill = ({k: r[k] for k in FILLABLE
+                             if getattr(row, k) is None and r.get(k) is not None}
+                            if row is not None else {})
+                    if not fill:
+                        # **绝不覆盖**：已有值可能是 sync_boards 写的当日权威收盘，
+                        # 而导入的是前复权序列，口径不同
+                        skipped_exist += 1
+                    elif abs(row.close - close) > close * CLOSE_TOLERANCE:
+                        mismatch += 1
+                    else:
+                        if not dry_run:
+                            for k, v in fill.items():
+                                setattr(row, k, v)
+                        n += 1
+                        filled += 1
                     continue
                 if not dry_run:
                     db.add(SectorIndexDaily(
@@ -96,8 +127,18 @@ def import_file(db, path: str, dry_run: bool = False) -> dict:
     if not dry_run and no_data:
         from app.services.data_audit_service import record_no_data_codes
         record_no_data_codes(db, no_data, date.today())
-    return {"sectors": sectors, "added": added, "skipped_exist": skipped_exist,
-            "bad": bad, "no_data": no_data}
+    return {"sectors": sectors, "added": added, "filled": filled, "mismatch": mismatch,
+            "skipped_exist": skipped_exist, "bad": bad, "no_data": no_data}
+
+
+def summarize_import(r: dict) -> str:
+    """一行结果，命令行和数据体检页面共用。"""
+    return (f"{r['sectors']} 个板块｜新增 {r['added']} 行"
+            + (f"｜补齐空字段 {r['filled']} 行" if r["filled"] else "")
+            + f"｜已存在跳过 {r['skipped_exist']} 行"
+            + (f"｜收盘对不上没补 {r['mismatch']} 行" if r["mismatch"] else "")
+            + (f"｜解析失败 {r['bad']} 行" if r["bad"] else "")
+            + (f"｜东财没有指数日线 {len(r['no_data'])} 个" if r["no_data"] else ""))
 
 
 def main():
@@ -112,18 +153,15 @@ def main():
         r = import_file(db, args.path, dry_run=args.dry_run)
     finally:
         db.close()
-    print(f"{r['sectors']} 个板块｜新增 {r['added']} 行｜已存在跳过 {r['skipped_exist']} 行"
-          + (f"｜解析失败 {r['bad']} 行" if r["bad"] else "")
-          + (f"｜东财没有指数日线 {len(r['no_data'])} 个" if r["no_data"] else ""))
+    print(summarize_import(r))
     if args.dry_run:
         print("--dry-run：未写库")
-    elif r["added"] == 0 and not r["no_data"]:
+    elif r["added"] == 0 and r["filled"] == 0 and not r["no_data"]:
         print("⚠️ 一行都没写。检查文件内容，别让『导入成功』掩盖『其实没写』")
     else:
-        # 2026-09-12 核对：生命周期快照的 RS_sector 走东财板块区间涨幅（rs_sector_source=vendor），
-        # 不读这张表。导入只是把板块指数历史补齐备用，**不用**再回填生命周期快照
-        print("\n已写入。现在还没有页面读板块指数日线（RS_sector 用的是东财板块区间涨幅），"
-              "不用再回填生命周期快照。复查：python -m scripts.data_audit run --check sector_index --save")
+        # 板块趋势（/sector-trend）读这张表：趋势和相对强度用收盘，「放量」用成交额。
+        # 生命周期快照的 RS_sector 走东财板块区间涨幅（rs_sector_source=vendor），不读这张表
+        print("\n已写入。复查：python -m scripts.data_audit run --check sector_index --save")
 
 
 if __name__ == "__main__":

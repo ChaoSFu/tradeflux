@@ -84,8 +84,11 @@ def _fetch_boards_by_fs(fs_code: str, label: str, client: "httpx.Client | None" 
             "fltt": "2", "invt": "2", "fid": "f3",
             "fs": fs_code,
             # f2 = 板块指数点位（2026-09-03 加）。RS_sector 的每日增量靠它，
-            # 零新增请求——这个 clist 调用每天本来就在打
-            "fields": "f12,f14,f2,f3,f8,f20,f6,f109,f110,f160,f165",
+            # 零新增请求——这个 clist 调用每天本来就在打。
+            # f17/f15/f16/f5 = 板块指数当日开盘/最高/最低/成交量（2026-09-13 加，板块趋势的
+            # 「放量」事实要用，同样零新增请求）。含义不是猜的：09-11 收盘后拿 65 个板块跟
+            # push2his 日K逐字段核对，开高低收量额 390 个数 0 处不一致；f6 成交额单位是元
+            "fields": "f12,f14,f2,f3,f5,f6,f8,f15,f16,f17,f20,f109,f110,f160,f165",
         }
         # 最多重试 3 次，每次间隔递增。超时给10s而不是30s——握手真挂了没必要
         # 傻等30秒才报错，3次重试全部超时的极端情况下 30s×3=90s 比 10s×3=30s
@@ -185,13 +188,30 @@ def _upsert_board(db, board: dict, sector_type: str) -> tuple["Sector | None", b
     return sector, is_new
 
 
+def _num(v):
+    """clist 的数值字段：停牌 / 没数时给 "-"。不是正数就当不知道（None），不当 0。"""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if x > 0 else None
+
+
+# SectorIndexDaily 列 ← clist 字段。字段含义 09-11 跟 push2his 日K逐字段核对过（见 fields 注释）
+_BAR_FIELDS = (("open", "f17"), ("high", "f15"), ("low", "f16"), ("volume", "f5"), ("amount", "f6"))
+
+
 def _upsert_sector_index_bar(db, board: dict, code: str, trade_date, settled: bool) -> bool:
     """
-    把板块当日点位（f2）落进 SectorIndexDaily，供 RS_sector 用。零新增请求。
+    把板块当日那根 bar（f2 收盘、f17/f15/f16 开高低、f5/f6 量额）落进 SectorIndexDaily，
+    供 RS_sector 和板块趋势用。零新增请求。
 
     **盘中不写**：f2 盘中给的是当时的点位，不是收盘点位。写进去就等于让盘中值
     冒充当日收盘——本仓库为这个模式栽过（股票快照的"盘中价就地转正成收盘价"，
     600984 被记成涨停而实际收盘炸板）。这里从一开始就不给它机会。
+
+    开高低量额是 2026-09-13 才加的，之前那几天只有收盘和涨跌幅，空字段由
+    import_sector_klines 从导出文件补。clist 给 "-" 的字段不写，也不拿空值盖掉已有的值。
 
     历史那 300 根靠 sector_index_service.backfill_sector_index() 从 push2his 一次性
     回填；这个函数只负责往后每天接一根。
@@ -200,8 +220,8 @@ def _upsert_sector_index_bar(db, board: dict, code: str, trade_date, settled: bo
 
     if not settled:
         return False
-    close = board.get("f2")
-    if not close or close <= 0:
+    close = _num(board.get("f2"))
+    if close is None:
         return False
     row = (db.query(SectorIndexDaily)
              .filter(SectorIndexDaily.sector_code == code,
@@ -209,9 +229,13 @@ def _upsert_sector_index_bar(db, board: dict, code: str, trade_date, settled: bo
     if row is None:
         row = SectorIndexDaily(sector_code=code, date=trade_date)
         db.add(row)
-    row.close = round(float(close), 4)
+    row.close = round(close, 4)
     pct = board.get("f3")
-    row.pct_change = round(float(pct), 4) if pct is not None else None
+    row.pct_change = round(float(pct), 4) if isinstance(pct, (int, float)) else None
+    for col, key in _BAR_FIELDS:
+        v = _num(board.get(key))
+        if v is not None:
+            setattr(row, col, round(v, 4) if col in ("open", "high", "low") else v)
     return True
 
 

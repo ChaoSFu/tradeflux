@@ -226,15 +226,13 @@ def fix_sector_index(db, a) -> int:
     if not _FILE_RE.match(a.file) or not path.is_file():
         print(f"收件箱里没有 {a.file}")
         return 2
-    from scripts.import_sector_klines import import_file
+    from scripts.import_sector_klines import import_file, summarize_import
     r = import_file(db, str(path), dry_run=not a.apply)
-    print(f"{r['sectors']} 个板块｜新增 {r['added']} 行｜已存在跳过 {r['skipped_exist']} 行"
-          + (f"｜解析失败 {r['bad']} 行" if r["bad"] else "")
-          + (f"｜东财没有指数日线 {len(r['no_data'])} 个" if r["no_data"] else ""))
+    print(summarize_import(r))
     if not a.apply:
-        print("试跑（不写库）。数字没问题就确认导入——已有行一律不覆盖")
+        print("试跑（不写库）。数字没问题就确认导入——已有的值一律不覆盖，只补空字段")
         return 0
-    if r["added"] == 0 and not r["no_data"]:
+    if r["added"] == 0 and r["filled"] == 0 and not r["no_data"]:
         print("⚠️ 一行都没写——文件里的数据库里都已经有了，或者文件是空的")
     done = svc.INBOX_DIR / "done"
     done.mkdir(exist_ok=True)

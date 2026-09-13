@@ -18,8 +18,9 @@
   `bool(None) is False` 正是我们要的——不知道就不能算已结算。
 """
 from datetime import date
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..models.stock import StockDailySnapshot
@@ -50,3 +51,29 @@ def settled_by_date(db: Session, dates: Iterable[date]) -> Dict[date, Optional[b
 def date_is_settled(db: Session, d: date) -> Optional[bool]:
     """单日版。True=收盘终值 / False=还有盘中行 / None=库里没这天。"""
     return settled_by_date(db, [d])[d]
+
+
+def settlement_counts(db: Session, dates: Iterable[date]) -> Dict[date, Tuple[int, int]]:
+    """
+    {日期: (已结算行数, 总行数)}，库里没这天 → (0, 0)。一条分组查询。
+
+    settled_by_date 回答「这一天是不是**全都**结算了」，给跨股统计定性用。可生产上过去的
+    交易日几乎都过不了这一关：2026-09-13 实测 09-04 ~ 09-10 每天都是 False，只有最新
+    那天是 True——少数股票收盘那一跑没拉到，行还停在盘中那一跑的状态。
+
+    板块趋势要问的是另一件事：「这一天整体是不是收盘后的数据」。盘前 09:27 那一跑写的
+    是 0/N，收盘后是 N-少数/N，看比例才分得开；少数没结算的行照实写进证据。
+    """
+    wanted = sorted(set(dates))
+    if not wanted:
+        return {}
+    out = {d: [0, 0] for d in wanted}
+    for d, flag, n in (
+            db.query(StockDailySnapshot.date, StockDailySnapshot.is_settled,
+                     func.count(StockDailySnapshot.id))
+            .filter(StockDailySnapshot.date.in_(wanted))
+            .group_by(StockDailySnapshot.date, StockDailySnapshot.is_settled)):
+        out[d][1] += n
+        if flag:
+            out[d][0] += n
+    return {d: (s, t) for d, (s, t) in out.items()}
