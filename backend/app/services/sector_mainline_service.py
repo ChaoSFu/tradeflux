@@ -480,10 +480,12 @@ def classify_state(gates: Dict[str, Dict[str, Any]], tf: Optional[Dict[str, Any]
         return DIVERGENCE, "主升中出现分歧：" + weak
     if t == PASS and r == PASS and ef.get("fading"):
         return DIVERGENCE, "K 线还强，但生态在退：" + gates["ecology"]["reason"]
-    if sum(1 for g in CORE_GATES if gates[g]["status"] == PASS) >= 2 and e != FAIL:
-        return IGNITION, "三道闸过了两道，还差：" + weak
-    if ef["lu_trend"] == SPIKE:
-        return IGNITION, "单日涨停爆发，趋势还没确认——先记点火，不算主升：" + weak
+    # 点火只有上面「三道闸第一次全过」那一种。第一版「两道闸过了」「单日涨停爆发」也记点火，
+    # 2026-09-13 生产上一天出 41 个点火。用生产同源数据回放 10 天：这两类次日进主升只有
+    # 2%（3/156）和 0%（0/18），一半以上次日回到「无」；第一次全过的次日进主升 50%（19/38）。
+    # 用户定：点火只留第一次全过，其余记「无」，理由里写清差哪一道
+    if sum(1 for g in CORE_GATES if gates[g]["status"] == PASS) == 2:
+        return NONE, "三道闸过了两道，还差：" + weak
     return NONE, weak
 
 

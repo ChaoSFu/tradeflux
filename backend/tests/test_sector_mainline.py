@@ -141,14 +141,19 @@ def test_1_标准主升(db):
 
 # ── 2 ────────────────────────────────────────────────────────────────────────
 
-def test_2_单日涨停爆发只算点火_不算主升(db):
+def test_2_单日涨停爆发不算主升_也不算点火(db):
+    """
+    第一版记点火。2026-09-13 生产分布 + 回放：单日爆发 18 次，次日进主升 0 次，
+    用户定点火只留「三道闸第一次全过」。
+    """
     add_bench(db)
     add_fillers(db)
     main_rise(db, lu=[0] * 14 + [6], height=[0] * 14 + [1])
     _, it = state(db, "BK0001")
     assert it["facts"]["lu_trend"] == svc.SPIKE
     assert it["gates"]["ecology"]["status"] == svc.WARN
-    assert it["state"] == svc.IGNITION, it["state_reason"]
+    assert it["state"] == svc.NONE, it["state_reason"]
+    assert it["state_reason"].startswith("三道闸过了两道") and "单日爆发" in it["state_reason"]
 
 
 def test_2b_三道闸第一次全过也只是点火(db):
@@ -254,7 +259,8 @@ def test_6b_没在主线里过_跌破MA20就是无(db):
 
 # ── 需求原文里的 Case 2 / 5 / 6（跟上面同名场景的另一种形态）──────────────────
 
-def test_2c_趋势还没确认的单日涨停爆发_点火不是主升(db):
+def test_2c_趋势还没确认的单日涨停爆发_也是无(db):
+    """需求原文 Case 2 要求记点火；按 09-13 生产分布撤掉了（见 test_2）。不判主升这条仍然成立。"""
     add_bench(db)
     add_fillers(db)
     main_rise(db, closes=with_tail([1000.0 * 0.999 ** i for i in range(N)], [0.04]),
@@ -262,7 +268,7 @@ def test_2c_趋势还没确认的单日涨停爆发_点火不是主升(db):
     _, it = state(db, "BK0001")
     assert it["gates"]["trend"]["status"] == svc.WARN, "站上 MA20，但均线没排好、MA20 没向上"
     assert it["facts"]["lu_trend"] == svc.SPIKE
-    assert it["state"] == svc.IGNITION, it["state_reason"]
+    assert it["state"] == svc.NONE, it["state_reason"]
 
 
 def test_5b_高潮_涨停成交偏离同时极端(db):
