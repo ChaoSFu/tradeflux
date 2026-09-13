@@ -37,6 +37,10 @@ class Stock(Base):
     pct_change_20d = Column(Float, default=0.0, nullable=False)    # 近20日累计涨幅 %
     pct_change_10d = Column(Float, default=0.0, nullable=False)    # 近10日累计涨幅 %
     top_10_pct_change_20d = Column(Boolean, default=False, nullable=False)
+    # 股性：库里有记录的每次涨停，次一交易日的平均涨跌幅 %（limit_up_premium_service，日更收盘后重算）。
+    # 没有样本是 None 不是 0；样本数单独存——只涨停过一两次的平均值参考意义有限
+    limit_up_next_avg_pct = Column(Float, nullable=True)
+    limit_up_next_samples = Column(Integer, default=0, nullable=False)
 
     # 主板块（每日更新时计算：watched板块中股票最多的优先，相同则涨停数→情绪分）
     # 是所有展示模块的单一数据源，确保仪表盘/龙头/强股池/涨跌停池一致

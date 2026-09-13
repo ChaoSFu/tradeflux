@@ -180,6 +180,7 @@ screening_criteria     （★ 新增：可配置的入池筛选条件，is_activ
 | limit_up_days_60d | Int | 60日涨停天数 |
 | limit_up_days_10d | Int | 10日涨停天数 |
 | top_10_pct_change_20d | Boolean | 20日涨幅是否进入全市场前10% |
+| limit_up_next_avg_pct / limit_up_next_samples | Float / Int | **股性**：库里有记录的每次涨停，次一交易日的平均涨跌幅 % 和样本数（连板也算；次日停牌的样本不要；没有样本为 NULL；日更收盘后重算，见 `limit_up_premium_service`） |
 
 > `Stock` 字段是**缓存态**，由 `daily_update.py` 夜间重算写入，日内查询直接读取，无需实时计算。
 
