@@ -232,8 +232,11 @@ GET https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=90.BK0832&klt=10
 - push2his 限流很凶（见坑 13）：2026-09-12 实测约 2 秒一个、连取 20 个就被掐，至少封
   二十分钟，**浏览器也一样**（不是请求头 / 参数的问题）；生产服务器的出口则被它长期拒绝。
   所以只用于一次性回填，走「本机慢速导出 → 服务器收件箱 → 页面导入」的固定流程（见
-  `docs/DATA_AUDIT.md` 第五节，缺哪些板块由数据体检列出）；日常增量走 clist 的 `f2`
-  字段（板块指数点位），零新增请求
+  `docs/DATA_AUDIT.md` 第五节，缺哪些板块由数据体检列出）；日常增量走 clist，零新增请求：
+  `f2` 收盘点位（09-03 起）、`f17/f15/f16` 开高低 + `f5/f6` 量额（09-13 起。09-11 收盘后跟
+  push2his 日 K 逐字段核对，65 个板块 × 6 个字段 0 处不一致；`f6` 单位是元）。09-13 之前那几天
+  只有收盘，空字段由 `import_sector_klines` 从导出文件补（收盘对得上才补，已有值不覆盖）。
+  读这张表的：板块趋势 / 主升板块雷达（`docs/SECTOR_MAINLINE.md`）
 
 代码：`app/services/eastmoney_fetcher.fetch_sector_kline()` /
 `app/services/sector_index_service.py`

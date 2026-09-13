@@ -181,7 +181,8 @@ class Test导入:
             "not json",
         ]) + "\n", encoding="utf-8")
         r = imp.import_file(db, str(p), dry_run=True)
-        assert r == {"sectors": 2, "added": 1, "skipped_exist": 1, "bad": 2, "no_data": ["BK0005"]}
+        assert r == {"sectors": 2, "added": 1, "filled": 0, "mismatch": 0, "skipped_exist": 1,
+                     "bad": 2, "no_data": ["BK0005"]}
         assert db.query(SectorIndexDaily).count() == 1 and svc.load_no_data_codes(db) == {}
 
         assert imp.import_file(db, str(p))["added"] == 1

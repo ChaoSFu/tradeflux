@@ -18,7 +18,7 @@ const FEATURES = [
   { to: '/strong', icon: LayoutDashboard, name: '强势股概览', color: '#FFD700', desc: '强势股分组与多维评分' },
   { to: '/stocks', icon: TrendingUp, name: '活跃股池', color: '#5EA6FF', desc: '活跃候选股筛选与排序' },
   { to: '/watchlist', icon: ShieldAlert, name: '重点监控', color: '#F59E0B', desc: '严重异动名单与监管预警' },
-  { to: '/sector-trend', icon: Activity, name: '趋势板块', color: '#00E5A0', desc: '多周期强势板块与生命周期' },
+  { to: '/sector-trend', icon: Activity, name: '板块趋势', color: '#00E5A0', desc: '主升板块雷达：趋势、相对强度、涨停生态、风险四道闸' },
   { to: '/sector-emotion', icon: Activity, name: '情绪板块', color: '#B47CFF', desc: '板块资金情绪分布与迁移' },
   { to: '/signals', icon: Zap, name: '弱转强信号', color: '#FFB020', desc: '三类弱转强形态自动检测' },
   { to: '/review', icon: BookOpen, name: '日复盘', color: '#4E9CF5', desc: '每日点评与复盘记录' },

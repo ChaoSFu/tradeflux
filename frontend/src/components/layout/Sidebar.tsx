@@ -23,6 +23,7 @@ import {
   Mountain,
   Archive,
   ClipboardCheck,
+  Radar,
 } from 'lucide-react'
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
@@ -34,6 +35,8 @@ type NavEntry     = NavLinkItem | NavGroupItem
 const NAV: NavEntry[] = [
   { type: 'link', to: '/', label: '主页', icon: Home },
   { type: 'link', to: '/market-trend', label: '大盘趋势', icon: TrendingUp },
+  // 板块趋势（主升板块雷达）：看完大盘看主线在哪几个板块，再往下看活跃股
+  { type: 'link', to: '/sector-trend', label: '板块趋势', icon: Radar },
   {
     type: 'group',
     label: '活跃股分析',
@@ -68,7 +71,7 @@ const NAV: NavEntry[] = [
     label: '板块分析',
     icon: BarChart2,
     children: [
-      { type: 'link', to: '/sector-trend',   label: '趋势板块', icon: Activity  },
+      // 趋势板块已提到顶层「板块趋势」（主升板块雷达），这里只留情绪板块
       { type: 'link', to: '/sector-emotion', label: '情绪板块', icon: Activity  },
     ],
   },

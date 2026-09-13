@@ -204,3 +204,22 @@ def compute_rs_sector_from_vendor(
         mine = _interval_return(stock_closes, anchor, latest) if anchor and latest else None
         out[w] = round(mine - base, 2) if (base is not None and mine is not None) else None
     return out
+
+
+# ─── 板块相对大盘 ─────────────────────────────────────────────────────────────
+
+def rs_vs_benchmark(closes: Dict[date, float], bench_closes: Dict[date, float],
+                    anchor: date, latest: date) -> Optional[float]:
+    """
+    一个指数（板块指数）相对基准指数在 anchor → latest 这段的强度，单位百分点。
+    板块趋势雷达用（板块 vs 上证）。
+
+    跟 RS_market / RS_sector 同一套口径：复合收益，不是日涨幅相加；两边都必须有
+    anchor 和 latest 那天的收盘，缺一个就 None，不拿邻近日期顶替。锚点由调用方
+    按**基准**的交易日往前数（指数日线不缺，是最可靠的交易日序列）。
+    """
+    base = _interval_return(bench_closes, anchor, latest)
+    mine = _interval_return(closes, anchor, latest)
+    if base is None or mine is None:
+        return None
+    return round(mine - base, 2)

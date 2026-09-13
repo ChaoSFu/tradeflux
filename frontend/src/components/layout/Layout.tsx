@@ -12,7 +12,7 @@ const TITLES: Record<string, string> = {
   '/sector-config': '板块展示配置 Sector Config',
   '/pool-config': '股池 Prompt 配置 Pool Config',
   '/data-health': '数据体检 Data Health',
-  '/sector-trend': '趋势板块 Sector Trend',
+  '/sector-trend': '板块趋势 Sector Trend',
   '/sector-emotion': '情绪板块 Sector Emotion',
   '/sector-ranking': '板块涨幅排名 Sector Ranking',
   '/review': '日复盘 Daily Review',
