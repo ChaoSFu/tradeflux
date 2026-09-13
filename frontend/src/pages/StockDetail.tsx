@@ -106,10 +106,18 @@ export default function StockDetail() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+      <div className="grid grid-cols-3 md:grid-cols-7 gap-3">
         {[
           { label: '60日涨停', value: stock.limit_up_days_60d },
           { label: '10日涨停', value: stock.limit_up_days_10d },
+          // 股性：有记录的每次涨停，次一交易日的平均涨跌幅（样本数一起给，太少参考意义有限）
+          {
+            label: '涨停次日均',
+            value: stock.limit_up_next_avg_pct != null
+              ? `${pct(stock.limit_up_next_avg_pct)} · ${stock.limit_up_next_samples}次`
+              : '--',
+            color: stock.limit_up_next_avg_pct != null ? pctColor(stock.limit_up_next_avg_pct) : '',
+          },
           { label: '昨日涨跌', value: latest ? pct(latest.pct_change) : '--', color: latest ? pctColor(latest.pct_change) : '' },
           { label: '换手率', value: latest?.turnover_rate != null ? `${latest.turnover_rate.toFixed(1)}%` : '--' },
           { label: '昨收', value: latest?.close_price != null ? latest.close_price.toFixed(2) : '--' },

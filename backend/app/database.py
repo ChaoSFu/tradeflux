@@ -72,6 +72,9 @@ def _apply_schema_patches():
         "ALTER TABLE leader_cycle_snapshots ADD COLUMN IF NOT EXISTS bar_settled BOOLEAN",
         "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS float_shares DOUBLE PRECISION",
         "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS float_shares_date DATE",
+        # Stock 股性：涨停次日平均涨跌幅 + 样本数（limit_up_premium_service）
+        "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS limit_up_next_avg_pct DOUBLE PRECISION",
+        "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS limit_up_next_samples INTEGER DEFAULT 0 NOT NULL",
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS volume DOUBLE PRECISION",
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS amount DOUBLE PRECISION",
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS volume_source VARCHAR(10)",

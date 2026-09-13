@@ -22,6 +22,9 @@ export interface Stock {
   pct_change_20d: number
   pct_change_10d: number
   top_10_pct_change_20d: boolean
+  // 股性：有记录的每次涨停，次一交易日的平均涨跌幅 %；没有样本为 null。样本数单独给
+  limit_up_next_avg_pct: number | null
+  limit_up_next_samples: number
   created_at: string | null
   updated_at: string | null
   primary_sector: string | null

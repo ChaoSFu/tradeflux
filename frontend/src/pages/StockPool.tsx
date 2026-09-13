@@ -26,6 +26,7 @@ type SortKey =
   | 'limit_up_days_20d'
   | 'limit_up_days_60d'
   | 'board_count_60d'
+  | 'limit_up_next_avg_pct'
   | 'pct_change_10d'
   | 'pct_change_20d'
   | 'pct_change_60d'
@@ -494,6 +495,22 @@ export default function StockPool() {
                   <SortTh col="limit_up_days_20d" label="20日涨停"  sort={headerSort} onSort={handleSort} />
                   <SortTh col="limit_up_days_60d" label="60日涨停"  sort={headerSort} onSort={handleSort} />
                   <SortTh col="board_count_60d"   label={activeTab === 'limit_down' ? '60日高跌' : '60日高板'}  sort={headerSort} onSort={handleSort} />
+                  <th className="px-3 py-2 whitespace-nowrap">
+                    <span className="flex items-center justify-end gap-1">
+                      <SortHeader label="涨停次日均" sortKey="limit_up_next_avg_pct" sort={headerSort} onSort={handleSort} align="right" />
+                      <ColInfo
+                        title="涨停次日均（股性）"
+                        subtitle="这只票涨停之后，第二天平均还有多少溢价"
+                        range="样本少于 3 次的淡显"
+                        lines={[
+                          { factor: '样本', formula: '库里有记录的每一次涨停', note: '连板也算' },
+                          { factor: '溢价', formula: '次一交易日的涨跌幅（收盘对前收）', note: '' },
+                          { factor: '平均', formula: '所有样本的算术平均', note: '' },
+                          { factor: '不算', formula: '次日停牌或没快照、次日还没收盘', note: '不当 0' },
+                        ]}
+                      />
+                    </span>
+                  </th>
                   <SortTh col="pct_change_10d"    label="10日涨幅"  sort={headerSort} onSort={handleSort} />
                   <SortTh col="pct_change_20d"    label="20日涨幅"  sort={headerSort} onSort={handleSort} />
                   <SortTh col="pct_change_60d"    label="60日涨幅"  sort={headerSort} onSort={handleSort} />
@@ -515,7 +532,7 @@ export default function StockPool() {
               <tbody>
                 {activeStocks.length === 0 ? (
                   <tr>
-                    <td colSpan={14} className="py-16 text-center text-text-muted text-sm">暂无数据</td>
+                    <td colSpan={15} className="py-16 text-center text-text-muted text-sm">暂无数据</td>
                   </tr>
                 ) : (
                   activeStocks.map((stock) => (
@@ -721,6 +738,20 @@ function StockRow({
             </span>
           )
         })()}
+      </td>
+
+      {/* 涨停次日均（股性）：样本少于 3 次淡显 */}
+      <td className="px-3 py-2.5 text-right font-mono text-xs whitespace-nowrap">
+        {stock.limit_up_next_avg_pct != null ? (
+          <span className={cn((stock.limit_up_next_samples ?? 0) < 3 && 'opacity-50')}
+                title={`有记录的 ${stock.limit_up_next_samples} 次涨停，次一交易日平均涨跌幅`}>
+            <span className={cn('font-medium',
+              stock.limit_up_next_avg_pct > 0 ? 'text-up' : stock.limit_up_next_avg_pct < 0 ? 'text-down' : 'text-text-muted')}>
+              {stock.limit_up_next_avg_pct > 0 ? '+' : ''}{stock.limit_up_next_avg_pct.toFixed(2)}%
+            </span>
+            <span className="ml-1 text-[10px] text-text-muted">{stock.limit_up_next_samples}次</span>
+          </span>
+        ) : <span className="text-text-secondary">—</span>}
       </td>
 
       {/* 10日涨幅 */}

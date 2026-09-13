@@ -2248,6 +2248,22 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             f"仓位={review.suggested_position_level:.0f}%"
         ) if review else "写入成功")
 
+        # ── 股性：涨停次日溢价（独立步骤，失败不影响主流程）──────────────────
+        # 每只票「有记录的每次涨停，次一交易日的平均涨跌幅」写回 Stock。只在收盘那一跑算：
+        # 盘前、盘中那一跑今天的行还没结算，算出来跟上一次一样
+        if run_settled:
+            try:
+                from app.services.limit_up_premium_service import refresh_limit_up_premium
+                from app.services.trading_calendar import get_trading_days as _gtd_lup
+                r_lup = refresh_limit_up_premium(
+                    db, as_of=target_date, cal=_gtd_lup(db, need_through=target_date, log=log))
+                log.info(f"股性（涨停次日溢价）：{len(r_lup['by_stock'])} 只有样本，"
+                         f"共 {r_lup['samples']} 次，更新 {r_lup['updated']} 只")
+            except Exception as e:
+                log.info(f"[limit-up-premium] 涨停次日溢价计算失败（不影响主流程）: {e}")
+                db.rollback()
+            log.lap("涨停次日溢价")
+
         # ── 重点监管名单同步（独立步骤，失败不影响主流程）──────────────────
         # 注：「即将进入监管」预警改用东财实时接口，无需本地指数偏离值管道。
         # 须在 log.summary() 之前执行——summary() 会关闭日志文件。
