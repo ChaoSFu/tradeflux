@@ -252,6 +252,44 @@ def test_6b_没在主线里过_跌破MA20就是无(db):
     assert it["state"] == svc.NONE
 
 
+# ── 需求原文里的 Case 2 / 5 / 6（跟上面同名场景的另一种形态）──────────────────
+
+def test_2c_趋势还没确认的单日涨停爆发_点火不是主升(db):
+    add_bench(db)
+    add_fillers(db)
+    main_rise(db, closes=with_tail([1000.0 * 0.999 ** i for i in range(N)], [0.04]),
+              lu=[0] * 14 + [6], height=[0] * 14 + [1])
+    _, it = state(db, "BK0001")
+    assert it["gates"]["trend"]["status"] == svc.WARN, "站上 MA20，但均线没排好、MA20 没向上"
+    assert it["facts"]["lu_trend"] == svc.SPIKE
+    assert it["state"] == svc.IGNITION, it["state_reason"]
+
+
+def test_5b_高潮_涨停成交偏离同时极端(db):
+    add_bench(db)
+    add_fillers(db)
+    main_rise(db, closes=with_tail(rising(step=0.003), [0.03] * 6),
+              amounts=[1e9] * (N - 5) + [2e9] * 5)
+    _, it = state(db, "BK0001")
+    f = it["facts"]
+    assert f["amount_ratio"] >= svc.AMOUNT_SURGE and f["lu_3d"] >= svc.EUPHORIA_LU_3D
+    assert f["seal_rate"] == 1.0, "没有炸板，也没有别的见顶迹象"
+    assert it["state"] == svc.CLIMAX
+    assert "情绪高潮" in it["gates"]["risk"]["reason"]
+
+
+def test_6c_跌破MA10_5日跑输_涨停收缩同时出现_转弱不是分歧(db):
+    add_bench(db)
+    add_fillers(db)
+    main_rise(db, closes=with_tail(rising(), [-0.015, -0.015]), lu=FADE_LU, height=FADE_H)
+    _, it = state(db, "BK0001")
+    f = it["facts"]
+    assert it["gates"]["trend"]["status"] == svc.WARN, "还在 MA20 上方，趋势闸没 FAIL"
+    assert f["rs5"] < 0 < f["rs10"] and f["lu_trend"] == svc.CONTRACTING
+    assert it["state"] == svc.WEAKENING, it["state_reason"]
+    assert svc.MAIN_RISE in [x["state"] for x in it["trail"]]
+
+
 # ── 7 ────────────────────────────────────────────────────────────────────────
 
 def test_7_历史不足是未知(db):
