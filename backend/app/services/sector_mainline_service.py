@@ -1,11 +1,16 @@
 """
 板块趋势 · 主升板块雷达（sector_mainline_v1）
 
-回答一个问题：**现在哪几个板块在主升**。
+回答一个问题：**现在哪几个板块在主升**。在「大盘 → 板块主线 → 个股」这条链上管中间那一环：
+大盘趋势页看环境，这里看主线在哪几个板块，再往下才轮到个股。**主升状态 ≠ 买入信号**——
+这里只描述板块处在什么状态，不给买卖建议。
 
 事实 → 闸门 → 状态 → 证据。不打分：每个关注板块过四道闸（趋势 / 相对强度 / 生态 / 风险），
 每道闸给 PASS / WARN / FAIL / UNKNOWN 和它依据的事实，状态由闸门组合决定。页面上从状态
-能一路追到「为什么是这个状态」。只描述板块处在什么状态，不给买卖建议。
+能一路追到「为什么是这个状态」。
+
+**第一版是规则型状态机，阈值是工程初始值**：下面的分位数只用来定量级（板块指数不是个股），
+不代表已经拿历史回测优化过。上线后用 scripts/sector_mainline.py --days 在生产上看分布再调。
 
 ## 数据从哪来（2026-09-13 量过生产后定的）
 
@@ -77,6 +82,8 @@ STATE_LABELS = {
 }
 # 「在主线里」的几种状态：从这里掉出来先是分歧 / 转弱，不直接回到「无」
 MAINLINE_FAMILY = frozenset({MAIN_RISE, ACCELERATION, CLIMAX, DIVERGENCE})
+# 真正「主升过」的状态。分歧不算：分歧只是主升之后的缓冲，不能自己给自己续命
+CORE_STATES = frozenset({MAIN_RISE, ACCELERATION, CLIMAX})
 
 # ── 闸门结果 ──────────────────────────────────────────────────────────────────
 PASS = "PASS"
@@ -93,7 +100,7 @@ SPIKE = "SPIKE"
 LU_TREND_LABELS = {EXPANDING: "扩散", STABLE: "平稳", CONTRACTING: "收缩",
                    SPIKE: "单日爆发", UNKNOWN: "未知"}
 
-# ── 阈值（板块指数量级，出处见模块说明）────────────────────────────────────────
+# ── 阈值（工程初始值；量级出处见模块说明）────────────────────────────────────
 MIN_BARS = 26            # MA20 + 它 5 天前的值（算走向）+ 1
 LOAD_DAYS = 80           # 读多少个交易日的板块指数（10 天轨迹 + 60 根图 + 均线预热）
 CHART_DAYS = 60          # 详情里的指数日线
@@ -117,6 +124,7 @@ HEIGHT_DROP = 2          # 高度从 ≥3 板掉了 2 板以上 = 高度在降
 SEAL_RATE_LOW = 0.5      # 封板率低于一半（样本 ≥4 只）
 SEAL_MIN_SAMPLE = 4
 AMOUNT_SURGE = 1.4       # 5 日 / 20 日成交额 ≈ p99：放量
+EUPHORIA_LU_3D = 10      # 近 3 日涨停 ≥10 只：涨停板块雷达 08-25 以来有涨停的板块-日里约前 5~10%
 CRASH_MIN_LD = 3         # 跌停 ≥3 只且不少于涨停：亏钱效应压过赚钱效应
 SETTLED_SHARE_MIN = 0.5  # 那天成分股快照过半已结算，才算收盘后的数据
 
@@ -126,7 +134,7 @@ THRESHOLDS = {
     "eco_min_lu_3d": ECO_MIN_LU_3D, "eco_min_active_days": ECO_MIN_ACTIVE_DAYS,
     "eco_min_height": ECO_MIN_HEIGHT, "spike_min_lu": SPIKE_MIN_LU,
     "contract_ratio": CONTRACT_RATIO, "seal_rate_low": SEAL_RATE_LOW,
-    "amount_surge": AMOUNT_SURGE,
+    "amount_surge": AMOUNT_SURGE, "euphoria_lu_3d": EUPHORIA_LU_3D,
 }
 
 
@@ -379,8 +387,8 @@ def ecology_gate(ef: Dict[str, Any]) -> Dict[str, Any]:
 
 def risk_gate(tf: Optional[Dict[str, Any]], ef: Dict[str, Any]) -> Dict[str, Any]:
     """
-    过热和见顶迹象。只用看得见的事实：乖离、5 日涨幅、封板率、跌停、放量滞涨。
-    kind：climax（极端乖离 + 见顶迹象）/ crash（跌停潮）/ extreme / hot / None。
+    过热和见顶迹象。只用看得见的事实：乖离、5 日涨幅、涨停数、封板率、跌停、成交额。
+    kind：climax（极端乖离 + 见顶迹象，或涨停、成交也同时极端）/ crash（跌停潮）/ extreme / hot / None。
     """
     if not tf or "close" not in tf:
         return _gate(UNKNOWN, "趋势事实缺失，算不了乖离", kind=None)
@@ -404,6 +412,10 @@ def risk_gate(tf: Optional[Dict[str, Any]], ef: Dict[str, Any]) -> Dict[str, Any
     if dev >= EXTREME_DEV20 or r5 >= EXTREME_R5:
         if signals:
             return _gate(FAIL, f"极端乖离（{ext}），且出现" + "、".join(signals), kind="climax")
+        lu3 = ef.get("lu_3d")
+        if ratio is not None and ratio >= AMOUNT_SURGE and lu3 is not None and lu3 >= EUPHORIA_LU_3D:
+            return _gate(FAIL, f"极端乖离（{ext}），涨停（近3日 {lu3} 只）和成交（5日/20日 {ratio:.2f} 倍）"
+                               "也同时到了极端——情绪高潮", kind="climax")
         return _gate(WARN, f"极端乖离（{ext}），还没有见顶迹象", kind="extreme")
     if dev >= HOT_DEV20 or signals:
         parts = ([f"偏离 MA20 {dev:+.1f}%，偏热"] if dev >= HOT_DEV20 else []) + signals
@@ -413,12 +425,8 @@ def risk_gate(tf: Optional[Dict[str, Any]], ef: Dict[str, Any]) -> Dict[str, Any
 
 # ═══ 状态 ════════════════════════════════════════════════════════════════════
 
-# 真正「主升过」的状态。分歧不算：分歧只是主升之后的缓冲，不能自己给自己续命
-CORE_STATES = frozenset({MAIN_RISE, ACCELERATION, CLIMAX})
-
-
 def classify_state(gates: Dict[str, Dict[str, Any]], tf: Optional[Dict[str, Any]],
-                   ef: Dict[str, Any], core_hist: Sequence[bool],
+                   rf: Dict[str, Any], ef: Dict[str, Any], core_hist: Sequence[bool],
                    trail: Sequence[str]) -> Tuple[str, str]:
     """
     闸门组合 → 状态。core_hist 是截至今天（含）每天三道核心闸是否全过，
@@ -448,6 +456,13 @@ def classify_state(gates: Dict[str, Dict[str, Any]], tf: Optional[Dict[str, Any]
         return NONE, gates["rs"]["reason"]
     if k == FAIL:
         return CLIMAX, gates["risk"]["reason"]
+    # 主升之后价格、相对强度、生态三样同时变差（跌破 MA10、5 日跑输上证、涨停收缩或断档）：
+    # 这已经不是某一道闸的分歧，是转弱——哪怕还没跌破 MA20
+    rs5 = rf.get("rs5")
+    if recent and tf["close"] < tf["ma10"] and rs5 is not None and rs5 < 0 \
+            and (ef["lu_trend"] == CONTRACTING or e == FAIL):
+        return WEAKENING, (f"刚从主线退下来：收盘跌破 MA10、近5日跑输上证 {rs5:+.2f} 个百分点、"
+                           + ("涨停在收缩" if ef["lu_trend"] == CONTRACTING else "涨停断档"))
 
     if core_hist and core_hist[-1]:
         confirmed = sum(core_hist[-3:]) >= 2
@@ -467,6 +482,8 @@ def classify_state(gates: Dict[str, Dict[str, Any]], tf: Optional[Dict[str, Any]
         return DIVERGENCE, "K 线还强，但生态在退：" + gates["ecology"]["reason"]
     if sum(1 for g in CORE_GATES if gates[g]["status"] == PASS) >= 2 and e != FAIL:
         return IGNITION, "三道闸过了两道，还差：" + weak
+    if ef["lu_trend"] == SPIKE:
+        return IGNITION, "单日涨停爆发，趋势还没确认——先记点火，不算主升：" + weak
     return NONE, weak
 
 
@@ -560,7 +577,7 @@ def _compute(db: Session, as_of: Optional[date] = None,
             gates = {"trend": trend_gate(tf, day), "rs": rs_gate(rf),
                      "ecology": ecology_gate(ef), "risk": risk_gate(tf, ef)}
             core_hist.append(all(gates[g]["status"] == PASS for g in CORE_GATES))
-            state, why = classify_state(gates, tf, ef, core_hist, trail)
+            state, why = classify_state(gates, tf, rf, ef, core_hist, trail)
             trail.append(state)
             days_out.append({"date": day, "state": state, "reason": why, "gates": gates,
                              "tf": tf, "rf": rf, "ef": ef})
@@ -590,7 +607,7 @@ def _evidence(r: Dict[str, Any], cal: Sequence[date]) -> List[str]:
     if missing_bars and r["pos"]:
         ev.append(f"板块指数近 {MIN_BARS} 个交易日缺 {missing_bars} 根，均线跨度会变长")
     if tf.get("amount_missing"):
-        ev.append(f"近20日有 {tf['amount_missing']} 天缺板块成交额，「放量滞涨」这条没法判断")
+        ev.append(f"近20日有 {tf['amount_missing']} 天缺板块成交额，「放量」两条（放量滞涨、情绪高潮）没法判断")
     if ef.get("unsettled"):
         ev.append(f"{ef['unsettled']} 只成分股当天的快照不是收盘终值，涨停数可能不全")
     return ev
