@@ -5,7 +5,6 @@ import { useAppStore } from '@/store'
 import {
   LayoutDashboard,
   TrendingUp,
-  BarChart2,
   BookOpen,
   ChevronLeft,
   ChevronRight,
@@ -48,13 +47,19 @@ const NAV: NavEntry[] = [
       // 顺序跟数据流一致：先看池子，再看池子里谁在转强
       { type: 'link', to: '/weak-to-strong-radar', label: '弱转强雷达', icon: Crosshair },
       { type: 'link', to: '/stocks',      label: '活跃股池',   icon: TrendingUp },
+      // 情绪板块：把上面这几个池子里的活跃股（强势 / 涨跌停）按板块分组看，所以放在这组里
+      { type: 'link', to: '/sector-emotion', label: '情绪板块', icon: Activity },
       { type: 'link', to: '/turnover',    label: '成交额概览', icon: Coins },
       { type: 'link', to: '/watchlist',   label: '重点监控',   icon: ShieldAlert },
     ],
   },
-  // 被「涨跌停分析」整合掉的四个页面。**降级不是删除**——整合页有没有漏掉东西，
-  // 只有对着原页面才看得出来。原路由已 redirect 到整合页（老书签不落空），
-  // 页面本体挪到 /legacy/* 继续可访问
+  // 买入前的纪律对账：看完市场、下单之前
+  { type: 'link', to: '/pre-trade-check', label: '买入检查', icon: ClipboardCheck },
+  // 放在最后的「旧版页面」（路由都不变）：
+  // · 被「涨跌停分析」整合掉的四个页面。**降级不是删除**——整合页有没有漏掉东西，
+  //   只有对着原页面才看得出来。原路由已 redirect 到整合页（老书签不落空），
+  //   页面本体挪到 /legacy/* 继续可访问
+  // · 日复盘、交易复盘（2026-09-13 挪进来）。交易复盘未登录时页面展示功能介绍，数据仍受登录保护
   {
     type: 'group',
     label: '旧版页面',
@@ -64,22 +69,10 @@ const NAV: NavEntry[] = [
       { type: 'link', to: '/legacy/speculation-radar', label: '破局雷达',     icon: Mountain },
       { type: 'link', to: '/legacy/limit-up-radar',    label: '涨停板块雷达', icon: Zap },
       { type: 'link', to: '/legacy/market-effects',    label: '市场效应',     icon: Gauge },
+      { type: 'link', to: '/review',                   label: '日复盘',       icon: BookOpen },
+      { type: 'link', to: '/trade-journal',            label: '交易复盘',     icon: NotebookPen },
     ],
   },
-  {
-    type: 'group',
-    label: '板块分析',
-    icon: BarChart2,
-    children: [
-      // 趋势板块已提到顶层「板块趋势」（主升板块雷达），这里只留情绪板块
-      { type: 'link', to: '/sector-emotion', label: '情绪板块', icon: Activity  },
-    ],
-  },
-  // 买入前的纪律对账：放在「看市场」和「复盘」之间，跟决策的先后一致
-  { type: 'link', to: '/pre-trade-check', label: '买入检查', icon: ClipboardCheck },
-  { type: 'link', to: '/review',  label: '日复盘',     icon: BookOpen },
-  // 交易复盘：入口常显;未登录时页面展示功能介绍,数据仍受登录保护
-  { type: 'link', to: '/trade-journal', label: '交易复盘', icon: NotebookPen },
 ]
 
 // All link items flattened (used in collapsed mode)
