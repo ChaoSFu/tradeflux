@@ -323,6 +323,18 @@ def test_8_缺成交额_只跳过放量那条_状态照常(db):
     assert full["facts"]["amount_ratio"] == 1.0
 
 
+def test_8b_近6日跌停序列_跟涨停同一个口径_没快照的天是None(db):
+    add_bench(db)
+    add_fillers(db)
+    main_rise(db, ld=[0] * 12 + [1, 0, 2])
+    db.query(StockDailySnapshot).filter(StockDailySnapshot.date == DAYS[-5]).delete()
+    db.flush()
+    _, it = state(db, "BK0001")
+    f = it["facts"]
+    assert f["ld_series"] == [0, None, 0, 1, 0, 2]
+    assert f["ld_3d"] == 3 and f["ld"] == 2
+
+
 # ── 9 ────────────────────────────────────────────────────────────────────────
 
 def test_9_缺基准_相对强度不知道_跌破MA20的照样判(db):

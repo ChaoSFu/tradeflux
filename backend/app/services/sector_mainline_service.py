@@ -274,6 +274,7 @@ def ecology_facts(aggs: Sequence[Optional[Dict[str, int]]], members: int) -> Dic
     """aggs：D-5 ~ D 每天的成分股汇总（member_ecology 的值，不知道的天是 None）。"""
     lu = [a["lu"] if a else None for a in aggs]
     h = [a["height"] if a else None for a in aggs]
+    ld = [a["ld"] if a else None for a in aggs]
     last = aggs[-1] if aggs else None
 
     def total(xs):
@@ -284,6 +285,8 @@ def ecology_facts(aggs: Sequence[Optional[Dict[str, int]]], members: int) -> Dic
 
     f: Dict[str, Any] = {
         "members": members, "lu_series": lu, "height_series": h,
+        # 跌停序列：跟涨停同一个口径（成分股日快照 is_limit_down 的只数），不知道的天是 None
+        "ld_series": ld, "ld_3d": total(ld[-3:]),
         "lu": last["lu"] if last else None, "broken": last["broken"] if last else None,
         "ld": last["ld"] if last else None, "height": last["height"] if last else None,
         "up_ratio": round(last["up"] / last["rows"], 3) if last and last["rows"] else None,
@@ -634,7 +637,8 @@ def _item(r: Dict[str, Any], cal: Sequence[date]) -> Dict[str, Any]:
             "lu": ef["lu"], "lu_series": ef["lu_series"], "lu_3d": ef["lu_3d"],
             "lu_prev3d": ef["lu_prev3d"], "lu_trend": ef["lu_trend"],
             "height": ef["height"], "height_3d": ef["height_3d"], "broken": ef["broken"],
-            "seal_rate": ef["seal_rate"], "ld": ef["ld"], "up_ratio": ef["up_ratio"],
+            "seal_rate": ef["seal_rate"], "ld": ef["ld"], "ld_series": ef["ld_series"],
+            "ld_3d": ef["ld_3d"], "up_ratio": ef["up_ratio"],
         },
         "evidence": _evidence(r, cal),
     }

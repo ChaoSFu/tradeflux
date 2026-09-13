@@ -117,19 +117,31 @@ function GatePills({ gates }: { gates: SectorTrendItem['gates'] }) {
   )
 }
 
-function LuSeries({ series, dates }: { series: (number | null)[]; dates?: string[] }) {
+/**
+ * 最近 6 天每天的只数，最右是状态基准日，近 3 天亮一些；null = 那天库里没快照，标「?」不当 0。
+ * tone="down"（跌停）：大于 0 用跌的颜色，0 淡显——跌停大多数日子是 0，不淡显就看不出哪天有。
+ */
+function CountSeries({ series, dates, tone = 'plain' }: {
+  series: (number | null)[]; dates?: string[]; tone?: 'plain' | 'down'
+}) {
   return (
     <span className="font-mono text-xs">
-      {series.map((v, i) => (
-        <Fragment key={i}>
-          {i > 0 && <span className="text-text-muted/50">·</span>}
-          <span title={dates?.[i]}
-                className={cn(i >= series.length - 3 ? 'text-text-primary' : 'text-text-muted',
-                              v == null && 'text-warn')}>
-            {v ?? '?'}
-          </span>
-        </Fragment>
-      ))}
+      {series.map((v, i) => {
+        const recent = i >= series.length - 3
+        return (
+          <Fragment key={i}>
+            {i > 0 && <span className="text-text-muted/50">·</span>}
+            <span title={dates?.[i]}
+                  className={cn(
+                    v == null ? 'text-warn'
+                      : tone === 'down'
+                        ? (v > 0 ? (recent ? 'text-down' : 'text-down/60') : 'text-text-muted/60')
+                        : (recent ? 'text-text-primary' : 'text-text-muted'))}>
+              {v ?? '?'}
+            </span>
+          </Fragment>
+        )
+      })}
     </span>
   )
 }
@@ -339,10 +351,12 @@ function Detail({ item }: { item: SectorTrendItem }) {
 
 // ─── 雷达表 ───────────────────────────────────────────────────────────────────
 
-type SortKey = 'default' | 'r5' | 'rs10' | 'dev20' | 'lu_3d'
+type SortKey = 'default' | 'r5' | 'rs10' | 'dev20' | 'lu_3d' | 'ld_3d'
 const SORT_VALUE: Record<Exclude<SortKey, 'default'>, (s: SectorTrendItem) => number | null> = {
-  r5: (s) => s.facts.r5, rs10: (s) => s.facts.rs10, dev20: (s) => s.facts.dev20, lu_3d: (s) => s.facts.lu_3d,
+  r5: (s) => s.facts.r5, rs10: (s) => s.facts.rs10, dev20: (s) => s.facts.dev20,
+  lu_3d: (s) => s.facts.lu_3d, ld_3d: (s) => s.facts.ld_3d,
 }
+const COLS = 10
 
 function RadarTable({ rows, ecoDates, hot, extreme }: {
   rows: SectorTrendItem[]; ecoDates?: string[]; hot: number; extreme: number
@@ -377,6 +391,7 @@ function RadarTable({ rows, ecoDates, hot, extreme }: {
             {th('RS10 / RS20', 'rs10')}
             {th('偏离MA20', 'dev20')}
             {th('近6日涨停', 'lu_3d', false)}
+            {th('近6日跌停', 'ld_3d', false)}
             {th('最高板')}
             {th('封板率')}
           </tr>
@@ -418,8 +433,11 @@ function RadarTable({ rows, ecoDates, hot, extreme }: {
                     {fmtPct(f.dev20)}
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">
-                    <LuSeries series={f.lu_series} dates={ecoDates} />
+                    <CountSeries series={f.lu_series} dates={ecoDates} />
                     <span className="ml-1.5 text-[10px] text-text-muted">{LU_TREND[f.lu_trend]}</span>
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <CountSeries series={f.ld_series ?? []} dates={ecoDates} tone="down" />
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-xs text-text-secondary">{f.height_3d ?? '—'}</td>
                   <td className="px-3 py-2 text-right font-mono text-xs text-text-secondary">
@@ -428,14 +446,14 @@ function RadarTable({ rows, ecoDates, hot, extreme }: {
                 </tr>
                 {isOpen && (
                   <tr className="border-t border-bg-border/40">
-                    <td colSpan={9} className="p-0"><Detail item={s} /></td>
+                    <td colSpan={COLS} className="p-0"><Detail item={s} /></td>
                   </tr>
                 )}
               </Fragment>
             )
           })}
           {sorted.length === 0 && (
-            <tr><td colSpan={9} className="px-3 py-6 text-center text-xs text-text-muted">没有板块</td></tr>
+            <tr><td colSpan={COLS} className="px-3 py-6 text-center text-xs text-text-muted">没有板块</td></tr>
           )}
         </tbody>
       </table>

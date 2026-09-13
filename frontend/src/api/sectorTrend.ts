@@ -39,6 +39,8 @@ export interface SectorFacts {
   broken: number | null
   seal_rate: number | null
   ld: number | null
+  ld_series: (number | null)[]  // 最近 6 个交易日的跌停只数，口径同 lu_series
+  ld_3d: number | null
   up_ratio: number | null
 }
 
