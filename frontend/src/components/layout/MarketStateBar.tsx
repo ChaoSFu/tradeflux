@@ -8,13 +8,21 @@
  *
  * 这里只留能追到具体字段的市场事实：涨跌停家数、强势池当日涨跌幅、T-1 冻结群体
  * 的次日反馈、成交额分布、板块排名。它们各自的来源在每个 Cell 上都说得出来。
+ *
+ * **2026-09-15 换掉「涨停龙头赚钱 / 震荡龙头赚钱」**：那两组按 `Stock.phase` 分，
+ * 而 phase 只是「收盘价在哪条均线下面」的单日快照。强势股概览下面的卡片 09-07
+ * 就换成了生命周期分组，顶栏一直没跟上。现在是「昨日刚断板 / 昨日修复中」：
+ * 昨天处于该状态的票，今天的平均涨幅——跟概览页「逐日赚钱效应」曲线同一个数。
+ * 原来那个「×」（今日 / 30日均值）不带过来：拿涨跌幅做除数，均值贴着 0 时
+ * 就是 -61.14× 这种数，看不出任何东西。
  */
 import { useState, useMemo, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { fetchProfitEffect, fetchMarketHistory } from '@/api/marketState'
+import { fetchProfitEffect } from '@/api/marketState'
 import { fetchTurnoverOverview } from '@/api/turnover'
-import { fetchLimitMoves, fetchLimitMovesTrend, fetchStrongPool } from '@/api/stocks'
+import { fetchLimitMoves, fetchLimitMovesTrend, fetchStrongPool, fetchLifecycleEffect } from '@/api/stocks'
+import { LIFECYCLE_ZH } from '@/lib/lifecycle'
 import { fetchMarketEffectLatest } from '@/api/marketEffects'
 import { useSectorTags } from '@/hooks/useSectorTags'
 import { SectorTag } from '@/components/common/SectorTags'
@@ -36,9 +44,9 @@ function ClickSector({ name, pct, active, onClick }: { name: string; pct?: numbe
   )
 }
 
-function Cell({ label, children }: { label: string; children: React.ReactNode }) {
+function Cell({ label, title, children }: { label: string; title?: string; children: React.ReactNode }) {
   return (
-    <div className="shrink-0">
+    <div className="shrink-0" title={title}>
       <p className="text-[10px] text-text-muted leading-none mb-1">{label}</p>
       <div className="flex items-center gap-1.5">{children}</div>
     </div>
@@ -175,23 +183,17 @@ export function MarketStateBar() {
     [turnover],
   )
 
-  // 龙头分组赚钱效应：今日 avg_pct（来自 profit-effect）+ 30日均值（来自 market-history）
-  const { data: history } = useQuery({ queryKey: ['market-history', 30], queryFn: () => fetchMarketHistory(30) })
-  const groupAvg30: Record<string, number> = (() => {
-    const acc: Record<string, { sum: number; n: number }> = {}
-    for (const pt of (history ?? []) as any[]) {
-      for (const g of (pt.profit_effect_groups ?? []) as any[]) {
-        if ((g.stock_count ?? 0) <= 0) continue
-        const a = acc[g.key] ?? { sum: 0, n: 0 }
-        a.sum += g.avg_pct; a.n += 1; acc[g.key] = a
-      }
-    }
-    const out: Record<string, number> = {}
-    for (const k in acc) out[k] = acc[k].n ? acc[k].sum / acc[k].n : 0
-    return out
-  })()
-  const groupToday: Record<string, any> = {}
-  for (const g of ((pe as any)?.groups ?? [])) groupToday[g.key] = g
+  // 昨日刚断板 / 昨日修复中：跟强势股概览共用 ['lifecycle-effect'] 这一次请求。
+  // 收盘后取 series 里 as_of 那一点；未收盘取 today_estimate（盘中估算，标出来）。
+  // **按 as_of 找，不取 series 的最后一点**——那可能是前一天的，会冒充今天
+  const { data: lce } = useQuery({
+    queryKey: ['lifecycle-effect'], queryFn: fetchLifecycleEffect,
+    staleTime: 10 * 60 * 1000,
+  })
+  const lcPoint = lce?.today_estimate
+    ?? lce?.series.find((p) => p.trade_date === lce.as_of) ?? null
+  const lcIsEstimate = !!lce?.today_estimate
+  const lcBasedOn = lce?.today_estimate?.based_on ?? lce?.prev ?? null
 
   return (
     <>
@@ -267,23 +269,29 @@ export function MarketStateBar() {
           ) : <span className="text-text-muted text-xs">—</span>}
         </Cell>
 
-        {(['limit_up', 'oscillation'] as const).map((key) => {
-          const g = groupToday[key]
-          if (!g || g.stock_count <= 0) return null
-          const avg30 = groupAvg30[key]
-          const ratio = avg30 && avg30 > 0 ? g.avg_pct / avg30 : null
-          const label = key === 'limit_up' ? '涨停龙头赚钱' : '震荡龙头赚钱'
+        {/* 昨天处于该状态的票，今天的平均涨幅。**均值**——跟概览页那条逐日曲线
+            同一个数；那里卡片上的是去极值均值，不足 3 只算不出，而这两组平时
+            每天就一两只，照搬那个口径这两格多数日子是空的。只数一起摆出来：
+            1 只的时候它就是一只票的涨幅 */}
+        {(['BROKEN', 'REPAIRING'] as const).map((st) => {
+          const zh = LIFECYCLE_ZH[st]
+          // 当天没有这个 key = 昨天没有处于该状态的票，**不是涨了 0%**
+          const v = lcPoint?.values[st]
+          const tip = !lcPoint ? '暂无数据'
+            : !v ? `昨天（${lcBasedOn}）没有处于「${zh}」的票`
+            : `昨天（${lcBasedOn}）处于「${zh}」的 ${v.n} 只票，`
+              + `${lcIsEstimate ? '今天按现价的盘中估算' : `${lcPoint.trade_date} 收盘`}平均 ${pctSign(v.avg)}。\n`
+              + '均值，跟强势股概览「逐日赚钱效应」曲线同一个数；'
+              + '下面卡片上的是去极值均值（不足 3 只算不出）。'
           return (
-            <Cell key={key} label={label}>
-              <span className={cn('font-mono text-base font-bold', pctColor(g.avg_pct))}>{pctSign(g.avg_pct)}</span>
-              {ratio != null && (
-                <span
-                  title={`今日 ${pctSign(g.avg_pct)} / 30日均值 ${pctSign(avg30)} = ${ratio.toFixed(2)}（>1 强于近月均值）`}
-                  className={cn('text-xs font-mono font-medium', ratio >= 1 ? 'text-up' : 'text-text-muted')}
-                >
-                  {ratio.toFixed(2)}×
-                </span>
-              )}
+            <Cell key={st} label={`昨日${zh}`} title={tip}>
+              {v ? (
+                <>
+                  <span className={cn('font-mono text-base font-bold', pctColor(v.avg))}>{pctSign(v.avg)}</span>
+                  <span className="text-xs text-text-muted">{v.n}只</span>
+                  {lcIsEstimate && <span className="text-[10px] text-warn">盘中估算</span>}
+                </>
+              ) : <span className="text-text-muted text-xs">—</span>}
             </Cell>
           )
         })}
