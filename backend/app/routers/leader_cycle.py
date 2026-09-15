@@ -266,6 +266,11 @@ def get_leader_cycle(
         # 看似合理的状态安全
         obs_calendar = []
     sec_names = {sid: name for sid, name in db.query(Sector.id, Sector.name).all()}
+    # 状态机按**这只票自己的交易日**判相邻、数停留天数：停牌那几天不算（龙版传媒
+    # 09-09~11 停牌，复牌那天是断板后第 1 个交易日，不是第 4 个）
+    from ..services.suspension_service import load_suspensions_by_code, stock_calendar
+    susp = load_suspensions_by_code(db, [r.stock_code for r in rows],
+                                    since=obs_calendar[0] if obs_calendar else None)
 
     items: List[LeaderCycleItem] = []
     for r in rows:
@@ -275,7 +280,8 @@ def get_leader_cycle(
             name=st.name if st else None,
             sector_name=(sec_names.get(st.primary_sector_id)
                          if st and st.primary_sector_id else None),
-            **_lifecycle_fields(hist.get(r.stock_code, []), trade_date, obs_calendar),
+            **_lifecycle_fields(hist.get(r.stock_code, []), trade_date,
+                                stock_calendar(obs_calendar, susp.get(r.stock_code))),
             **{k: getattr(r, k) for k in (
                 "peak_board_count", "board_count_60d", "cycle_start_date",
                 "cycle_peak_date", "break_date", "days_since_break",

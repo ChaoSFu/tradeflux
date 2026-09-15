@@ -759,7 +759,7 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
 
 
 
-def _repair_today_bar_from_quotes(infos, klines_map, target_date, log, prefix="  "):
+def _repair_today_bar_from_quotes(infos, klines_map, target_date, log, prefix="  ", suspended=None):
     """
     用实时行情把缺失的**当日 bar** 补回 klines_map。返回 (补回数, 行情自身过期被拒数)。
 
@@ -793,6 +793,10 @@ def _repair_today_bar_from_quotes(infos, klines_map, target_date, log, prefix=" 
         if not bar:
             if q.trade_date != target_date:
                 rejected += 1
+            elif suspended is not None and q.volume is not None and q.volume <= 0:
+                # 行情是今天的、一整天却没有成交：停牌。交给调用方记停牌日——只在收盘后
+                # 那一跑记，盘前没有集合竞价成交的票也是 0
+                suspended.add(info.code)
             continue
         bars = [b for b in klines_map.get(info.code, []) if b.date != target_date]
         bars.append(bar)
@@ -1558,6 +1562,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # dump 是**加速手段不是依赖**：没配 key、下载失败、pyarrow 没装、解析出错，
         # 任何一种都静默退回逐股那条老路，只记日志，绝不让整轮更新失败。
         today_klines: dict = {}
+        _dump_dates: dict = {}            # {代码: dump 里这只票有行的日子}——停牌期间 dump 没有行
+        _quote_suspended: set = set()     # 行情是今天的、全天零成交（停牌），收盘后那一跑记下来
         dump_hit: set[str] = set()        # dump 把历史缺口补齐了，不用逐股拉
         dump_no_today: set[str] = set()   # 且 dump 里没有当日那一根 —— 当日走实时行情
         _fuyao_key = get_fuyao_key()
@@ -1587,6 +1593,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                         if _usable:
                             wanted = {i.code: i.is_st for i in db_group}
                             dump_bars = load_bars(dump_path, wanted)
+                            # 停牌期间 dump 没有行：记下每只票有行的日子，后面对着交易日历认停牌
+                            _dump_dates = {c: [b.date for b in bs] for c, bs in dump_bars.items() if bs}
                 for info in db_group:
                     bars = dump_bars.get(info.code) or []
                     hist = db_klines_map.get(info.code) or []
@@ -1805,11 +1813,13 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         if stale_infos:
             log.info(f"  {len(stale_infos)} 只今日K线仍缺失，用实时行情定向补当日bar...")
             repaired, rejected_stale_quote = _repair_today_bar_from_quotes(
-                stale_infos, klines_map, target_date, log)
+                stale_infos, klines_map, target_date, log, suspended=_quote_suspended)
             log.info(
                 f"  行情兜底补回 {repaired}/{len(stale_infos)} 只当日bar"
                 + (f"（另有 {rejected_stale_quote} 只行情自身日期也不是{target_date}，已拒绝）"
                    if rejected_stale_quote else "")
+                + (f"；{len(_quote_suspended)} 只全天零成交（停牌），不补 bar"
+                   if _quote_suspended else "")
             )
 
         # 上一交易日：全体候选K线里 target_date 之前的最大日期。跟 target_date 自身
@@ -1866,6 +1876,42 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"ℹ️  {target_date} 已有 {existing_snap_count} 条快照（覆盖更新）")
         log.end(detail=f"成功 {fetched}/{len(candidates)} 只" + (f"，失败 {failed} 只" if failed else ""))
 
+        # ── 停牌日：记下来，窗口统计和龙头周期都按「这只票自己的交易日」算 ──────
+        # 停牌那天本来就不该有 K 线：不能当成缺口，更不能写一根「涨跌 0」的假 bar
+        # （龙版传媒 09-09~11）。来源两个：fuyao dump 里那天没有这只票（dump 覆盖的
+        # 十来天）；收盘后行情显示今天全天零成交。停牌核查后复牌接着涨停，连板照样接着数
+        from app.services.suspension_service import stock_calendar as _stock_cal
+        _susp_by_code: dict = {}
+        try:
+            from app.services.suspension_service import (
+                load_suspensions_by_code, record_suspensions, suspended_days_from_rows,
+            )
+            _sid_by_code = dict(db.query(Stock.code, Stock.id)
+                                .filter(Stock.code.in_([c.code for c in candidates])).all())
+            n_dump = n_quote = 0
+            if _dump_dates and _cal:
+                _lo = min(min(v) for v in _dump_dates.values())
+                _hi = max(max(v) for v in _dump_dates.values())
+                _mk = [d for d in _cal if _lo <= d <= _hi]
+                n_dump = record_suspensions(db, [
+                    (_sid_by_code[c], d)
+                    for c, days in suspended_days_from_rows(_dump_dates, _mk).items()
+                    if c in _sid_by_code for d in days], "dump")
+            if run_settled and _quote_suspended:
+                n_quote = record_suspensions(db, [
+                    (_sid_by_code[c], target_date) for c in _quote_suspended if c in _sid_by_code],
+                    "quote")
+            db.commit()
+            _susp_by_code = load_suspensions_by_code(
+                db, list(_sid_by_code), since=_cal[-120] if _cal and len(_cal) >= 120 else None)
+            if n_dump or n_quote or _susp_by_code:
+                log.info(f"停牌日：新记 {n_dump + n_quote} 条（dump {n_dump}、收盘行情 {n_quote}），"
+                         f"候选里有停牌记录的 {len(_susp_by_code)} 只")
+        except Exception as e:  # noqa: BLE001
+            db.rollback()
+            _susp_by_code = {}
+            log.info(f"[suspension] 停牌日记录失败（不影响主流程，停牌照旧当缺口处理）: {e}")
+
         # ── 第4步：计算指标 & 写入快照 ───────────────────────────
         log.begin("计算指标&写入快照")
         stats_list: List[StockWindowStats] = []
@@ -1877,8 +1923,10 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 listing_date=getattr(info, "listing_date", None),
                 is_sector_leader=info.code in leader_code_set,
                 # 连板计数必须知道交易日历，否则缺行会把不相邻的涨停日
-                # 挤到一起数成连板（603065 被数成 6 板，真实 2 板）
-                trading_days=_cal,
+                # 挤到一起数成连板（603065 被数成 6 板，真实 2 板）。
+                # 用这只票自己的交易日：停牌日不算缺口，停牌两边的涨停照样相邻
+                trading_days=_stock_cal(_cal, _susp_by_code.get(info.code),
+                                        traded=[b.date for b in bars]),
             )
             if stats:
                 stats_list.append(stats)
@@ -2036,6 +2084,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 db, target_date, klines_map,
                 trading_days=_tdays,
                 stats_map={st.code: st for st in stats_list},
+                # 停牌日单独传：连板跨停牌接着数，停牌也不算数据缺口（上面第4步前记下的）
+                suspended_map={c: sorted(s) for c, s in _susp_by_code.items()},
                 # 收盘了没有——用上面已经算好的 run_settled，**不另起一套判定**。
                 # 在此之前这个信息压根没传到快照层：盘中跑出来的盘中价标着
                 # data_fresh=True 躺在表里，事后无从分辨是终值还是 11 点的现价

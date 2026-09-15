@@ -84,23 +84,47 @@ def get_trading_days(db: Session, need_through: Optional[date] = None,
     """
     cached = _read_cache(db)
     if cached and (need_through is None or cached[-1] >= need_through):
-        return cached                       # 零请求
+        return _with_index_days(db, cached, log)          # 零请求
 
     key = get_api_key()
     if not key:
-        return cached or None
+        return _with_index_days(db, cached, log) or None
     try:
         days = fetch_trading_days(key)
         if days:
             _write_cache(db, days)
             if log:
                 log.info(f"交易日历已更新：{len(days)} 个交易日（{days[0]} ~ {days[-1]}）")
-            return days
+            return _with_index_days(db, days, log)
     except Exception as e:  # noqa: BLE001
         if log:
             log.warning(f"交易日历拉取失败（{type(e).__name__}: {str(e)[:80]}），"
                         + ("沿用旧缓存" if cached else "退回从快照反推"))
-    return cached or None
+    return _with_index_days(db, cached, log) or None
+
+
+def _with_index_days(db: Session, days: List[date], log=None) -> List[date]:
+    """
+    用上证日线补日历漏掉的交易日，**只补不删**，也不往日历末尾之后延伸。
+
+    2026-09 实测：fuyao 这个接口有一阵子漏了 09-04——那天明明开市（龙版传媒还涨停了），
+    09-07 拉的缓存里就是没有它。缓存又只在跨天时才刷新，于是那几天所有按日历判「相邻」
+    的地方（连板计数、龙头周期状态机）都在 09-04 两边断开：龙版 08-31~09-07 的 6 连板
+    被数成 4 板，而且不止它一只。上证每个交易日都有一根日线，有 bar 就一定开市。
+    """
+    if not days:
+        return days
+    from ..models.market_index import IndexDailySnapshot
+    idx = {d for (d,) in db.query(IndexDailySnapshot.date).filter(
+        IndexDailySnapshot.index_code == "000001",
+        IndexDailySnapshot.date >= days[0], IndexDailySnapshot.date <= days[-1])}
+    extra = idx - set(days)
+    if not extra:
+        return days
+    if log:
+        log.warning(f"交易日历缺 {len(extra)} 个交易日"
+                    f"（{'、'.join(d.isoformat() for d in sorted(extra)[:5])}），已用上证日线补上")
+    return sorted(set(days) | extra)
 
 
 def prev_trading_day(days: List[date], d: date) -> Optional[date]:

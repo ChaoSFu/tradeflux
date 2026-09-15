@@ -97,8 +97,11 @@ def identify_leader_cycle(
         return None
     # **必须把交易日历传下去**：缺行会让非涨停日消失，把不相邻的涨停日
     # 在数组里挤到一起数成一段连板（603065 就被数成 6 板，真实是 2 板）
-    segs = [s for s in board_streaks(bars, calendar=trading_days)
-            if s[2] >= min_peak]
+    # 连板按**这只票自己的交易日**判相邻：停牌核查后复牌接着涨停，连板照样接着数
+    # （A 股通行算法）。停牌日得单独传进来才分得出——不传就只能当缺口，保守断开
+    from .suspension_service import stock_calendar
+    own_cal = stock_calendar(trading_days, suspended_days, traded=[b.date for b in bars])
+    segs = [s for s in board_streaks(bars, calendar=own_cal) if s[2] >= min_peak]
     if not segs:
         return None
 

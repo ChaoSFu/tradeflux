@@ -589,6 +589,12 @@ def kline_bar_from_quote(
     price, prev_close = quote.price, quote.prev_close
     if not price or price <= 0 or not prev_close or prev_close <= 0:
         return None
+    # 当天零成交 = 没交易（停牌），不是「涨跌 0」。上面「停牌（价格<=0）」那条拦不住：
+    # 腾讯对停牌股报的现价就是昨收、成交量 0。2026-09 龙版传媒 09-09~09-11 停牌，就这样
+    # 被写成三根「涨跌 0、成交量 0」的假 bar——占掉窗口位置，还被龙头周期当成三次观测。
+    # 盘前那一跑没有集合竞价成交的票也会落到这里：本来就是盘中值，不补没有损失
+    if quote.volume is not None and quote.volume <= 0:
+        return None
     pct = quote.pct_change
     if pct is None:
         pct = round((price - prev_close) / prev_close * 100, 2)

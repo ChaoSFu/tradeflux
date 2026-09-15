@@ -68,7 +68,8 @@ def _trimmed_mean(vals: List[float]) -> Optional[float]:
 
 
 def _states_by_date(snaps_by_code: Dict[str, list], days: List[date],
-                    cal: List[date]) -> Dict[date, Dict[str, str]]:
+                    cal: List[date],
+                    susp_by_code: Optional[Dict[str, set]] = None) -> Dict[date, Dict[str, str]]:
     """
     {日期: {代码: 状态}}。**每只票只 replay 一趟**。
 
@@ -79,9 +80,12 @@ def _states_by_date(snaps_by_code: Dict[str, list], days: List[date],
 
     look-ahead guard 不变：算 d 那天只吃 `date <= d` 的行。
     """
+    from .suspension_service import stock_calendar
     out: Dict[date, Dict[str, str]] = {d: {} for d in days}
     for code, rows in snaps_by_code.items():
-        for d, s in replay_series(rows, days, trading_days=cal).items():
+        # 按这只票自己的交易日走（停牌日不算），跟龙头周期页面同一个口径
+        scal = stock_calendar(cal, (susp_by_code or {}).get(code))
+        for d, s in replay_series(rows, days, trading_days=scal).items():
             # 当日判不出来时用最近一次有效状态——跟界面同一个口径
             st = s.state if s.state not in ("UNKNOWN",) else s.last_valid_state
             if st:
@@ -226,7 +230,9 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     window = [d for d in dates if d <= as_of][-history_days:]
     prev = _nth(as_of, -1)
     need_days = sorted(set(window) | ({prev} if prev else set()))
-    states = _states_by_date(snaps, need_days, cal) if need_days else {}
+    from .suspension_service import load_suspensions_by_code
+    _susp = load_suspensions_by_code(db, list(snaps), since=cal[0] if cal else None)
+    states = _states_by_date(snaps, need_days, cal, _susp) if need_days else {}
 
     # ── 当日 cohort：昨天的状态 → 今天的表现 ────────────────────────────
     cohorts = []
