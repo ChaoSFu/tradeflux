@@ -184,6 +184,15 @@ screening_criteria     （★ 新增：可配置的入池筛选条件，is_activ
 
 > `Stock` 字段是**缓存态**，由 `daily_update.py` 夜间重算写入，日内查询直接读取，无需实时计算。
 
+#### `stock_suspension_days` — 个股停牌日（2026-09-15）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| stock_id / date | Int / Date | 联合唯一 |
+| source | String | quote（收盘后行情全天零成交）/ dump（fuyao 日K里那天没有这只票）/ zero_volume_row（数据体检从零成交假行转来） |
+
+> 连板计数、龙头周期识别、龙头周期状态机都按「市场交易日去掉这只票的停牌日」判相邻、数天数（`suspension_service.stock_calendar`）：停牌核查后复牌接着涨停，连板照样接着数；复牌那天是断板后第 1 个交易日。停牌日不写日快照，更不写「涨跌 0」的假 bar。
+
 #### `stock_daily_snapshots` — 股票日快照
 
 每只股票每个交易日一条记录，保存完整的当日行情与统计数据：

@@ -60,7 +60,7 @@ NO_DATA_KEY = "data_audit:sector_index_no_data"
 OK, GAP, EXPIRED, WARN, ERROR = "ok", "gap", "expired", "warn", "error"
 
 #: 有一键补法的检测项。scripts/data_audit.py 的 FIXERS 必须跟它一致（有测试盯着）
-FIXABLE = ("archive", "stock_snapshots", "index_daily", "market_breadth",
+FIXABLE = ("archive", "stock_snapshots", "suspension_rows", "index_daily", "market_breadth",
            "limit_up_details", "market_effect", "leader_cycle", "sector_index")
 
 
@@ -437,6 +437,25 @@ def _check_sector_index(ctx: AuditContext, chk: Check) -> dict:
     return _res(chk, OK, f"{len(secs)} 个关注板块历史齐全{note}", **data)
 
 
+def _check_suspension_rows(ctx: AuditContext, chk: Check) -> dict:
+    from .suspension_service import zero_volume_rows
+    rows = zero_volume_rows(ctx.db)
+    if not rows:
+        return _res(chk, OK, "没有零成交的假行")
+    per: Dict[str, dict] = {}
+    for _rid, _sid, code, name, d in rows:
+        per.setdefault(code, {"code": code, "name": name or "", "missing_dates": []}
+                       )["missing_dates"].append(d.isoformat())
+    items = sorted(per.values(), key=lambda e: -len(e["missing_dates"]))
+    for e in items:
+        e["missing"] = len(e["missing_dates"])
+    return _res(chk, GAP, f"{len(rows):,} 行成交量为 0（{len(per):,} 只票）——停牌日被当成交易日写了进来",
+                fix=_fix_server("转成停牌记录、删掉假行",
+                                "零成交就是那天没交易。转成停牌记录后，连板、龙头周期会跳过这些天；"
+                                "同一天的龙头周期快照也一起删，下一次日更按新口径重算"),
+                counts={"rows": len(rows), "stocks": len(per)}, items=items[:100])
+
+
 CHECKS: List[Check] = [
     Check("calendar", "交易日历", "app_config · trading_calendar",
           "缓存只在跨天、问到新日期时才去拉；拉失败会一直用旧的", _check_calendar),
@@ -444,6 +463,9 @@ CHECKS: List[Check] = [
           "存档要手动重下，不会自己更新", _check_archive),
     Check("stock_snapshots", "个股日快照", "stock_daily_snapshots",
           "某天拉 K 线失败、或者某只票那几天不在候选池里，那几天就没有快照", _check_stock_snapshots),
+    Check("suspension_rows", "停牌假行", "stock_daily_snapshots",
+          "收盘后用实时行情补当日 bar 时，停牌股的现价是昨收、成交量 0；2026-09-15 之前会被写成"
+          "一根「涨跌 0」的假 bar", _check_suspension_rows),
     Check("index_daily", "指数日线", "index_daily_snapshots",
           "日更里的「大盘趋势同步」是独立步骤，失败只记一行日志", _check_index_daily),
     Check("market_breadth", "市场宽度（两融 / 成交额 / 涨跌统计）", "market_breadth_daily",

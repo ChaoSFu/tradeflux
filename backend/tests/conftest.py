@@ -14,7 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.models.stock import Stock, StockDailySnapshot
+from app.models.stock import Stock, StockDailySnapshot, StockSuspensionDay
 from app.models.sector import Sector, StockSectorRelation, SectorDailySnapshot
 from app.models.limit_up_detail import LimitUpDailyDetail, BrokenBoardDailyDetail
 from app.models.app_config import AppConfig
@@ -30,7 +30,7 @@ from app.models.weak_to_strong_radar import (
 )
 
 _TABLES = [
-    Stock.__table__, StockDailySnapshot.__table__,
+    Stock.__table__, StockDailySnapshot.__table__, StockSuspensionDay.__table__,
     Sector.__table__, StockSectorRelation.__table__, SectorDailySnapshot.__table__,
     LimitUpDailyDetail.__table__, BrokenBoardDailyDetail.__table__,
     AppConfig.__table__,

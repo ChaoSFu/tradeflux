@@ -40,7 +40,8 @@ _ICON = {svc.ERROR: "✗", svc.GAP: "✗", svc.WARN: "⚠", svc.EXPIRED: "·", s
 _ORDER = [svc.ERROR, svc.GAP, svc.WARN, svc.EXPIRED, svc.OK]
 #: 补完复查哪几项。补快照会改市场效应的输入，所以一起复查
 RECHECK = {"archive": {"archive", "stock_snapshots"},
-           "stock_snapshots": {"stock_snapshots", "market_effect"}}
+           "stock_snapshots": {"stock_snapshots", "market_effect"},
+           "suspension_rows": {"suspension_rows", "stock_snapshots"}}
 
 
 class Busy(Exception):
@@ -241,9 +242,27 @@ def fix_sector_index(db, a) -> int:
     return 0
 
 
+def fix_suspension_rows(db, a) -> int:
+    from app.services.suspension_service import convert_zero_volume_rows
+    r = convert_zero_volume_rows(db, apply=a.apply)
+    if not r["rows"]:
+        print("没有零成交的假行")
+        return 0
+    verb = "已转成停牌记录并删除" if r["applied"] else "将转成停牌记录并删除（试跑，没写库）"
+    print(f"{verb}：{r['rows']:,} 行，涉及 {r['stocks']:,} 只票")
+    for code, e in sorted(r["per_stock"].items(), key=lambda kv: -len(kv[1]["dates"]))[:20]:
+        print(f"  {code} {e['name'] or ''}：{'、'.join(d.strftime('%m-%d') for d in e['dates'])}")
+    if r["applied"]:
+        print(f"停牌记录新增 {r['recorded']:,} 条；删掉快照 {r['deleted']:,} 行、"
+              f"同日龙头周期快照 {r['cycle_rows_deleted']:,} 行")
+        print("连板、龙头周期要等下一次日更才按新口径重算；想现在就看到，在顶栏「数据更新」里重跑一次今天的日更")
+    return 0
+
+
 FIXERS = {
     "archive": fix_archive,
     "stock_snapshots": fix_stock_snapshots,
+    "suspension_rows": fix_suspension_rows,
     "index_daily": fix_index_daily,
     "market_breadth": fix_market_breadth,
     "limit_up_details": fix_limit_up_details,

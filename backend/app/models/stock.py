@@ -146,3 +146,26 @@ class StockDailySnapshot(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     stock = relationship("Stock", back_populates="daily_snapshots")
+
+
+class StockSuspensionDay(Base):
+    """
+    个股停牌日（2026-09-15 起）。「那天没交易」和「那天我们漏了数据」是两件事：停牌那天
+    本来就不该有 K 线，不能当成缺口，更不能写一根假 bar 顶上。
+
+    连板计数、龙头周期都按「市场交易日去掉这只票的停牌日」判相邻、数天数——停牌核查后
+    复牌接着涨停，连板照样接着数（A 股通行算法）；复牌那天是断板后第 1 个交易日。
+
+    source：quote = 收盘后行情当天零成交；dump = fuyao 日K里那天没有这只票；
+    zero_volume_row = 以前误写进快照的零成交假行（数据体检转过来的）。
+    """
+    __tablename__ = "stock_suspension_days"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "date", name="uq_suspension_stock_date"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    source = Column(String(20), nullable=False)
+    created_at = Column(DateTime, server_default=func.now())

@@ -173,6 +173,8 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
     # 快照里最新的那一天。**只有这一天的未结算行是活价格**，见 LIVE_DATE_DOC
     live_date = dates[-1]
     sid = {s.code: s.id for s in db.query(Stock).all()}
+    from app.services.suspension_service import load_suspensions_by_code, stock_calendar
+    susp = load_suspensions_by_code(db, list(snaps))
     bars: Dict[str, Bars] = {}
     for code in snaps:
         rows = (db.query(StockDailySnapshot)
@@ -185,8 +187,10 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
     baseline = []
     for code, rows in snaps.items():
         b = bars[code]
+        # 状态机按这只票自己的交易日走（停牌日不算），跟界面同一个口径
+        scal = stock_calendar(cal, susp.get(code))
         for d in dates:
-            s = replay_price_lifecycle(rows, d, trading_days=cal)
+            s = replay_price_lifecycle(rows, d, trading_days=scal)
             # 每个"有价格事实的交易日"都进基线池——组间比较必须有同期对照
             if d in b.close:
                 baseline.append(("ALL_STOCK_DAYS", code, d, s.entry_reason_codes,
