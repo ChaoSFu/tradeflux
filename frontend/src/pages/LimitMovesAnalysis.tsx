@@ -15,6 +15,10 @@
  * 它的唯一职责是把这个暗示拆掉。
  *
  * 旧的四个页面一行没动，路由都还在。
+ *
+ * 2026-09-15 撤掉「历史反馈」Tab：跨日反馈（逐日曲线 + 昨日群体表 + 涨停/最高板
+ * 走势）并进全景，排在连板梯队热力图和板块结构之间。全景底部原来就有同一张
+ * 昨日群体表，Tab 里那份是重复的——合成一份。
  */
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -41,11 +45,10 @@ import { AdvanceLadderPanel } from '@/components/limitMovesAnalysis/AdvanceLadde
 import { SectorContinuationPanel } from '@/components/limitMovesAnalysis/SectorContinuationPanel'
 import { buildSectorRows } from '@/components/limitMovesAnalysis/sectorRows'
 
-type Tab = 'overview' | 'sectors' | 'history'
+type Tab = 'overview' | 'sectors'
 const TABS: { k: Tab; label: string }[] = [
   { k: 'overview', label: '全景' },
   { k: 'sectors', label: '板块与个股' },
-  { k: 'history', label: '历史反馈' },
 ]
 
 export default function LimitMovesAnalysis() {
@@ -246,16 +249,9 @@ export default function LimitMovesAnalysis() {
             </QueryState>
           </div>
 
-          <div className="card p-3">
-            <QueryState qs={[radar, down]}
-                        isEmpty={!sectorRows.length}
-                        emptyText="今天没有板块达到涨停雷达门槛，也没有跌停股">
-              <SectorLimitTable rows={sectorRows}
-                                radarDate={radar.data?.trade_date ?? null}
-                                downDate={down.data?.trade_date ?? null} />
-            </QueryState>
-          </div>
-
+          {/* 跨日反馈（原「历史反馈」Tab，2026-09-15 并进来）。逐日曲线紧贴在
+              昨日群体表正上方——两者是同一份 cohorts_json，曲线最后一点就是表里
+              今天那一列，拆开放就对不上眼了 */}
           <div className="card p-3">
             <QueryState qs={[cohortSeries]} rows={3}
                         isEmpty={!cohortSeries.data?.points.length}>
@@ -267,6 +263,23 @@ export default function LimitMovesAnalysis() {
             <QueryState qs={[effect]}
                         isEmpty={!effect.data}>
               {effect.data && <CohortFeedbackTable data={effect.data} />}
+            </QueryState>
+          </div>
+
+          <div className="card p-3">
+            <QueryState qs={[trend, height]}
+                        isEmpty={!trend.data?.length}>
+              <LimitHistoryChart trend={trend.data ?? []} heights={points} />
+            </QueryState>
+          </div>
+
+          <div className="card p-3">
+            <QueryState qs={[radar, down]}
+                        isEmpty={!sectorRows.length}
+                        emptyText="今天没有板块达到涨停雷达门槛，也没有跌停股">
+              <SectorLimitTable rows={sectorRows}
+                                radarDate={radar.data?.trade_date ?? null}
+                                downDate={down.data?.trade_date ?? null} />
             </QueryState>
           </div>
         </div>
@@ -294,22 +307,6 @@ export default function LimitMovesAnalysis() {
               <SectorLimitTable rows={sectorRows}
                                 radarDate={radar.data?.trade_date ?? null}
                                 downDate={down.data?.trade_date ?? null} />
-            </QueryState>
-          </div>
-        </div>
-      )}
-
-      {tab === 'history' && (
-        <div className="space-y-3">
-          <div className="card p-3">
-            <QueryState qs={[effect]} isEmpty={!effect.data}>
-              {effect.data && <CohortFeedbackTable data={effect.data} />}
-            </QueryState>
-          </div>
-          <div className="card p-3">
-            <QueryState qs={[trend, height]}
-                        isEmpty={!trend.data?.length}>
-              <LimitHistoryChart trend={trend.data ?? []} heights={points} />
             </QueryState>
           </div>
         </div>
