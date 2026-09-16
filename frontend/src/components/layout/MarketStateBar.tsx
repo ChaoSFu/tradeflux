@@ -44,6 +44,41 @@ function ClickSector({ name, pct, active, onClick }: { name: string; pct?: numbe
   )
 }
 
+/**
+ * 跌停水平的四档 —— **全部由「今日只数 / 跌停30日均值」这一个比值定**，没有别的
+ * 输入，阈值写在那一格的悬停说明里。这不是评分，是把一个比值切成四段。
+ *
+ * 颜色沿用本仓库的约定：跌停一律走 down 色（绿），轻重靠边框浓淡表达，不靠换色。
+ * 「退潮」那档例外走 accent（蓝）——它要的是「看一眼」，不是「警告」。
+ */
+const DOWN_LEVEL = {
+  ebb:     { text: '退潮',     box: 'border-accent/60 bg-accent/10' },
+  normal:  { text: '均值附近', box: 'border-bg-border bg-bg-elevated/40' },
+  high:    { text: '高于均值', box: 'border-down/50 bg-down/10' },
+  extreme: { text: '极端',     box: 'border-down bg-down/20' },
+} as const
+type DownLevel = keyof typeof DOWN_LEVEL
+
+/**
+ * 近 N 个交易日的跌停只数缩略图。
+ *
+ * **柱状不是折线**：只数是离散计数，柱子高度一眼能比大小；折线会在 0 附近画出
+ * 根本不存在的斜坡。最后一根是今天，单独着色。
+ * 那天真是 0 只就画 1px 的底座——**0 是事实，不是没数据**，逐根悬停给具体只数。
+ */
+function MiniBars({ data }: { data: { date: string; n: number }[] }) {
+  const max = Math.max(...data.map((d) => d.n), 1)
+  return (
+    <div className="flex items-end gap-[2px] h-4">
+      {data.map((d, i) => (
+        <div key={d.date} title={`${d.date.slice(5)} ${d.n} 只`}
+             className={cn('w-[3px] rounded-sm', i === data.length - 1 ? 'bg-down' : 'bg-down/35')}
+             style={{ height: d.n === 0 ? 1 : Math.max(3, (d.n / max) * 16) }} />
+      ))}
+    </div>
+  )
+}
+
 function Cell({ label, title, children }: { label: string; title?: string; children: React.ReactNode }) {
   return (
     <div className="shrink-0" title={title}>
@@ -132,6 +167,42 @@ export function MarketStateBar() {
   const avgDown30 = last30.length ? last30.reduce((s, p) => s + p.limit_down_count, 0) / last30.length : null
   const upRatio = limitUpCount != null && avgUp30 ? limitUpCount / avgUp30 : null
   const downRatio = limitDownCount != null && avgDown30 ? limitDownCount / avgDown30 : null
+
+  // ── 跌停 · 极端做空：**整条里最该先看的一格，所以它排在最前、单独成框** ──
+  // 一个数字说不出它在什么水平、往哪个方向走，而方向恰恰是能用的那部分：
+  // 贴近 0 或急剧变少 = 做空力量退潮；开始变多 = 风险抬头。所以这格给三样，
+  // 每样都追得到字段：今日只数 + 相对30日均值的倍数、相对上一交易日的增减、
+  // 近 12 个交易日的柱状缩略图。
+  //
+  // **增减和大数字必须是同一天的事实**：大数字来自 limit-moves 的 total，
+  // 缩略图和昨日只数来自 trend 序列，两个查询两个观测时点。日期对不上就不显示
+  // 增减——拿昨天的数冒充今天，正好会在方向上骗人（2026-09-16 实测两边都是 4）
+  const downSeries: { date: string; n: number }[] = last30
+    .slice(-12)
+    .map((p) => ({ date: p.date, n: p.limit_down_count }))
+  const downPrev = downSeries.length >= 2 ? downSeries[downSeries.length - 2] : null
+  const downSameDay = downSeries.length > 0
+    && downSeries[downSeries.length - 1].date === (downCount as any)?.trade_date
+  const downDelta = downPrev && downSameDay && limitDownCount != null
+    ? limitDownCount - downPrev.n : null
+  const downLevel: DownLevel | null =
+    downRatio == null ? null
+      : downRatio >= 2 ? 'extreme'
+      : downRatio >= 1 ? 'high'
+      : downRatio <= 0.5 ? 'ebb'
+      : 'normal'
+  const downTip = limitDownCount == null ? '' : [
+    `今日跌停 ${limitDownCount} 只`
+      + (avgDown30 && downRatio != null
+        ? ` · 30日均值 ${avgDown30.toFixed(1)} → ${downRatio.toFixed(2)}×` : ''),
+    downPrev && downDelta != null
+      ? `上一交易日（${downPrev.date}）${downPrev.n} 只，${
+          downDelta > 0 ? `多了 ${downDelta} 只` : downDelta < 0 ? `少了 ${-downDelta} 只` : '持平'}`
+      : '上一交易日的只数和今天不是同一天的观测，不显示增减',
+    '柱状 = 近 12 个交易日的跌停只数，最后一根是今天（未收盘时是盘中数）',
+    '读法：贴近 0 或急剧变少 = 做空力量退潮；开始变多 = 风险抬头',
+    '四档阈值（今日/30日均值）：≤0.5× 退潮 · 1× 以下均值附近 · ≥1× 高于均值 · ≥2× 极端',
+  ].join('\n')
 
   // 行情强弱标注：涨停数>30日均值=强势(>2倍=极端强势)；跌停数>30日均值=弱势(>2倍=极端弱势)
   const strongLv = upRatio == null ? 0 : upRatio > 2 ? 2 : upRatio > 1 ? 1 : 0
@@ -226,6 +297,45 @@ export function MarketStateBar() {
             )}
           </div>
         )}
+        {/* 跌停 · 极端做空（2026-09-16 提到队首并单独成框）：这一格是做多做空
+            环境最直接的那个事实，原来跟其他格一样是一行小字，看不出方向 */}
+        {limitDownCount != null && (
+          <div className={cn('shrink-0 rounded-md border px-2.5 py-1',
+                             DOWN_LEVEL[downLevel ?? 'normal'].box)}
+               title={downTip}>
+            <p className="text-[10px] text-text-secondary leading-none mb-1">跌停 · 极端做空</p>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-xl font-bold text-down leading-none">
+                {limitDownCount}
+              </span>
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-1.5 leading-none">
+                  {downRatio != null && (
+                    <span className="text-[11px] font-mono font-bold text-down/90">
+                      {downRatio.toFixed(2)}×
+                    </span>
+                  )}
+                  {downLevel && (
+                    <span className={cn('text-[10px]',
+                      downLevel === 'ebb' ? 'text-accent'
+                        : downLevel === 'normal' ? 'text-text-muted' : 'text-down')}>
+                      {DOWN_LEVEL[downLevel].text}
+                    </span>
+                  )}
+                  {/* 跌停变多是风险抬头，走 down 色；变少只是退潮，不抢注意力 */}
+                  {downDelta != null && (
+                    <span className={cn('text-[10px] font-mono',
+                      downDelta > 0 ? 'text-down font-bold' : 'text-text-muted')}>
+                      {downDelta > 0 ? `↑${downDelta}` : downDelta < 0 ? `↓${-downDelta}` : '持平'}
+                    </span>
+                  )}
+                </div>
+                {downSeries.length >= 2 && <MiniBars data={downSeries} />}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* 此前叫"赚钱效应"，但统计口径其实是当前 in_strong_pool 股票的当天涨跌幅，
             跟下面"短线赚亏效应"（market_effect_service 的T-1冻结群体反馈）是两套
             完全不同方法论的独立指标，共用一个名字会互相误导——改名成"强势股池
@@ -309,21 +419,6 @@ export function MarketStateBar() {
             )}
           </Cell>
         )}
-        {limitDownCount != null && (
-          <Cell label="跌停 · 极端做空">
-            <span className="font-mono text-base font-bold text-down">{limitDownCount}</span>
-            {downRatio != null && (
-              <span
-                title={`当日跌停 ${limitDownCount} / 跌停30日均值 ${avgDown30!.toFixed(1)} = ${downRatio.toFixed(2)}（远大于1 风险极大）`}
-                className={cn('text-xs font-mono font-bold',
-                  downRatio >= 2 ? 'text-down' : downRatio >= 1 ? 'text-down/80' : 'text-text-muted')}
-              >
-                {downRatio.toFixed(2)}×
-              </span>
-            )}
-          </Cell>
-        )}
-
         {turnover?.date && (
           <Cell label="大成交额赚钱效应">
             <span className={cn('font-mono text-base font-bold', pctColor(turnover.overall_avg_pct))}>
