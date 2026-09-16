@@ -2516,7 +2516,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 同一把锁文件，避免撞上用户手动点刷新的并发写入。
         #
         # **2026-09-04 补一道闸：只在收盘后跑。** 上面那段"每天一次、收盘后"的论证
-        # 只考虑了 15:30 那次，漏了 scheduler 里还有一次 **09:27 盘前** daily_update
+        # 只考虑了 15:30 那次，漏了 scheduler 里还有一次 **09:26 盘前** daily_update
         # ——而 run_refresh 内部会调 fetch_stock_quotes_batch 打实时行情。于是产品上
         # 锁定的"弱转强雷达不做自动轮询"，实际变成了"自动轮询从独立任务搬进了
         # daily_update"。行为没变，只是换了个入口，边界照样被越过。

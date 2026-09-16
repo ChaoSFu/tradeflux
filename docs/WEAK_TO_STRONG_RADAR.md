@@ -56,7 +56,7 @@
 ## 2. 架构总览
 
 ```
-盘前（daily_update.py 收盘后 15:30 / 09:27 两次调度）
+盘前（daily_update.py 收盘后 15:30 / 09:26 两次调度）
   ├─ 第5步 刷新板块统计 → 板块每日快照 upsert_sector_daily_snapshot()
   └─ 候选池发现 w2s_candidate_service.discover_candidates()
        ├─ Prompt1/Prompt2 → eastmoney_fetcher.fetch_strong_pool_codes()

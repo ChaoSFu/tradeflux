@@ -421,7 +421,7 @@ def test_盘中和盘前的快照不会让状态基准日前移(db):
     d1 = date(2026, 9, 14)
     for s in db.query(Sector).all():
         db.add(SectorIndexDaily(sector_code=s.code, date=d1, close=2000.0, amount=1e9))
-    add_eco(db, st, [9], [1], days=[d1], settled=False)      # 盘前 09:27 那一跑写的
+    add_eco(db, st, [9], [1], days=[d1], settled=False)      # 盘前 09:26 那一跑写的
     r = svc.get_sector_mainline_state(db, now=datetime(2026, 9, 14, 16, 0, tzinfo=SH_TZ))
     assert r["state_date"] == "2026-09-11"
     assert any("0/20 行是收盘终值" in n for n in r["notes"])

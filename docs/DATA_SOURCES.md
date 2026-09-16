@@ -555,6 +555,10 @@ stdout 逐行回传(比原来 `redirect_stdout` 到最后才 flush 还更实时)
 1. 「是 15:30 定时任务在跑」—— 日志显示那次因为锁被占用**跳过了**
 2. 「`jitter=3600` + 重启重置 `next_run_time`,所以每次部署都重新触发」——
    `next_run` 明明指向明天,`[SCHED]` 全天只有两条
+   （2026-09-16 补:那个 `jitter=3600` 根本没生效过——`add_job` 拿到的是构造好的
+   `CronTrigger` 实例,多出来的 kwargs 被 `_create_trigger` 静默丢掉。这个假设
+   连前提都不成立,当时却没人去量一下 `trigger.jitter`。见 `app/scheduler.py`
+   的 docstring）
 
 两次都是**对着代码推断生产行为**,而不是先量。第三次换成"把涨的那一刻抓在现场",
 一轮就定位了。**读代码能生成假设,不能验证假设。**

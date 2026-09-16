@@ -241,12 +241,21 @@ def _run_weekly_data_audit() -> None:
 def create_scheduler() -> BackgroundScheduler:
     """
     创建并配置后台调度器。四个定时任务：
-    - 盘后 15:30 触发每日数据更新，jitter=3600（±1h 内随机）
-    - 盘前 09:27 触发每日数据更新，jitter=60（9:26:00~9:28:00，集合竞价后、开盘前随机）
+    - 盘后 15:30 触发每日数据更新
+    - 盘前 09:26 触发每日数据更新（集合竞价 9:25 之后、开盘 9:30 之前）
     - 周六 10:00 触发板块全量同步（周度兜底，见 BACKEND.md §0.3）
     - 周六 11:00 数据体检（周度兜底；平时每次日更跑完都会接着体检一次）
     前三者共享同一把文件锁互斥；max_instances=1；每日更新失败后 10 分钟自动重试
     最多 3 次，周度兜底失败不重试（下周还会再跑，非关键路径）。
+
+    **四个都是准点起跑，这里没有随机窗口。** 两个日更原来各挂着 `jitter=3600` /
+    `jitter=60`，注释也写着「±1h 内随机」「9:26:00~9:28:00 随机」——**那两个参数
+    从来没生效过**：APScheduler 3.x 的 jitter 是**触发器**的参数，而这里
+    `add_job(trigger=CronTrigger(...), jitter=...)` 传的是构造好的实例，
+    `_create_trigger` 见到实例就原样返回、多出来的 kwargs 静默丢掉
+    （apscheduler/schedulers/base.py:1120）。2026-09-16 实测 `trigger.jitter` 是
+    None，同一触发器采样 50 次落点全是同一秒。所以删掉那两行、注释按真实行为写。
+    真要随机窗口得写成 `CronTrigger(..., jitter=N)`，那是行为变更，得单独定。
     """
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
     # 盘后更新（收盘后最终数据）
@@ -258,7 +267,6 @@ def create_scheduler() -> BackgroundScheduler:
             minute=30,
             timezone="Asia/Shanghai",
         ),
-        jitter=3600,        # ±3600 秒随机
         max_instances=1,    # 同一任务只允许一个实例运行
         id="daily_update",
         name="每日数据更新",
@@ -266,15 +274,19 @@ def create_scheduler() -> BackgroundScheduler:
         misfire_grace_time=7200,  # 错过触发时间 2 小时内仍可补跑
     )
     # 盘前更新（集合竞价 9:25 之后、开盘 9:30 之前）
+    #
+    # 2026-09-16 从 09:27 提前到 09:26：要的是开盘前就拿到准确数字，而日更本身要跑
+    # 一分半左右（09-16 那次 1 分 26 秒），09:27 起跑等于 09:28:26 才出数，离开盘只
+    # 剩一分半。09:26 起跑留出约两分半。
+    # **不再往前挪**：9:25 竞价刚撮完，那一秒的行情不一定已经发出来。
     scheduler.add_job(
         _run_daily_update,
         trigger=CronTrigger(
             day_of_week="mon-fri",
             hour=9,
-            minute=27,
+            minute=26,
             timezone="Asia/Shanghai",
         ),
-        jitter=60,          # ±60 秒 → 9:26:00~9:28:00
         max_instances=1,
         id="daily_update_preopen",
         name="盘前数据更新",
