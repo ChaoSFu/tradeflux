@@ -336,6 +336,24 @@ export function MarketStateBar() {
           </div>
         )}
 
+        {/* 涨停 · 极端做多：紧挨着跌停（2026-09-16 移过来）。多空两端的极端读数
+            并排，才看得出今天是哪一边在主导。倍数口径跟跌停那格一致：今日只数 /
+            该方向的30日均值 */}
+        {limitUpCount != null && (
+          <Cell label="涨停 · 极端做多"
+                title={`今日涨停 ${limitUpCount} 只`
+                  + (avgUp30 && upRatio != null
+                    ? ` · 30日均值 ${avgUp30.toFixed(1)} → ${upRatio.toFixed(2)}×（>1 做多意愿强于近月）` : '')}>
+            <span className="font-mono text-base font-bold text-up">{limitUpCount}</span>
+            {upRatio != null && (
+              <span className={cn('text-xs font-mono font-medium',
+                                  upRatio >= 1 ? 'text-up' : 'text-text-muted')}>
+                {upRatio.toFixed(2)}×
+              </span>
+            )}
+          </Cell>
+        )}
+
         {/* 此前叫"赚钱效应"，但统计口径其实是当前 in_strong_pool 股票的当天涨跌幅，
             跟下面"短线赚亏效应"（market_effect_service 的T-1冻结群体反馈）是两套
             完全不同方法论的独立指标，共用一个名字会互相误导——改名成"强势股池
@@ -406,19 +424,6 @@ export function MarketStateBar() {
           )
         })}
 
-        {limitUpCount != null && (
-          <Cell label="涨停 · 极端做多">
-            <span className="font-mono text-base font-bold text-up">{limitUpCount}</span>
-            {upRatio != null && (
-              <span
-                title={`当日涨停 ${limitUpCount} / 涨停30日均值 ${avgUp30!.toFixed(1)} = ${upRatio.toFixed(2)}（>1 做多意愿强）`}
-                className={cn('text-xs font-mono font-medium', upRatio >= 1 ? 'text-up' : 'text-text-muted')}
-              >
-                {upRatio.toFixed(2)}×
-              </span>
-            )}
-          </Cell>
-        )}
         {turnover?.date && (
           <Cell label="大成交额赚钱效应">
             <span className={cn('font-mono text-base font-bold', pctColor(turnover.overall_avg_pct))}>
