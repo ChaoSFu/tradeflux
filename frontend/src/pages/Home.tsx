@@ -277,7 +277,7 @@ export default function Home() {
         <SectionTitle>数据更新</SectionTitle>
         <div className="card p-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-text-muted border border-bg-border">
           <span className="flex items-center gap-1.5"><Sunset className="w-3.5 h-3.5 text-accent/70" />盘后 15:30 自动</span>
-          <span className="flex items-center gap-1.5"><Sunrise className="w-3.5 h-3.5 text-accent/70" />盘前 9:26–9:28 自动</span>
+          <span className="flex items-center gap-1.5"><Sunrise className="w-3.5 h-3.5 text-accent/70" />盘前 9:26 自动</span>
           <span className="flex items-center gap-1.5"><RefreshCw className="w-3.5 h-3.5 text-accent/70" />失败自动重试</span>
           <span className="flex items-center gap-1.5"><MousePointerClick className="w-3.5 h-3.5 text-accent/70" />手动更新
             <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-warn/10 text-warn border border-warn/30"><Lock className="w-2.5 h-2.5" />需登录</span>

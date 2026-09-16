@@ -61,7 +61,7 @@ class TestBarIsSettled:
         assert bar_is_settled(TODAY, datetime(2026, 8, 26, 15, 0, tzinfo=SH_TZ)) is True
 
     def test_历史交易日必然已收盘(self):
-        # 盘前 09:27 那一跑写的是上一交易日，不该被当成"盘中"
+        # 盘前 09:26 那一跑写的是上一交易日，不该被当成"盘中"
         assert bar_is_settled(YESTERDAY, datetime(2026, 8, 26, 9, 27, tzinfo=SH_TZ)) is True
 
     def test_盘前想写当日则未收盘(self):
