@@ -847,6 +847,35 @@ class TestPostLowNeedsTrendBreak:
         assert s.state == REPAIRING and s.reason_codes == ["MA_MISSING"], \
             "证不出结构坏了，就不能判失败"
 
+    def test_修复中跌破MA10单日即失败(self):
+        """
+        MA10 是底线。跟 CROSS_SUCCESS 那条同样敏感——两个状态都在核心观察池里。
+        这里既没创新低、也只是第一天收在 MA5 下，但收盘已经跌破 MA10。
+        """
+        rows = self._repairing() + [
+            Row(2, 22.0, ma5=27.056, ma10=22.647, ma20=19.0, ma30=18.0,
+                days_since_break=2, new_high=False, new_low=False)]
+        s = _replay(rows)
+        assert s.state == CROSS_FAILED and s.reason_codes == ["BELOW_MA10"]
+
+    def test_复刻龙版传媒(self):
+        """
+        2026-09-28 实测 605577：09-22 从修复失败转回修复中，09-24 收在 MA5 上方，
+        09-28 一根大阴线跌破 MA5 8.8%、跌破 MA10 5.8%——却因为「连续两日收在 MA5
+        下」只数到一天而仍挂在「修复中」。补上 MA10 那条之后当天就判失败。
+        """
+        rows = [
+            Row(0, 17.69, ma5=15.722, ma10=15.0, ma20=14.0, ma30=13.0,
+                days_since_break=8, new_high=False, new_low=False),
+            Row(1, 16.52, ma5=16.482, ma10=15.6, ma20=14.2, ma30=12.9,
+                days_since_break=9, new_high=False, new_low=False),
+            Row(2, 14.87, ma5=16.312, ma10=15.784, ma20=14.368, ma30=12.898,
+                days_since_break=10, new_high=False, new_low=False),
+        ]
+        assert _replay(rows[:2]).state == REPAIRING, "站回 MA5 且 MA5 上行 → 修复中"
+        s = _replay(rows)
+        assert s.state == CROSS_FAILED and s.reason_codes == ["BELOW_MA10"]
+
     def test_放宽的只是创新低那一条_两日规则照旧(self):
         rows = self._repairing() + [
             # 两天都收在 MA5 之下（但都在容差内），且 MA5 没有上行
