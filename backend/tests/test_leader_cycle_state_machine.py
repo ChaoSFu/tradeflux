@@ -786,3 +786,74 @@ class TestReplaySeries:
         tampered = rows + [Row(20, 999.0, ma5=1.0, ma10=1.0, ma20=1.0, ma30=1.0,
                                days_since_break=20)]
         assert replay_series(tampered, [d], trading_days=CAL)[d] == before
+
+
+class TestPostLowNeedsTrendBreak:
+    """
+    2026-09-28 生产实测（001216 华瓷股份）：断板后三根收盘 28.31 / 28.40 / 28.04，
+    今天只比断板日低 0.95% 就被判「修复失败」，而它仍在 MA5 上方 3.6%、距断板后
+    高点 1.28%、收盘还高于周期顶 5.9%。同一天 3 只票全被这条判失败、全是 D+2。
+
+    根子在比较集太小：D+2 时「断板后收盘」只有两根，"创新低"几乎不含信息，任何
+    一根小阴线都必然触发。所以创新低要跟"短趋势真的破了"同时成立才判失败。
+    """
+
+    def _repairing(self):
+        """华瓷股份的真实形态：断板日 → 次日站回 MA5 且 MA5 上行 → 修复中。"""
+        return [
+            Row(0, 28.31, ma5=24.118, ma10=19.918, ma20=18.0, ma30=17.0,
+                days_since_break=0),
+            Row(1, 28.40, ma5=25.822, ma10=21.299, ma20=18.5, ma30=17.5,
+                days_since_break=1, new_high=True, new_low=False),
+        ]
+
+    def test_复刻华瓷股份_窄幅新低不判失败(self):
+        rows = self._repairing() + [
+            Row(2, 28.04, ma5=27.056, ma10=22.647, ma20=19.0, ma30=18.0,
+                days_since_break=2, new_high=False, new_low=True)]
+        assert _replay(rows[:2]).state == REPAIRING
+        s = _replay(rows)
+        assert s.state == REPAIRING, "创了新低但仍在 MA5 上方，修复结构没破"
+        assert s.reason_codes == ["POST_LOW_HELD"]
+
+    def test_新低且跌破MA5容差才判失败(self):
+        rows = self._repairing() + [
+            # 收盘 26.0 < MA5 27.056 × 97% = 26.24
+            Row(2, 26.0, ma5=27.056, ma10=22.647, ma20=19.0, ma30=18.0,
+                days_since_break=2, new_high=False, new_low=True)]
+        s = _replay(rows)
+        assert s.state == CROSS_FAILED
+        assert s.reason_codes == ["BREAK_POST_LOW", "BELOW_MA5_TOL"]
+
+    def test_小幅跌破MA5但守住MA10仍算修复中(self):
+        rows = self._repairing() + [
+            # 26.5 在 MA5×97%=26.24 之上，MA10 更是远在下面
+            Row(2, 26.5, ma5=27.056, ma10=22.647, ma20=19.0, ma30=18.0,
+                days_since_break=2, new_high=False, new_low=True)]
+        assert _replay(rows).state == REPAIRING, "容差之内，算正常回踩"
+
+    def test_跌破MA10一律判失败(self):
+        rows = self._repairing() + [
+            Row(2, 22.0, ma5=27.056, ma10=22.647, ma20=19.0, ma30=18.0,
+                days_since_break=2, new_high=False, new_low=True)]
+        s = _replay(rows)
+        assert s.state == CROSS_FAILED and "BELOW_MA10" in s.reason_codes
+
+    def test_均线缺失时不判失败(self):
+        rows = self._repairing() + [
+            Row(2, 26.0, ma5=None, ma10=None, ma20=None, ma30=None,
+                days_since_break=2, new_high=False, new_low=True)]
+        s = _replay(rows)
+        assert s.state == REPAIRING and s.reason_codes == ["MA_MISSING"], \
+            "证不出结构坏了，就不能判失败"
+
+    def test_放宽的只是创新低那一条_两日规则照旧(self):
+        rows = self._repairing() + [
+            # 两天都收在 MA5 之下（但都在容差内），且 MA5 没有上行
+            Row(2, 26.8, ma5=27.056, ma10=22.647, ma20=19.0, ma30=18.0,
+                days_since_break=2, new_high=False, new_low=True),
+            Row(3, 26.7, ma5=27.0, ma10=23.0, ma20=19.0, ma30=18.0,
+                days_since_break=3, new_high=False, new_low=True),
+        ]
+        s = _replay(rows)
+        assert s.state == CROSS_FAILED and "BELOW_MA5_2OBS" in s.reason_codes

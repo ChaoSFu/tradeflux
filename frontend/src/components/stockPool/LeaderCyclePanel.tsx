@@ -160,9 +160,9 @@ const STATE_TONE: Record<string, { hint: string; tone: string }> = {
   STREAKING:       { tone: 'text-up',
                      hint: '尚未断板' },
   CROSS_FAILED:    { tone: 'text-down',
-                     hint: '本次修复失败：创断板后新低、连续收在 MA5 下，'
-                         + '或断板满 2 个交易日仍未修复。不是终点——重新站回 MA5'
-                         + '且 MA5 上行仍会回到修复中' },
+                     hint: '本次修复失败：创断板后新低且收盘跌破 MA5×97%（或跌破'
+                         + ' MA10）、连续收在 MA5 下，或断板满 2 个交易日仍未修复。'
+                         + '不是终点——重新站回 MA5 且 MA5 上行仍会回到修复中' },
   FADED:           { tone: 'text-text-muted',
                      hint: '当前这段周期生命周期结束，默认弱化' },
   UNKNOWN:         { tone: 'text-text-muted',

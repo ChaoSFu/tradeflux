@@ -64,10 +64,12 @@ from typing import Dict, List, Optional, Sequence
 # 2026-09-06 从 price_v1 升到 price_v1_1：BROKEN 从"可无限停留"变成"D+2 必须
 # 表态"，这是状态函数本身变了。不升版本的话，以后拿旧规则的 MFE 和新规则的
 # MFE 做对比就区分不出来，而那正是不落库、可 replay 的全部意义所在。
-FORMULA_VERSION = "price_v1_1"
+# 2026-09-28 升到 price_v1_2：REPAIRING 的「创断板后新低」不再单独成立，要
+# 同时确实跌破短趋势才判失败（见 MA5_BREAK_TOLERANCE）。
+FORMULA_VERSION = "price_v1_2"
 # 历史上出现过的版本，按时间倒序。replay 传入旧版本时要能明确拒绝而不是静默
 # 按新规则算——"这段历史是哪套规则算的"必须永远可追溯
-KNOWN_VERSIONS = ("price_v1_1", "price_v1")
+KNOWN_VERSIONS = ("price_v1_2", "price_v1_1", "price_v1")
 
 # ── 拍出来的常量（见模块 docstring）────────────────────────────────────────
 # 连续几个**有效交易 observation** 收在 MA5 之下才算走弱。1 次不够：高标波动大，
@@ -90,6 +92,18 @@ BELOW_MA30_OBS = 2
 # 否则 CROSS_FAILED。「修复失败」在语义上包含「从来没修复起来过」，所以复用这个
 # 状态而不新增一个，分组已经够多了。
 MAX_BROKEN_DAYS = 2
+
+# 修复中创了断板后新低，**还要确实跌破短趋势**才算修复失败。MA5 给 3% 容差：
+# 小幅跌破是正常回踩，只要没跌破 MA10 就仍然算在修复中。
+#
+# 2026-09-28 实测（001216 华瓷股份）：断板后三根收盘 28.31 / 28.40 / 28.04，
+# 今天只比断板日低 0.95% 就被判「修复失败」——而它当天仍在 MA5 上方 3.6%、
+# 距断板后高点 1.28%、收盘还高于周期顶 5.9%。
+#
+# 根子在**比较集太小**：D+2 时「断板后的收盘价」只有两根，"创新低"几乎不含
+# 信息，任何一根小阴线都必然触发。那天 3 只票同时被这条判失败，全是这个机制。
+# 所以不是取消这条，而是要求它跟"结构真的坏了"同时成立。
+MA5_BREAK_TOLERANCE = 0.97
 
 # ── 生命周期状态 ───────────────────────────────────────────────────────────
 STREAKING = "STREAKING"                # 仍在连板中
@@ -128,6 +142,9 @@ REASON_TEXT = {
     "MA5_TURN_UP": "MA5 本身开始上行",
     "BREAK_POST_HIGH": "创断板后收盘新高",
     "BREAK_POST_LOW": "创断板后收盘新低",
+    "BELOW_MA5_TOL": f"收盘跌破 MA5×{MA5_BREAK_TOLERANCE:.0%}",
+    "POST_LOW_HELD": f"创了断板后收盘新低，但仍站在 MA5×{MA5_BREAK_TOLERANCE:.0%} "
+                     "之上、也没跌破 MA10 —— 修复结构没破，不判失败",
     "ABOVE_MA10": "收盘站上 MA10",
     "BELOW_MA5_2OBS": f"连续 {BELOW_MA5_OBS} 个有效交易日收在 MA5 之下",
     "BELOW_MA10": "收盘跌破 MA10",
@@ -328,6 +345,25 @@ def _hard_fade(obs, calendar=None) -> Optional[List[str]]:
     return hits or None
 
 
+def _short_trend_break(cur) -> tuple:
+    """
+    收盘有没有**真正跌破短趋势**。返回 (是否跌破, reason codes)。
+
+    `(None, …)` = 均线缺失，证明不了。按仓库那条最核心的纪律，证不出来就不当作
+    跌破——「不知道结构坏没坏」不能判成「修复失败」。
+
+    两条线各管一段：**MA10 是底线**，破了就是破了；**MA5 给 3% 容差**，小幅跌破
+    属于正常回踩。两者是或的关系，任一成立即算跌破。
+    """
+    if cur.ma10 is not None and cur.latest_close < cur.ma10:
+        return True, ["BELOW_MA10"]
+    if cur.ma5 is not None and cur.latest_close < cur.ma5 * MA5_BREAK_TOLERANCE:
+        return True, ["BELOW_MA5_TOL"]
+    if cur.ma5 is None and cur.ma10 is None:
+        return None, ["MA_MISSING"]
+    return False, []
+
+
 def _advance(prev_state: str, obs, calendar=None) -> tuple:
     """
     从 prev_state 推进一步。返回 (新状态, reason_codes)。
@@ -382,14 +418,23 @@ def _advance(prev_state: str, obs, calendar=None) -> tuple:
 
     # 7) REPAIRING 之后：先看失败，再看成功
     if prev_state == REPAIRING:
+        post_low_codes: List[str] = []
         if cur.new_post_break_low_today is True:
-            return CROSS_FAILED, ["BREAK_POST_LOW"]
+            # **创新低本身不够。** 断板后没几根收盘时，比较集只有一两个数，
+            # 任何小阴线都能"创新低"（见 MA5_BREAK_TOLERANCE 里的实测）。
+            # 要判失败，还得同时证明短趋势真的破了
+            broke, why = _short_trend_break(cur)
+            if broke is True:
+                return CROSS_FAILED, ["BREAK_POST_LOW", *why]
+            # 没破（或证不出破）：不判失败，但今天发生了什么要说清楚，
+            # 而且**继续往下判**——「连续两日收在 MA5 下」那条仍然管用
+            post_low_codes = ["POST_LOW_HELD"] if broke is False else why
         if below_ma5_2 is True and ma5_up is False:
             return CROSS_FAILED, ["BELOW_MA5_2OBS"]
         if (cur.new_post_break_high_today is True and above_ma5 and above_ma10
                 and ma5_up is True):
             return CROSS_SUCCESS, ["BREAK_POST_HIGH", "ABOVE_MA10", "MA5_TURN_UP"]
-        return REPAIRING, ["HOLD"]
+        return REPAIRING, post_low_codes or ["HOLD"]
 
     # 8) BROKEN / CROSS_FAILED → REPAIRING：股价重新站回短趋势，
     #    **且 MA5 本身开始向上**。只站上一条仍在快速下行的 MA5 不算修复
