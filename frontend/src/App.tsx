@@ -9,7 +9,7 @@ import Watchlist from '@/pages/Watchlist'
 import StockDetail from '@/pages/StockDetail'
 import SectorConfig from '@/pages/SectorConfig'
 import PoolConfig from '@/pages/PoolConfig'
-import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
+import { RequireLogin } from '@/components/auth/RequireLogin'
 import SectorTrend from '@/pages/SectorTrend'
 import SectorEmotion from '@/pages/SectorEmotion'
 import DailyReview from '@/pages/DailyReview'
@@ -43,49 +43,60 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Home />} />
-          <Route path="market-trend" element={<MarketTrend />} />
-          <Route path="strong" element={<Dashboard />} />
-          <Route path="stocks" element={<StockPool />} />
-          <Route path="watchlist" element={<Watchlist />} />
-          <Route path="stocks/:code" element={<StockDetail />} />
-          <Route path="sector-config" element={<ProtectedRoute><SectorConfig /></ProtectedRoute>} />
-          <Route path="pool-config" element={<PoolConfig />} />
-          <Route path="sector-trend" element={<SectorTrend />} />
-          <Route path="sector-emotion" element={<SectorEmotion />} />
-          <Route path="weak-to-strong-radar" element={<WeakToStrongRadar />} />
-          <Route path="weak-to-strong-radar/guide" element={<WeakToStrongRadarGuide />} />
-          <Route path="review" element={<DailyReview />} />
-          <Route path="trade-journal" element={<TradeJournal />} />
-          <Route path="pre-trade-check" element={<PreTradeCheck />} />
-          {/* 数据体检：管理功能，没登录看不到（后端接口也全部要登录） */}
-          <Route path="data-health" element={<ProtectedRoute><DataHealth /></ProtectedRoute>} />
-          {/* ── 涨跌停分析：四合一整合页 ─────────────────────────────
-              旧的四个页面**没有删**，挪到 /legacy/* 继续可访问。整合页有没有
-              漏掉东西，只有对着原页面才看得出来；redirect 如果同时让原页面
-              失联，就等于把这个校验能力一起丢了。 */}
-          <Route path="limit-moves-analysis" element={<LimitMovesAnalysis />} />
-          <Route path="legacy/limit-moves" element={<LimitMovesDashboard />} />
-          <Route path="legacy/speculation-radar" element={<SpeculationRadar />} />
-          <Route path="legacy/limit-up-radar" element={<LimitUpSectorRadar />} />
-          <Route path="legacy/market-effects" element={<MarketEffects />} />
-          {/* 老书签 / 老链接落到整合页。replace 不留历史，避免返回键在
-              重定向和目标页之间来回弹 */}
-          {['limit-moves', 'speculation-radar', 'limit-up-radar', 'market-effects']
-            .map((p) => (
-              <Route key={p} path={p}
-                     element={<Navigate to="/limit-moves-analysis" replace />} />
-            ))}
-          <Route path="turnover" element={<TurnoverOverview />} />
+
+          {/* ── 登录闸门：除主页外全部页面要登录（2026-10-11）──────────────
+              写成布局路由，不逐页包装：逐页包的写法有个必然漏洞——以后新加
+              一条路由忘了包就是公开的，而且不报错、界面上也看不出来。落在
+              这个 Route 底下的页面默认受保护。
+              **只挡界面**：后端数据接口除管理类外目前仍公开。 */}
+          <Route element={<RequireLogin />}>
+            <Route path="market-trend" element={<MarketTrend />} />
+            <Route path="strong" element={<Dashboard />} />
+            <Route path="stocks" element={<StockPool />} />
+            <Route path="watchlist" element={<Watchlist />} />
+            <Route path="stocks/:code" element={<StockDetail />} />
+            <Route path="sector-config" element={<SectorConfig />} />
+            <Route path="pool-config" element={<PoolConfig />} />
+            <Route path="sector-trend" element={<SectorTrend />} />
+            <Route path="sector-emotion" element={<SectorEmotion />} />
+            <Route path="weak-to-strong-radar" element={<WeakToStrongRadar />} />
+            <Route path="weak-to-strong-radar/guide" element={<WeakToStrongRadarGuide />} />
+            <Route path="review" element={<DailyReview />} />
+            <Route path="trade-journal" element={<TradeJournal />} />
+            <Route path="pre-trade-check" element={<PreTradeCheck />} />
+            {/* 数据体检：管理功能（后端接口同样要登录） */}
+            <Route path="data-health" element={<DataHealth />} />
+            {/* ── 涨跌停分析：四合一整合页 ─────────────────────────────
+                旧的四个页面**没有删**，挪到 /legacy/* 继续可访问。整合页有没有
+                漏掉东西，只有对着原页面才看得出来；redirect 如果同时让原页面
+                失联，就等于把这个校验能力一起丢了。 */}
+            <Route path="limit-moves-analysis" element={<LimitMovesAnalysis />} />
+            <Route path="legacy/limit-moves" element={<LimitMovesDashboard />} />
+            <Route path="legacy/speculation-radar" element={<SpeculationRadar />} />
+            <Route path="legacy/limit-up-radar" element={<LimitUpSectorRadar />} />
+            <Route path="legacy/market-effects" element={<MarketEffects />} />
+            {/* 老书签 / 老链接落到整合页。replace 不留历史，避免返回键在
+                重定向和目标页之间来回弹 */}
+            {['limit-moves', 'speculation-radar', 'limit-up-radar', 'market-effects']
+              .map((p) => (
+                <Route key={p} path={p}
+                       element={<Navigate to="/limit-moves-analysis" replace />} />
+              ))}
+            <Route path="turnover" element={<TurnoverOverview />} />
+          </Route>
         </Route>
 
-        <Route path="/v2" element={<V2Layout />}>
-          <Route index element={<TradingConsole />} />
-          <Route path="market" element={<V2Market />} />
-          <Route path="mainlines" element={<V2Mainlines />} />
-          <Route path="core" element={<V2CoreStocks />} />
-          <Route path="regulatory" element={<V2Regulatory />} />
-          <Route path="model" element={<V2ModelGuide />} />
-          <Route path="settings" element={<V2Settings />} />
+        {/* V2 冻结中（只维护 V1），但它同样是页面，一并要登录 */}
+        <Route element={<RequireLogin />}>
+          <Route path="/v2" element={<V2Layout />}>
+            <Route index element={<TradingConsole />} />
+            <Route path="market" element={<V2Market />} />
+            <Route path="mainlines" element={<V2Mainlines />} />
+            <Route path="core" element={<V2CoreStocks />} />
+            <Route path="regulatory" element={<V2Regulatory />} />
+            <Route path="model" element={<V2ModelGuide />} />
+            <Route path="settings" element={<V2Settings />} />
+          </Route>
         </Route>
       </Routes>
     </BrowserRouter>

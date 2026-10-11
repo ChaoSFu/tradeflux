@@ -13,7 +13,7 @@ import { Card } from '@/components/ui/card'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 
-// 数据体检：各张按日写的表缺了什么、为什么缺、怎么补。管理功能——路由走 ProtectedRoute，
+// 数据体检：各张按日写的表缺了什么、为什么缺、怎么补。管理功能——路由走 RequireLogin，
 // 没登录进不来，后端接口也全部要登录。
 // 检测只读（每次日更后自动跑一次，周六再兜一次）；补数一律先试跑、再确认，补完后端自动复查。
 

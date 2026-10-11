@@ -2,6 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import { cn } from '@/utils/cn'
 import { useAppStore } from '@/store'
+import { useAuthStore } from '@/store/auth'
 import {
   LayoutDashboard,
   TrendingUp,
@@ -86,6 +87,13 @@ export function Sidebar() {
   const { sidebarCollapsed, toggleSidebar } = useAppStore()
   const location = useLocation()
 
+  // 2026-10-11 起除主页外全部页面要登录（见 components/auth/RequireLogin）。
+  // 未登录时导航**只留主页**：摆着一排点进去就弹回来的入口，比干脆不显示更糟。
+  // 登录入口在顶栏，登录后整棵导航树原样回来
+  const isLoggedIn = useAuthStore((s) => s.isLoggedIn)
+  const nav = isLoggedIn ? NAV : NAV.filter((e) => e.type === 'link' && e.to === '/')
+  const flatLinks = isLoggedIn ? FLAT_LINKS : FLAT_LINKS.filter((l) => l.to === '/')
+
   // Track which groups are open; default all groups open
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
     const open = new Set<string>()
@@ -141,7 +149,7 @@ export function Sidebar() {
         {sidebarCollapsed ? (
           // ── Collapsed: flat icon list ──────────────────────────────────────
           <div className="space-y-0.5">
-            {FLAT_LINKS.map(({ to, label, icon: Icon }) => (
+            {flatLinks.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
                 to={to}
@@ -163,7 +171,7 @@ export function Sidebar() {
         ) : (
           // ── Expanded: grouped list ─────────────────────────────────────────
           <div className="space-y-0.5">
-            {NAV.map((entry) => {
+            {nav.map((entry) => {
               if (entry.type === 'link') {
                 const { to, label, icon: Icon } = entry
                 return (
