@@ -216,13 +216,18 @@ def fix_leader_cycle(db, a) -> int:
 
 
 def fix_sector_index(db, a) -> int:
-    """板块指数的「补」= 导入收件箱里本机导出的文件（历史只能在本机取，见 FIX_EXPORT）。"""
+    """
+    板块指数的「补」有两条路：
+
+      · **默认：直接从 push2his 回填**。2026-10-13 实测服务器又能直连了
+        （2026-09-06 那条「出口被拒」已经过期），不必再走本机浏览器导出。
+        **缺口名单直接取体检算好的那一份**——「哪天算缺」只有体检一个定义，
+        不在这里重算第二套。
+      · `--file 文件名`：导入收件箱里本机导出的文件。push2his 再被拒时的兜底，
+        流程一行没动。
+    """
     if not a.file:
-        print(svc.run_check(db, "sector_index")["summary"])
-        files = svc.list_inbox()
-        print(f"收件箱 {svc.INBOX_DIR}：" + ("、".join(f["name"] for f in files) if files else "空的"))
-        print("导入要指定文件：--file 文件名")
-        return 2
+        return _backfill_sector_index(db, a)
     path = svc.INBOX_DIR / a.file
     if not _FILE_RE.match(a.file) or not path.is_file():
         print(f"收件箱里没有 {a.file}")
@@ -239,6 +244,45 @@ def fix_sector_index(db, a) -> int:
     done.mkdir(exist_ok=True)
     shutil.move(str(path), str(done / a.file))
     print(f"文件已挪到 {done}")
+    return 0
+
+
+def _backfill_sector_index(db, a) -> int:
+    """从 push2his 补板块指数：缺多少天补多少天，已有的行一律不动。"""
+    r = svc.run_check(db, "sector_index")
+    items = r.get("items") or []
+    if not items:
+        print(r.get("summary") or "板块指数没有缺口")
+        return 0
+    short = [it for it in items if it.get("reason") == "历史不足"]
+    holes = [it for it in items if it.get("reason") != "历史不足"]
+    print(f"要补 {len(items)} 个板块：{len(short)} 个历史不足、{len(holes)} 个窗口里有洞")
+    for it in items[:10]:
+        gap = f"，缺 {_dates(it['holes'])}" if it.get("holes") else ""
+        print(f"  {it['code']} {it['name']}：{it['bars']} 根{gap}")
+    if len(items) > 10:
+        print(f"  …… 其余 {len(items) - 10} 个")
+    if not a.apply:
+        print("试跑（不写库）：将逐个板块向 push2his 拉日线，只插缺的日期，已有行不覆盖。"
+              "被限流会自动退避并写冷却；一次补不完的下次重跑（可重入）。")
+        print(f"收件箱导入仍然可用（push2his 再被拒时的兜底）：--file 文件名")
+        return 0
+    from app.services.sector_index_service import backfill_sector_index
+    res = backfill_sector_index(db, [it["code"] for it in items], only_short=False)
+    if res.get("cooling_down"):
+        return 2
+    print(f"补齐 {res['filled']} 个板块，写入 {res['bars']} 行；"
+          f"实发请求 {res['requests']} 次，等待 {res['slept'] / 60:.1f} 分钟")
+    if res["no_data"]:
+        # 不是失败：这些板块东财本来就没有指数日线。它们下面股票的 RS_sector
+        # 会一直是 None，如实标注，不拿别的板块顶替
+        print(f"无指数日线 {len(res['no_data'])} 个（非失败）：{'、'.join(res['no_data'][:12])}"
+              + ("…" if len(res["no_data"]) > 12 else ""))
+    if res["failed"]:
+        print(f"被拦 {len(res['failed'])} 个：{'、'.join(res['failed'][:12])}"
+              + ("…" if len(res["failed"]) > 12 else ""))
+    if res.get("aborted"):
+        print("本次没跑完（请求上限或被限流）——**再跑一次**接着补，已补的不会重复打")
     return 0
 
 

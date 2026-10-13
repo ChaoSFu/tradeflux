@@ -145,13 +145,26 @@ class Test板块指数:
         db.commit()
         svc.record_no_data_codes(db, ["BK0005"], TODAY)
 
-    def test_历史不足和有洞进导出清单(self, db, seeded):
+    def test_历史不足和有洞进补数清单(self, db, seeded):
         c = svc.run_check(db, "sector_index", now=AFTER_CLOSE)
-        assert c["status"] == svc.GAP and c["fix"]["kind"] == "local_export"
+        # 2026-10-13 起默认服务器直连 push2his 一键补，不再是本机导出
+        assert c["status"] == svc.GAP and c["fix"]["kind"] == "server"
         assert [(it["code"], it["reason"]) for it in c["items"]] == [("BK0002", "历史不足"), ("BK0003", "有洞")]
         assert c["items"][1]["holes"] == ["2026-08-05"]
         # 只缺今天那根的归日更（板块同步写），不进导出清单；东财没有的排除
         assert c["today_missing"] == 1 and c["no_data"] == ["BK0005"]
+
+    def test_被限流冷却时补法退回本机导出(self, db, seeded):
+        """
+        冷却期间那个一键按钮点下去只会被冷却挡回来。**给一个注定点不动的按钮，
+        不如给一条真能走的路**，所以这时要换回本机导出。
+        """
+        from app.services.rate_limiter import set_cooldown
+        from app.services.sector_index_service import THROTTLE_DOMAIN
+        set_cooldown(db, THROTTLE_DOMAIN, 1800)
+        db.commit()
+        c = svc.run_check(db, "sector_index", now=AFTER_CLOSE)
+        assert c["status"] == svc.GAP and c["fix"]["kind"] == "local_export"
 
     def test_导出脚本里正好是这些板块(self, db, seeded):
         rep = svc.run_audit(db, now=AFTER_CLOSE, only={"sector_index"})
