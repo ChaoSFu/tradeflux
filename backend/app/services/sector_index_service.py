@@ -58,10 +58,14 @@ def existing_bar_counts(db: Session, codes: Sequence[str]) -> Dict[str, int]:
 def backfill_sector_index(
     db: Session, sector_codes: Sequence[str], days: int = 300,
     delay: float = 2.0, stop_after_failures: int = 4, max_requests: int = 80,
-    log=None, ignore_cooldown: bool = False,
+    log=None, ignore_cooldown: bool = False, only_short: bool = True,
 ) -> dict:
     """
-    逐板块回填指数日线。**可重入**：已补够 MIN_BARS_FOR_RS 根的直接跳过。
+    逐板块回填指数日线。**可重入**：已有的日期不会重复写。
+
+    `only_short=True`（默认）只处理「根数不足 MIN_BARS_FOR_RS」的板块——给首次
+    建历史用。**窗口中间的洞用 only_short=False**：那种板块根数是够的，按根数
+    挑一个都挑不中（见 todo 那段的注释）。
 
     ## 限速三件事
 
@@ -93,8 +97,14 @@ def backfill_sector_index(
                 "aborted": True, "requests": 0, "slept": 0.0, "cooldown_until": None,
                 "cooling_down": True}
 
+    # **根数够 ≠ 没缺口。** 窗口中间缺一天，根数照样是 314——2026-10-12 那天
+    # 板块同步赶上东财接口抽风，302 个板块全缺那一天，而它们每个都有 314 根，
+    # 按根数挑的话一个都挑不中，这个函数等于对这类洞完全失明。
+    # 调用方（数据体检的补数）已经算出哪些板块缺哪几天，那时传 only_short=False
+    # 把名单原样交进来——下面逐板块那段本来就只插缺的日期，不会重复写。
     have = existing_bar_counts(db, sector_codes)
-    todo = [c for c in sector_codes if have.get(c, 0) < MIN_BARS_FOR_RS]
+    todo = ([c for c in sector_codes if have.get(c, 0) < MIN_BARS_FOR_RS]
+            if only_short else list(sector_codes))
     skipped = len(sector_codes) - len(todo)
     filled, bars_written, consecutive_block = 0, 0, 0
     failed: List[str] = []

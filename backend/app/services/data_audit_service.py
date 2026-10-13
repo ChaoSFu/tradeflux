@@ -77,7 +77,28 @@ FIX_RERUN = {"kind": "rerun_update", "label": "重跑今天的日更",
 FIX_GONE = {"kind": "none", "label": "过了当天，补不回来",
             "note": "这类数据只能在当天拍。列在这里，是让你知道那几天相关页面的数据是空的"}
 FIX_EXPORT = {"kind": "local_export", "label": "本机导出 → 传到服务器 → 页面导入",
-              "note": "服务器连不上 push2his（2026-09-06 实测出口被拒），历史只能在本机浏览器里慢慢取"}
+              "note": "服务器正被 push2his 限流（或再次被拒）时的兜底：历史在本机浏览器里慢慢取"}
+FIX_SECTOR_INDEX = _fix_server(
+    "从 push2his 回填（只插缺的日期）",
+    "2026-10-13 实测服务器又能直连 push2his（2026-09-06「出口被拒」那条已过期），"
+    "不必再走本机导出。一次最多补 80 个板块，没补完再跑一次（可重入）；"
+    "被限流会自动退避并写冷却，冷却期间这里会自动改回本机导出")
+
+
+def _sector_index_fix(db) -> dict:
+    """
+    板块指数该显示哪条补法。
+
+    **冷却期间给手工路径**：那时一键按钮点下去只会被冷却挡回来，给一个注定点不动
+    的按钮，不如给一条真能走的路。平时则是服务器直连回填。
+    """
+    try:
+        from ..services.sector_index_service import THROTTLE_DOMAIN, cooldown_remaining
+        if cooldown_remaining(db, THROTTLE_DOMAIN) is not None:
+            return FIX_EXPORT
+    except Exception:  # noqa: BLE001
+        pass
+    return FIX_SECTOR_INDEX
 
 
 # ── 检测上下文 ───────────────────────────────────────────────────────────────
@@ -430,7 +451,8 @@ def _check_sector_index(ctx: AuditContext, chk: Check) -> dict:
     if items:
         short = sum(1 for it in items if it["reason"] == "历史不足")
         return _res(chk, GAP, f"{len(items)} 个关注板块要补：{short} 个历史不足 {MIN_BARS_FOR_RS} 根，"
-                              f"{len(items) - short} 个窗口里有洞{note}", fix=FIX_EXPORT, **data)
+                              f"{len(items) - short} 个窗口里有洞{note}",
+                    fix=_sector_index_fix(db), **data)
     if today_missing:
         return _res(chk, GAP, f"今天有 {today_missing} 个板块的点位还没写（日更后的板块同步写）{note}",
                     fix=FIX_RERUN, **data)
