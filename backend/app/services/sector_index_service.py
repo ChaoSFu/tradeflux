@@ -22,13 +22,15 @@
 某个板块拿不到指数历史 → 它下面股票的 RS_sector 就是 None（不知道），
 如实标注，**不用 0 顶替、也不用别的板块顶替**。本仓库为"用0表达不知道"栽过太多次。
 """
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, List, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
 from ..models.market_index import SectorIndexDaily
-from ..services.eastmoney_fetcher import fetch_sector_kline_detailed
+from ..services.eastmoney_fetcher import (
+    SH_TZ, bar_is_settled, fetch_sector_kline_detailed, probe_market_now,
+)
 from ..services.rate_limiter import (
     AdaptiveRateLimiter, Outcome, cooldown_remaining, set_cooldown,
 )
@@ -114,6 +116,17 @@ def backfill_sector_index(
     limiter = AdaptiveRateLimiter(base_delay=delay, max_delay=90.0, jitter=0.35,
                                   pause_every=20, pause_seconds=30.0)
 
+    # **今天那根只有收盘后才算数。** push2his 盘中就返回当前点位，不在库里就照抄
+    # 进来，等于让盘中值冒充当日收盘——sync_boards 为这个模式专门设过防线（股票
+    # 快照那次"盘中价就地转正成收盘价"，600984 被记成涨停而实际收盘炸板），
+    # 回填这条路不能从旁边绕过去。
+    # 收没收盘用市场自己的时间判，跟 sync_boards 同一套判定，不另造一份。
+    _now = probe_market_now() or datetime.now(SH_TZ)
+    today_ = _now.date()
+    today_settled = bar_is_settled(today_, _now)
+    if not today_settled:
+        _say(f"  尚未收盘：今天（{today_}）那根不写，等收盘后由板块同步写")
+
     for i, code in enumerate(todo):
         if limiter.requests >= max_requests:
             aborted = True
@@ -156,6 +169,8 @@ def backfill_sector_index(
                 continue
             if d in exist_dates:
                 continue
+            if d >= today_ and not today_settled:
+                continue        # 盘中不写今天那根，见上面的注释
             db.add(SectorIndexDaily(
                 sector_code=code, date=d,
                 close=r.get("close"), pct_change=r.get("pct_change"),
