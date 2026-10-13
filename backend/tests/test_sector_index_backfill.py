@@ -30,6 +30,17 @@ def _fake_bars(n, start=date(2026, 1, 5)):
              "pct_change": 1.0} for i in range(n)]
 
 
+@pytest.fixture(autouse=True)
+def _market_now(monkeypatch):
+    """
+    **别让回填在测试里真去探测市场时间**（那是一次网络请求，慢且不稳）。
+    默认给「已收盘」；要盘中场景的用例自己再打一次桩。
+    """
+    from datetime import datetime
+    monkeypatch.setattr(sis, "probe_market_now",
+                        lambda: datetime(2026, 1, 20, 15, 30, tzinfo=sis.SH_TZ))
+
+
 def _stub(monkeypatch, table, calls=None):
     """
     table: {板块码: "ok" | "blocked" | "no_data" | "error"}，缺省当 blocked。
@@ -42,6 +53,41 @@ def _stub(monkeypatch, table, calls=None):
         return (_fake_bars(80) if kind == "ok" else [], kind,
                 "" if kind == "ok" else f"模拟{kind}", None)
     monkeypatch.setattr(sis, "fetch_sector_kline_detailed", _f)
+
+
+class Test今天那根:
+    """
+    push2his **盘中就返回当天的当前点位**。不在库里就照抄进来的话，等于让盘中值
+    冒充当日收盘——sync_boards 为这个模式专门设过防线（股票快照那次"盘中价就地
+    转正成收盘价"，600984 被记成涨停而实际收盘炸板），回填不能从旁边绕过去。
+    """
+
+    def _bars(self, today):
+        return [{"date": str(today - timedelta(days=1)), "open": 1.0, "close": 10.0,
+                 "high": 1.0, "low": 1.0, "volume": 1.0, "amount": 1.0, "pct_change": 0.0},
+                {"date": str(today), "open": 1.0, "close": 99.0,
+                 "high": 1.0, "low": 1.0, "volume": 1.0, "amount": 1.0, "pct_change": 0.0}]
+
+    def _dates(self, db):
+        return {d for (d,) in db.query(SectorIndexDaily.date)
+                .filter(SectorIndexDaily.sector_code == "BK0001").all()}
+
+    def test_盘中不写今天那根_收盘后才补上(self, db, monkeypatch):
+        from datetime import datetime
+        today = date(2026, 1, 20)
+        monkeypatch.setattr(sis, "fetch_sector_kline_detailed",
+                            lambda code, days=300: (self._bars(today), "ok", "", None))
+
+        monkeypatch.setattr(sis, "probe_market_now",
+                            lambda: datetime(2026, 1, 20, 11, 0, tzinfo=sis.SH_TZ))
+        r = sis.backfill_sector_index(db, ["BK0001"], delay=0, only_short=False)
+        assert self._dates(db) == {today - timedelta(days=1)} and r["bars"] == 1, \
+            "盘中那根不许落库"
+
+        monkeypatch.setattr(sis, "probe_market_now",
+                            lambda: datetime(2026, 1, 20, 15, 30, tzinfo=sis.SH_TZ))
+        sis.backfill_sector_index(db, ["BK0001"], delay=0, only_short=False)
+        assert today in self._dates(db), "收盘后再跑就该补上"
 
 
 class TestBackfillResumable:
