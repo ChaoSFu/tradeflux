@@ -177,8 +177,74 @@ class Test板块指数:
         _bars(db, "BK0006", [d for d in DAYS[-80:] if d != TODAY])
         db.commit()
         c = svc.run_check(db, "sector_index", now=AFTER_CLOSE)
-        assert c["status"] == svc.GAP and c["fix"]["kind"] == "rerun_update" and not c["items"]
+        # 收盘后可以直接回填今天那根；2026-10 clist 反复被掐，重跑日更多半也写不上
+        assert c["status"] == svc.GAP and c["fix"]["kind"] == "server" and not c["items"]
+        assert c["today_missing_codes"] == ["BK0006"]
         assert svc.run_check(db, "sector_index", now=INTRADAY)["status"] == svc.OK
+
+
+class Test收盘后自动补板块指数:
+    """
+    2026-10-12 ~ 10-30 的 15 个交易日里 clist 有 12 天被掐，当日点位写上 0~800 个，
+    日志结尾却全是 ✅，洞积了两周半。同一天下午 push2his 回填是通的。
+    """
+
+    def _run(self, monkeypatch, tmp_path, now, code=0, status="ok"):
+        from datetime import datetime as _dt
+        from app import scheduler
+        seen, result = [], {}
+        monkeypatch.setattr(svc, "run_audit_subprocess",
+                            lambda args, on_line=None: seen.append(args) or code)
+        monkeypatch.setattr(svc, "load_report", lambda: {
+            "checks": [{"id": "sector_index", "status": status, "summary": "还缺 5 个"}]})
+        scheduler._catch_up_sector_index(str(tmp_path / "x.log"), result,
+                                         now=_dt(2026, 11, 2, *now))
+        return seen, result
+
+    def test_盘前那次不跑(self, monkeypatch, tmp_path):
+        assert self._run(monkeypatch, tmp_path, (9, 28)) == ([], {})
+
+    def test_收盘后不拿锁_补齐了不算降级(self, monkeypatch, tmp_path):
+        seen, result = self._run(monkeypatch, tmp_path, (15, 33))
+        assert seen == [["fix", "sector_index", "--apply", "--no-lock", "--max-requests", "320"]]
+        assert not result.get("degraded")
+
+    def test_补不齐要亮数据降级(self, monkeypatch, tmp_path):
+        _, result = self._run(monkeypatch, tmp_path, (15, 33), status=svc.GAP)
+        assert result["degraded"] and "还缺 5 个" in result["warnings"][0]
+
+    def test_补数命令挂了也算降级(self, monkeypatch, tmp_path):
+        _, result = self._run(monkeypatch, tmp_path, (15, 33), code=2)
+        assert result["degraded"]
+
+    def test_只缺今天那根时也走回填_有洞的板块不重复打(self, db, monkeypatch):
+        import scripts.data_audit as cli
+        from types import SimpleNamespace
+        from app.services import sector_index_service as sis
+        monkeypatch.setattr(svc, "run_check", lambda d, cid: {
+            "items": [{"code": "BK0001", "name": "甲", "bars": 300, "reason": "有洞", "holes": []}],
+            "today_missing_codes": ["BK0001", "BK0002"]})
+        got = {}
+
+        def fake(d, codes, **kw):
+            got.update(codes=codes, **kw)
+            return {"filled": 2, "bars": 3, "requests": 2, "slept": 0.0,
+                    "no_data": [], "failed": []}
+        monkeypatch.setattr(sis, "backfill_sector_index", fake)
+        cli._backfill_sector_index(db, SimpleNamespace(apply=True, max_requests=320))
+        assert got == {"codes": ["BK0001", "BK0002"], "only_short": False, "max_requests": 320}
+
+
+class Test当日点位核对:
+    def test_按库里的结果核对_没关注的不算(self, db):
+        from scripts.sync_boards import _unwritten_index_points
+        d = date(2026, 11, 2)
+        _sector(db, "BK0002")
+        _sector(db, "BK0003")
+        db.add(Sector(code="BK0009", name="没关注", sector_type="concept", is_watched=False))
+        _bars(db, "BK0002", [d])
+        db.commit()
+        assert _unwritten_index_points(db, d) == {"BK0003"}
 
 
 class Test导入:

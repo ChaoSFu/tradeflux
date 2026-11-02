@@ -432,7 +432,7 @@ def _check_sector_index(ctx: AuditContext, chk: Check) -> dict:
             have.setdefault(c, set()).add(d)
     # 今天那根由日更后的板块同步写（只在收盘后写），没写是日更的事，不算历史洞
     hist_days = [d for d in w if not ctx.is_today(d)]
-    items, excluded, today_missing = [], [], 0
+    items, excluded, today_codes = [], [], []
     for code, name in secs:
         if code in no_data:
             excluded.append(code)
@@ -441,21 +441,24 @@ def _check_sector_index(ctx: AuditContext, chk: Check) -> dict:
         got = have.get(code, set())
         holes = [d for d in hist_days if first is not None and d >= first and d not in got]
         if ctx.through_is_today and first is not None and ctx.through not in got:
-            today_missing += 1
+            today_codes.append(code)
         if n < MIN_BARS_FOR_RS or holes:
             items.append({"code": code, "name": name, "bars": n, "holes": _iso(holes),
                           "reason": "历史不足" if n < MIN_BARS_FOR_RS else "有洞"})
     data = {"items": items, "watched": len(secs), "min_bars": MIN_BARS_FOR_RS,
-            "no_data": excluded, "today_missing": today_missing}
+            "no_data": excluded, "today_missing": len(today_codes),
+            "today_missing_codes": today_codes}
     note = f"（另有 {len(excluded)} 个板块东财没有指数日线，已排除）" if excluded else ""
     if items:
         short = sum(1 for it in items if it["reason"] == "历史不足")
         return _res(chk, GAP, f"{len(items)} 个关注板块要补：{short} 个历史不足 {MIN_BARS_FOR_RS} 根，"
                               f"{len(items) - short} 个窗口里有洞{note}",
                     fix=_sector_index_fix(db), **data)
-    if today_missing:
-        return _res(chk, GAP, f"今天有 {today_missing} 个板块的点位还没写（日更后的板块同步写）{note}",
-                    fix=FIX_RERUN, **data)
+    if today_codes:
+        # 收盘后可以直接回填今天那根。冷却中回填会被挡回来，这时才让人重跑日更
+        fix = _sector_index_fix(db)
+        return _res(chk, GAP, f"今天有 {len(today_codes)} 个板块的点位还没写（日更后的板块同步写）{note}",
+                    fix=FIX_RERUN if fix is FIX_EXPORT else fix, **data)
     return _res(chk, OK, f"{len(secs)} 个关注板块历史齐全{note}", **data)
 
 
@@ -503,7 +506,7 @@ CHECKS: List[Check] = [
     Check("leader_cycle", "龙头周期快照", "leader_cycle_snapshots",
           "日更里写，日更那天失败就缺（2026-09-04 起才有）", _check_leader_cycle),
     Check("sector_index", "板块指数日线", "sector_index_daily",
-          "历史只能从 push2his 取，而服务器被它拒；每天那一根由板块同步写，同步失败那天就有洞",
+          "每天那一根由板块同步写（东财 clist），接口被掐那天就有洞；收盘后日更会走 push2his 自动回填",
           _check_sector_index),
     Check("daily_review", "日复盘", "daily_reviews",
           "日更最后一步写，日更失败那天就没有；它依赖当天的池子状态，只能当天补",
