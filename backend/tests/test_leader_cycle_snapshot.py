@@ -58,6 +58,56 @@ class TestBuildSnapshots:
         assert db.query(LeaderCycleSnapshot).count() == 1, \
             "daily_update 一天跑 2~3 次，必须幂等"
 
+    def test_盘中进池收盘掉出去_那行盘中值要清掉(self, db):
+        """
+        603131 上海沪工 2026-11-02：盘中摸涨停算成 4 板进了快照，收盘只有 3 板掉出
+        强势池，这行却一直留着，界面显示「数据不足」、比池子多一只。
+        """
+        keep = _seed_stock(db, code="600002")
+        gone = _seed_stock(db, code="603131")
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        klines = {keep.code: bars, gone.code: bars}
+        d = bars[-1].date            # 当天那根，才是「盘中值」
+
+        build_snapshots(db, d, klines, settled=False)
+        assert [x.bar_settled for x in db.query(LeaderCycleSnapshot).all()] == [False, False]
+
+        gone.in_strong_pool = False
+        db.flush()
+        r = build_snapshots(db, d, klines, settled=False)
+        assert r["cleaned"] == 0 and db.query(LeaderCycleSnapshot).count() == 2, \
+            "盘中不删：盘中进出池子是常态，它还可能回来"
+
+        r = build_snapshots(db, d, klines, settled=True)
+        assert r["cleaned"] == 1
+        assert [x.stock_code for x in db.query(LeaderCycleSnapshot).all()] == ["600002"]
+
+    def test_已结算的行掉出池子也不删(self, db):
+        """已结算的值是真的。只删能证明是错的行。"""
+        keep = _seed_stock(db, code="600002")
+        out = _seed_stock(db, code="600003")
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        klines = {keep.code: bars, out.code: bars}
+        d = bars[-1].date            # 当天那根，才是「盘中值」
+        build_snapshots(db, d, klines, settled=True)
+        out.in_strong_pool = False
+        db.flush()
+        r = build_snapshots(db, d, klines, settled=True)
+        assert r["cleaned"] == 0 and db.query(LeaderCycleSnapshot).count() == 2
+
+    def test_不知道收没收盘时不删(self, db):
+        """settled=None 是「调用方没说」，不能当成已收盘去删东西。"""
+        keep = _seed_stock(db, code="600002")
+        gone = _seed_stock(db, code="603131")
+        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        klines = {keep.code: bars, gone.code: bars}
+        d = bars[-1].date            # 当天那根，才是「盘中值」
+        build_snapshots(db, d, klines, settled=False)
+        gone.in_strong_pool = False
+        db.flush()
+        assert build_snapshots(db, d, klines)["cleaned"] == 0
+        assert db.query(LeaderCycleSnapshot).count() == 2
+
     def test_不同日期各自成行(self, db):
         """相邻两天相减是这张表存在的全部意义。"""
         st = _seed_stock(db)
