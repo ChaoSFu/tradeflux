@@ -253,6 +253,23 @@ def build_snapshots(db: Session, trade_date: date,
         if not fresh:
             stale += 1
 
+    # **收盘后，清掉盘中写进来、现在已经掉出池子的行。**
+    #
+    # 上面只遍历当前强势池。盘中进池、收盘前又掉出去的票不会再被碰到，那行盘中值就
+    # 永远留着。2026-11-02 603131 上海沪工：盘中摸到涨停价 19.31，被算成 4 板进了
+    # 周期快照；收盘 17.30、-1.42%，实际只有 3 板，而这行仍写着 4 板、未结算，界面
+    # 显示「数据不足」，池子 73 只、界面 74 只。日快照那边有
+    # _settle_dropped_out_snapshots 处理这种情况，这张表一直没有对应逻辑。
+    #
+    # 只删能证明是错的行：**只在收盘后的运行里删**（盘中进出池子是常态），**只删
+    # bar_settled=False 的**（已结算的行值是真的，不动）。
+    if settled is True:
+        in_pool = {st.id for st in pool}
+        for sid, row in existing.items():
+            if sid not in in_pool and row.bar_settled is False:
+                db.delete(row)
+                cleaned += 1
+
     db.commit()
     return {"written": written, "skipped": skipped, "no_cycle": no_cycle,
             "stale": stale, "cleaned": cleaned}
