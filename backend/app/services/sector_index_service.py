@@ -40,6 +40,9 @@ MIN_BARS_FOR_RS = 70
 
 # 限速的域名。冷却按域名记——板块回填把 push2his 打死，指数同步一样拉不到
 THROTTLE_DOMAIN = "push2his.eastmoney.com"
+# 区间涨幅窗口（交易日）→ Sector 字段
+QUOTE_WINDOWS = {5: "pct_change_5d", 10: "pct_change_10d",
+                 20: "pct_change_20d", 60: "pct_change_60d"}
 # 判定被限流后的冷却时长。宁可长——重来一趟只是多等，打死 IP 是连累整条链路
 BLOCKED_COOLDOWN_SECONDS = 30 * 60
 
@@ -55,6 +58,56 @@ def existing_bar_counts(db: Session, codes: Sequence[str]) -> Dict[str, int]:
         .group_by(SectorIndexDaily.sector_code).all()
     )
     return {c: n for c, n in rows}
+
+
+def refresh_watched_sector_quotes(db: Session) -> Optional[int]:
+    """
+    用板块指数日线刷新关注板块的今日涨幅、近 5/10/20/60 日涨幅和成交额。
+
+    这些字段平时由 clist 写，clist 被掐那天就停在旧值，而且页面看不出来：2026-11-02
+    CPO 概念页面显示 -6.78%，东财当天是 +1.50%。区间涨幅用收盘价算出来跟东财给的
+    一致（8 个板块 × 4 个窗口 0 处不同），是同一份数据。
+
+    **基准日按交易日历取**，不是「往前数 N 根」：序列里缺一天，数根数就会错位，算出
+    一个看着很对的错数。基准日那根不在库里就保留原值。
+    换手率、市值从日线算不出来，不动。
+
+    返回刷新的板块数；还没收盘返回 None（盘中的值不是收盘值）。
+    """
+    from ..models.sector import Sector
+    from ..services.trading_calendar import get_trading_days
+
+    now = probe_market_now() or datetime.now(SH_TZ)
+    day = now.date()
+    if not bar_is_settled(day, now):
+        return None
+    cal = [d for d in (get_trading_days(db, need_through=day) or []) if d <= day]
+    if not cal or cal[-1] != day:
+        return 0
+    anchors = {attr: cal[-1 - n] for n, attr in QUOTE_WINDOWS.items() if len(cal) > n}
+    sectors = db.query(Sector).filter(Sector.is_watched.is_(True)).all()
+    bars: Dict[str, Dict[date, SectorIndexDaily]] = {}
+    for r in (db.query(SectorIndexDaily)
+              .filter(SectorIndexDaily.sector_code.in_([s.code for s in sectors]),
+                      SectorIndexDaily.date.in_([day, *anchors.values()])).all()):
+        bars.setdefault(r.sector_code, {})[r.date] = r
+
+    n = 0
+    for s in sectors:
+        cur = bars.get(s.code, {}).get(day)
+        if cur is None or not cur.close:
+            continue
+        if cur.pct_change is not None:
+            s.pct_change_30d = round(cur.pct_change, 2)     # 历史命名，存的是今日涨幅
+        if cur.amount is not None:
+            s.amount = round(cur.amount / 1e8, 2)
+        for attr, anchor in anchors.items():
+            base = bars[s.code].get(anchor)
+            if base is not None and base.close:
+                setattr(s, attr, round((cur.close / base.close - 1) * 100, 2))
+        n += 1
+    db.commit()
+    return n
 
 
 def backfill_sector_index(

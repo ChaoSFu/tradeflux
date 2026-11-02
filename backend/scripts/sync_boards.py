@@ -107,7 +107,9 @@ def _fetch_boards_by_fs(fs_code: str, label: str, client: "httpx.Client | None" 
             # f17/f15/f16/f5 = 板块指数当日开盘/最高/最低/成交量（2026-09-13 加，板块趋势的
             # 「放量」事实要用，同样零新增请求）。含义不是猜的：09-11 收盘后拿 65 个板块跟
             # push2his 日K逐字段核对，开高低收量额 390 个数 0 处不一致；f6 成交额单位是元
-            "fields": "f12,f14,f2,f3,f5,f6,f8,f15,f16,f17,f20,f109,f110,f160,f165",
+            # 区间涨幅 f109/f160/f110/f24 = 5/10/20/60 日（2026-11-02 跟 K 线逐一核对 8 个
+            # 板块 + 4 只个股，0 处不一致）。此前把 f110、f160 接反了，f165 也不是涨幅
+            "fields": "f12,f14,f2,f3,f5,f6,f8,f15,f16,f17,f20,f24,f109,f110,f160",
         }
         # 最多重试 3 次，每次间隔递增。超时给10s而不是30s——握手真挂了没必要
         # 傻等30秒才报错，3次重试全部超时的极端情况下 30s×3=90s 比 10s×3=30s
@@ -200,9 +202,9 @@ def _upsert_board(db, board: dict, sector_type: str) -> tuple["Sector | None", b
     sector.amount           = round((board.get("f6") or 0) / 1e8, 2)
     sector.pct_change_30d   = round(board.get("f3") or 0, 2)
     sector.pct_change_5d    = round(board.get("f109") or 0, 2)
-    sector.pct_change_10d   = round(board.get("f110") or 0, 2)
-    sector.pct_change_20d   = round(board.get("f160") or 0, 2)
-    sector.pct_change_60d   = round(board.get("f165") or 0, 2)
+    sector.pct_change_10d   = round(board.get("f160") or 0, 2)
+    sector.pct_change_20d   = round(board.get("f110") or 0, 2)
+    sector.pct_change_60d   = round(board.get("f24") or 0, 2)
 
     return sector, is_new
 

@@ -84,3 +84,12 @@ def test_成份股数量只在全量同步时拉(monkeypatch, kw, want):
         "relations_removed": 0, "fetch_failed": 0})
     sb.run_sync_boards(**kw)
     assert seen["c"] is want
+
+
+def test_区间涨幅字段对应5_10_20_60日(db):
+    """2026-11-02 跟 K 线核对：f109/f160/f110/f24。此前 f110、f160 接反，f165 不是涨幅。"""
+    board = {"f12": "BK0009", "f14": "丙", "f109": 5.0, "f160": 10.0, "f110": 20.0,
+             "f24": 60.0, "f165": 999.0}
+    s, _ = sb._upsert_board(db, board, "concept")
+    assert (s.pct_change_5d, s.pct_change_10d, s.pct_change_20d, s.pct_change_60d) == \
+        (5.0, 10.0, 20.0, 60.0)

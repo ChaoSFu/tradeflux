@@ -347,7 +347,7 @@ GET .../multi_last_snapshot                                     # 批量快照�
    |---|---|
    | 成交量 / 成交额 | fuyao dump 的 parquet **本来就有** `volume`/`turnover` 两列，`load_bars` 的 `read_table` 只选了 6 列；腾讯 K 线每行 `row[5]` 也被解析器直接丢掉 |
    | rs_market | `IndexDailySnapshot` 已有 5 指数 × 120 根完整历史 |
-   | rs_sector | `Sector.pct_change_5d/10d/20d/60d`（f109/f110/f160/f165）每天在同步 |
+   | rs_sector | `Sector.pct_change_5d/10d/20d/60d`（f109/f160/f110/f24，2026-11-02 更正）每天在同步 |
    | 换手率 | 涨停池**和炸板池**的 `ltsz`（流通市值）÷ 收盘价 = 流通股本 |
 
    同一份文档第 1.1 节早就列着 dump 的完整列名。**写在文档里的经验，不主动去查

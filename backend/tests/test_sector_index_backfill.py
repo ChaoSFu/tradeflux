@@ -90,6 +90,64 @@ class Test今天那根:
         assert today in self._dates(db), "收盘后再跑就该补上"
 
 
+class Test用指数日线刷新板块涨跌幅:
+    """
+    clist 被掐那天板块涨跌幅停在旧值：2026-11-02 CPO 概念页面 -6.78%，东财 +1.50%。
+    """
+    DAY = date(2026, 1, 20)
+
+    def _seed(self, db, skip=(), today=True, watched=True):
+        from app.models.sector import Sector
+        from app.services.trading_calendar import _write_cache
+        days = [self.DAY - timedelta(days=i) for i in range(70)][::-1]
+        _write_cache(db, days)
+        s = Sector(code="BK0001", name="甲", is_watched=watched, pct_change_30d=-6.78,
+                   pct_change_5d=-1.0, pct_change_10d=-2.0, pct_change_20d=-3.0,
+                   pct_change_60d=-4.0, amount=999.0)
+        db.add(s)
+        for i, d in enumerate(days):
+            if d in skip or (d == self.DAY and not today):
+                continue
+            db.add(SectorIndexDaily(sector_code="BK0001", date=d, close=100.0 + i,
+                                    pct_change=1.5, amount=2e10))
+        db.commit()
+        return s, days
+
+    def test_刷新今日涨幅_区间涨幅_成交额(self, db):
+        s, _ = self._seed(db)
+        assert sis.refresh_watched_sector_quotes(db) == 1
+        assert (s.pct_change_30d, s.amount) == (1.5, 200.0)
+        assert s.pct_change_5d == round((169 / 164 - 1) * 100, 2)
+        assert s.pct_change_10d == round((169 / 159 - 1) * 100, 2)
+        assert s.pct_change_20d == round((169 / 149 - 1) * 100, 2)
+        assert s.pct_change_60d == round((169 / 109 - 1) * 100, 2)
+
+    def test_基准日缺行时保留原值_不用错位的K线顶替(self, db):
+        days_back_10 = self.DAY - timedelta(days=10)
+        s, _ = self._seed(db, skip=[days_back_10])
+        sis.refresh_watched_sector_quotes(db)
+        assert s.pct_change_10d == -2.0, "数根数会算出一个看着很对的错数"
+        assert s.pct_change_5d != -1.0
+
+    def test_盘中不刷新(self, db, monkeypatch):
+        from datetime import datetime
+        s, _ = self._seed(db)
+        monkeypatch.setattr(sis, "probe_market_now",
+                            lambda: datetime(2026, 1, 20, 11, 0, tzinfo=sis.SH_TZ))
+        assert sis.refresh_watched_sector_quotes(db) is None
+        assert s.pct_change_30d == -6.78
+
+    def test_今天的点位还没有时不动(self, db):
+        s, _ = self._seed(db, today=False)
+        assert sis.refresh_watched_sector_quotes(db) == 0
+        assert s.pct_change_30d == -6.78
+
+    def test_没关注的板块不动(self, db):
+        s, _ = self._seed(db, watched=False)
+        assert sis.refresh_watched_sector_quotes(db) == 0
+        assert s.pct_change_30d == -6.78
+
+
 class TestBackfillResumable:
 
     def test_已补够的板块直接跳过(self, db, monkeypatch):

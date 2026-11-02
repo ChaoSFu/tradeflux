@@ -175,7 +175,7 @@ def compute_rs_sector_from_vendor(
 ) -> Dict[int, Optional[float]]:
     """
     RS_sector 的**第二种口径**：板块那一边用东财服务端算好的区间涨幅
-    （`Sector.pct_change_5d/10d/20d/60d`，即 f109/f110/f160/f165），
+    （`Sector.pct_change_5d/10d/20d/60d`，即 f109/f160/f110/f24），
     个股那一边仍用收盘价序列算复合收益。
 
     ## 为什么会有两种口径
