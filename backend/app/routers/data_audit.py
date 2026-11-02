@@ -119,8 +119,9 @@ def fix(check_id: str, apply: bool = False, file: Optional[str] = None):
     if check_id not in svc.FIXABLE:
         raise HTTPException(status_code=404, detail=f"「{check_id}」没有一键补法")
     args = ["fix", check_id]
-    if check_id == "sector_index":
-        if not file or not _FILE_RE.match(file) or not (svc.INBOX_DIR / file).is_file():
+    # 板块指数不带文件 = 服务器直连 push2his 回填；带文件才是导入收件箱，才要校验文件
+    if check_id == "sector_index" and file is not None:
+        if not _FILE_RE.match(file) or not (svc.INBOX_DIR / file).is_file():
             raise HTTPException(status_code=400, detail="收件箱里没有这个文件")
         args += ["--file", file]
     if apply:

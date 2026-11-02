@@ -25,7 +25,10 @@ const STATUS_META: Record<AuditStatus, { label: string; cls: string; icon: React
   ok:      { label: '正常',     cls: 'text-safe bg-safe/10 border-safe/30', icon: CheckCircle },
 }
 
-type Start = (fn: () => Promise<{ ok: boolean; message: string }>) => void
+// scope = 这次操作属于哪张卡片。被拒绝的提示要显示在点的那张卡片上：显示在页面顶部的话
+// 下面的卡片点了没反应（提示在屏幕外），2026-11-02 存档「确认补上」就是这么被报成没反应的
+type Start = (fn: () => Promise<{ ok: boolean; message: string }>, scope?: string) => void
+type Notice = { text: string; scope?: string }
 
 function fmtTime(iso?: string | null) {
   if (!iso) return '—'
@@ -311,7 +314,7 @@ function ExportSteps({
               <div key={f.name} className="flex items-center gap-2 flex-wrap">
                 <span className="font-mono text-[11px] text-text-primary">{f.name}</span>
                 <span className="text-[10px] text-text-muted">{(f.size / 1048576).toFixed(1)}MB · {fmtTime(f.modified)}</span>
-                <ActionButton disabled={running} onClick={() => start(() => runFix('sector_index', false, f.name))}>
+                <ActionButton disabled={running} onClick={() => start(() => runFix('sector_index', false, f.name), c.id)}>
                   <Play className="w-3 h-3" />试跑导入
                 </ActionButton>
                 <ActionButton
@@ -319,7 +322,7 @@ function ExportSteps({
                   disabled={running}
                   onClick={() => {
                     if (window.confirm(`确认导入 ${f.name}？会写数据库（已有行一律不覆盖）。`)) {
-                      start(() => runFix('sector_index', true, f.name))
+                      start(() => runFix('sector_index', true, f.name), c.id)
                     }
                   }}
                 >
@@ -336,14 +339,15 @@ function ExportSteps({
 }
 
 function FixArea({
-  c, report, job, running, start, onRerun,
+  c, report, job, running, start, onRerun, notice,
 }: {
   c: AuditCheck
   report: AuditReport
   job?: AuditJob
   running: boolean
   start: Start
-  onRerun: () => void
+  onRerun: (scope: string) => void
+  notice: Notice | null
 }) {
   const f = c.fix
   if (!f || (!f.label && !f.note)) return null
@@ -359,14 +363,14 @@ function FixArea({
 
       {f.kind === 'server' && (
         <div className="mt-2 flex items-center gap-2 flex-wrap">
-          <ActionButton disabled={running} title="只列出将补什么，不写库" onClick={() => start(() => runFix(c.id, false))}>
+          <ActionButton disabled={running} title="只列出将补什么，不写库" onClick={() => start(() => runFix(c.id, false), c.id)}>
             <Play className="w-3 h-3" />试跑
           </ActionButton>
           <ActionButton
             primary
             disabled={running}
             onClick={() => {
-              if (window.confirm(`确认补「${c.title}」？会写数据库，补完自动复查。`)) start(() => runFix(c.id, true))
+              if (window.confirm(`确认补「${c.title}」？会写数据库，补完自动复查。`)) start(() => runFix(c.id, true), c.id)
             }}
           >
             确认补上
@@ -381,7 +385,7 @@ function FixArea({
 
       {f.kind === 'rerun_update' && (
         <div className="mt-2">
-          <ActionButton onClick={onRerun}>
+          <ActionButton onClick={() => onRerun(c.id)}>
             <RefreshCw className="w-3 h-3" />重跑今天的日更
           </ActionButton>
         </div>
@@ -390,6 +394,8 @@ function FixArea({
       {f.kind === 'local_export' && (
         <ExportSteps c={c} report={report} running={running} start={start} />
       )}
+
+      {notice?.scope === c.id && <p className="mt-2 text-xs text-warn">{notice.text}</p>}
     </div>
   )
 }
@@ -400,7 +406,8 @@ function CheckCard(props: {
   job?: AuditJob
   running: boolean
   start: Start
-  onRerun: () => void
+  onRerun: (scope: string) => void
+  notice: Notice | null
 }) {
   const { c } = props
   return (
@@ -451,7 +458,7 @@ function Group({
 
 export default function DataHealth() {
   const qc = useQueryClient()
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<Notice | null>(null)
 
   const { data: report, isLoading, error } = useQuery({
     queryKey: ['data-audit-report'],
@@ -475,18 +482,21 @@ export default function DataHealth() {
     prevStatus.current = job?.status
   }, [job, qc])
 
-  const start: Start = (fn) => {
+  const start: Start = (fn, scope) => {
     fn()
       .then((r) => {
-        setNotice(r.ok ? null : r.message)
+        setNotice(r.ok ? null : { text: r.message, scope })
         qc.invalidateQueries({ queryKey: ['data-audit-job'] })
       })
-      .catch((e: Error) => setNotice(e.message))
+      .catch((e: Error) => setNotice({ text: e.message, scope }))
   }
-  const onRerun = () => {
+  const onRerun = (scope: string) => {
     triggerUpdate()
-      .then((r) => setNotice(r.ok ? '今天的日更已启动，进度看顶栏「数据更新」；跑完会自动再体检一次' : r.message))
-      .catch((e: Error) => setNotice(e.message))
+      .then((r) => setNotice({
+        text: r.ok ? '今天的日更已启动，进度看顶栏「数据更新」；跑完会自动再体检一次' : r.message,
+        scope,
+      }))
+      .catch((e: Error) => setNotice({ text: e.message, scope }))
   }
 
   const checks = report?.checks ?? []
@@ -497,7 +507,7 @@ export default function DataHealth() {
     .sort((a, b) => rank[a.status] - rank[b.status])
   const expired = checks.filter((c) => c.status === 'expired')
   const ok = checks.filter((c) => c.status === 'ok')
-  const cardProps = { report: report!, job, running, start, onRerun }
+  const cardProps = { report: report!, job, running, start, onRerun, notice }
   const s = report?.summary
 
   return (
@@ -529,7 +539,7 @@ export default function DataHealth() {
             <span className={cn('px-2 py-0.5 rounded border', STATUS_META.ok.cls)}>正常 {s.ok}</span>
           </div>
         )}
-        {notice && <p className="mt-2 text-xs text-warn">{notice}</p>}
+        {notice && !notice.scope && <p className="mt-2 text-xs text-warn">{notice.text}</p>}
         {job && job.status !== 'idle' && <JobLog job={job} report={report} />}
       </Card>
 

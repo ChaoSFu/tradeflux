@@ -310,6 +310,16 @@ class Test接口:
         assert seen == [["-m", "scripts.data_audit", "fix", "index_daily"]]
         assert router_mod._job["log_lines"] == ["试跑（不写库）：……"]
 
+    def test_板块指数不带文件走服务器回填(self, client, monkeypatch):
+        seen = []
+        monkeypatch.setattr(router_mod, "run_script_subprocess",
+                            lambda args, on_line=None: seen.append(args) or 0)
+        monkeypatch.setitem(router_mod._job, "status", "idle")
+        r = client.post("/admin/data-audit/fix/sector_index", headers=_auth())
+        assert r.status_code == 200 and r.json()["ok"]
+        _wait_job()
+        assert seen == [["-m", "scripts.data_audit", "fix", "sector_index"]]
+
     def test_退出码3如实报什么都没动(self, client, monkeypatch):
         monkeypatch.setattr(router_mod, "run_script_subprocess", lambda args, on_line=None: 3)
         monkeypatch.setitem(router_mod._job, "status", "idle")
