@@ -12,9 +12,10 @@ sector_top_stocks_service.py
 涨幅字段：
   f3   今日涨幅 %
   f109 近5日涨幅 %
-  f110 近10日涨幅 %
-  f160 近20日涨幅 %
-  f165 近60日涨幅 %
+  f160 近10日涨幅 %
+  f110 近20日涨幅 %
+  f24  近60日涨幅 %
+（2026-11-02 跟 K 线核对过。此前 f110、f160 接反了，f165 也不是涨幅）
 """
 
 import json
@@ -34,9 +35,9 @@ _HEADERS = [
 # 周期 → 排序字段
 _PERIOD_FIELD = {
     "5d":  "f109",
-    "10d": "f110",
-    "20d": "f160",
-    "60d": "f165",
+    "10d": "f160",
+    "20d": "f110",
+    "60d": "f24",
 }
 
 
@@ -75,7 +76,7 @@ def _fetch_market(bk_code: str, market_fs: str, fid: str, pz: int = 50) -> List[
         "fltt": "2", "invt": "2",
         "fid": fid,
         "fs": f"b:{bk_code}+{market_fs}",
-        "fields": "f12,f14,f3,f109,f110,f160,f165",
+        "fields": "f12,f14,f3,f24,f109,f110,f160",
     }
     url = f"{_BASE}?{urllib.parse.urlencode(params)}"
     data = _curl(url)
@@ -101,7 +102,7 @@ def get_top_stocks(
     返回板块 bk_code 内主板非ST个股，按 period 涨幅降序取前 limit 名。
     period: "5d" | "10d" | "20d" | "60d"
     """
-    fid = _PERIOD_FIELD.get(period, "f160")
+    fid = _PERIOD_FIELD.get(period, "f110")
     fetch_size = max(limit * 3, 30)  # 多取一些，过滤ST后仍能凑够 limit 条
 
     # ── 拉取沪深主板 ──────────────────────────────────────────────────────────
@@ -123,8 +124,8 @@ def get_top_stocks(
         merged.append(item)
 
     # ── 按 fid 对应涨幅降序排序 ───────────────────────────────────────────────
-    field_map = {"f109": "pct_5d", "f110": "pct_10d", "f160": "pct_20d", "f165": "pct_60d"}
-    raw_field = fid  # e.g. "f160"
+    field_map = {"f109": "pct_5d", "f160": "pct_10d", "f110": "pct_20d", "f24": "pct_60d"}
+    raw_field = fid  # e.g. "f110"
 
     def sort_val(item: dict) -> float:
         v = _to_float(item.get(raw_field))
@@ -140,8 +141,8 @@ def get_top_stocks(
             name=str(item.get("f14", "")),
             pct_today=_to_float(item.get("f3")),
             pct_5d=_to_float(item.get("f109")),
-            pct_10d=_to_float(item.get("f110")),
-            pct_20d=_to_float(item.get("f160")),
-            pct_60d=_to_float(item.get("f165")),
+            pct_10d=_to_float(item.get("f160")),
+            pct_20d=_to_float(item.get("f110")),
+            pct_60d=_to_float(item.get("f24")),
         ))
     return result

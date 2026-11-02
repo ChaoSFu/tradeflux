@@ -254,6 +254,8 @@ def _backfill_sector_index(db, a) -> int:
     today = r.get("today_missing_codes") or []
     if not items and not today:
         print(r.get("summary") or "板块指数没有缺口")
+        if a.apply:
+            _refresh_sector_quotes(db)
         return 0
     short = [it for it in items if it.get("reason") == "历史不足"]
     holes = [it for it in items if it.get("reason") != "历史不足"]
@@ -288,7 +290,16 @@ def _backfill_sector_index(db, a) -> int:
               + ("…" if len(res["failed"]) > 12 else ""))
     if res.get("aborted"):
         print("本次没跑完（请求上限或被限流）——**再跑一次**接着补，已补的不会重复打")
+    _refresh_sector_quotes(db)
     return 0
+
+
+def _refresh_sector_quotes(db) -> None:
+    """clist 被掐那天，板块涨跌幅还停在旧值。点位补齐了就用它刷新（不发 K 线请求）。"""
+    from app.services.sector_index_service import refresh_watched_sector_quotes
+    n = refresh_watched_sector_quotes(db)
+    print("尚未收盘，板块涨跌幅不刷新" if n is None
+          else f"已用板块指数刷新 {n} 个关注板块的涨跌幅和成交额（换手率、市值不在内）")
 
 
 def fix_suspension_rows(db, a) -> int:

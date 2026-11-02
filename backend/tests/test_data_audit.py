@@ -231,6 +231,7 @@ class Test收盘后自动补板块指数:
             return {"filled": 2, "bars": 3, "requests": 2, "slept": 0.0,
                     "no_data": [], "failed": []}
         monkeypatch.setattr(sis, "backfill_sector_index", fake)
+        monkeypatch.setattr(sis, "refresh_watched_sector_quotes", lambda d: 2)
         cli._backfill_sector_index(db, SimpleNamespace(apply=True, max_requests=320))
         assert got == {"codes": ["BK0001", "BK0002"], "only_short": False, "max_requests": 320}
 

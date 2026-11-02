@@ -87,7 +87,7 @@ def build_snapshots(db: Session, trade_date: date,
 
     bench = MarketBenchmark(db, as_of=trade_date, windows=DEFAULT_WINDOWS)
 
-    # 主板块的区间涨幅：Sector 表里 f109/f110/f160/f165 每天同步，直接用。
+    # 主板块的区间涨幅：Sector 表里 f109/f160/f110/f24 每天同步，直接用。
     # 板块指数序列（SectorIndexDaily）现在只有当天那一根，回填被数据源封锁，
     # 所以这一版 RS_sector 走这条——它是东财算好的板块区间收益，口径干净。
     sec_by_id = {s.id: s for s in db.query(Sector).all()}
