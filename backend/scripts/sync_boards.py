@@ -65,6 +65,25 @@ DYNAMIC_BOARD_KEYWORDS = {
 # 第1步：板块元数据同步（httpx，替换原 curl subprocess）
 # ---------------------------------------------------------------------------
 
+# 最近一次同步后，收盘了却还没写上当日点位的关注板块数。run_sync_boards 结尾据此报结果
+_index_missing = 0
+
+
+def _unwritten_index_points(db, day) -> set:
+    """
+    关注板块里，day 这天还没有指数点位的。
+
+    **按结果核对，不看过程。** clist 某一页失败时只打一行日志就跳过，后面照常走完：
+    2026-10 有 12 天写入 0~800 个，日志结尾全是 ✅。接口被掐有好几种样子（空响应、握手
+    超时、断在第 4 页），逐种去判不如直接看库里到底有没有。
+    """
+    from app.models.market_index import SectorIndexDaily
+    watched = {c for (c,) in db.query(Sector.code).filter(Sector.is_watched.is_(True)).all()}
+    have = {c for (c,) in db.query(SectorIndexDaily.sector_code)
+            .filter(SectorIndexDaily.date == day).all()}
+    return watched - have
+
+
 def _fetch_boards_by_fs(fs_code: str, label: str, client: "httpx.Client | None" = None) -> list[dict]:
     """
     拉取指定 fs 类型的全量板块列表。
@@ -286,8 +305,14 @@ def sync_board_metadata(db, update_stock_count: bool = True) -> tuple[int, int]:
 
     db.commit()
     print(f"  板块元数据同步完成: 新增 {new_count} 个，更新 {updated_count} 个")
+    global _index_missing
+    _index_missing = 0
     if _settled:
         print(f"  板块指数当日点位: {bar_count} 个（RS_sector 基准，零新增请求）")
+        _index_missing = len(_unwritten_index_points(db, _today))
+        if _index_missing:
+            print(f"  ❌ 板块指数当日点位没写全：{_index_missing} 个关注板块缺今天那根"
+                  f"（东财 clist 被掐），收盘后日更会走 push2his 回填")
     else:
         print(f"  尚未收盘，跳过板块指数当日点位——盘中的 f2 不是收盘点位，"
               f"写进去就是让盘中值冒充收盘")
@@ -527,7 +552,8 @@ def run_sync_boards(
         print(f"  {'─'*26}")
         print(f"  {'总耗时':<16} {total:>7.1f}s  完成于 {datetime.now().strftime('%H:%M:%S')}")
         print(f"{'─'*60}")
-        print("\n✅ 板块同步完成\n")
+        print(f"\n⚠️ 板块同步结束，但 {_index_missing} 个关注板块缺当日点位\n"
+              if _index_missing else "\n✅ 板块同步完成\n")
 
     except Exception as e:
         db.rollback()

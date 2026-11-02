@@ -67,7 +67,43 @@ def _do_update(log_path: str, today: date) -> dict:
              else f"⚠️ 数据体检退出码 {code}（不影响日更）")
     except Exception as exc:  # noqa: BLE001
         _log(log_path, "SCHED", f"⚠️ 数据体检失败（不影响日更）: {exc}")
+    _catch_up_sector_index(log_path, result)
     return result
+
+
+def _catch_up_sector_index(log_path: str, result: dict, now=None) -> None:
+    """
+    收盘后走 push2his 把板块指数补齐（今天那根 + 窗口里的洞）。
+
+    板块同步靠东财 clist，2026-10-12 ~ 10-30 的 15 个交易日里有 12 天被掐（空响应 /
+    握手超时），当天只写上 0~800 个。而同一天下午 push2his 回填 80 个全部成功，所以
+    补救走 push2his，不是重试 clist。两者的点位是同一个数：09-11 收盘后逐字段核对过。
+
+    **补不齐要亮「数据降级」**：原来这种情况日志结尾是 ✅，洞积了两周半才被看见。
+
+    只在收盘后跑：盘前那次要赶在开盘前结束，而且今天那根此时还不存在。父进程正持着
+    日更的锁，所以传 --no-lock。失败只记日志，不影响日更结果。
+    """
+    from app.services.data_audit_service import OK, load_report, run_audit_subprocess
+    from app.services.eastmoney_fetcher import SH_TZ
+    if (now or datetime.now(SH_TZ)).hour < 15:
+        return
+    # 302 个关注板块 + 余量。被拦 4 次会主动停手并写冷却，不会硬打
+    try:
+        code = run_audit_subprocess(
+            ["fix", "sector_index", "--apply", "--no-lock", "--max-requests", "320"],
+            on_line=lambda ln: _log(log_path, "AUDIT", ln))
+        chk = next((c for c in (load_report() or {}).get("checks", [])
+                    if c.get("id") == "sector_index"), None)
+        if code == 0 and (chk is None or chk.get("status") == OK):
+            _log(log_path, "SCHED", "✅ 板块指数已补齐")
+            return
+        detail = (chk or {}).get("summary") or f"退出码 {code}"
+    except Exception as exc:  # noqa: BLE001
+        detail = str(exc)
+    _log(log_path, "SCHED", f"⚠️ 板块指数没补齐（不影响日更）: {detail}")
+    result["degraded"] = True
+    result["warnings"] = [*(result.get("warnings") or []), f"板块指数没补齐：{detail}"]
 
 
 def _run_with_retry(attempt: int = 1) -> None:

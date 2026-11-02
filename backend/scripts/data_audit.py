@@ -251,7 +251,8 @@ def _backfill_sector_index(db, a) -> int:
     """从 push2his 补板块指数：缺多少天补多少天，已有的行一律不动。"""
     r = svc.run_check(db, "sector_index")
     items = r.get("items") or []
-    if not items:
+    today = r.get("today_missing_codes") or []
+    if not items and not today:
         print(r.get("summary") or "板块指数没有缺口")
         return 0
     short = [it for it in items if it.get("reason") == "历史不足"]
@@ -262,13 +263,17 @@ def _backfill_sector_index(db, a) -> int:
         print(f"  {it['code']} {it['name']}：{it['bars']} 根{gap}")
     if len(items) > 10:
         print(f"  …… 其余 {len(items) - 10} 个")
+    if today:
+        print(f"今天的点位还缺 {len(today)} 个板块（回填只在收盘后写今天那根）")
     if not a.apply:
         print("试跑（不写库）：将逐个板块向 push2his 拉日线，只插缺的日期，已有行不覆盖。"
               "被限流会自动退避并写冷却；一次补不完的下次重跑（可重入）。")
         print(f"收件箱导入仍然可用（push2his 再被拒时的兜底）：--file 文件名")
         return 0
     from app.services.sector_index_service import backfill_sector_index
-    res = backfill_sector_index(db, [it["code"] for it in items], only_short=False)
+    # dict.fromkeys 去重且保序：有洞的板块多半今天也缺，同一个板块不用打两次
+    codes = list(dict.fromkeys([it["code"] for it in items] + today))
+    res = backfill_sector_index(db, codes, only_short=False, max_requests=a.max_requests)
     if res.get("cooling_down"):
         return 2
     print(f"补齐 {res['filled']} 个板块，写入 {res['bars']} 行；"
@@ -343,7 +348,7 @@ def cmd_fix(a) -> int:
     recheck = RECHECK.get(a.check, {a.check})
     try:
         # 试跑也探锁：日更写到一半时列出来的「将补什么」是错的
-        with update_lock(hold=a.apply):
+        with (nullcontext() if a.no_lock else update_lock(hold=a.apply)):
             db = SessionLocal()
             try:
                 code = fixer(db, a)
@@ -396,6 +401,9 @@ def main() -> int:
     f.add_argument("check")
     f.add_argument("--apply", action="store_true")
     f.add_argument("--file", help="sector_index 专用：收件箱里的文件名")
+    f.add_argument("--no-lock", action="store_true", help="不拿日更锁（只给正持着锁的日更自己调用）")
+    f.add_argument("--max-requests", type=int, default=80,
+                   help="sector_index 专用：这次最多打多少次 push2his")
     e = sub.add_parser("export-script", help="生成板块指数导出脚本")
     e.add_argument("--out")
     e.add_argument("--codes", action="store_true",
