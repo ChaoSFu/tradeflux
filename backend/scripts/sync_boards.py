@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.database import SessionLocal, init_db
 from app.models.sector import Sector, StockSectorRelation
 from app.models.stock import Stock, StockDailySnapshot
-from app.services.eastmoney_fetcher import fetch_stock_bk_codes
+from app.services.eastmoney_fetcher import _warmed_client, fetch_stock_bk_codes
 
 BASE_URL = "https://push2delay.eastmoney.com/api/qt"
 
@@ -268,8 +268,11 @@ def sync_board_metadata(db, update_stock_count: bool = True) -> tuple[int, int]:
     print("\n[第1步] 拉取东财全量板块元数据...")
     all_boards: list[tuple[dict, str]] = []
 
-    # 3种板块类型共用一条长连接（不再每页都新建连接），减少握手次数
-    with httpx.Client(headers=_HTTP_HEADERS, follow_redirects=True) as client:
+    # 3种板块类型共用一条长连接（不再每页都新建连接），减少握手次数。
+    # 先预热：冷连接直接打接口会被静默丢弃（见 _warmed_client）。2026-10 clist 反复返回
+    # 空响应，跟那段描述的现象一样，而同一天走预热连接的 push2his 是通的。
+    # 这只是推测的原因：有没有用要看之后每天的「板块指数当日点位」
+    with _warmed_client(headers=_HTTP_HEADERS, tag="sync_boards") as client:
         for fs_code, sector_type, label in BOARD_TYPES:
             boards = _fetch_boards_by_fs(fs_code, label, client=client)
             print(f"  {label}共 {len(boards)} 个")
@@ -442,15 +445,22 @@ def sync_stock_sector_relations(db, max_workers: int = 10) -> dict:
                     fetch_results.append((stock, bk_codes))
                 except Exception:
                     failed += 1
-                    fetch_results.append((stock, []))
 
     elapsed = time.time() - t0
-    print(f"  F10 拉取完成: {len(fetch_results)-failed}/{len(stocks)} 只，耗时 {elapsed:.1f}s")
+    got = sum(1 for _, codes in fetch_results if codes)
+    print(f"  F10 拉取完成: {got}/{len(stocks)} 只，耗时 {elapsed:.1f}s")
 
     # ── 增量对比 & 写入 ───────────────────────────────────────────────────
-    added = removed = skipped = 0
+    added = removed = skipped = fetch_empty = 0
 
     for stock, bk_codes in fetch_results:
+        # **拉空不等于没有板块。** fetch_stock_bk_codes 失败时返回空列表，A 股也不存在一个
+        # 板块都没有的票，所以空结果只能说明没拿到。原来空列表直接进增量对比，等于
+        # 「这只票现在没有任何板块」，把旧关联全删了：2026-11-02 强势池 73 只有 37 只、
+        # 当日涨停 125 只有 49 只一个板块都没有，而它们的主板块还在
+        if not bk_codes:
+            fetch_empty += 1
+            continue
         # 新的 sector_id 集合（只保留 watched 板块）
         new_ids: set[int] = {
             sector_map[code].id
@@ -489,6 +499,7 @@ def sync_stock_sector_relations(db, max_workers: int = 10) -> dict:
         "relations_added": added,
         "relations_removed": removed,
         "fetch_failed": failed,
+        "fetch_empty": fetch_empty,
     }
 
 
@@ -500,6 +511,7 @@ def run_sync_boards(
     meta_only: bool = False,
     stocks_only: bool = False,
     write_log: bool = True,   # 命令行直接运行时自己写日志；admin 调用时由 admin 写
+    stock_count: bool = True, # 日更传 False：成份股数量 888 个并发请求，周六全量同步更新就够
 ) -> None:
     from datetime import datetime
     today = date.today().isoformat()
@@ -522,8 +534,9 @@ def run_sync_boards(
 
         if not stocks_only:
             t0 = time.time()
-            print(f"\n[步骤1] 板块元数据同步（update_stock_count={'否' if meta_only else '是'}）...")
-            sync_board_metadata(db, update_stock_count=not meta_only)
+            _count = stock_count and not meta_only
+            print(f"\n[步骤1] 板块元数据同步（update_stock_count={'是' if _count else '否'}）...")
+            sync_board_metadata(db, update_stock_count=_count)
             elapsed = time.time() - t0
             print(f"  ✅ 板块元数据完成，耗时 {elapsed:.1f}s")
             steps.append(("板块元数据", elapsed))
@@ -542,6 +555,8 @@ def run_sync_boards(
             print(f"    移除关联:   {stats['relations_removed']} 条")
             if stats['fetch_failed']:
                 print(f"    F10 失败:   {stats['fetch_failed']} 只")
+            if stats.get('fetch_empty'):
+                print(f"    ⚠️ F10 拉空: {stats['fetch_empty']} 只（已跳过，旧关联保留）")
 
         total = time.time() - t_start
         print(f"\n{'─'*60}")

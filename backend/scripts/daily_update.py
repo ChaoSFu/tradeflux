@@ -2570,7 +2570,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
     if not skip_boards:
         try:
             from scripts.sync_boards import run_sync_boards
-            run_sync_boards()
+            # 成份股数量不是每天要的：888 个并发请求一天两次，周六全量同步更新就够
+            run_sync_boards(stock_count=False)
         except Exception as e:
             print(f"[sync_boards] 板块同步失败（不影响主流程）: {e}")
 
