@@ -126,6 +126,7 @@ def backfill_sector_index(
     today_settled = bar_is_settled(today_, _now)
     if not today_settled:
         _say(f"  尚未收盘：今天（{today_}）那根不写，等收盘后由板块同步写")
+    _say(f"  开始回填 {len(todo)} 个板块（约 {len(todo) * 3.5 / 60:.0f} 分钟，每 20 个打一行进度）")
 
     for i, code in enumerate(todo):
         if limiter.requests >= max_requests:
@@ -181,6 +182,9 @@ def backfill_sector_index(
         db.commit()          # 每只板块独立提交——限流中途掐断也不丢已补的
         filled += 1
         bars_written += n
+        # 跑一轮要十几分钟。不打进度的话屏幕一动不动，看着就像卡死了
+        if filled % 20 == 0:
+            _say(f"  进度 {filled}/{len(todo)} 个板块，已写入 {bars_written} 行")
 
     return {"filled": filled, "skipped": skipped, "failed": failed,
             "no_data": no_data, "bars": bars_written, "aborted": aborted,
