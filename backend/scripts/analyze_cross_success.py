@@ -67,7 +67,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.database import SessionLocal                                  # noqa: E402
 from app.models.leader_cycle import LeaderCycleSnapshot                 # noqa: E402
 from app.services.leader_cycle_state_service import (                   # noqa: E402
-    CROSS_FAILED, CROSS_SUCCESS, CROSS_WEAKENING, FADED, REPAIRING, replay_series,
+    CROSS_FAILED, CROSS_SUCCESS, CROSS_WEAKENING, FADED, REPAIRING, cycle_keys,
+    replay_series,
 )
 from app.services.suspension_service import (                           # noqa: E402
     load_suspensions_by_code, stock_calendar,
@@ -129,7 +130,9 @@ def _timelines(db) -> tuple:
         st = {d: (series[d].state if series[d].state != "UNKNOWN"
                   else series[d].last_valid_state) for d in days}
         out.append({"code": code, "days": days, "st": st,
-                    "row": {r.date: r for r in srows}})
+                    "row": {r.date: r for r in srows},
+                    # 周期分段一律走 cycle_keys，跟状态机同一套身份判定
+                    "cyc": cycle_keys(srows)})
     all_days = sorted({r.date for r in rows})
     return (len(rows), len(by_code), all_days), out
 
@@ -140,7 +143,7 @@ def _follow(fwd, st, close, cycle, d0) -> dict:
     """
     从进入成功那天往后走，直到这段周期有结论。
 
-    **一旦 cycle_start_date 变了就停**：那是新的一轮，上一轮的结论不能跨周期延续。
+    **一旦周期键变了就停**：那是新的一轮，上一轮的结论不能跨周期延续。
     """
     base, c0 = close.get(d0), cycle.get(d0)
     success_days = 0          # 在成功里待了几天才松动
@@ -195,7 +198,7 @@ def report_after_success(lines, min_peak: int) -> None:
     for t in lines:
         days, st, row = t["days"], t["st"], t["row"]
         close = {d: row[d].latest_close for d in days}
-        cycle = {d: row[d].cycle_start_date for d in days}
+        cycle = t["cyc"]
         prev = None
         for i, d in enumerate(days):
             cur = st[d]
@@ -255,8 +258,8 @@ def _break_cycles(t, horizon: int) -> List[dict]:
     days, st, row = t["days"], t["st"], t["row"]
     seg = defaultdict(list)
     for d in days:
-        if row[d].cycle_start_date is not None:
-            seg[row[d].cycle_start_date].append(d)
+        if t["cyc"][d] is not None:
+            seg[t["cyc"][d]].append(d)
 
     out = []
     for c, ds in seg.items():

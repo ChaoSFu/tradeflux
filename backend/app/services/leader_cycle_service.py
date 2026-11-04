@@ -67,7 +67,10 @@ class LeaderCycle:
     absent_days: int = 0                 # 其中该股没有 bar 的天数（停牌 + 缺口）
     suspended_days: int = 0              # 其中已确认是停牌的
     missing_days: int = 0                # absent - suspended，真正的数据缺口
-    peak_board_confident: bool = True    # 只由 missing_days 决定，跟停牌无关
+    # 这段连板顶到了 bars[0]：更早的涨停可能没拉进来，起始日和板数都只是下界
+    # （跟 max_board_streak 的 truncated 同一回事）
+    start_truncated: bool = False
+    peak_board_confident: bool = True    # 数据缺口或窗口截断才 False，停牌不算
 
 
 def identify_leader_cycle(
@@ -146,7 +149,9 @@ def identify_leader_cycle(
         absent_days=absent,
         suspended_days=suspended,
         missing_days=missing,
-        # 只看真正的数据缺口。停牌那几天本来就没有 bar，数据是完整的——
-        # 把它算进"不可信"，等于因为股票没交易而怀疑自己的数据
-        peak_board_confident=(missing == 0),
+        start_truncated=(start_i == 0),
+        # 只看真正的数据缺口和窗口截断。停牌那几天本来就没有 bar，数据是完整的——
+        # 把它算进"不可信"，等于因为股票没交易而怀疑自己的数据。
+        # 截断：003032 07-27~08-05 实为 8 板，07-27 滑出窗口后只数得到 7
+        peak_board_confident=(missing == 0 and start_i != 0),
     )

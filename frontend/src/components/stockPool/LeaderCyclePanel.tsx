@@ -587,7 +587,9 @@ function Row({ r }: { r: LeaderCycleItem }) {
         <span className={cn(NUM, 'text-up font-semibold')}>{r.peak_board_count ?? '—'}</span>
         <span className="text-text-muted">板</span>
         {suspect && (
-          <span title={`周期区间内有 ${r.missing_days} 个交易日没有快照，连板数可能偏低`}
+          <span title={r.missing_days
+                  ? `周期区间内有 ${r.missing_days} 个交易日没有快照，连板数可能偏低`
+                  : '这段连板的起点早于 K 线窗口（近 65 个交易日），更早的涨停没拉进来，实际板数可能更高'}
                 className="ml-1 inline-flex align-middle text-warn">
             <AlertTriangle className="w-3 h-3" />
           </span>

@@ -281,7 +281,8 @@ class TestSuspensionNotGap:
 
     def test_已知停牌不算数据缺口(self, db):
         st = _seed_stock(db)
-        bars = _bars([10.0, 11.0, 12.1, 13.31, 14.64])
+        # 第一根平盘：连板段不顶到窗口左边（顶到了是「可能被截断」，另一回事）
+        bars = _bars([10.0, 10.0, 11.0, 12.1, 13.31, 14.64])
         susp = date(2026, 8, 10)
         later = build_kline_bar(dt=date(2026, 8, 11), open_p=14.0, close_p=14.0,
                                 high_p=14.0, low_p=14.0, pct=0.0, turnover=None,

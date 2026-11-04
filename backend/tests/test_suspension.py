@@ -104,10 +104,13 @@ def test_停牌夹在连板中间_按个股日历连板接着数():
 
 
 def test_龙头周期_停牌不切断连板_也不算数据缺口():
-    bars = [_bar(CAL[0], True), _bar(CAL[1], True), _bar(CAL[4], True), _bar(CAL[5], True),
+    # 前面垫一根非涨停：连板段顶到 bars[0] 会被标成「可能截断」，那是另一回事
+    pre = _bar(CAL[0] - timedelta(days=1), False)
+    bars = [pre, _bar(CAL[0], True), _bar(CAL[1], True), _bar(CAL[4], True), _bar(CAL[5], True),
             _bar(CAL[6], False), _bar(CAL[7], False)]
-    assert identify_leader_cycle(bars, trading_days=CAL[:8]) is None, "不告诉它停牌：两段 2 板"
-    c = identify_leader_cycle(bars, trading_days=CAL[:8], suspended_days=[CAL[2], CAL[3]])
+    cal = [pre.date] + CAL[:8]
+    assert identify_leader_cycle(bars, trading_days=cal) is None, "不告诉它停牌：两段 2 板"
+    c = identify_leader_cycle(bars, trading_days=cal, suspended_days=[CAL[2], CAL[3]])
     assert (c.peak_board_count, c.cycle_start_date, c.break_date) == (4, CAL[0], CAL[6])
     assert (c.suspended_days, c.missing_days, c.peak_board_confident) == (2, 0, True)
     assert c.days_since_break == 1

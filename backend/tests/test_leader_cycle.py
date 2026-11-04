@@ -87,10 +87,25 @@ class TestGapAwareness:
     所以缺口必须显式表达出来，而不是给一个看起来精确的错数。
     """
     def test_无缺口时标为可信(self):
-        bars = _series(date(2026, 8, 1), [10.0, 11.0, 12.1, 13.31, 14.64])
+        # 第一根是平盘：连板段没顶到窗口左边，否则是「可能被截断」，同样不可信
+        bars = _series(date(2026, 8, 1), [10.0, 10.0, 11.0, 12.1, 13.31, 14.64])
         days = [b.date for b in bars]
         c = identify_leader_cycle(bars, trading_days=days)
         assert c.missing_days == 0 and c.peak_board_confident is True
+
+    def test_连板段顶到窗口左边标为可能截断(self):
+        """
+        003032 传智教育 07-27~08-05 实为 8 板，07-27 滑出 65 日窗口后只数得到 7。
+        第一根 bar 就是涨停时，更早的那几板有没有、有几板，这批数据回答不了。
+        """
+        bars = _series(date(2026, 8, 1), [10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        c = identify_leader_cycle(bars, trading_days=[b.date for b in bars])
+        assert c.missing_days == 0
+        assert c.start_truncated is True and c.peak_board_confident is False
+
+        flat_first = _series(date(2026, 8, 1), [10.0, 10.0, 11.0, 12.1, 13.31, 14.64, 14.0])
+        c = identify_leader_cycle(flat_first, trading_days=[b.date for b in flat_first])
+        assert c.start_truncated is False and c.peak_board_confident is True
 
     def test_区间内缺交易日则标为不可信(self):
         bars = _series(date(2026, 8, 1), [10.0, 11.0, 12.1, 13.31, 14.64])

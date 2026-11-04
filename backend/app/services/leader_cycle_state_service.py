@@ -68,10 +68,12 @@ from typing import Dict, List, Optional, Sequence
 # 同时确实跌破短趋势才判失败（见 MA5_BREAK_TOLERANCE）。
 # 同日再升到 price_v1_3：REPAIRING 收盘跌破 MA10 单日即判失败——它和 CROSS_SUCCESS
 # 同在核心观察池，没道理一松一紧（见 REPAIRING 分支的注释）。
-FORMULA_VERSION = "price_v1_3"
+# 2026-11-04 升到 price_v1_4：周期身份从「起始日相等」改成「连板区间有交集」，
+# 老周期起点滑出 K 线窗口时不再被当成新一轮重置（见 same_cycle）。
+FORMULA_VERSION = "price_v1_4"
 # 历史上出现过的版本，按时间倒序。replay 传入旧版本时要能明确拒绝而不是静默
 # 按新规则算——"这段历史是哪套规则算的"必须永远可追溯
-KNOWN_VERSIONS = ("price_v1_3", "price_v1_2", "price_v1_1", "price_v1")
+KNOWN_VERSIONS = ("price_v1_4", "price_v1_3", "price_v1_2", "price_v1_1", "price_v1")
 
 # ── 拍出来的常量（见模块 docstring）────────────────────────────────────────
 # 连续几个**有效交易 observation** 收在 MA5 之下才算走弱。1 次不够：高标波动大，
@@ -242,20 +244,54 @@ def _has_cycle(row) -> bool:
     return row.cycle_start_date is not None
 
 
-def _cycle_id(row):
+def _span(row) -> tuple:
+    """这一行看到的连板区间 (起始日, 峰值日)。"""
+    return (row.cycle_start_date, row.cycle_peak_date)
+
+
+def same_cycle(a: Optional[tuple], b: tuple) -> bool:
     """
     cycle identity。状态属于**一段 LeaderCycle**，不是股票的永久身份。
 
-    **只用 cycle_start_date。** 第一版还带上了 cycle_peak_date，"宁可多 reset 一次"
-    ——错的：连板还在进行时，峰值日就是最后一根板，**每天都在往后走**，于是整段
-    连板期天天判定为新周期。003040 的轨迹里 08-27 那行原因写着
-    `NEW_CYCLE、STILL_STREAKING`，就是这么来的。
+    **按连板区间有没有交集判，不按某一个日期相等。** 两个日期单独拿来当身份都栽过：
 
-    起始日才是一段周期的稳定标识：它是这段连板的第一个涨停日，不同周期必然不同。
-    峰值日在周期走完之前根本不是常量，拿它当身份的一部分是把"进行中的量"当成
-    "标识"用了。
+    · 峰值日：第一版带上了它，"宁可多 reset 一次"——错的：连板还在进行时峰值日
+      就是最后一根板，**每天都在往后走**，整段连板期天天判成新周期（003040 的轨迹
+      里 08-27 那行原因写着 `NEW_CYCLE、STILL_STREAKING`）。
+    · 起始日：K 线窗口只有 65 个交易日，老周期的头几根板会从窗口左边滑出去，起始日
+      跟着往后挪一天。003032 传智教育 07-27~08-05 走了 8 连板，11-04 那天 07-27
+      滑出窗口，起始日变成 07-28，状态机当成新一轮重置成「刚断板」——D+58 的票
+      挂着「今日刚断板 · 来自新一轮」，板数也从 8 掉成 7。
+
+    连板段是原子的：真正的新一轮必然在上一轮断板之后才起，跟上一段**不重叠**；
+    窗口截断、连板推进只会让区间一端移动，跟昨天那段**一定重叠**。
     """
-    return row.cycle_start_date
+    if a is None:
+        return False
+    (a0, a1), (b0, b1) = a, b
+    if a1 is None or b1 is None:          # 没有峰值日的老行，只能退回比起始日
+        return a0 == b0
+    return a0 <= b1 and b0 <= a1
+
+
+def cycle_keys(rows) -> Dict[date, Optional[date]]:
+    """
+    一只票按日期排好的行 → {日期: 周期键}。键 = 这段周期第一行看到的起始日；
+    识别不出周期的行是 None。研究脚本按周期分段用它，**不要再直接拿
+    cycle_start_date 当键**——那是 same_cycle 修掉的同一个错。
+    """
+    out: Dict[date, Optional[date]] = {}
+    key, last = None, None
+    for r in rows:
+        if r.cycle_start_date is None:
+            out[r.date] = None
+            continue
+        span = _span(r)
+        if not same_cycle(last, span):
+            key = r.cycle_start_date
+        last = span
+        out[r.date] = key
+    return out
 
 
 def _adjacent(d1: date, d2: date, calendar: Optional[Sequence[date]]) -> Optional[bool]:
@@ -523,15 +559,15 @@ def _step(w: _Walk, row, trading_days) -> None:
     # below-MA observation**，也跨不过去假装「连续两日」
     if not _usable(row):
         return
-    cid = _cycle_id(row)
-    if w.state is None or cid != w.cycle:
+    span = _span(row)
+    if w.state is None or not same_cycle(w.cycle, span):
         # 新周期 → 整个状态机 reset。上一轮的 FADED / CROSS_FAILED 不能继承，
         # FADED 只在「当前这段 cycle」里是 terminal
         new_state, new_codes = _initial_state(row)
         if w.state is not None:
             new_codes = ["NEW_CYCLE"] + new_codes
             w.ever_success, w.first_success = False, None
-        w.cycle = cid
+        w.cycle = span
         w.obs = [row]
         w.last_ok = row.date
         w.state, w.prev_state, w.since, w.codes = new_state, w.state, row.date, new_codes
@@ -539,6 +575,8 @@ def _step(w: _Walk, row, trading_days) -> None:
         w.transitioned_on = row.date
         return
 
+    # 跟最新这一行比：截断一天挪一格，每天都跟前一天重叠
+    w.cycle = span
     w.obs.append(row)
     w.last_ok = row.date
     nxt, new_codes = _advance(w.state, w.obs, trading_days)
