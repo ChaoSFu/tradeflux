@@ -55,7 +55,7 @@ from app.database import SessionLocal
 from app.models.leader_cycle import LeaderCycleSnapshot
 from app.models.stock import Stock, StockDailySnapshot
 from app.services.leader_cycle_state_service import (
-    FORMULA_VERSION, replay_price_lifecycle,
+    FORMULA_VERSION, cycle_keys, replay_price_lifecycle,
 )
 from app.services.trading_calendar import get_trading_days
 
@@ -189,6 +189,7 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
         b = bars[code]
         # 状态机按这只票自己的交易日走（停牌日不算），跟界面同一个口径
         scal = stock_calendar(cal, susp.get(code))
+        keys = cycle_keys(sorted(rows, key=lambda r: r.date))
         for d in dates:
             s = replay_price_lifecycle(rows, d, trading_days=scal)
             # 每个"有价格事实的交易日"都进基线池——组间比较必须有同期对照
@@ -211,8 +212,7 @@ def evaluate(db, only_event: Optional[str] = None) -> tuple:
                 # cluster = (股票, 周期起点)。**同一只票同一段周期里的多次转移
                 # 不是独立样本**：BROKEN→REPAIRING→FAILED→REPAIRING→SUCCESS 全
                 # 出自一段行情，收益窗口还高度重叠。bootstrap 要整段一起重抽
-                cyc = next((r.cycle_start_date for r in rows if r.date == d), None)
-                events.append((ev, code, d, s.entry_reason_codes, (code, cyc)))
+                events.append((ev, code, d, s.entry_reason_codes, (code, keys.get(d))))
 
     # ── 同日同池对照 ──────────────────────────────────────────────────────
     # **逐事件对照，不是两组中位数相减。** 事件集中在特定时段，而基线摊在全部

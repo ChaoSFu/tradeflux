@@ -598,7 +598,8 @@ class TestSnapshotWindowScope:
         """直接砍到 win_start 会让跨窗口边界的周期少掉前半段，状态就变了。"""
         src = self._src()
         assert "min(LeaderCycleSnapshot.cycle_start_date)" in src
-        assert "min(_win_start, _min_cycle)" in src
+        # 往回扩到不动点：截断过的起始日之前，同一段周期还有更早的行（见 same_cycle）
+        assert "_min_cycle >= lower" in src
 
     def test_跨窗口边界的周期状态不变(self, db):
         """

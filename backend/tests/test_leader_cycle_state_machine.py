@@ -426,6 +426,85 @@ class TestCycleIdentity:
         assert s.ever_cross_success is True, "同一段周期内，成功过的记录不该被清掉"
 
 
+class TestLeftTruncation:
+    """
+    2026-11-04 生产：003032 传智教育 07-27~08-05 走了 8 连板，K 线窗口只有 65 个
+    交易日，11-04 那天 07-27 滑出窗口，快照里的起始日变成 07-28、板数变成 7。
+    状态机按「起始日相等」认周期，当成新一轮重置：D+58 的票挂着
+    「今日刚断板 · 来自新一轮」，FADED 被冲成 BROKEN。
+
+    连板段是原子的：截断只会让起始日往峰值日那边挪，跟前一天的区间一定重叠；
+    真正的新一轮必然在上一轮峰值之后才起。
+    """
+    S, P = D0 - timedelta(days=8), D0 - timedelta(days=1)
+
+    def _faded(self):
+        rows = _to_success() + [
+            Row(3, 14.0, ma5=19.0, ma10=18.0, ma20=17.0, ma30=16.0, days_since_break=3),
+            Row(4, 13.0, ma5=18.0, ma10=17.5, ma20=17.0, ma30=16.0, days_since_break=4),
+        ]
+        for r in rows:
+            r.cycle_start_date, r.cycle_peak_date = self.S, self.P
+        return rows
+
+    def test_起始日滑出窗口不算新周期(self):
+        old = self._faded()
+        assert _replay(old).state == FADED
+        rows = old + [Row(5, 13.5, ma5=17.0, ma10=17.0, ma20=17.0, ma30=16.0,
+                          days_since_break=5,
+                          cycle_start=self.S + timedelta(days=1), cycle_peak=self.P)]
+        s = _replay(rows)
+        assert s.state == FADED, f"截断不是新一轮，FADED 不该被冲掉：{s.state}"
+        assert "NEW_CYCLE" not in s.reason_codes
+        assert s.transitioned_today is False
+
+    def test_连续几天截断也不重置(self):
+        rows = self._faded()
+        for i in range(1, 4):
+            rows.append(Row(4 + i, 13.5, ma5=17.0, ma10=17.0, ma20=17.0, ma30=16.0,
+                            days_since_break=4 + i,
+                            cycle_start=self.S + timedelta(days=i), cycle_peak=self.P))
+        s = _replay(rows)
+        assert s.state == FADED and "NEW_CYCLE" not in s.reason_codes
+
+    def test_上一轮峰值之后起的才是新一轮(self):
+        rows = self._faded() + [Row(30, 30.0, ma5=25.0, ma10=22.0, ma20=20.0, ma30=18.0,
+                                    break_date=None, days_since_break=None,
+                                    cycle_start=D0 + timedelta(days=27),
+                                    cycle_peak=D0 + timedelta(days=30))]
+        s = _replay(rows)
+        assert s.state == STREAKING and "NEW_CYCLE" in s.reason_codes
+
+
+class TestSameCycle:
+    def test_区间重叠是同一段(self):
+        from app.services.leader_cycle_state_service import same_cycle
+        d = lambda n: D0 + timedelta(days=n)
+        assert same_cycle((d(0), d(7)), (d(1), d(7))), "左端被窗口截掉"
+        assert same_cycle((d(0), d(3)), (d(0), d(4))), "连板推进，峰值日后移"
+        assert same_cycle((d(1), d(7)), (d(0), d(7))), "补数后看到了更早的起点"
+        assert not same_cycle((d(0), d(7)), (d(9), d(12))), "上一轮峰值之后才起"
+        assert not same_cycle(None, (d(0), d(1)))
+
+    def test_缺峰值日时退回比起始日(self):
+        from app.services.leader_cycle_state_service import same_cycle
+        assert same_cycle((D0, None), (D0, D0))
+        assert not same_cycle((D0, None), (D0 + timedelta(days=1), D0 + timedelta(days=1)))
+
+    def test_cycle_keys跨截断保持同一个键(self):
+        from app.services.leader_cycle_state_service import cycle_keys
+        rows = TestLeftTruncation()._faded() + [
+            Row(5, 13.5, cycle_start=TestLeftTruncation.S + timedelta(days=1),
+                cycle_peak=TestLeftTruncation.P),
+            Row(6, 13.5, cycle_start=None, cycle_peak=None),
+            Row(30, 30.0, cycle_start=D0 + timedelta(days=27), cycle_peak=D0 + timedelta(days=30)),
+        ]
+        keys = cycle_keys(rows)
+        assert {keys[r.date] for r in rows[:6]} == {TestLeftTruncation.S}
+        assert keys[rows[6].date] is None
+        assert keys[rows[7].date] == D0 + timedelta(days=27)
+
+
 class TestBrokenIsTransient:
     """
     **BROKEN 是过渡态，不是停留态。**

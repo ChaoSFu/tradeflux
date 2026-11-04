@@ -133,10 +133,17 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     as_of = trade_date or dates[-1]
     _win = [d for d in dates if d <= as_of][-history_days:]
     _win_start = _win[0] if _win else as_of
-    _min_cycle = (db.query(sqlfunc.min(LeaderCycleSnapshot.cycle_start_date))
-                  .filter(LeaderCycleSnapshot.date >= _win_start,
-                          LeaderCycleSnapshot.date <= as_of).scalar())
-    lower = min(_win_start, _min_cycle) if _min_cycle else _win_start
+    # 下界要取到不动点：周期身份按区间交集判（same_cycle），老周期起点滑出
+    # K 线窗口后，窗口里的行记的是被截过的起始日，同一段周期更早那些行记的
+    # 才是真起点。往回扩一次就能看到它们，扩到不再变为止（通常两轮）
+    lower = _win_start
+    for _ in range(10):
+        _min_cycle = (db.query(sqlfunc.min(LeaderCycleSnapshot.cycle_start_date))
+                      .filter(LeaderCycleSnapshot.date >= lower,
+                              LeaderCycleSnapshot.date <= as_of).scalar())
+        if not _min_cycle or _min_cycle >= lower:
+            break
+        lower = _min_cycle
 
     rows = (db.query(LeaderCycleSnapshot)
             .filter(LeaderCycleSnapshot.date >= lower,
