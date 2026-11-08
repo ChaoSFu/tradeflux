@@ -31,7 +31,7 @@ export function LargeCapSettings({ editable }: { editable: boolean }) {
       setMsg('已保存，页面立即按新设置重算（不会重新采集）')
       setTimeout(() => setMsg(''), 4000)
     },
-    onError: (e: any) => setMsg(e?.response?.data?.detail ?? '保存失败（需登录权限）'),  // eslint-disable-line @typescript-eslint/no-explicit-any
+    onError: (e: any) => setMsg(e?.message ?? '保存失败（需登录权限）'),  // eslint-disable-line @typescript-eslint/no-explicit-any
   })
 
   if (!data || !f) return null
