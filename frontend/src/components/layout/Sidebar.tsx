@@ -36,8 +36,8 @@ type NavEntry     = NavLinkItem | NavGroupItem
 
 const NAV: NavEntry[] = [
   { type: 'link', to: '/', label: '主页', icon: Home },
-  // 每日盘面复盘：把各页面的事实收拢成次日预案（主页之后、大盘趋势之前）
-  { type: 'link', to: '/market-recap', label: '每日盘面复盘', icon: BookOpenCheck },
+  // 每日复盘：把各页面的事实收拢成次日预案（主页之后、大盘趋势之前）
+  { type: 'link', to: '/market-recap', label: '每日复盘', icon: BookOpenCheck },
   { type: 'link', to: '/market-trend', label: '大盘趋势', icon: TrendingUp },
   // 板块趋势（主升板块雷达）：看完大盘看主线在哪几个板块，再往下看活跃股
   { type: 'link', to: '/sector-trend', label: '板块趋势', icon: Radar },

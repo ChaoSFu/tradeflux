@@ -5,6 +5,7 @@ import { MarketStateBar } from './MarketStateBar'
 
 const TITLES: Record<string, string> = {
   '/': '主页 Home',
+  '/market-recap': '每日复盘 Daily Recap',
   '/market-trend': '大盘趋势 Market Trend',
   '/strong': '强势股概览 Strong Overview',
   '/stocks': '活跃股池 Active Pool',
@@ -23,6 +24,7 @@ const TITLES: Record<string, string> = {
   '/legacy/speculation-radar': '破局雷达 Speculation Regime Radar（旧版）',
   '/legacy/limit-up-radar': '涨停板块雷达 Limit Up Sector Radar（旧版）',
   '/legacy/market-effects': '市场效应 Market Effects（旧版）',
+  '/large-cap': '大市值概览 Large Cap Monitor',
   '/weak-to-strong-radar': '弱转强雷达 Weak-to-Strong Radar',
   '/weak-to-strong-radar/guide': '实现说明 · 弱转强雷达',
 }
