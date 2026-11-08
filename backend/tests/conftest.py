@@ -28,6 +28,7 @@ from app.models.pre_trade_check import PreTradeCheck
 from app.models.weak_to_strong_radar import (
     WeakToStrongCandidate, WeakToStrongEvent, WeakToStrongDiscoveryRun,
 )
+from app.models.large_cap import LargeCapMarketDaily, LargeCapStockBoards, LargeCapSyncBatch
 
 _TABLES = [
     Stock.__table__, StockDailySnapshot.__table__, StockSuspensionDay.__table__,
@@ -44,6 +45,7 @@ _TABLES = [
     WeakToStrongDiscoveryRun.__table__,
     CohortOutcomeQuote.__table__,
     TradeJournal.__table__, PreTradeCheck.__table__,
+    LargeCapMarketDaily.__table__, LargeCapSyncBatch.__table__, LargeCapStockBoards.__table__,
 ]
 
 

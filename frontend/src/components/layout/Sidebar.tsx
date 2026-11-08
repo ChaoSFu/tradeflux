@@ -24,6 +24,7 @@ import {
   Archive,
   ClipboardCheck,
   Radar,
+  Landmark,
 } from 'lucide-react'
 
 // ─── Nav structure ────────────────────────────────────────────────────────────
@@ -51,6 +52,7 @@ const NAV: NavEntry[] = [
       // 情绪板块：把上面这几个池子里的活跃股（强势 / 涨跌停）按板块分组看，所以放在这组里
       { type: 'link', to: '/sector-emotion', label: '情绪板块', icon: Activity },
       { type: 'link', to: '/turnover',    label: '成交额概览', icon: Coins },
+      { type: 'link', to: '/large-cap',   label: '大市值概览', icon: Landmark },
       { type: 'link', to: '/watchlist',   label: '重点监控',   icon: ShieldAlert },
     ],
   },

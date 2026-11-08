@@ -17,6 +17,7 @@ import LimitMovesDashboard from '@/pages/LimitMovesDashboard'
 import LimitMovesAnalysis from '@/pages/LimitMovesAnalysis'
 import TradeJournal from '@/pages/TradeJournal'
 import TurnoverOverview from '@/pages/TurnoverOverview'
+import LargeCapOverview from '@/pages/LargeCapOverview'
 import WeakToStrongRadar from '@/pages/WeakToStrongRadar'
 import SpeculationRadar from '@/pages/SpeculationRadar'
 import LimitUpSectorRadar from '@/pages/LimitUpSectorRadar'
@@ -83,6 +84,7 @@ export default function App() {
                        element={<Navigate to="/limit-moves-analysis" replace />} />
               ))}
             <Route path="turnover" element={<TurnoverOverview />} />
+            <Route path="large-cap" element={<LargeCapOverview />} />
           </Route>
         </Route>
 
