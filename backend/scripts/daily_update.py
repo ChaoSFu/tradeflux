@@ -2365,10 +2365,13 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 每天存一份成交额前列快照，供成交额概览页面按板块聚合赚钱效应、
         # 跟前一天名单对比标「新进」股票；靠自愈懒同步无法保证每天都有存档
         # （没人手动刷新页面就不会触发），所以在这里主动跑一次。
+        # 记在 target_date 名下（上面按K线最大日期修正过的那个），不是跑的那天：
+        # 周末/节假日/盘前跑，选股 API 给的是上一交易日收盘的名单（2026-11-08 修）。
         try:
             from app.services.turnover_service import sync_turnover_pool
-            r_tov = sync_turnover_pool(db)
-            log.info(f"成交额概览数据同步：{r_tov['count']} 只")
+            r_tov = sync_turnover_pool(db, trade_date=target_date, market_now=market_now)
+            log.info(f"成交额概览数据同步：{r_tov['count']} 只 → {r_tov.get('date') or '未写'}"
+                     + ("" if r_tov.get("settled") is not False else "（尚未收盘，盘中名单）"))
             for w in (r_tov.get("errors") or []):
                 api_warnings.append(f"成交额概览: {w}")
         except Exception as e:

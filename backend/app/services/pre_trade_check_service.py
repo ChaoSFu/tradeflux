@@ -60,7 +60,7 @@ from .leader_cycle_state_service import replay_price_lifecycle
 from .limit_up_detail_fetcher import fetch_broken_board_pool, fetch_limit_up_pool
 from .market_effect_service import _cohort_snapshots
 from .trading_calendar import (
-    calendar_status, get_trading_days, last_n_trading_days, prev_trading_day,
+    calendar_status, get_trading_days, last_n_trading_days, last_weekday_before, prev_trading_day,
 )
 from .w2s_config_service import KEY_PULLBACK_MIN_PCT, get_numeric
 # 私有函数，但它就是"实时涨跌分布"这件事的唯一实现，不另写一份
@@ -205,11 +205,8 @@ def _prev_trade_date(db: Session, d: date, cal) -> Optional[date]:
     return db.query(func.max(StockDailySnapshot.date)).filter(StockDailySnapshot.date < d).scalar()
 
 
-def _last_weekday_before(d: date) -> date:
-    x = d - timedelta(days=1)
-    while x.weekday() >= 5:
-        x -= timedelta(days=1)
-    return x
+# 挪到了 trading_calendar.last_weekday_before（成交额前列的落库日期也要用），这里保留原名。
+_last_weekday_before = last_weekday_before
 
 
 # 挪到了 trading_calendar.calendar_status（数据体检也要用同一份判断），这里保留原名。

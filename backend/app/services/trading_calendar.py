@@ -26,8 +26,8 @@ fuyao 有现成接口：`GET /api/a-share/calendar/trading-days`，**无入参**
 交易日历是"让判断更准"的增强，不是"没有它就跑不了"的依赖——这跟 dump 的定位一样。
 """
 import json
-from datetime import date, datetime, timedelta
-from typing import List, Optional
+from datetime import date, datetime, time, timedelta
+from typing import List, Optional, Sequence
 
 import httpx
 from sqlalchemy.orm import Session
@@ -37,6 +37,13 @@ from .fuyao_dump import FUYAO_BASE, _timeouts, get_api_key
 from .eastmoney_fetcher import json_or_explain
 
 CACHE_KEY = "trading_calendar:days"
+
+# 行情从这一刻起才换成新的一天：09:15 集合竞价开始。之前行情还停在上一交易日收盘
+# （scheduler 里 08:45 那次大市值重试补的就是上一交易日，同一个事实）。
+# 取竞价开始而不是 09:25/09:30：这段时间数据源可能已经换成今天，按"上一交易日"写
+# 就会拿今天的竞价数据盖掉昨天的存档，那是补不回来的；按今天写错了，09:26 和 15:30
+# 的日更还会再覆盖一遍。
+MARKET_DAY_STARTS = time(9, 15)
 
 
 def fetch_trading_days(api_key: str, timeout: int = 20) -> List[date]:
@@ -131,6 +138,41 @@ def prev_trading_day(days: List[date], d: date) -> Optional[date]:
     """d 之前最近的一个交易日。days 需升序。"""
     prev = [x for x in days if x < d]
     return prev[-1] if prev else None
+
+
+def last_weekday_before(d: date) -> date:
+    """d 之前最近的一个工作日。只要求日历覆盖到它：盘中 d 本身不在日历里是常态，
+    按 d 要求会让每次调用都去重拉一次日历（原在 pre_trade_check_service，2026-11-08 挪到这里）。"""
+    x = d - timedelta(days=1)
+    while x.weekday() >= 5:
+        x -= timedelta(days=1)
+    return x
+
+
+def market_data_day(cal: Optional[Sequence[date]], now: datetime) -> Optional[date]:
+    """
+    此刻从行情源拿到的「当日」数据属于哪个交易日。
+
+    now 应当是市场时间（eastmoney_fetcher.probe_market_now，腾讯字段30）。周末、节假日
+    它停在最后一个交易日收盘后——2026-11-08（周日）实测返回 2026-11-06 16:14:48——所以
+    多数时候 now.date() 本身就是答案，跟 daily_update 用「全体K线最大日期」修正 target_date
+    是同一个信号（K线也是腾讯的）。日历兜住剩下的情形（主要是探测失败退回本机时钟）：
+      · 09:15 之前：今天的行情还没开始，往前取
+      · 日历说这天不是交易日（周末、节假日）：往前取最近的交易日
+      · 日历还没覆盖到这天（盘中今天不在日历里是常态）：工作日按交易日算，周末往前退
+    拿不到日历也能用（只按周末退）。日历里找不到更早的交易日返回 None。
+    """
+    d = now.date()
+    if now.time() < MARKET_DAY_STARTS:
+        d -= timedelta(days=1)
+    days = sorted(cal) if cal else []
+    last = days[-1] if days else None
+    while last is None or d > last:
+        if d.weekday() < 5:
+            return d
+        d -= timedelta(days=1)
+    prior = [x for x in days if x <= d]
+    return prior[-1] if prior else None
 
 
 def is_trading_day(days: List[date], d: date) -> bool:
