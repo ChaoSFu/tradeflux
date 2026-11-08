@@ -17,7 +17,19 @@ function surgeOf(g: LargeCapGroup) {
   return g.surge_multiple ?? g.surge_volume_ratio
 }
 
-export function GroupTable({ groups, stocksByCode, window, eventsAvailable, multipleReady, label, maxHeight, emptyText }: {
+/** 跟后端加权用同一套权重：前一交易日市值（拿不到的不参与），或当日市值。缺涨幅的不参与 */
+function weightShares(members: LargeCapStock[], basis: 'prev_cap' | 'current_cap') {
+  const w = new Map<string, number>()
+  for (const s of members) {
+    const v = basis === 'prev_cap' ? s.prev_cap : s.total_cap
+    if (v != null && v > 0 && s.pct != null) w.set(s.code, v)
+  }
+  const sum = [...w.values()].reduce((a, b) => a + b, 0)
+  return new Map([...w].map(([k, v]) => [k, sum > 0 ? v / sum : 0]))
+}
+
+export function GroupTable({ groups, stocksByCode, window, eventsAvailable, multipleReady, label, maxHeight, emptyText, weightBasis }: {
+  weightBasis: 'prev_cap' | 'current_cap'
   groups: LargeCapGroup[]
   stocksByCode: Map<string, LargeCapStock>
   window: Window
@@ -89,7 +101,13 @@ export function GroupTable({ groups, stocksByCode, window, eventsAvailable, mult
                   <td className={cn('px-2 py-1.5 text-right text-text-primary', NUM)}>{g.count}</td>
                   <td className={cn('px-2 py-1.5 text-right text-text-secondary', NUM)}>{fmtCap(g.total_cap)}</td>
                   <td className={cn('px-2 py-1.5 text-right', NUM, pctCls(g.weighted_pct))}
-                      title={`参与加权 ${g.n_weighted}/${g.count}`}>{fmtPct(g.weighted_pct)}</td>
+                      title={`参与加权 ${g.n_weighted}/${g.count}`}>
+                    {g.weighted_pct != null && g.median_pct != null && g.weighted_pct * g.median_pct < 0 && (
+                      <span className="mr-1 px-1 rounded bg-warn/15 text-warn text-[10px] font-sans"
+                            title="加权涨幅和中位数方向相反：少数权重股和多数成员走势不同，展开看组内权重">背离</span>
+                    )}
+                    {fmtPct(g.weighted_pct)}
+                  </td>
                   <td className="px-2 py-1.5 text-left max-w-[9rem] truncate">
                     {g.top_contributor && g.count > 1 ? (
                       <span title={`${g.top_contributor.name} 贡献 ${g.top_contributor.pp > 0 ? '+' : ''}${g.top_contributor.pp.toFixed(2)} 个百分点`}>
@@ -119,7 +137,7 @@ export function GroupTable({ groups, stocksByCode, window, eventsAvailable, mult
                   <tr className="border-b border-bg-border">
                     <td colSpan={15} className="p-0 bg-bg-base/40">
                       <div className="pl-5 pr-2 py-1">
-                        <StockTable rows={members} />
+                        <StockTable rows={members} shares={weightShares(members, weightBasis)} />
                         {g.count === 0 && <div className="px-2 pb-2 text-[11px] text-text-muted">今天没有成员（只有跨出）</div>}
                       </div>
                     </td>

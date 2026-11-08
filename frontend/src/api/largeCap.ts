@@ -59,6 +59,9 @@ export interface LargeCapStock {
   code: string
   name: string | null
   market: string | null
+  /** 本系统股票库有没有这只（个股详情只收录进过候选池的股票） */
+  has_detail: boolean
+  listing_date: string | null
   total_cap: number | null
   float_cap: number | null
   prev_cap: number | null
@@ -90,15 +93,18 @@ export interface LargeCapCrossEvent {
   pct_20d: number | null
   amount: number | null
   cap_price_mismatch: boolean
+  has_detail: boolean
 }
 
 export interface LargeCapEvents {
   available: boolean
+  /** 不可用时的原因（第一份快照 / 前一交易日缺快照 / 日历没覆盖） */
+  reason: string | null
   entered: LargeCapCrossEvent[]
   exited: LargeCapCrossEvent[]
-  first_observed: { code: string; name: string | null; industry: string | null; cap: number; pct: number | null; amount: number | null; reason: string }[]
-  missing_today: { code: string; name: string | null; industry: string | null; prev_cap: number; reason: string }[]
-  st_change: { code: string; name: string | null; change: string }[]
+  first_observed: { code: string; name: string | null; industry: string | null; cap: number; pct: number | null; amount: number | null; reason: string; has_detail: boolean }[]
+  missing_today: { code: string; name: string | null; industry: string | null; prev_cap: number; reason: string; has_detail: boolean }[]
+  st_change: { code: string; name: string | null; change: string; has_detail: boolean }[]
 }
 
 export interface LargeCapConfig {
@@ -150,7 +156,10 @@ export interface LargeCapOverviewOk extends OverviewBase {
     with_industry_l2: number
     note: string
   }
+  /** 数据有问题、要人去看 */
   warnings: string[]
+  /** 正常的状态说明（第一天、历史还在攒） */
+  notes: string[]
 }
 
 export interface LargeCapOverviewEmpty extends OverviewBase {

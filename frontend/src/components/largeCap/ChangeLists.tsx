@@ -23,7 +23,7 @@ function CrossTable({ rows }: { rows: LargeCapCrossEvent[] }) {
           {rows.map((e) => (
             <tr key={e.code} className="border-b border-bg-border/50 last:border-0">
               <td className="px-1.5 py-1 whitespace-nowrap">
-                <StockLink code={e.code} name={e.name} />
+                <StockLink code={e.code} name={e.name} hasDetail={e.has_detail} />
                 {e.industry && <span className="ml-1 text-[10px] text-text-muted">{e.industry}</span>}
               </td>
               <td className={cn('px-1.5 py-1 text-right whitespace-nowrap text-text-secondary', NUM)}>
@@ -45,19 +45,17 @@ function CrossTable({ rows }: { rows: LargeCapCrossEvent[] }) {
   )
 }
 
-export function ChangeLists({ events, threshold, prevDate }: {
+export function ChangeLists({ events, threshold }: {
   events: LargeCapEvents
   threshold: number
-  prevDate: string | null
 }) {
   const t = fmtCap(threshold)
   if (!events.available) {
     return (
-      <Card title="今日重要变化">
-        <div className="text-xs text-text-muted leading-relaxed">
-          前一交易日{prevDate ? `（${prevDate}）` : ''}没有完整收盘快照，跨入 / 跨出无法判定——不拿更早的市值冒充昨日。
-        </div>
-      </Card>
+      <div className="card px-3 py-2 text-xs text-text-muted">
+        <span className="text-text-secondary font-medium mr-2">跨入 / 跨出 {t}</span>
+        {events.reason ?? '前一交易日没有完整收盘快照，无法判定'}
+      </div>
     )
   }
   return (
@@ -76,7 +74,7 @@ export function ChangeLists({ events, threshold, prevDate }: {
                 <span className="text-text-muted">首次观测（昨日没有有效市值，不判跨入）：</span>
                 {events.first_observed.map((e) => (
                   <span key={e.code} className="mr-3 whitespace-nowrap" title={e.reason}>
-                    <StockLink code={e.code} name={e.name} /> <span className={NUM}>{fmtCap(e.cap)}</span>
+                    <StockLink code={e.code} name={e.name} hasDetail={e.has_detail} /> <span className={NUM}>{fmtCap(e.cap)}</span>
                   </span>
                 ))}
               </div>
@@ -86,7 +84,7 @@ export function ChangeLists({ events, threshold, prevDate }: {
                 <span className="text-text-muted">今日无有效市值（停牌或没返回，不判跨出）：</span>
                 {events.missing_today.map((e) => (
                   <span key={e.code} className="mr-3 whitespace-nowrap" title={e.reason}>
-                    <StockLink code={e.code} name={e.name} /> <span className={NUM}>昨 {fmtCap(e.prev_cap)}</span>
+                    <StockLink code={e.code} name={e.name} hasDetail={e.has_detail} /> <span className={NUM}>昨 {fmtCap(e.prev_cap)}</span>
                   </span>
                 ))}
               </div>
@@ -96,7 +94,7 @@ export function ChangeLists({ events, threshold, prevDate }: {
                 <span className="text-text-muted">ST 状态变化：</span>
                 {events.st_change.map((e) => (
                   <span key={e.code} className="mr-3 whitespace-nowrap">
-                    <StockLink code={e.code} name={e.name} /> {e.change}
+                    <StockLink code={e.code} name={e.name} hasDetail={e.has_detail} /> {e.change}
                   </span>
                 ))}
               </div>
@@ -139,7 +137,7 @@ export function VolumeSurges({ rows, multipleReady, multiple, ratio }: {
               {rows.map((s) => (
                 <tr key={s.code} className="border-b border-bg-border/50 last:border-0">
                   <td className="px-1.5 py-1 whitespace-nowrap">
-                    <StockLink code={s.code} name={s.name} />
+                    <StockLink code={s.code} name={s.name} hasDetail={s.has_detail} />
                     <span className="ml-1 text-[10px] text-text-muted">{s.industry_l2}</span>
                   </td>
                   <td className={cn('px-1.5 py-1 text-right text-text-secondary', NUM)}>{fmtCap(s.total_cap)}</td>
@@ -191,7 +189,7 @@ export function Movers({ stocks, n = 8 }: { stocks: LargeCapStock[]; n?: number 
               <tbody>
                 {rows.map((s) => (
                   <tr key={s.code} className="border-b border-bg-border/50 last:border-0">
-                    <td className="px-1.5 py-1"><StockLink code={s.code} name={s.name} /></td>
+                    <td className="px-1.5 py-1"><StockLink code={s.code} name={s.name} hasDetail={s.has_detail} /></td>
                     <td className="px-1.5 py-1 text-text-muted max-w-[7rem] truncate" title={`${s.industry_l1} / ${s.industry_l2}`}>{s.industry_l2}</td>
                     <td className={cn('px-1.5 py-1 text-right text-text-secondary', NUM)}>{fmtCap(s.total_cap)}</td>
                     <td className={cn('px-1.5 py-1 text-right', NUM, pctCls(s.pct))}>{fmtPct(s.pct)}</td>
