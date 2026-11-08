@@ -40,6 +40,10 @@ def _apply_schema_patches():
     from sqlalchemy import text
 
     patches = [
+        # 每日复盘 V2（2026-11-08）：三个观察点、预案的关联依据与观察触发
+        "ALTER TABLE market_recaps ADD COLUMN IF NOT EXISTS key_points JSON",
+        "ALTER TABLE next_day_plans ADD COLUMN IF NOT EXISTS relation_note TEXT",
+        "ALTER TABLE next_day_plans ADD COLUMN IF NOT EXISTS watch_trigger TEXT",
         # 近5日累计涨幅（2026-11-08，活跃股池「5涨幅龙」标签用）
         "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS pct_change_5d DOUBLE PRECISION",
         "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS pct_change_5d DOUBLE PRECISION",

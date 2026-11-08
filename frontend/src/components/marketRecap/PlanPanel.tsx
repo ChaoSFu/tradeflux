@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ClipboardCheck, Plus, Trash2 } from 'lucide-react'
 import type { Plan, RecapDraft, Scenario, WatchItem } from '@/api/marketRecap'
@@ -8,19 +9,47 @@ const MAX_PLANS = 5
 const SCENARIOS = Object.keys(SCENARIO_META) as Scenario[]
 const PLAN_STATUS = { waiting: '等待', triggered: '已触发', not_triggered: '未触发', invalid: '失效', unverified: '未验证' }
 
-const emptyPlan = (): Plan => ({
+export const emptyPlan = (): Plan => ({
   stock_code: '', stock_name: null, leader_code: null, sector_name: null, scenario: 'A', reason: null,
+  relation_note: null, watch_trigger: null,
   entry_trigger: '', invalidation: '', planned_stop: null, risk_budget: null, position_limit: null,
   observe_until: null, status: 'waiting',
 })
 
 const numOrNull = (v: string) => (v.trim() === '' ? null : Number(v))
 
-export function ScenarioPanel({ draft, set, readOnly }: { draft: RecapDraft; set: (p: Partial<RecapDraft>) => void; readOnly: boolean }) {
-  const put = (s: Scenario, f: string, v: string) =>
-    set({ scenarios: { ...draft.scenarios, [s]: { ...(draft.scenarios[s] ?? {}), [f]: v } } })
+export function ScenarioPanel({ draft, set, pool, readOnly }: {
+  draft: RecapDraft
+  set: (p: Partial<RecapDraft>) => void
+  pool: WatchItem[]
+  readOnly: boolean
+}) {
+  // 全局一套 + 每只重点高标各一套（★ 的那几只）
+  const leaders = pool.filter((w) => w.deep)
+  const [who, setWho] = useState<string>('_global')
+  const cur = who === '_global' ? draft.scenarios : draft.scenarios.by_leader?.[who]
+  const put = (s: Scenario, f: string, v: string) => {
+    if (who === '_global') {
+      set({ scenarios: { ...draft.scenarios, [s]: { ...(draft.scenarios[s] ?? {}), [f]: v } } })
+      return
+    }
+    const by = { ...(draft.scenarios.by_leader ?? {}) }
+    const one = by[who] ?? { A: {}, B: {}, C: {}, N: {} }
+    by[who] = { ...one, [s]: { ...(one[s] ?? {}), [f]: v } }
+    set({ scenarios: { ...draft.scenarios, by_leader: by } })
+  }
   return (
-    <Manual title="次日情景推演" hint="不是预测走势，是提前准备不同情景下看什么、怎么应对；四个情景各存各的">
+    <Manual title="次日情景推演" hint="不是预测走势，是提前准备不同情景下看什么、怎么应对；按重点高标分别写">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {[{ code: '_global', name: '全局' }, ...leaders.map((w) => ({ code: w.code, name: w.name ?? w.code }))].map((x) => (
+          <button key={x.code} onClick={() => setWho(x.code)}
+                  className={cn('px-2 py-0.5 rounded border text-xs', who === x.code ? 'border-purple-400 bg-purple-400/10 text-purple-200' : 'border-bg-border text-text-secondary')}>
+            {x.code === '_global' ? x.name : `★ ${x.name}`}
+            {x.code !== '_global' && draft.scenarios.by_leader?.[x.code] && <span className="ml-1 text-[10px] text-text-muted">已写</span>}
+          </button>
+        ))}
+        {!leaders.length && <span className="text-[11px] text-text-muted">观察池里给高标标 ★，就能按高标分别写情景</span>}
+      </div>
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
         {SCENARIOS.map((s) => (
           <div key={s} className="card-elevated p-2.5 space-y-1.5">
@@ -28,7 +57,7 @@ export function ScenarioPanel({ draft, set, readOnly }: { draft: RecapDraft; set
             {SCENARIO_META[s].fields.map(([f, label]) => (
               <div key={f}>
                 <div className="text-[10px] text-text-muted mb-0.5">{label}</div>
-                <TextArea value={draft.scenarios[s]?.[f]} onChange={(v) => put(s, f, v)} rows={1} disabled={readOnly} />
+                <TextArea value={cur?.[s]?.[f]} onChange={(v) => put(s, f, v)} rows={1} disabled={readOnly} />
               </div>
             ))}
           </div>
@@ -96,13 +125,24 @@ export function PlanPanel({ draft, set, pool, readOnly }: {
               </button>
             )}
           </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+            <div>
+              <div className="text-[10px] text-text-muted mb-0.5">关联依据（跟哪只高标、凭什么关联）</div>
+              <TextArea value={p.relation_note} onChange={(v) => upd(i, { relation_note: v })} disabled={readOnly} />
+            </div>
+            <div>
+              <div className="text-[10px] text-text-muted mb-0.5">观察触发（高标出现什么就去看它——不是买点）</div>
+              <TextArea value={p.watch_trigger} onChange={(v) => upd(i, { watch_trigger: v })} disabled={readOnly}
+                        placeholder="例：东方海洋竞价高开且 10 分钟内回封" />
+            </div>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-1.5">
             <div>
               <div className="text-[10px] text-text-muted mb-0.5">选择理由（市场事实 + 你的判断）</div>
               <TextArea value={p.reason} onChange={(v) => upd(i, { reason: v })} disabled={readOnly} />
             </div>
             <div>
-              <div className="text-[10px] text-text-muted mb-0.5">入场触发 <span className="text-down">*</span></div>
+              <div className="text-[10px] text-text-muted mb-0.5">它自己的入场触发 <span className="text-down">*</span></div>
               <TextArea value={p.entry_trigger} onChange={(v) => upd(i, { entry_trigger: v })} disabled={readOnly}
                         placeholder="例：高标回封后，它放量突破 12.50 且板块保持领先" />
             </div>

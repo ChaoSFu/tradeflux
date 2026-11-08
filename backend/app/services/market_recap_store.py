@@ -36,12 +36,15 @@ TIMED_RESPONSES = ("leading", "sync", "lagging")
 MARKET_OPEN = dtime(9, 30)
 
 # 情景的字段：三个情景各存各的，不是一段笼统评论
+# V2 只加字段不改旧字段名——已经存下的草稿不能因为改版丢内容
 SCENARIO_FIELDS = {
-    "A": ("trigger", "sector_confirm", "watch_stocks", "overheat"),
-    "B": ("strong_peers", "reseal", "successor", "keep_watching"),
-    "C": ("logic_invalid", "drop_stocks", "independent", "pause"),
-    "N": ("new_core", "evidence", "verify_by"),
+    "A": ("trigger", "attributes", "sector_confirm", "watch_stocks", "weak_resonance", "overheat"),
+    "B": ("reseal", "strong_peers", "successor", "keep_watching"),
+    "C": ("logic_invalid", "pause", "drop_stocks", "independent"),
+    "N": ("new_core", "same_mainline", "regroup", "evidence", "verify_by"),
 }
+MAX_LEADER_SCENARIOS = 8
+MAX_KEY_POINTS = 3
 
 
 class RecapError(ValueError):
@@ -105,8 +108,8 @@ def _plans(db: Session, owner: str, d: date) -> List[NextDayPlan]:
 def plan_dict(p: NextDayPlan) -> dict:
     return {k: getattr(p, k) for k in (
         "id", "stock_code", "stock_name", "leader_code", "sector_name", "scenario", "reason",
-        "entry_trigger", "invalidation", "planned_stop", "risk_budget", "position_limit",
-        "observe_until", "status")}
+        "relation_note", "watch_trigger", "entry_trigger", "invalidation", "planned_stop",
+        "risk_budget", "position_limit", "observe_until", "status")}
 
 
 def recap_dict(r: Optional[MarketRecap]) -> Optional[dict]:
@@ -115,14 +118,26 @@ def recap_dict(r: Optional[MarketRecap]) -> Optional[dict]:
     return {k: getattr(r, k) for k in (
         "trade_date", "market_posture", "market_evidence", "evidence_note", "invalidation",
         "sector_picks", "scenarios", "flat_plan", "discovery", "mistake", "mistake_type",
-        "hypothesis", "deviations", "status", "updated_at")}
+        "hypothesis", "deviations", "key_points", "status", "updated_at")}
 
 
-def _scenarios(raw: Any) -> dict:
+def _scenario_set(raw: Any) -> dict:
     out = {}
     for k, fields in SCENARIO_FIELDS.items():
         src = (raw or {}).get(k) or {}
         out[k] = {f: _clean(src.get(f), 2000) for f in fields}
+    return out
+
+
+def _scenarios(raw: Any) -> dict:
+    """全局一套 + 按重点高标各一套（by_leader）。四个情景各存各的，不是一段笼统评论。"""
+    out = _scenario_set(raw)
+    by = {}
+    for code, sc in list(((raw or {}).get("by_leader") or {}).items())[:MAX_LEADER_SCENARIOS]:
+        code = str(code).strip()
+        if code.isdigit() and len(code) == 6:
+            by[code] = _scenario_set(sc)
+    out["by_leader"] = by
     return out
 
 
@@ -164,7 +179,8 @@ def _plan_rows(raw: Iterable[dict], owner: str, d: date) -> List[NextDayPlan]:
         rows.append(NextDayPlan(
             owner=owner, recap_date=d, sort=i, stock_code=code, stock_name=_clean(p.get("stock_name"), 50),
             leader_code=_clean(p.get("leader_code"), 10), sector_name=_clean(p.get("sector_name"), 100),
-            scenario=sc, reason=_clean(p.get("reason")), entry_trigger=entry, invalidation=inval,
+            scenario=sc, reason=_clean(p.get("reason")), relation_note=_clean(p.get("relation_note")),
+            watch_trigger=_clean(p.get("watch_trigger")), entry_trigger=entry, invalidation=inval,
             planned_stop=num("planned_stop"), risk_budget=num("risk_budget"),
             position_limit=num("position_limit"),
             observe_until=date.fromisoformat(obs) if isinstance(obs, str) and obs else None,
@@ -207,6 +223,10 @@ def save_recap(db: Session, owner: str, d: date, payload: dict) -> MarketRecap:
     r.mistake = _clean(payload.get("mistake"))
     r.mistake_type = mt
     r.hypothesis = _clean(payload.get("hypothesis"))
+    kp = [x for x in (_clean(v, 300) for v in payload.get("key_points") or []) if x]
+    if len(kp) > MAX_KEY_POINTS:
+        raise RecapError(f"最重要的观察点最多 {MAX_KEY_POINTS} 条")
+    r.key_points = kp
     r.deviations = [{k: _clean(x.get(k), 1000) for k in
                      ("subject", "original", "actual", "kind", "cause", "next_step")}
                     | {"keep_verifying": bool(x.get("keep_verifying"))}
@@ -233,15 +253,22 @@ def relation_dict(r: LeaderRelation) -> dict:
         "first_recorded", "last_verified", "note")}
 
 
-def relations_for(db: Session, owner: str, leader_codes: Iterable[str]) -> List[LeaderRelation]:
+def relations_for(db: Session, owner: str, leader_codes: Iterable[str],
+                  include_rejected: bool = False) -> List[LeaderRelation]:
+    """
+    「不成立」（rejected）默认不返回：批量忽略关联建议就是记成不成立——留着这条记录，
+    建议列表里就不会再冒出来，也查得到当初为什么否掉。
+    """
     codes = list(leader_codes)
     if not codes:
         return []
-    return (db.query(LeaderRelation)
-            .filter(LeaderRelation.owner == owner, LeaderRelation.leader_code.in_(codes),
-                    LeaderRelation.removed_at.is_(None))
-            .order_by(LeaderRelation.leader_code, LeaderRelation.relation_basis,
-                      LeaderRelation.attribute_type, LeaderRelation.id).all())
+    q = (db.query(LeaderRelation)
+         .filter(LeaderRelation.owner == owner, LeaderRelation.leader_code.in_(codes),
+                 LeaderRelation.removed_at.is_(None)))
+    if not include_rejected:
+        q = q.filter(LeaderRelation.confidence_status != "rejected")
+    return q.order_by(LeaderRelation.leader_code, LeaderRelation.relation_basis,
+                      LeaderRelation.attribute_type, LeaderRelation.id).all()
 
 
 def upsert_relation(db: Session, owner: str, payload: dict, d: date) -> LeaderRelation:
@@ -369,6 +396,7 @@ def summary(db: Session, owner: str, d: date) -> dict:
     judged = sum(1 for x in resp.values() if x.response_status not in ("pending", "unknown"))
     picks = r.get("sector_picks") or []
     return {
+        "key_points": r.get("key_points") or [],
         "market": {"posture": r.get("market_posture"), "evidence": r.get("market_evidence") or [],
                    "evidence_note": r.get("evidence_note"), "invalidation": r.get("invalidation") or []},
         "core": {"core_sectors": [p for p in picks if p["tier"] == "core"],
@@ -398,7 +426,7 @@ def next_trading_day(cal: Sequence[date], d: date) -> tuple:
 
 
 def lock(db: Session, owner: str, d: date, cal: Sequence[date], now: datetime,
-         data_status: Optional[dict] = None) -> RecapLockedVersion:
+         data_status: Optional[dict] = None, cores: Optional[dict] = None) -> RecapLockedVersion:
     from .market_recap_service import stock_facts
     g = get_recap(db, owner, d)
     if g["recap"] is None:
@@ -426,6 +454,8 @@ def lock(db: Session, owner: str, d: date, cal: Sequence[date], now: datetime,
         # 锁定那一刻候选股的价格事实——验证时跟次日对照，不靠事后重查
         "plan_facts": {c: {k: v for k, v in f.items() if k in ("pct", "close", "is_limit_up", "board_count")}
                        for c, f in stock_facts(db, [p["stock_code"] for p in plans], d).items()},
+        # 当时的人气核心池（成员 + 选入理由）和活跃事件。之后新冒出来的票不会补进这一版
+        "cores": cores,
     }
     v = RecapLockedVersion(owner=owner, recap_date=d, version=(last[0] if last else 0) + 1,
                            locked_at=now, target_trade_date=target, target_is_provisional=provisional,
@@ -451,6 +481,41 @@ def locked_versions(db: Session, owner: str, d: date, cal: Sequence[date]) -> Li
             .filter(RecapLockedVersion.owner == owner, RecapLockedVersion.recap_date == d)
             .order_by(RecapLockedVersion.version).all())
     return [version_dict(v, cal) for v in rows]
+
+
+def chosen_version(db: Session, owner: str, d: date, cal: Sequence[date]) -> Optional[dict]:
+    """拿来准备 / 验证的那一版：最后一份盘前锁定；一份都没有就最新一版（标事后）。"""
+    versions = locked_versions(db, owner, d, cal)
+    if not versions:
+        return None
+    pre = [v for v in versions if v["pre_open"]]
+    return {**(pre[-1] if pre else versions[-1]), "backfilled": not pre,
+            "versions": [{k: v[k] for k in ("version", "locked_at", "pre_open")} for v in versions]}
+
+
+def prepare(db: Session, owner: str, d: date, cal: Sequence[date]) -> dict:
+    """次日准备：d 这天锁定的预案，一屏看完（姿态、重点高标、关联、事件、触发与放弃条件）。"""
+    v = chosen_version(db, owner, d, cal)
+    if v is None:
+        return {"status": "no_lock", "message": f"{d} 没有锁定的预案"}
+    p = v["payload"]
+    rec = p.get("recap") or {}
+    deep = [w for w in p.get("watch_pool") or [] if w.get("deep")]
+    rel_by_leader: Dict[str, list] = {}
+    for x in p.get("relations") or []:
+        rel_by_leader.setdefault(x["leader_code"], []).append(
+            {k: x.get(k) for k in ("related_code", "related_name", "attribute_type", "attribute_value",
+                                   "relation_basis")} | {"response": (x.get("response") or {}).get("response_status")})
+    cores = p.get("cores") or {}
+    focus_codes = {w["code"] for w in deep} | {x.get("leader_code") for x in p.get("plans") or [] if x.get("leader_code")}
+    return {"status": "ok", "recap_date": d,
+            **{k: v[k] for k in ("version", "locked_at", "pre_open", "target_trade_date", "backfilled", "versions")},
+            "posture": rec.get("market_posture"), "invalidation": rec.get("invalidation") or [],
+            "key_points": rec.get("key_points") or [], "flat_plan": bool(rec.get("flat_plan")),
+            "focus_leaders": deep, "relations": {c: rel_by_leader.get(c, []) for c in focus_codes},
+            "events": [e for e in cores.get("events") or [] if e.get("leader_code") in focus_codes]
+            or (cores.get("events") or [])[:20],
+            "scenarios": rec.get("scenarios") or {}, "plans": p.get("plans") or []}
 
 
 # ── 次日验证 ────────────────────────────────────────────────────────────────
