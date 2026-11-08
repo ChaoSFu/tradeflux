@@ -42,6 +42,7 @@ def _apply_schema_patches():
     patches = [
         # 大市值日快照：上市日（2026-11-08，新股的区间涨幅要靠它判是否有效）
         "ALTER TABLE large_cap_market_daily ADD COLUMN IF NOT EXISTS listing_date DATE",
+        "ALTER TABLE large_cap_market_daily ADD COLUMN IF NOT EXISTS concepts TEXT",
         # 炸板明细补全字段（2026-08-26，东财一直返回只是没解析）
         "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS price FLOAT",
         "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS limit_price FLOAT",

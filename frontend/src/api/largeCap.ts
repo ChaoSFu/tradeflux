@@ -30,6 +30,8 @@ export interface LargeCapGroupStats {
   n_pct: number
   weighted_pct: number | null
   n_weighted: number
+  /** 对加权涨幅贡献最大（按绝对值）的成员，单位百分点 */
+  top_contributor: { code: string; name: string | null; pp: number } | null
   amount: number | null
   n_amount: number
   surge_multiple: number | null
@@ -142,11 +144,10 @@ export interface LargeCapOverviewOk extends OverviewBase {
   stocks: LargeCapStock[]
   classification: {
     members: number
-    with_f10: number
     with_concept: number
+    concept_unknown: number
     with_industry_l1: number
     with_industry_l2: number
-    f10_as_of: string | null
     note: string
   }
   warnings: string[]

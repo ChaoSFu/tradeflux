@@ -17,7 +17,7 @@ function surgeOf(g: LargeCapGroup) {
   return g.surge_multiple ?? g.surge_volume_ratio
 }
 
-export function GroupTable({ groups, stocksByCode, window, eventsAvailable, multipleReady, label, maxHeight }: {
+export function GroupTable({ groups, stocksByCode, window, eventsAvailable, multipleReady, label, maxHeight, emptyText }: {
   groups: LargeCapGroup[]
   stocksByCode: Map<string, LargeCapStock>
   window: Window
@@ -25,6 +25,7 @@ export function GroupTable({ groups, stocksByCode, window, eventsAvailable, mult
   multipleReady: boolean
   label: string
   maxHeight?: number
+  emptyText?: string
 }) {
   const sort = useSort<Col>(windowCol(window))
   useEffect(() => { sort.setKey(windowCol(window)) }, [window]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -39,7 +40,7 @@ export function GroupTable({ groups, stocksByCode, window, eventsAvailable, mult
         title={`有效样本 ${n}/${g.count}`}>{fmtPct(g[c as MedCol])}</td>
   )
 
-  if (!groups.length) return <div className="px-3 py-6 text-xs text-text-muted text-center">没有数据</div>
+  if (!groups.length) return <div className="px-3 py-6 text-xs text-text-muted text-center">{emptyText ?? '没有数据'}</div>
   return (
     <div className="overflow-auto" style={maxHeight ? { maxHeight } : undefined}>
       <table className="w-full text-xs [&_td]:whitespace-nowrap">
@@ -50,6 +51,10 @@ export function GroupTable({ groups, stocksByCode, window, eventsAvailable, mult
             <SortTh label="总市值" col="total_cap" sort={sort} />
             <SortTh label="今日加权" col="weighted_pct" sort={sort}
                     title="Σ(权重 × 今日涨幅) / Σ权重。权重口径见页面顶部说明；缺涨幅或缺权重的不参与" />
+            <th className="px-2 py-1.5 text-left font-medium whitespace-nowrap"
+                title="对今日加权涨幅贡献最大的成员和它贡献的百分点。加权涨幅大部分来自它、而中位数方向相反时，就是一只权重股在拉">
+              主要贡献
+            </th>
             <SortTh label="今日中位" col="median_pct" sort={sort} className={hl('median_pct')} />
             <th className="px-2 py-1.5 text-right font-medium whitespace-nowrap" title="今日上涨 / 平盘 / 下跌家数">上/平/下</th>
             <SortTh label="5D中位" col="median_5d" sort={sort} className={hl('median_5d')}
@@ -85,6 +90,16 @@ export function GroupTable({ groups, stocksByCode, window, eventsAvailable, mult
                   <td className={cn('px-2 py-1.5 text-right text-text-secondary', NUM)}>{fmtCap(g.total_cap)}</td>
                   <td className={cn('px-2 py-1.5 text-right', NUM, pctCls(g.weighted_pct))}
                       title={`参与加权 ${g.n_weighted}/${g.count}`}>{fmtPct(g.weighted_pct)}</td>
+                  <td className="px-2 py-1.5 text-left max-w-[9rem] truncate">
+                    {g.top_contributor && g.count > 1 ? (
+                      <span title={`${g.top_contributor.name} 贡献 ${g.top_contributor.pp > 0 ? '+' : ''}${g.top_contributor.pp.toFixed(2)} 个百分点`}>
+                        <span className="text-text-secondary">{g.top_contributor.name}</span>
+                        <span className={cn('ml-1', NUM, pctCls(g.top_contributor.pp))}>
+                          {g.top_contributor.pp > 0 ? '+' : ''}{g.top_contributor.pp.toFixed(2)}
+                        </span>
+                      </span>
+                    ) : <span className="text-text-muted/50">—</span>}
+                  </td>
                   {medCell(g, 'median_pct', g.n_pct)}
                   <td className="px-2 py-1.5 text-right"><UpFlatDown up={g.up} flat={g.flat} down={g.down} /></td>
                   {medCell(g, 'median_5d', g.n_5d)}
@@ -102,7 +117,7 @@ export function GroupTable({ groups, stocksByCode, window, eventsAvailable, mult
                 </tr>
                 {isOpen && (
                   <tr className="border-b border-bg-border">
-                    <td colSpan={14} className="p-0 bg-bg-base/40">
+                    <td colSpan={15} className="p-0 bg-bg-base/40">
                       <div className="pl-5 pr-2 py-1">
                         <StockTable rows={members} />
                         {g.count === 0 && <div className="px-2 pb-2 text-[11px] text-text-muted">今天没有成员（只有跨出）</div>}

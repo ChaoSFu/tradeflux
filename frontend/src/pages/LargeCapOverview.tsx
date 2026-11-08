@@ -9,7 +9,7 @@ import { Card } from '@/components/ui/card'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { GroupTable, type Window } from '@/components/largeCap/GroupTable'
 import { StockTable } from '@/components/largeCap/StockTable'
-import { ChangeLists, VolumeSurges } from '@/components/largeCap/ChangeLists'
+import { ChangeLists, Movers, VolumeSurges } from '@/components/largeCap/ChangeLists'
 import { NUM, fmtAmt, fmtCap, fmtPct, pctCls } from '@/components/largeCap/shared'
 import { useAuthStore } from '@/store/auth'
 import { cn } from '@/utils/cn'
@@ -135,7 +135,7 @@ export default function LargeCapOverview() {
   const [customOpen, setCustomOpen] = useState(false)
   const [customVal, setCustomVal] = useState('')
   const [win, setWin] = useState<Window | null>(null)
-  const [kind, setKind] = useState<Kind>('industry_l1')
+  const [kindSel, setKind] = useState<Kind | null>(null)
   const [conceptScope, setConceptScope] = useState<'watched' | 'all'>('watched')
   // 只有一家的组，中位数就是那一家——按中位数排序时会全挤到最上面。概念默认至少 3 家
   const [minCount, setMinCount] = useState<number | null>(null)
@@ -151,6 +151,8 @@ export default function LargeCapOverview() {
 
   const ok: LargeCapOverviewOk | null = data && data.status === 'ok' ? data : null
   const window: Window = win ?? (ok ? (`${ok.config.history_days}d` as Window) : '20d')
+  // 一级行业一只都映射不上时（层级表里没有这些二级），默认落到二级行业，不展示一张只有「一级未映射」的表
+  const kind: Kind = kindSel ?? (ok && ok.classification.with_industry_l1 === 0 ? 'industry_l2' : 'industry_l1')
   const stocksByCode = useMemo(() => new Map((ok?.stocks ?? []).map((s) => [s.code, s])), [ok])
   const minMembers = minCount ?? (kind === 'concept' ? 3 : 1)
   const scoped = useMemo(() => {
@@ -335,16 +337,20 @@ export default function LargeCapOverview() {
             </div>
             <GroupTable groups={groups} stocksByCode={stocksByCode} window={window}
                         eventsAvailable={d.events.available} multipleReady={multipleReady}
-                        label={KINDS.find((k) => k.key === kind)!.label} maxHeight={560} />
+                        label={KINDS.find((k) => k.key === kind)!.label} maxHeight={560}
+                        emptyText={kind !== 'concept' ? undefined
+                          : d.classification.with_concept === 0 ? '这一天的快照没有概念数据'
+                          : conceptScope === 'watched' ? `关注概念里没有 ≥${minMembers} 家成员的，可以切到「全部概念」或调低成员数`
+                          : `没有 ≥${minMembers} 家成员的概念`} />
             <div className="px-3 py-1.5 text-[11px] text-text-muted border-t border-bg-border">
               {d.classification.note}
-              {' '}F10 已分类 {d.classification.with_f10}/{d.classification.members}，
-              一级行业映射 {d.classification.with_industry_l1}/{d.classification.members}
-              {d.classification.f10_as_of && `，F10 抓取于 ${fmtTime(d.classification.f10_as_of)}`}
+              {' '}一级行业映射 {d.classification.with_industry_l1}/{d.classification.members}，
+              有概念 {d.classification.with_concept}/{d.classification.members}
             </div>
           </div>
 
           <ChangeLists events={d.events} threshold={thr} prevDate={d.prev_date} />
+          <Movers stocks={d.stocks} />
           <VolumeSurges rows={d.volume_surges} multipleReady={multipleReady}
                         multiple={d.config.surge_amount_multiple} ratio={d.config.surge_volume_ratio} />
         </>

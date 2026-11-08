@@ -12,6 +12,8 @@
     f109 / f160 / f110 / f24   近 5 / 10 / 20 / 60 个交易日涨跌幅 %（前复权收盘价算的）
     f100 东财二级行业名，跟 sectors 表里的行业板块同名（≥400 亿的 435 只全部对得上）
     f26  上市日（yyyymmdd）
+    f103 概念（逗号分隔的板块名，跟 sectors 表的概念板块同名）。只有题材概念，不含 F10 里
+         混着的权重股 / HS300_ / 融资融券这类风格、指数板块
     f297 这条行情的交易日（yyyymmdd）
 
 **上市不满 N 天的「N 日涨跌幅」不是 N 日涨跌幅**：粤芯半导 10-13 上市、到 11-06 只有
@@ -58,10 +60,14 @@ SOURCE_EM = "eastmoney_clist"
 SOURCE_TENCENT = "tencent_quote"
 
 EM_HOSTS = ("push2delay.eastmoney.com", "push2.eastmoney.com")
-EM_FIELDS = "f12,f13,f14,f2,f3,f6,f8,f10,f20,f21,f24,f26,f100,f109,f110,f160,f297"
+EM_FIELDS = "f12,f13,f14,f2,f3,f6,f8,f10,f20,f21,f24,f26,f100,f103,f109,f110,f160,f297"
 PAGE_SIZE = 100
 PAGE_TRIES = 4
 _BACKOFF = (1.0, 3.0, 6.0, 10.0)
+
+# 概念只给总市值 ≥ 这个数的存：全市场每只都存一串概念名，一年要多上百 MB，而门槛最低
+# 预设也是 500 亿。门槛调到这以下时，下面那截公司没有概念（页面会报数）
+CONCEPT_FLOOR_YI = 300.0
 
 MIN_VALID_CAP_RATIO = 0.90
 MIN_EXPECTED_RATIO = 0.95
@@ -120,6 +126,10 @@ def parse_em_item(it: dict) -> Optional[dict]:
     industry = it.get("f100")
     if not isinstance(industry, str) or industry.strip() in ("", "-"):
         industry = None
+    raw_concepts = it.get("f103")
+    concepts = None
+    if isinstance(raw_concepts, str) and raw_concepts.strip() not in ("", "-"):
+        concepts = list(dict.fromkeys(x.strip() for x in raw_concepts.split(",") if x.strip()))
     total = _pos(it.get("f20"))
     flt = _pos(it.get("f21"))
     amount = _num(it.get("f6"))
@@ -139,6 +149,7 @@ def parse_em_item(it: dict) -> Optional[dict]:
         "turnover_rate": _num(it.get("f8")),
         "volume_ratio": _num(it.get("f10")),
         "industry": industry,
+        "concepts": concepts,
         "is_st": _is_st(name if isinstance(name, str) else None),
         "listing_date": _parse_yyyymmdd(it.get("f26")),
         "trade_date": _parse_yyyymmdd(it.get("f297")),
@@ -179,6 +190,7 @@ def parse_tencent_line(line: str) -> Optional[dict]:
         "turnover_rate": _num(f[38]),
         "volume_ratio": _num(f[49]),
         "industry": None,
+        "concepts": None,
         "is_st": _is_st(f[1]),
         "listing_date": None,
         "trade_date": _parse_yyyymmdd(ts),
@@ -393,6 +405,9 @@ def _write_rows(db: Session, batch: LargeCapSyncBatch, rows: Iterable[dict], obs
     payload = []
     for r in rows:
         rec = {k: v for k, v in r.items() if k != "trade_date"}
+        cps = rec.get("concepts")
+        keep = cps is not None and (rec.get("total_market_cap") or 0) >= CONCEPT_FLOOR_YI
+        rec["concepts"] = json.dumps(cps, ensure_ascii=False) if keep else None
         rec.update(trade_date=batch.trade_date, source=batch.source,
                    batch_id=batch.id, observed_at=observed_at)
         payload.append(rec)
@@ -433,17 +448,18 @@ def _prev_complete_expected(db: Session, source: str) -> Optional[int]:
     return b.expected_count if b else None
 
 
-def _tencent_universe(db: Session, max_age_days: int = 20) -> Tuple[List[Tuple[str, str]], Dict[str, str], Optional[date]]:
-    """沿用最近一次东财完整快照的名单（和那天的行业）。太旧就不沿用。"""
+def _tencent_universe(db: Session, max_age_days: int = 20) -> Tuple[List[Tuple[str, str]], Dict[str, tuple], Optional[date]]:
+    """沿用最近一次东财完整快照的名单（和那天的行业、概念）。太旧就不沿用。"""
     b = (db.query(LargeCapSyncBatch)
          .filter(LargeCapSyncBatch.source == SOURCE_EM, LargeCapSyncBatch.applied.is_(True))
          .order_by(LargeCapSyncBatch.trade_date.desc()).first())
     if b is None or b.trade_date is None or b.trade_date < date.today() - timedelta(days=max_age_days):
         return [], {}, None
-    rows = (db.query(LargeCapMarketDaily.stock_code, LargeCapMarketDaily.market, LargeCapMarketDaily.industry)
+    rows = (db.query(LargeCapMarketDaily.stock_code, LargeCapMarketDaily.market,
+                     LargeCapMarketDaily.industry, LargeCapMarketDaily.concepts)
             .filter(LargeCapMarketDaily.trade_date == b.trade_date).all())
-    return ([(c, m) for c, m, _ in rows if m in ("SH", "SZ")],
-            {c: ind for c, _, ind in rows if ind}, b.trade_date)
+    return ([(c, m) for c, m, _, _ in rows if m in ("SH", "SZ")],
+            {c: (ind, json.loads(cps) if cps else None) for c, _, ind, cps in rows}, b.trade_date)
 
 
 def sync_snapshot(db: Session, *, apply: bool = True, source: str = "auto",
@@ -473,7 +489,7 @@ def sync_snapshot(db: Session, *, apply: bool = True, source: str = "auto",
         if src == SOURCE_EM:
             log("[大市值] 东财 clist 翻全市场...")
             res = fetch_em()
-            carry_industry: Dict[str, str] = {}
+            carry_industry: Dict[str, tuple] = {}
         else:
             universe, carry_industry, uni_date = _tencent_universe(db)
             if not universe:
@@ -486,11 +502,11 @@ def sync_snapshot(db: Session, *, apply: bool = True, source: str = "auto",
                     db.commit()
                 continue
             log(f"[大市值] 腾讯行情备用，名单沿用 {uni_date} 东财快照（{len(universe)} 只）...")
-            warnings.append(f"全市场名单与行业沿用 {uni_date} 东财快照；之后新上市的不在内；"
+            warnings.append(f"全市场名单与行业、概念沿用 {uni_date} 东财快照；之后新上市的不在内；"
                             "腾讯不提供 5/10/20/60 日涨跌幅")
             res = fetch_tx(universe)
             for code, rec in res.rows.items():
-                rec["industry"] = carry_industry.get(code)
+                rec["industry"], rec["concepts"] = carry_industry.get(code, (None, None))
 
         verdict = judge(res, _prev_complete_expected(db, src) if src == SOURCE_EM else None)
         if verdict.trade_date is not None:

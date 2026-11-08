@@ -48,6 +48,11 @@ class TestParse:
             == (4.38, 8.84, 15.04, 11.04)
         assert r["trade_date"] == date(2026, 11, 6) and r["market"] == "SH"
 
+    def test_概念取f103_去重(self):
+        r = sync.parse_em_item(_em("600519", 18163, f103="酿酒概念,白酒,白酒, 央国企改革"))
+        assert r["concepts"] == ["酿酒概念", "白酒", "央国企改革"]
+        assert sync.parse_em_item(_em("1", 100, f103="-"))["concepts"] is None
+
     def test_横杠是None不是0(self):
         r = sync.parse_em_item(_em("601059", None, pct="-", f2="-", f6="-", f8="-", f10="-", f100="-"))
         assert r["total_market_cap"] is None and r["pct_change"] is None
@@ -190,6 +195,13 @@ class TestStats:
         assert st["weighted_pct"] == pytest.approx((3000 * 2 - 1000 * 2) / 4000)
         assert st["n_weighted"] == 2, "C 没有前一日市值，不参与加权"
 
+    def test_最大贡献者_看是不是一只巨头拉的(self):
+        ms = [_o("A", 30000, 3.0, name="巨头"), _o("B", 1000, -1.0), _o("C", 1000, -1.0)]
+        st = svc.group_stats(ms, {o.code: o.total_cap for o in ms}, {}, 2, 2)
+        assert st["top_contributor"]["name"] == "巨头"
+        assert st["top_contributor"]["pp"] == pytest.approx(30000 * 3 / 32000, abs=0.01)
+        assert st["median_pct"] == -1.0, "加权是正的、中位数是负的：一只巨头拉的"
+
     def test_成交额求和单位亿(self):
         st = svc.group_stats([_o("A", 2000, amount=12.5), _o("B", 1500, amount=None)], {}, {}, 2, 2)
         assert st["amount"] == 12.5 and st["n_amount"] == 1
@@ -301,6 +313,15 @@ class TestSyncWrites:
             assert out["applied"] is True
         assert db.query(LargeCapMarketDaily).filter_by(trade_date=d).count() == 120
         assert db.query(LargeCapSyncBatch).filter_by(applied=True).count() == 2
+
+    def test_概念只给300亿以上的存(self, db):
+        d = _today()
+        items = [_em("600001", 2000, f103="CPO,光通信"), _em("600002", 100, f103="CPO")]
+        sync.sync_snapshot(db, fetch_em=_fake_em(items, d), source="eastmoney",
+                           market_now=_after_close(d), log=lambda m: None)
+        rows = {r.stock_code: r for r in db.query(LargeCapMarketDaily).all()}
+        assert json.loads(rows["600001"].concepts) == ["CPO", "光通信"]
+        assert rows["600002"].concepts is None
 
     def test_盘中不写(self, db):
         d = _today()
@@ -419,7 +440,7 @@ D1, D2, D3 = date(2026, 11, 4), date(2026, 11, 5), date(2026, 11, 6)
 NOW = datetime(2026, 11, 6, 18, 0)
 
 
-def _seed(db, d, rows, source=sync.SOURCE_EM):
+def _seed(db, d, rows, source=sync.SOURCE_EM, concepts=None):
     b = LargeCapSyncBatch(trade_date=d, source=source, started_at=NOW, is_complete=True,
                           is_settled=True, applied=True, status="ok")
     db.add(b)
@@ -428,6 +449,8 @@ def _seed(db, d, rows, source=sync.SOURCE_EM):
         db.add(LargeCapMarketDaily(trade_date=d, stock_code=code, stock_name=f"股{code}", market="SH",
                                    total_market_cap=cap, pct_change=pct, pct_change_20d=pct,
                                    amount=10.0, industry=industry, is_st=False, source=source,
+                                   concepts=json.dumps((concepts or {}).get(code), ensure_ascii=False)
+                                   if (concepts or {}).get(code) is not None else None,
                                    batch_id=b.id))
     db.commit()
 
@@ -488,20 +511,31 @@ class TestOverview:
         ov = svc.build_overview(db, threshold=800, now=NOW)
         assert ov["summary"]["count"] == 1 and ov["events"]["entered"] == []
 
-    def test_概念多重归属_同一概念不重复计(self, db, cal):
+    def test_概念多重归属_取当天快照(self, db, cal):
         db.add_all([Sector(code="BK1", name="CPO", sector_type="concept", is_watched=True),
                     Sector(code="BK2", name="光通信", sector_type="concept", is_watched=False),
                     Sector(code="BK9", name="银行", sector_type="industry")])
-        db.add(LargeCapStockBoards(stock_code="A", status="ok", boards=json.dumps(
-            [["BK9", "银行", 1], ["BK1", "CPO", 9], ["BK2", "光通信", 10], ["BK1", "CPO", 11]])))
-        _seed(db, D3, [("A", 2000, 1.0, "银行Ⅱ"), ("B", 1500, 2.0, "银行Ⅱ")])
+        _seed(db, D3, [("A", 2000, 1.0, "银行Ⅱ"), ("B", 1500, 2.0, "银行Ⅱ"), ("C", 1200, 1.0, "银行Ⅱ")],
+              concepts={"A": ["CPO", "光通信", "新概念"], "B": ["CPO"], "C": []})
         ov = svc.build_overview(db, now=NOW)
         concepts = {g["key"]: g for g in ov["groups"]["concept"]}
-        assert concepts["BK1"]["count"] == 1 and concepts["BK2"]["count"] == 1
-        assert concepts["BK1"]["watched"] is True and concepts["BK1"]["name"] == "CPO"
+        assert concepts["BK1"]["count"] == 2 and concepts["BK1"]["watched"] is True
+        assert concepts["BK1"]["name"] == "CPO" and concepts["BK2"]["count"] == 1
+        assert concepts["name:新概念"]["name"] == "新概念", "sectors 表里没有的概念也不丢"
         a = next(s for s in ov["stocks"] if s["code"] == "A")
-        assert a["concepts"] == ["BK1", "BK2"], "行业板块不算概念；重复的 BK 只算一次"
-        assert ov["classification"]["with_f10"] == 1
+        assert a["concepts"] == ["BK1", "BK2", "name:新概念"]
+        assert ov["classification"]["with_concept"] == 2 and ov["classification"]["concept_unknown"] == 0
+
+    def test_一级行业用东财层级_不依赖F10(self, db, cal):
+        _seed(db, D3, [("A", 2000, 1.0, "银行Ⅱ"), ("B", 1500, 2.0, "白酒Ⅱ"), ("C", 1100, 1.0, "不存在的行业")])
+        ov = svc.build_overview(db, now=NOW)
+        l1 = {s["code"]: s["industry_l1"] for s in ov["stocks"]}
+        assert l1 == {"A": "银行", "B": "食品饮料", "C": "一级未映射"}
+        assert any("一级行业没映射上" in w for w in ov["warnings"])
+
+    def test_第一份快照的提示(self, db, cal):
+        _seed(db, D3, [("A", 2000, 1.0, "银行Ⅱ")])
+        assert any("第一份收盘快照" in w for w in svc.build_overview(db, now=NOW)["warnings"])
 
     def test_过期标记(self, db, cal):
         _seed(db, D2, [("A", 1030, 1.0, "银行Ⅱ")])
