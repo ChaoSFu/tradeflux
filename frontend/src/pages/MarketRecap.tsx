@@ -118,7 +118,7 @@ export default function MarketRecap() {
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <div className="flex items-center gap-2">
             <BookOpenCheck className="w-4 h-4 text-accent" />
-            <h1 className="text-base font-semibold text-text-primary">每日盘面复盘</h1>
+            <h1 className="text-base font-semibold text-text-primary">每日复盘</h1>
             <select value={date} onChange={(e) => switchDate(e.target.value)}
                     className="bg-bg-elevated border border-bg-border rounded px-1.5 py-0.5 text-sm text-text-primary font-mono">
               {dates.map((x) => (

@@ -1,6 +1,6 @@
-# 每日盘面复盘（Daily Market Recap）
+# 每日复盘（Daily Market Recap）
 
-> 2026-11-08 上线 Phase 1。页面 `/market-recap`（侧边栏：主页 → **每日盘面复盘** → 大盘趋势，要登录）。
+> 2026-11-08 上线 Phase 1。页面 `/market-recap`（侧边栏：主页 → **每日复盘** → 大盘趋势，要登录）。
 > 代码：`backend/app/services/market_recap_service.py`（市场事实）、`market_recap_store.py`（人工数据、锁定、验证）、
 > `backend/app/routers/market_recap.py`、`backend/app/models/market_recap.py`、`frontend/src/pages/MarketRecap.tsx`。
 > 原 `/review`（旧版日复盘）保留。
