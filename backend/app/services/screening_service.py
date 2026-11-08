@@ -117,6 +117,8 @@ class StockWindowStats:
     # 近60日最高连板那一段顶到了 bar 序列开头 → 更早的涨停没拉进来，board_count_60d
     # 只是**下界**。跟 peak_board_confident 同一条纪律：宁可说"可能偏低"
     board_count_60d_truncated: bool = False
+    # 近5日累计涨幅（跟 10/20/60 同口径：日涨跌幅相加）。不足 5 根 bar 为 None
+    pct_change_5d: Optional[float] = None
     # 成交量（股）/ 成交额（元）/ 量的来源口径。None = 该源没给，不是 0。
     # 来源要一路带到快照：dump 未复权、腾讯 qfq，复权会同时调整价和量。
     today_volume: Optional[float] = None
@@ -186,6 +188,8 @@ def compute_window_stats(
     pct_60d = sum(b.pct_change for b in recent_60)
     pct_20d = sum(b.pct_change for b in recent_20)
     pct_10d = sum(b.pct_change for b in recent_10)
+    # 近 5 日：跟上面三个同一种算法（日涨跌幅相加），不足 5 根就是不知道，不拿几根凑
+    pct_5d = sum(b.pct_change for b in bars[-5:]) if n >= 5 else None
 
     # 次新股判断
     # 优先用上市日期（精确）；没有则用 K 线条数估算（65日数据下不可靠，保守设为 False）
@@ -330,6 +334,7 @@ def compute_window_stats(
         pct_change_60d=pct_60d,
         pct_change_20d=pct_20d,
         pct_change_10d=pct_10d,
+        pct_change_5d=pct_5d,
         emotion_score=round(emotion, 1),
         risk_score=round(risk, 1),
         leader_score=round(leader, 1),

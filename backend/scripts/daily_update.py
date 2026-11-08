@@ -547,6 +547,7 @@ def _upsert_stock(
     stock.pct_change_60d = round(stats.pct_change_60d, 2)
     stock.pct_change_20d = round(stats.pct_change_20d, 2)
     stock.pct_change_10d = round(stats.pct_change_10d, 2)
+    stock.pct_change_5d = round(stats.pct_change_5d, 2) if stats.pct_change_5d is not None else None
     stock.top_10_pct_change_20d = (stats.pct_change_20d > 0 and stats.pct_change_20d > 30)  # 粗判
     # 阶段：仅对强势池股票标记，移出池时清空
     if in_pool:
@@ -650,6 +651,7 @@ def _upsert_snapshot(
         snap.pct_change_60d = round(stats.pct_change_60d, 2)
         snap.pct_change_20d = round(stats.pct_change_20d, 2)
         snap.pct_change_10d = round(stats.pct_change_10d, 2)
+        snap.pct_change_5d = round(stats.pct_change_5d, 2) if stats.pct_change_5d is not None else None
         snap.top_10_pct_change_20d = stats.pct_change_20d > 30  # 粗判阈值
         snap.phase = stats.phase                              # 落库当日阶段，供次日赚钱效应分组用
         snap.emotion_score = stats.emotion_score

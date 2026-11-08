@@ -21,6 +21,7 @@ export interface Stock {
   pct_change_60d: number
   pct_change_20d: number
   pct_change_10d: number
+  pct_change_5d?: number | null   // 近5日累计涨幅；null = 还没算过（新字段，下一次日更才有）
   top_10_pct_change_20d: boolean
   // 股性：有记录的每次涨停，次一交易日的平均涨跌幅 %；没有样本为 null。样本数单独给
   limit_up_next_avg_pct: number | null

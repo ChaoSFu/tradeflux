@@ -225,6 +225,7 @@ def _enrich_stocks_bulk(stocks: List[Stock], db: Session, as_of_date=None) -> Li
             data.pct_change_60d = snap.pct_change_60d
             data.pct_change_20d = snap.pct_change_20d
             data.pct_change_10d = snap.pct_change_10d
+            data.pct_change_5d = snap.pct_change_5d
             data.phase = snap.phase
             data.leader_score = snap.leader_score
             data.risk_score = snap.risk_score
@@ -298,10 +299,11 @@ def get_strong_pool(
         )
 
     sort_col = getattr(Stock, sort_by, Stock.leader_score)
+    # 缺值排最后（pct_change_5d 可为空；Postgres 降序默认把 NULL 排最前）
     if sort_order == "desc":
-        q = q.order_by(sort_col.desc())
+        q = q.order_by(sort_col.desc().nullslast())
     else:
-        q = q.order_by(sort_col.asc())
+        q = q.order_by(sort_col.asc().nullslast())
 
     total = q.count()
     stocks = q.offset((page - 1) * page_size).limit(page_size).all()

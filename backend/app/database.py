@@ -40,6 +40,9 @@ def _apply_schema_patches():
     from sqlalchemy import text
 
     patches = [
+        # 近5日累计涨幅（2026-11-08，活跃股池「5涨幅龙」标签用）
+        "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS pct_change_5d DOUBLE PRECISION",
+        "ALTER TABLE stock_daily_snapshots ADD COLUMN IF NOT EXISTS pct_change_5d DOUBLE PRECISION",
         # 大市值日快照：上市日（2026-11-08，新股的区间涨幅要靠它判是否有效）
         "ALTER TABLE large_cap_market_daily ADD COLUMN IF NOT EXISTS listing_date DATE",
         "ALTER TABLE large_cap_market_daily ADD COLUMN IF NOT EXISTS concepts TEXT",

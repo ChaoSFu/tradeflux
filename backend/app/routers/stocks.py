@@ -51,7 +51,7 @@ def list_strong_pool(
     sector_id: Optional[int] = None,
     phase: Optional[str] = None,
     search: Optional[str] = None,
-    sort_by: str = Query("leader_score", regex="^(leader_score|risk_score|emotion_score|board_count_60d|board_down_count_60d|limit_up_days_60d|limit_up_days_20d|limit_up_days_10d|pct_change_60d|pct_change_20d|pct_change_10d)$"),
+    sort_by: str = Query("leader_score", regex="^(leader_score|risk_score|emotion_score|board_count_60d|board_down_count_60d|limit_up_days_60d|limit_up_days_20d|limit_up_days_10d|pct_change_60d|pct_change_20d|pct_change_10d|pct_change_5d)$"),
     sort_order: str = Query("desc", regex="^(asc|desc)$"),
     db: Session = Depends(get_db),
 ):

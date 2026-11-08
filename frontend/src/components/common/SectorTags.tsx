@@ -100,6 +100,20 @@ export function LeaderTag({ label }: { label: string }) {
   )
 }
 
+/** 区间涨幅龙（60/20/10/5 日累计涨幅前三）：用红色系，跟按涨停天数排的琥珀色龙头标签分开 */
+export function GainLeaderTag({ label }: { label: string }) {
+  const rank = label.slice(-1)
+  const cls = rank === '1' ? 'bg-up/15 text-up border-up/35'
+    : rank === '2' ? 'bg-up/8 text-up/75 border-up/25'
+    : 'bg-up/5 text-up/55 border-up/15'
+  return (
+    <span className={`inline-flex items-center px-1 py-px text-[9px] font-bold rounded border whitespace-nowrap leading-tight ${cls}`}
+          title={`${label.replace('涨幅龙', '日累计涨幅 第')} 名（强势池 + 涨停池 + 跌停池全集）`}>
+      {label}
+    </span>
+  )
+}
+
 // ─── Negative feedback badge (red, for 跌停 consecutive streaks) ─────────────
 
 export function NegativeTag({ label }: { label: string }) {
