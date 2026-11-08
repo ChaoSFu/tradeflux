@@ -99,7 +99,7 @@ function SyncButton({ onDone }: { onDone: () => void }) {
       await triggerLargeCapSync()
       setPolling(true)
     } catch (e: any) {  // eslint-disable-line @typescript-eslint/no-explicit-any
-      setMsg(e?.response?.data?.detail ?? '启动失败')
+      setMsg(e?.message ?? '启动失败')
     }
   }
   const last = st.data?.log_lines?.[st.data.log_lines.length - 1]
@@ -172,7 +172,7 @@ export default function LargeCapOverview() {
 
   if (isLoading && !data) return <LoadingSpinner />
   if (isError) {
-    const detail = (error as any)?.response?.data?.detail  // eslint-disable-line @typescript-eslint/no-explicit-any
+    const detail = (error as any)?.message  // eslint-disable-line @typescript-eslint/no-explicit-any
     return <div className="card p-6 text-sm text-down">大市值数据读取失败：{detail ?? String(error)}</div>
   }
   if (!data) return null
