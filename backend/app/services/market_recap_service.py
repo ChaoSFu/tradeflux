@@ -499,3 +499,75 @@ def concept_suggestions(db: Session, leader_code: str, d: date, limit: int = 30)
                     "evidence": f"同属概念：{'、'.join(sorted(names))}；{d} 也涨停"})
     out.sort(key=lambda x: (-x["hits"], x["related_code"]))
     return out[:limit]
+
+
+# ── 板块关联：高标所在的每个板块里，当天的活跃股 ─────────────────────────────
+
+ACTIVE_LABEL = {"strong": "强势池", "limit_up": "涨停", "limit_down": "跌停"}
+
+
+def sector_peers(db: Session, leader_code: str, d: date) -> dict:
+    """
+    高标所在的每个板块（跟活跃股池里显示的板块标签同一份：Sector Config 里关注的行业 / 概念），
+    各列出 d 这天的活跃股。一只票同时在高标的几个板块里，就在每个板块下都出现。
+
+    「活跃」按 d 当天：强势池成员（那天的生命周期快照）、那天涨停（涨停明细，全的）、那天跌停
+    （股票日快照）。**板块归属是当前口径**——板块关联表不存历史，页面上写明。
+    """
+    from ..models.leader_cycle import LeaderCycleSnapshot
+    lead = db.query(Stock).filter(Stock.code == leader_code).first()
+    if lead is None:
+        return {"status": "missing", "note": "股票库里没有这只，查不到它的板块归属", "groups": []}
+    secs = (db.query(Sector.id, Sector.code, Sector.name, Sector.sector_type)
+            .join(StockSectorRelation, StockSectorRelation.sector_id == Sector.id)
+            .filter(StockSectorRelation.stock_id == lead.id, Sector.is_watched.is_(True)).all())
+    if not secs:
+        return {"status": "missing", "groups": [],
+                "note": "这只没有板块归属（板块关联靠 F10 同步，只关联关注板块；可以在下面手动录入关联）"}
+
+    reasons: Dict[str, List[str]] = {}
+    for (c,) in db.query(LeaderCycleSnapshot.stock_code).filter(LeaderCycleSnapshot.date == d):
+        reasons.setdefault(c, []).append("strong")
+    lu_known = False
+    for (c,) in db.query(LimitUpDailyDetail.stock_code).filter(LimitUpDailyDetail.trade_date == d):
+        lu_known = True
+        reasons.setdefault(c, []).append("limit_up")
+    for (c,) in (db.query(Stock.code).join(StockDailySnapshot, StockDailySnapshot.stock_id == Stock.id)
+                 .filter(StockDailySnapshot.date == d, StockDailySnapshot.is_limit_down.is_(True))):
+        reasons.setdefault(c, []).append("limit_down")
+    reasons.pop(leader_code, None)
+
+    sec_ids = [s.id for s in secs]
+    members: Dict[int, List[str]] = {}
+    if reasons:
+        for sid, c in (db.query(StockSectorRelation.sector_id, Stock.code)
+                       .join(Stock, Stock.id == StockSectorRelation.stock_id)
+                       .filter(StockSectorRelation.sector_id.in_(sec_ids), Stock.code.in_(list(reasons)))):
+            members.setdefault(sid, []).append(c)
+    codes = sorted({c for v in members.values() for c in v})
+    facts = stock_facts(db, codes + [leader_code], d)
+    in_secs: Dict[str, List[str]] = {}
+    name_of = {s.id: s.name for s in secs}
+    for sid, cs in members.items():
+        for c in cs:
+            in_secs.setdefault(c, []).append(name_of[sid])
+
+    def key(c: str):
+        f = facts.get(c) or {}
+        return (not f.get("is_limit_up"), -(f.get("board_count") or 0), -(f.get("pct") or -99))
+
+    order = sorted(secs, key=lambda s: (s.id != lead.primary_sector_id, s.sector_type != "industry", s.name))
+    groups = [{"sector": {"code": s.code, "name": s.name, "type": s.sector_type,
+                          "primary": s.id == lead.primary_sector_id},
+               "stocks": [{"code": c, "active": reasons[c], "also_in": [n for n in in_secs[c] if n != s.name],
+                           "facts": facts.get(c)} for c in sorted(members.get(s.id, []), key=key)]}
+              for s in order]
+    with_rel = {c for (c,) in db.query(Stock.code).join(StockSectorRelation, StockSectorRelation.stock_id == Stock.id)
+                .filter(Stock.code.in_(list(reasons))).distinct()} if reasons else set()
+    notes = ["板块归属是当前口径（板块关联表不存历史）；活跃股按当天：强势池、涨停、跌停"]
+    if not lu_known:
+        notes.append(f"{d} 没有涨停明细，涨停的活跃股可能不全")
+    if reasons and len(with_rel) < len(reasons):
+        notes.append(f"这天 {len(reasons)} 只活跃股里 {len(reasons) - len(with_rel)} 只没有板块归属，不会出现在任何板块下")
+    return {"status": "ok", "leader": facts.get(leader_code), "groups": groups,
+            "active_total": len(reasons), "peers_total": len(codes), "notes": notes}
