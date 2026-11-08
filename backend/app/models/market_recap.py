@@ -45,6 +45,7 @@ class MarketRecap(Base):
     deviations = Column(JSON, nullable=True)           # 偏差记录：[{subject, original, actual, kind, cause, next_step, keep_verifying}]
 
     status = Column(String(16), nullable=False, default="draft")   # draft | locked
+    key_points = Column(JSON, nullable=True)           # 明天最重要的三个观察点：[str]，最多 3 条
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -146,7 +147,9 @@ class NextDayPlan(Base):
     sector_name = Column(String(100), nullable=True)
     scenario = Column(String(2), nullable=True)           # A | B | C | N（新核心）
     reason = Column(Text, nullable=True)
-    entry_trigger = Column(Text, nullable=False)
+    relation_note = Column(Text, nullable=True)           # 关联依据（跟哪只高标、凭什么关联）
+    watch_trigger = Column(Text, nullable=True)           # 观察触发：高标出现什么才去看它（不是买点）
+    entry_trigger = Column(Text, nullable=False)          # 它自己的入场触发
     invalidation = Column(Text, nullable=False)
     planned_stop = Column(Float, nullable=True)           # 计划止损价
     risk_budget = Column(Float, nullable=True)            # 单笔风险预算（占账户 %）
@@ -177,3 +180,81 @@ class RecapLockedVersion(Base):
     target_is_provisional = Column(Boolean, nullable=False, default=True)
     payload = Column(JSON, nullable=False)                # 判断、观察池、关联、情景、预案、反思
     data_status = Column(JSON, nullable=True)             # 锁定时各事实模块的数据状态与口径
+
+
+class MarketPopularCoreRun(Base):
+    """
+    某个交易日人气核心池的一次冻结：各召回来源当时的数据状态和统计范围。
+    同一天同一规则版本只留一份（重新冻结是覆盖）。
+    """
+    __tablename__ = "market_popular_core_runs"
+    __table_args__ = (UniqueConstraint("trade_date", "rule_version", name="uq_popular_core_run"),)
+
+    id = Column(Integer, primary_key=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    rule_version = Column(String(16), nullable=False)
+    sources = Column(JSON, nullable=False)                # {source: {status, scope, n, note}}
+    built_at = Column(DateTime, nullable=False)
+
+
+class MarketPopularCoreDaily(Base):
+    """
+    人气核心池每日快照：那一天谁凭什么进了池（辨识度依据）和当时的结构状态。
+    **不重存行情历史**，只存成员资格和排名依据；不能拿今天的池子回填过去。
+    区间涨幅 / 排名是全市场快照（前复权）口径；涨停次数、连板、高板是已跟踪股票口径。
+    """
+    __tablename__ = "market_popular_core_daily"
+    __table_args__ = (UniqueConstraint("trade_date", "stock_code", "rule_version", name="uq_popular_core"),)
+
+    id = Column(Integer, primary_key=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(50), nullable=True)
+    board = Column(String(8), nullable=True)              # 主板 / 创业板 / 科创板（涨跌停制度不同）
+    is_st = Column(Boolean, nullable=True)
+    rule_version = Column(String(16), nullable=False)
+    selection_sources = Column(JSON, nullable=False)      # [{source, rank, value, scope}]
+    pct_change = Column(Float, nullable=True)             # 当日涨跌幅
+    rank_5d = Column(Integer, nullable=True)
+    rank_10d = Column(Integer, nullable=True)
+    rank_20d = Column(Integer, nullable=True)
+    rank_60d = Column(Integer, nullable=True)
+    pct_change_5d = Column(Float, nullable=True)
+    pct_change_10d = Column(Float, nullable=True)
+    pct_change_20d = Column(Float, nullable=True)
+    pct_change_60d = Column(Float, nullable=True)
+    limit_up_days_10d = Column(Integer, nullable=True)
+    limit_up_days_20d = Column(Integer, nullable=True)
+    limit_up_days_60d = Column(Integer, nullable=True)
+    current_board = Column(Integer, nullable=True)
+    historical_max_board = Column(Integer, nullable=True)
+    turnover_rank = Column(Integer, nullable=True)
+    amount = Column(Float, nullable=True)                 # 成交额（亿元）
+    limit_up_next_avg_pct = Column(Float, nullable=True)  # 冻结时的值；历史日期现算时不回填
+    limit_up_next_samples = Column(Integer, nullable=True)
+    lifecycle_state = Column(String(20), nullable=True)
+    sector = Column(String(100), nullable=True)
+    sector_basis = Column(String(30), nullable=True)
+    data_status = Column(JSON, nullable=True)             # 这一行哪些字段缺了、为什么
+
+
+class LeaderActivationEvent(Base):
+    """
+    人气核心活跃事件：当天发生的事实，只用来提醒去看关联池，**不是买入信号**。
+    同一天同一只可以有多种事件；(交易日, 股票, 事件类型, 规则版本) 唯一，重复刷新是覆盖。
+    """
+    __tablename__ = "leader_activation_events"
+    __table_args__ = (UniqueConstraint("trade_date", "leader_code", "event_type", "rule_version",
+                                       name="uq_leader_activation"),)
+
+    id = Column(Integer, primary_key=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    leader_code = Column(String(10), nullable=False)
+    leader_name = Column(String(50), nullable=True)
+    event_type = Column(String(24), nullable=False)
+    event_time = Column(Time, nullable=True)              # 只有首封时间这类真实时间戳才填
+    evidence = Column(Text, nullable=True)
+    source = Column(String(40), nullable=True)
+    data_status = Column(String(12), nullable=False, default="ok")
+    rule_version = Column(String(16), nullable=False)
+    created_at = Column(DateTime, server_default=func.now())

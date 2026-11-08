@@ -4,23 +4,27 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { BookOpenCheck, Lock, Save } from 'lucide-react'
 import {
   fetchRecapContext, fetchRecapDates, fetchRecapDay, fetchVerification, lockRecap, saveRecap,
-  type RecapDay, type RecapDraft,
+  type Plan, type RecapDay, type RecapDraft,
 } from '@/api/marketRecap'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { CorePanel } from '@/components/marketRecap/CorePanel'
 import { MarketPanel } from '@/components/marketRecap/MarketPanel'
-import { PlanPanel, ScenarioPanel } from '@/components/marketRecap/PlanPanel'
+import { PlanPanel, ScenarioPanel, emptyPlan } from '@/components/marketRecap/PlanPanel'
+import { CorePoolPanel } from '@/components/marketRecap/CorePoolPanel'
+import { DecisionSummary, PreparePanel } from '@/components/marketRecap/PreparePanel'
 import { RelationPanel } from '@/components/marketRecap/RelationPanel'
 import { ReflectPanel, SummaryCard, VerificationCard, VersionList } from '@/components/marketRecap/ReviewPanel'
 import { MetaBadge, Section } from '@/components/marketRecap/shared'
 import { cn } from '@/utils/cn'
 
-const NAV = [['market', '市场判断'], ['core', '核心观察'], ['relations', '关联研究'], ['plan', '次日预案'], ['review', '复盘总结']] as const
+const NAV = [['market', '市场判断'], ['cores', '人气核心'], ['core', '主线与观察池'], ['relations', '关联研究'], ['plan', '次日预案'], ['review', '复盘总结']] as const
+const MODES = [['research', '盘后研究'], ['prepare', '次日准备'], ['verify', '结果验证']] as const
+type Mode = typeof MODES[number][0]
 
 const emptyDraft = (): RecapDraft => ({
   market_posture: null, market_evidence: [], evidence_note: null, invalidation: [], sector_picks: [],
   scenarios: { A: {}, B: {}, C: {}, N: {} }, flat_plan: false, discovery: null, mistake: null,
-  mistake_type: null, hypothesis: null, deviations: [], plans: [],
+  mistake_type: null, hypothesis: null, deviations: [], plans: [], key_points: [],
 })
 
 function fromDay(day: RecapDay): RecapDraft {
@@ -31,7 +35,7 @@ function fromDay(day: RecapDay): RecapDraft {
     invalidation: r.invalidation ?? [], sector_picks: r.sector_picks ?? [],
     scenarios: r.scenarios ?? emptyDraft().scenarios, flat_plan: r.flat_plan,
     discovery: r.discovery, mistake: r.mistake, mistake_type: r.mistake_type, hypothesis: r.hypothesis,
-    deviations: r.deviations ?? [], plans: day.plans,
+    deviations: r.deviations ?? [], plans: day.plans, key_points: r.key_points ?? [],
   }
 }
 
@@ -52,6 +56,9 @@ export default function MarketRecap() {
   const [saved, setSaved] = useState<string>(JSON.stringify(emptyDraft()))
   const [msg, setMsg] = useState<{ text: string; err?: boolean } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [mode, setMode] = useState<Mode>('research')
+  const [leaderSel, setLeaderSel] = useState<string | null>(null)
+  const [extraLeader, setExtraLeader] = useState<{ code: string; name: string | null } | null>(null)
   // 只在换日期 / 首次载入时用服务器的草稿覆盖本地；之后的重新拉取（比如加观察股）不冲掉没保存的修改
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
   useEffect(() => {
@@ -85,6 +92,19 @@ export default function MarketRecap() {
       setMsg({ text: e?.message ?? '保存失败', err: true })
       return false
     } finally { setBusy(false) }
+  }
+  const research = (code: string, name: string | null) => {
+    setLeaderSel(code)
+    if (!day.data?.watch_pool.some((w) => w.code === code)) setExtraLeader({ code, name })
+    document.getElementById('relations')?.scrollIntoView({ behavior: 'smooth' })
+  }
+  // 「拟交易」只是放进草稿：入场 / 失效条件还得自己写，保存时后端会拦
+  const addPlan = (p: Partial<Plan>) => {
+    if (draft.flat_plan) { setMsg({ text: '现在是空仓预案，先取消空仓再加候选', err: true }); return }
+    if (draft.plans.some((x) => x.stock_code === p.stock_code)) { setMsg({ text: `${p.stock_code} 已经在预案里`, err: true }); return }
+    if (draft.plans.length >= 5) { setMsg({ text: '次日预案最多 5 只', err: true }); return }
+    set({ plans: [...draft.plans, { ...emptyPlan(), ...p }] })
+    setMsg({ text: `${p.stock_name ?? p.stock_code} 已放进次日预案（草稿），去写它自己的入场和失效条件` })
   }
   const lock = async () => {
     if (!date) return
@@ -147,9 +167,15 @@ export default function MarketRecap() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1 text-xs">
-          {NAV.map(([id, label], i) => (
+          <div className="inline-flex rounded border border-bg-border overflow-hidden mr-2">
+            {MODES.map(([m, l]) => (
+              <button key={m} onClick={() => setMode(m)}
+                      className={cn('px-2 py-0.5', mode === m ? 'bg-purple-400/15 text-purple-200' : 'text-text-muted hover:text-text-secondary')}>{l}</button>
+            ))}
+          </div>
+          {mode === 'research' && NAV.map(([id, label], i) => (
             <a key={id} href={`#${id}`} className="px-2 py-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-elevated">
-              {'①②③④⑤'[i]} {label}
+              {'①②③④⑤⑥'[i]} {label}
             </a>
           ))}
           {c.status === 'ok' && (
@@ -162,43 +188,61 @@ export default function MarketRecap() {
         </div>
       </div>
 
-      {d.prev_verification && d.prev_verification.status !== 'no_lock' && d.prev_date && (
-        <div className="card p-3 border border-purple-400/30">
-          <div className="text-xs font-medium text-text-primary mb-1.5">上一交易日锁定的预案（盘前准备 / 今日验证）</div>
-          <VerificationCard v={d.prev_verification} recapDate={d.prev_date} />
+      {mode === 'prepare' && <PreparePanel date={date} />}
+
+      {mode === 'verify' && (
+        <div className="space-y-3">
+          {verifySelf.data && verifySelf.data.status !== 'no_lock' ? (
+            <div className="card p-3">
+              <div className="text-xs font-medium text-text-primary mb-1.5">{date} 锁定的预案 → 下一交易日实际</div>
+              <VerificationCard v={verifySelf.data} recapDate={date} />
+            </div>
+          ) : <div className="card p-6 text-sm text-text-muted">{date} 没有锁定的预案，没法验证。</div>}
+          {d.prev_verification && d.prev_verification.status !== 'no_lock' && d.prev_date && (
+            <div className="card p-3">
+              <div className="text-xs font-medium text-text-primary mb-1.5">上一交易日（{d.prev_date}）锁定的预案 → {date} 实际</div>
+              <VerificationCard v={d.prev_verification} recapDate={d.prev_date} />
+            </div>
+          )}
+          <div className="card p-3"><VersionList date={date} versions={d.locked_versions} /></div>
         </div>
       )}
 
-      {c.status !== 'ok' ? (
+      {mode === 'research' && (c.status !== 'ok' ? (
         <div className="card p-6 text-sm text-text-muted">{c.message}</div>
       ) : (
         <>
+          <DecisionSummary date={date} draft={draft} set={set} summary={d.summary} pool={d.watch_pool} />
+          {d.prev_verification && d.prev_verification.status !== 'no_lock' && d.prev_date && (
+            <div className="card p-3 border border-purple-400/30">
+              <div className="text-xs font-medium text-text-primary mb-1.5">上一交易日锁定的预案（盘前准备 / 今日验证）</div>
+              <VerificationCard v={d.prev_verification} recapDate={d.prev_date} />
+            </div>
+          )}
           <Section id="market" step="①" title={`市场状态 · ${date}`} right={<span className="text-[11px] text-text-muted">系统给事实，姿态由你判断</span>}>
             <MarketPanel ctx={c} draft={draft} set={set} readOnly={false} />
           </Section>
-          <Section id="core" step="②" title="主线与核心股票" right={<span className="text-[11px] text-text-muted">候选约 10~20 只 → 观察 5~8 只 → 深入 3~5 只</span>}>
+          <Section id="cores" step="②" title="市场人气核心池" right={<span className="text-[11px] text-text-muted">多入口召回，不打分；从这里挑 5~8 只观察、3~5 只深入</span>}>
+            <CorePoolPanel date={date} onResearch={research} onPoolChanged={refreshDay} />
+          </Section>
+          <Section id="core" step="③" title="主线板块与我的观察池">
             <CorePanel ctx={c} draft={draft} set={set} pool={d.watch_pool} date={date} readOnly={false} onPoolChanged={refreshDay} />
           </Section>
-          <Section id="relations" step="③" title="高标关联图谱" right={<span className="text-[11px] text-text-muted">关联、响应即时保存（不随草稿）</span>}>
-            <RelationPanel pool={d.watch_pool} date={date} readOnly={false} />
+          <Section id="relations" step="④" title="高标关联研究" right={<span className="text-[11px] text-text-muted">关联、响应即时保存（不随草稿）</span>}>
+            <RelationPanel pool={d.watch_pool} date={date} readOnly={false} selected={leaderSel} onSelect={setLeaderSel}
+                           extraLeader={extraLeader} onAddPlan={addPlan} onPoolChanged={refreshDay} />
           </Section>
-          <Section id="plan" step="④" title="次日情景与交易预案">
-            <ScenarioPanel draft={draft} set={set} readOnly={false} />
+          <Section id="plan" step="⑤" title="次日情景与交易预案">
+            <ScenarioPanel draft={draft} set={set} pool={d.watch_pool} readOnly={false} />
             <PlanPanel draft={draft} set={set} pool={d.watch_pool} readOnly={false} />
           </Section>
-          <Section id="review" step="⑤" title="认知复盘与最终结果">
+          <Section id="review" step="⑥" title="认知复盘与最终结果">
             <ReflectPanel draft={draft} set={set} readOnly={false} />
             <SummaryCard s={d.summary} dirty={dirty} />
             <VersionList date={date} versions={d.locked_versions} />
-            {verifySelf.data && verifySelf.data.status !== 'no_lock' && (
-              <div className="card-elevated p-3">
-                <div className="text-xs font-medium text-text-primary mb-1.5">这一天预案的次日验证</div>
-                <VerificationCard v={verifySelf.data} recapDate={date} />
-              </div>
-            )}
           </Section>
         </>
-      )}
+      ))}
     </div>
   )
 }

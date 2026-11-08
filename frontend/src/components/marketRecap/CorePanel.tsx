@@ -1,9 +1,8 @@
-import { useMemo, useState } from 'react'
-import { Plus, Star, X, ShieldAlert } from 'lucide-react'
-import { addWatch, removeWatch, type Candidate, type RecapContextOk, type RecapDraft, type SectorTier, type WatchItem } from '@/api/marketRecap'
-import { LIFECYCLE_ZH } from '@/lib/lifecycle'
+import { useState } from 'react'
+import { Star, X } from 'lucide-react'
+import { addWatch, removeWatch, type RecapContextOk, type RecapDraft, type SectorTier, type WatchItem } from '@/api/marketRecap'
 import { cn } from '@/utils/cn'
-import { Facts, GROUP_LABEL, INPUT, Manual, NUM, SECTOR_STATE_ZH, StockLink, TIER_LABEL, fmtPct, pctCls } from './shared'
+import { Facts, INPUT, Manual, NUM, SECTOR_STATE_ZH, StockLink, TIER_LABEL, fmtPct, pctCls } from './shared'
 
 const TIERS: (SectorTier | null)[] = ['core', 'secondary', 'drop', null]
 
@@ -35,9 +34,7 @@ export function CorePanel({ ctx, draft, set, pool, date, readOnly, onPoolChanged
   const [err, setErr] = useState('')
   const [manualCode, setManualCode] = useState('')
   const tierOf = new Map(draft.sector_picks.map((p) => [p.code, p.tier]))
-  const inPool = new Set(pool.map((w) => w.code))
   const sectors = ctx.sectors.items ?? []
-  const cands = useMemo(() => ctx.candidates.items ?? [], [ctx])
 
   const setTier = (code: string, name: string, label: string, t: SectorTier | null) => {
     const rest = draft.sector_picks.filter((p) => p.code !== code)
@@ -88,63 +85,6 @@ export function CorePanel({ ctx, draft, set, pool, date, readOnly, onPoolChanged
           </div>
         )}
         <div className="text-[11px] text-text-muted">归类是你的复盘判断，不改板块趋势的事实；建议重点跟踪 3~5 个。</div>
-      </Facts>
-
-      <Facts title="核心股票候选（连板 / N天M板 / 生命周期 / 成交额前列，各组按上限取，不打分）" meta={ctx.candidates.meta}>
-        <div className="overflow-x-auto max-h-[420px]">
-          <table className="w-full text-xs [&_td]:whitespace-nowrap">
-            <thead className="sticky top-0 bg-bg-card">
-              <tr className="text-text-muted border-b border-bg-border">
-                {['股票', '来源', '今日', '连续连板', 'N天M板', '10日涨停', '20日涨幅', '生命周期', '成交额排名', '板块', '监管', ''].map((h, i) => (
-                  <th key={h + i} className={cn('px-2 py-1 font-medium', [0, 1, 7, 9, 10].includes(i) ? 'text-left' : 'text-right')}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {cands.map((c: Candidate) => (
-                <tr key={c.code} className={cn('border-b border-bg-border/50 last:border-0', inPool.has(c.code) && 'bg-purple-400/5')}>
-                  <td className="px-2 py-1"><StockLink code={c.code} name={c.name} hasDetail={c.has_snapshot} /></td>
-                  <td className="px-2 py-1">
-                    {c.groups.map((g) => <span key={g} className="mr-1 px-1 rounded bg-bg-elevated text-[10px] text-text-secondary">{GROUP_LABEL[g]}</span>)}
-                    {!c.groups.length && c.watched && <span className="text-[10px] text-purple-300">观察池</span>}
-                  </td>
-                  <td className={cn('px-2 py-1 text-right', NUM, pctCls(c.pct))}>{fmtPct(c.pct)}</td>
-                  <td className={cn('px-2 py-1 text-right', NUM, c.is_limit_up ? 'text-up' : 'text-text-secondary')}
-                      title={c.first_limit_time ? `首封 ${c.first_limit_time}` : undefined}>
-                    {c.is_limit_up && c.board_count ? `${c.board_count}板` : '—'}
-                  </td>
-                  <td className={cn('px-2 py-1 text-right text-text-secondary', NUM)}>{c.limit_stat ?? '—'}</td>
-                  <td className={cn('px-2 py-1 text-right text-text-secondary', NUM)}>{c.limit_up_days_10d ?? '—'}</td>
-                  <td className={cn('px-2 py-1 text-right', NUM, pctCls(c.pct_20d))}>{fmtPct(c.pct_20d)}</td>
-                  <td className="px-2 py-1 text-text-secondary"
-                      title={c.peak_board_count ? `本轮最高 ${c.peak_board_count} 板` : undefined}>
-                    {c.lifecycle_state ? LIFECYCLE_ZH[c.lifecycle_state] ?? c.lifecycle_state : '—'}
-                  </td>
-                  <td className={cn('px-2 py-1 text-right text-text-secondary', NUM)}>{c.turnover_rank ?? '—'}</td>
-                  <td className="px-2 py-1 text-text-secondary max-w-[8rem] truncate" title={c.sector_basis ? `${c.sector}（${c.sector_basis}）` : undefined}>
-                    {c.sector ?? '—'}{c.sector_basis?.startsWith('当前') && <span className="text-warn">*</span>}
-                  </td>
-                  <td className="px-2 py-1">
-                    {c.regulatory && (
-                      <span className="inline-flex items-center gap-0.5 text-warn text-[10px]" title={`${c.regulatory.reason ?? ''} 至 ${c.regulatory.until ?? '—'}`}>
-                        <ShieldAlert className="w-3 h-3" />{c.regulatory.status}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-2 py-1 text-right">
-                    {inPool.has(c.code) ? <span className="text-[10px] text-purple-300">已在观察</span> : !readOnly && (
-                      <button disabled={busy === c.code} onClick={() => add(c)}
-                              className="inline-flex items-center gap-0.5 text-[11px] text-accent hover:underline">
-                        <Plus className="w-3 h-3" />观察
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="text-[11px] text-text-muted">连续连板和 N天M板分开显示；板块带 <span className="text-warn">*</span> 的是股票表上的当前主板块，不是当天口径。</div>
       </Facts>
 
       <Manual title={`我的重点观察池（${pool.length}）`} hint="跨日保留，直到你取消；★ 是要建深入关联图谱的 3~5 只">

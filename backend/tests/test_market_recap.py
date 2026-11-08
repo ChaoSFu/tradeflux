@@ -308,3 +308,61 @@ class TestApiAuth:
                             ("get", "/market-recap/leader-relations/002086?date=2026-11-06")):
             r = getattr(c, method)(url, **({"json": {}} if method in ("put", "post") else {}))
             assert r.status_code in (401, 403), f"{method} {url} 没登录也能访问"
+
+
+class TestV2:
+    def test_三个观察点上限(self, db):
+        store.save_recap(db, U, D3, {"key_points": ["一", "二", "三"]})
+        with pytest.raises(RecapError, match="最多 3"):
+            store.save_recap(db, U, D3, {"key_points": ["一", "二", "三", "四"]})
+
+    def test_按高标分别存情景_旧字段不丢(self, db):
+        store.save_recap(db, U, D3, {"scenarios": {"A": {"trigger": "全局"}, "by_leader": {
+            "002086": {"A": {"weak_resonance": "关联股不跟"}}, "bad": {"A": {"trigger": "x"}}}}})
+        sc = store.get_recap(db, U, D3)["recap"]["scenarios"]
+        assert sc["A"]["trigger"] == "全局"
+        assert sc["by_leader"]["002086"]["A"]["weak_resonance"] == "关联股不跟"
+        assert "bad" not in sc["by_leader"]
+
+    def test_预案的关联依据和观察触发(self, db):
+        store.save_recap(db, U, D3, {"plans": [_plan(relation_note="同属农业概念", watch_trigger="东方海洋回封")]})
+        p = store.get_recap(db, U, D3)["plans"][0]
+        assert p["relation_note"] == "同属农业概念" and p["watch_trigger"] == "东方海洋回封"
+
+    def test_批量忽略就是记成不成立_默认不返回(self, db):
+        store.upsert_relation(db, U, _rel(confidence_status="rejected"), D3)
+        assert store.relations_for(db, U, ["002086"]) == []
+        assert len(store.relations_for(db, U, ["002086"], include_rejected=True)) == 1
+
+    def test_锁定带上当时的核心池_次日准备一屏(self, db):
+        store.add_watch(db, U, "002086", D2, name="东方海洋", deep=True)
+        store.save_recap(db, U, D2, {"market_posture": "probe", "key_points": ["看回封"], "plans": [_plan(leader_code="002086")]})
+        cores = {"items": [{"stock_code": "002086", "selection_sources": [{"source": "lu_10"}]}],
+                 "events": [{"leader_code": "002086", "event_type": "limit_up"}]}
+        store.lock(db, U, D2, CAL, datetime(2026, 11, 5, 20, 0), cores=cores)
+        p = store.prepare(db, U, D2, CAL)
+        assert p["status"] == "ok" and p["pre_open"] is True and p["posture"] == "probe"
+        assert p["key_points"] == ["看回封"] and [w["code"] for w in p["focus_leaders"]] == ["002086"]
+        assert p["events"][0]["event_type"] == "limit_up"
+        first = db.query(RecapLockedVersion).one()
+        assert first.payload["cores"]["items"][0]["stock_code"] == "002086"
+
+
+class TestApiSave:
+    def test_三个观察点经接口能存下来(self, db, cal):
+        """接口的请求模型漏了字段，Pydantic 会静默丢掉——本机走查时 key_points 就这么没了。"""
+        from app.auth import require_auth
+        from app.database import get_db
+        from app.routers import market_recap
+        app = FastAPI()
+        app.include_router(market_recap.router)
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[require_auth] = lambda: U
+        c = TestClient(app)
+        body = {"key_points": ["看回封"], "plans": [_plan(relation_note="同概念", watch_trigger="高标回封")],
+                "scenarios": {"by_leader": {"002086": {"A": {"trigger": "x"}}}}}
+        assert c.put("/market-recap/2026-11-06", json=body).status_code == 200
+        g = store.get_recap(db, U, D3)
+        assert g["recap"]["key_points"] == ["看回封"]
+        assert g["plans"][0]["watch_trigger"] == "高标回封"
+        assert g["recap"]["scenarios"]["by_leader"]["002086"]["A"]["trigger"] == "x"

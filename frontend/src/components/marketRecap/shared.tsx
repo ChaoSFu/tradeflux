@@ -23,17 +23,18 @@ export const RESPONSE_LABEL: Record<ResponseStatus, string> = {
 export const GROUP_LABEL = { board: '连板', interval: '区间', lifecycle: '生命周期', turnover: '成交额' } as const
 
 export const SCENARIO_META: Record<Scenario, { title: string; fields: [string, string][] }> = {
-  A: { title: 'A 高标继续走强', fields: [
-    ['trigger', '高标转强的客观条件'], ['sector_confirm', '关联板块需要什么确认'],
-    ['watch_stocks', '重点观察哪些关联股'], ['overheat', '什么情况说明已经过度上涨']] },
-  B: { title: 'B 高标出现分歧', fields: [
-    ['strong_peers', '哪些关联股保持相对强势'], ['reseal', '是否出现换手回封'],
-    ['successor', '有没有新核心接棒'], ['keep_watching', '什么条件支持继续观察']] },
-  C: { title: 'C 高标明显转弱', fields: [
-    ['logic_invalid', '原关联逻辑是否失效'], ['drop_stocks', '哪些股票失去关注理由'],
-    ['independent', '哪些股票有独立催化'], ['pause', '是否暂停这个方向的新仓研究']] },
-  N: { title: '新核心出现（可选）', fields: [
-    ['new_core', '新核心是谁'], ['evidence', '依据（高度 / 板块地位）'], ['verify_by', '后续用什么事实验证']] },
+  A: { title: 'A 继续走强', fields: [
+    ['trigger', '核心股票的触发条件'], ['attributes', '关注哪些属性方向'], ['sector_confirm', '关联板块需要什么确认'],
+    ['watch_stocks', '哪些关联股需要确认'], ['weak_resonance', '哪些走势说明共振不足'], ['overheat', '什么情况说明已经过度上涨']] },
+  B: { title: 'B 高位分歧', fields: [
+    ['reseal', '是否换手修复 / 回封'], ['strong_peers', '哪些关联股保持强势'],
+    ['successor', '是否有新核心接棒'], ['keep_watching', '什么条件支持继续观察']] },
+  C: { title: 'C 明显转弱', fields: [
+    ['logic_invalid', '哪些关联假设失效'], ['pause', '是否暂停相关方向'],
+    ['drop_stocks', '哪些股票失去关注理由'], ['independent', '哪些股票有独立催化']] },
+  N: { title: 'N 新核心出现', fields: [
+    ['new_core', '新核心是谁'], ['same_mainline', '是否属于原主线'], ['regroup', '是否需要重组观察池'],
+    ['evidence', '依据（高度 / 板块地位）'], ['verify_by', '后续用什么事实验证']] },
 }
 
 const STATUS_STYLE: Record<ModuleMeta['status'], [string, string]> = {

@@ -446,18 +446,26 @@ def name_suggestions(db: Session, leader_code: str, leader_name: str, d: date, l
                  .filter(LargeCapMarketDaily.trade_date == (
                      db.query(sqlfunc.max(LargeCapMarketDaily.trade_date))
                      .filter(LargeCapMarketDaily.trade_date <= d).scalar_subquery())).all())
+    scope = "全市场"
     if not names:
         names = dict(db.query(Stock.code, Stock.name).all())
+        scope = "股票库"      # 那天还没有全市场快照，只能在本系统股票表里数
+    # 每两个字在全市场名字里出现几次：「东方」「科技」这种常见词一配就是几十只，噪声大，
+    # 数字摆出来让人自己判断，并且越稀有的排越前
+    gram_n = {g: sum(1 for c, nm in names.items() if c != leader_code and nm and g in nm) for g in grams}
     out = []
     for code, nm in names.items():
         if code == leader_code or not nm:
             continue
         hit = [g for g in grams if g in nm]
         if hit:
+            rare = min(hit, key=lambda g: gram_n[g])
             out.append({"related_code": code, "related_name": nm, "attribute_type": "name",
-                        "attribute_value": hit[0], "source": "name_rule", "hits": len(hit),
-                        "evidence": f"名称都含「{'」「'.join(hit)}」"})
-    out.sort(key=lambda x: (-x["hits"], x["related_code"]))
+                        "attribute_value": rare, "source": "name_rule", "hits": len(hit),
+                        "gram_matches": {g: gram_n[g] for g in hit},
+                        "evidence": "名称都含" + "".join(f"「{g}」" for g in hit)
+                                    + f"（{scope}含「{rare}」的 {gram_n[rare]} 只）"})
+    out.sort(key=lambda x: (-x["hits"], min(x["gram_matches"].values()), x["related_code"]))
     return out[:limit]
 
 

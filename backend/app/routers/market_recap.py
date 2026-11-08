@@ -86,22 +86,43 @@ def remove_watch(code: str, date_: date = Query(..., alias="date"), db: Session 
 
 @router.get("/leader-relations/{code}")
 def leader_relations(code: str, date_: date = Query(..., alias="date"), name: Optional[str] = None,
+                     include_rejected: bool = False,
                      db: Session = Depends(get_db), user: str = Depends(require_auth)):
-    """一只高标的关联知识（跨日继承）+ 关联股在这一天的事实和响应 + 关联建议。"""
-    rels = store.relations_for(db, user, [code])
+    """
+    一只高标的关联知识（跨日继承）+ 关联股在这一天的事实、系统响应分类、人工响应 + 关联建议。
+    摘要按股票去重：一只票挂了三个属性，「今日涨停」只算一只。
+    """
+    from ..models.market_recap import LeaderActivationEvent
+    from ..services.popular_core_service import RESPONSE_LABEL, classify_response
+    rels = store.relations_for(db, user, [code], include_rejected=include_rejected)
+    all_rels = store.relations_for(db, user, [code], include_rejected=True)
     facts = ctx_svc.stock_facts(db, [code] + [r.related_code for r in rels], date_)
     resp = store.responses_on(db, user, date_, [r.id for r in rels])
     leader = facts.get(code) or {}
     leader_name = name or leader.get("name") or next((r.leader_name for r in rels if r.leader_name), None)
-    have = {(r.attribute_type, r.related_code) for r in rels}
+    leader_events = [e for (e,) in db.query(LeaderActivationEvent.event_type)
+                     .filter(LeaderActivationEvent.trade_date == date_, LeaderActivationEvent.leader_code == code)]
+    have = {(r.attribute_type, r.related_code) for r in all_rels}
     sugg = [s for s in (ctx_svc.name_suggestions(db, code, leader_name or "", date_)
                         + ctx_svc.concept_suggestions(db, code, date_))
             if (s["attribute_type"], s["related_code"]) not in have]
-    return {"leader": {"code": code, "name": leader_name, "facts": leader},
-            "relations": [{**store.relation_dict(r), "facts": facts.get(r.related_code),
-                           "response": store.response_dict(resp[r.id]) if r.id in resp else None}
-                          for r in rels],
-            "suggestions": sugg}
+    rows = [{**store.relation_dict(r), "facts": facts.get(r.related_code),
+             "system_response": classify_response(facts.get(r.related_code), leader, leader_events),
+             "response": store.response_dict(resp[r.id]) if r.id in resp else None}
+            for r in rels]
+    active = [x for x in rows if x["confidence_status"] != "rejected"]
+    by_type, by_resp = {}, {}
+    for x in active:
+        by_type.setdefault(x["attribute_type"], set()).add(x["related_code"])
+    for c, sr in {x["related_code"]: x["system_response"] for x in active}.items():
+        by_resp[sr] = by_resp.get(sr, 0) + 1
+    return {"leader": {"code": code, "name": leader_name, "facts": leader, "events": leader_events},
+            "relations": rows, "suggestions": sugg,
+            "summary": {"stocks": len({x["related_code"] for x in active}),
+                        "by_type": {k: len(v) for k, v in by_type.items()},
+                        "by_response": by_resp, "response_labels": RESPONSE_LABEL,
+                        "manual_pending": sum(1 for x in active
+                                              if (x["response"] or {}).get("response_status") == "pending")}}
 
 
 class RelationIn(BaseModel):
@@ -151,6 +172,75 @@ def put_response(body: ResponseIn, db: Session = Depends(get_db), user: str = De
     return store.response_dict(r)
 
 
+# ── 人气核心池 / 活跃事件 ──────────────────────────────────────────────────
+
+def _latest_snapshot_date(db: Session) -> Optional[date]:
+    from sqlalchemy import func
+    from ..models.stock import StockDailySnapshot
+    return db.query(func.max(StockDailySnapshot.date)).scalar()
+
+
+def _cores(db: Session, d: date) -> dict:
+    from ..services import popular_core_service as pc
+    cal = _cal(db, need=d)
+    if d not in set(cal):
+        raise HTTPException(status_code=400, detail=f"{d} 不在交易日历里")
+    from ..services.eastmoney_fetcher import bar_is_settled
+    if not bar_is_settled(d, _now()):
+        raise HTTPException(status_code=400, detail=f"{d} 还没收盘：人气核心和活跃事件只用收盘后的数据")
+    return pc.load(db, d, cal, _latest_snapshot_date(db))
+
+
+@router.get("/popular-cores")
+def popular_cores(date_: date = Query(..., alias="date"), db: Session = Depends(get_db),
+                  user: str = Depends(require_auth)):
+    """
+    指定交易日的人气核心池。冻结过读冻结的；没冻结现算（frozen=false），全部用那一天的数据。
+    叠加我自己的：观察池（「我的重点」，不受自动榜单淘汰）、每只的关联股数。
+    """
+    from ..services import popular_core_service as pc
+    res = _cores(db, date_)
+    watched = {w.stock_code: w for w in store.watch_pool(db, user, date_)}
+    items = list(res["items"])
+    have = {i["stock_code"] for i in items}
+    extra = [c for c in watched if c not in have]
+    if extra:
+        f = ctx_svc.stock_facts(db, extra, date_)
+        for c in extra:
+            items.append({"stock_code": c, "stock_name": watched[c].stock_name or (f.get(c) or {}).get("name"),
+                          "board": pc.board_of(c), "selection_sources": [{"source": "manual", "rank": None,
+                                                                           "value": None, "scope": "我的观察池"}],
+                          "pct_change_5d": (f.get(c) or {}).get("pct_5d"), "pct_change_20d": (f.get(c) or {}).get("pct_20d"),
+                          "data_status": {"missing": ["不在当天的人气核心池里，只有基础行情；活跃事件只对池内成员计算"]}})
+    rel_n: dict = {}
+    for r in store.relations_for(db, user, [i["stock_code"] for i in items]):
+        rel_n.setdefault(r.leader_code, set()).add(r.related_code)
+    ev_codes = {e["leader_code"] for e in res["events"]}
+    events_by: dict = {}
+    for e in res["events"]:
+        events_by.setdefault(e["leader_code"], []).append(e["event_type"])
+    for i in items:
+        i["watched"] = i["stock_code"] in watched
+        i["deep"] = bool(watched.get(i["stock_code"]) and watched[i["stock_code"]].deep)
+        i["relations"] = len(rel_n.get(i["stock_code"], ()))
+        i["events"] = events_by.get(i["stock_code"], [])
+        i["views"] = pc.view_of(i, ev_codes, set(watched))
+    return {"date": date_, "rule_version": res["rule_version"], "rules": res["rules"], "frozen": res["frozen"],
+            "built_at": res["built_at"], "sources": res["sources"], "source_labels": pc.SOURCE_LABEL,
+            "premium_is_current": res["premium_is_current"], "items": items}
+
+
+@router.get("/leader-activations")
+def leader_activations(date_: date = Query(..., alias="date"), event_type: Optional[str] = None,
+                       db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """当天人气核心活跃事件。只是提醒去看关联池，不是买入信号。"""
+    from ..services import popular_core_service as pc
+    res = _cores(db, date_)
+    events = [e for e in res["events"] if not event_type or e["event_type"] == event_type]
+    return {"date": date_, "frozen": res["frozen"], "labels": pc.EVENT_LABEL, "events": events,
+            "not_supported": ["关键价格突破：要先有你写下的价格触发条件，V2 还没接"]}
+
+
 # ── 按日期 ──────────────────────────────────────────────────────────────────
 
 @router.get("/{trade_date}")
@@ -193,6 +283,7 @@ class RecapIn(BaseModel):
     mistake_type: Optional[str] = None
     hypothesis: Optional[str] = None
     deviations: List[Any] = []
+    key_points: List[str] = []
     plans: List[Any] = []
 
 
@@ -211,10 +302,22 @@ def put_recap(trade_date: date, body: RecapIn, db: Session = Depends(get_db),
 @router.post("/{trade_date}/lock")
 def lock_recap(trade_date: date, db: Session = Depends(get_db), user: str = Depends(require_auth)):
     """锁定当前草稿为新的一版（只插不改）。顺带记下锁定时各事实模块的数据状态。"""
+    from ..services import popular_core_service as pc
     cal = _cal(db, need=trade_date)
     ctx = ctx_svc.build_context(db, trade_date, now=_now())
     try:
-        v = store.lock(db, user, trade_date, cal, _now(), data_status=_jsonable(ctx.get("data_status")))
+        cores = pc.load(db, trade_date, cal, _latest_snapshot_date(db)) if trade_date in set(cal) else None
+    except Exception:  # noqa: BLE001 —— 核心池挂了不挡锁定，锁定快照里如实记成 None
+        db.rollback()
+        cores = None
+    core_snap = None if cores is None else _jsonable({
+        "frozen": cores["frozen"], "rule_version": cores["rule_version"], "sources": cores["sources"],
+        "items": [{k: i.get(k) for k in ("stock_code", "stock_name", "selection_sources", "lifecycle_state")}
+                  for i in cores["items"]],
+        "events": [{k: (str(v) if k == "event_time" and v else v) for k, v in e.items()} for e in cores["events"]]})
+    try:
+        v = store.lock(db, user, trade_date, cal, _now(), data_status=_jsonable(ctx.get("data_status")),
+                       cores=core_snap)
     except RecapError as e:
         _bad(e)
     return store.version_dict(v, cal)
@@ -223,6 +326,12 @@ def lock_recap(trade_date: date, db: Session = Depends(get_db), user: str = Depe
 @router.get("/{trade_date}/locked")
 def locked(trade_date: date, db: Session = Depends(get_db), user: str = Depends(require_auth)):
     return store.locked_versions(db, user, trade_date, _cal(db))
+
+
+@router.get("/{trade_date}/prepare")
+def prepare(trade_date: date, db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """次日准备：这一天锁定的预案（最后一份盘前版本），一屏看完。"""
+    return _jsonable(store.prepare(db, user, trade_date, _cal(db)))
 
 
 @router.get("/{trade_date}/verification")

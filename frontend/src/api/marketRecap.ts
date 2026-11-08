@@ -136,6 +136,7 @@ export type Posture = 'attack' | 'probe' | 'defend' | 'unclear'
 export type Scenario = 'A' | 'B' | 'C' | 'N'
 export type SectorTier = 'core' | 'secondary' | 'drop'
 
+export type ScenarioSet = Record<Scenario, Record<string, string | null>>
 export interface Evidence { key: string; label: string; value: string }
 export interface SectorPick { code: string; name: string; tier: SectorTier; state_label: string | null }
 
@@ -147,6 +148,8 @@ export interface Plan {
   sector_name: string | null
   scenario: Scenario | null
   reason: string | null
+  relation_note?: string | null      // 关联依据（跟哪只高标、凭什么关联）
+  watch_trigger?: string | null      // 观察触发：高标出现什么才去看它（不是买点）
   entry_trigger: string
   invalidation: string
   planned_stop: number | null
@@ -162,8 +165,9 @@ export interface RecapDraft {
   evidence_note: string | null
   invalidation: string[]
   sector_picks: SectorPick[]
-  scenarios: Record<Scenario, Record<string, string | null>>
+  scenarios: ScenarioSet & { by_leader?: Record<string, ScenarioSet> }
   flat_plan: boolean
+  key_points?: string[]
   discovery: string | null
   mistake: string | null
   mistake_type: 'judgment' | 'execution' | 'strategy' | 'none' | null
@@ -199,6 +203,7 @@ export interface WatchItem {
 }
 
 export interface RecapSummary {
+  key_points: string[]
   market: { posture: Posture | null; evidence: Evidence[]; evidence_note: string | null; invalidation: string[] }
   core: {
     core_sectors: SectorPick[]
@@ -293,11 +298,117 @@ export interface Suggestion {
   evidence: string
 }
 
+export type SystemResponse = 'limit_up' | 'up_response' | 'independent_strong' | 'not_met' | 'insufficient'
+
 export interface LeaderRelations {
-  leader: { code: string; name: string | null; facts: StockFacts | null }
-  relations: Relation[]
-  suggestions: Suggestion[]
+  leader: { code: string; name: string | null; facts: StockFacts | null; events: string[] }
+  relations: (Relation & { system_response: SystemResponse })[]
+  suggestions: (Suggestion & { gram_matches?: Record<string, number> })[]
+  summary: {
+    stocks: number
+    by_type: Partial<Record<AttributeType, number>>
+    by_response: Partial<Record<SystemResponse, number>>
+    response_labels: Record<SystemResponse, string>
+    manual_pending: number
+  }
 }
+
+// ─── 人气核心池 / 活跃事件（V2）────────────────────────────────────────────
+
+export interface CoreSource { source: string; rank: number | null; value: number | string | null; scope: string }
+export interface SourceMeta { status: 'ok' | 'partial' | 'missing'; scope: string; n: number; note: string | null }
+
+export interface PopularCore {
+  stock_code: string
+  stock_name: string | null
+  board: '主板' | '创业板' | '科创板'
+  is_st?: boolean | null
+  selection_sources: CoreSource[]
+  pct_change?: number | null
+  rank_5d?: number | null
+  rank_10d?: number | null
+  rank_20d?: number | null
+  rank_60d?: number | null
+  pct_change_5d?: number | null
+  pct_change_10d?: number | null
+  pct_change_20d?: number | null
+  pct_change_60d?: number | null
+  limit_up_days_10d?: number | null
+  limit_up_days_20d?: number | null
+  limit_up_days_60d?: number | null
+  current_board?: number | null
+  historical_max_board?: number | null
+  turnover_rank?: number | null
+  amount?: number | null
+  limit_up_next_avg_pct?: number | null
+  limit_up_next_samples?: number | null
+  lifecycle_state?: string | null
+  sector?: string | null
+  sector_basis?: string | null
+  data_status?: { missing: string[] } | null
+  watched: boolean
+  deep: boolean
+  relations: number
+  events: string[]
+  views: ('all' | 'active' | 'historical' | 'repair' | 'mine')[]
+}
+
+export interface PopularCores {
+  date: string
+  rule_version: string
+  rules: Record<string, number>
+  frozen: boolean
+  built_at: string | null
+  sources: Record<string, SourceMeta>
+  source_labels: Record<string, string>
+  premium_is_current: boolean
+  items: PopularCore[]
+}
+
+export interface ActivationEvent {
+  leader_code: string
+  leader_name: string | null
+  event_type: string
+  event_time: string | null
+  evidence: string | null
+  source: string | null
+  data_status: string
+}
+
+export interface Activations {
+  date: string
+  frozen: boolean
+  labels: Record<string, string>
+  events: ActivationEvent[]
+  not_supported: string[]
+}
+
+export interface Prepare {
+  status: 'ok' | 'no_lock'
+  message?: string
+  recap_date?: string
+  version?: number
+  locked_at?: string
+  pre_open?: boolean
+  target_trade_date?: string
+  backfilled?: boolean
+  posture?: Posture | null
+  invalidation?: string[]
+  key_points?: string[]
+  flat_plan?: boolean
+  focus_leaders?: { code: string; name: string | null; deep: boolean; note: string | null }[]
+  relations?: Record<string, { related_code: string; related_name: string | null; attribute_type: AttributeType; attribute_value: string; relation_basis: string; response: string | null }[]>
+  events?: { leader_code: string; leader_name: string | null; event_type: string; evidence: string | null }[]
+  scenarios?: ScenarioSet & { by_leader?: Record<string, ScenarioSet> }
+  plans?: Plan[]
+}
+
+export const fetchPopularCores = (date: string) =>
+  client.get<PopularCores>('/market-recap/popular-cores', { params: { date } }).then((r) => r.data)
+export const fetchActivations = (date: string) =>
+  client.get<Activations>('/market-recap/leader-activations', { params: { date } }).then((r) => r.data)
+export const fetchPrepare = (date: string) =>
+  client.get<Prepare>(`/market-recap/${date}/prepare`).then((r) => r.data)
 
 export const fetchRecapDates = () =>
   client.get<{ date: string; recap_status: string | null; locked_versions: number }[]>('/market-recap/dates').then((r) => r.data)
@@ -317,8 +428,10 @@ export const addWatch = (body: { code: string; date: string; name?: string | nul
   client.post('/market-recap/watch', body).then((r) => r.data)
 export const removeWatch = (code: string, date: string) =>
   client.delete(`/market-recap/watch/${code}`, { params: { date } }).then((r) => r.data)
-export const fetchLeaderRelations = (code: string, date: string, name?: string | null) =>
-  client.get<LeaderRelations>(`/market-recap/leader-relations/${code}`, { params: { date, name: name ?? undefined } }).then((r) => r.data)
+export const fetchLeaderRelations = (code: string, date: string, name?: string | null, includeRejected = false) =>
+  client.get<LeaderRelations>(`/market-recap/leader-relations/${code}`, {
+    params: { date, name: name ?? undefined, include_rejected: includeRejected || undefined },
+  }).then((r) => r.data)
 export const putRelation = (body: {
   id?: number; date: string; leader_code: string; leader_name?: string | null; attribute_type: AttributeType
   attribute_value: string; related_code: string; related_name?: string | null; evidence?: string | null

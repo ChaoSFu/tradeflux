@@ -43,6 +43,29 @@ def _classify(db, codes_by_cap, limit: int) -> None:
          + ("（连续失败，提前停手）" if st.get("aborted") else ""))
 
 
+def _freeze_cores(db, d) -> None:
+    """
+    人气核心池的区间涨幅排名要这份全市场快照，所以接在它后面冻结当天的池子和活跃事件。
+    失败只记日志——快照已经写好了，不受影响；每日复盘页没冻结时会现算。
+    """
+    from sqlalchemy import func
+    from app.models.stock import StockDailySnapshot
+    from app.services import popular_core_service as pc
+    from app.services.trading_calendar import get_trading_days
+    if d is None:
+        return
+    try:
+        if not db.query(StockDailySnapshot.id).filter(StockDailySnapshot.date == d).first():
+            _log(f"[人气核心] {d} 还没有股票日快照，先不冻结")
+            return
+        latest = db.query(func.max(StockDailySnapshot.date)).scalar()
+        st = pc.freeze(db, d, get_trading_days(db, need_through=d) or [], latest)
+        _log(f"[人气核心] ✅ {d} 冻结 {st['cores']} 只核心、{st['events']} 个活跃事件")
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        _log(f"[人气核心] ⚠️ 冻结失败（不影响大市值快照）：{type(e).__name__}: {e}")
+
+
 def _already_have(db) -> bool:
     from app.services.eastmoney_fetcher import SH_TZ
     from app.services.trading_calendar import get_trading_days
@@ -128,6 +151,7 @@ def main() -> int:
                 _log(f"[大市值] ⚠️ F10 分类失败（快照已写好，不受影响）：{type(e).__name__}: {e}")
         if out.get("applied") or out["status"] == "kept_existing":
             _log(f"[大市值] ✅ {out.get('trade_date')} 收盘快照就绪")
+            _freeze_cores(db, out.get("trade_date"))
             return 0
         _log(f"[大市值] ❌ 没写入：{out['status']}")
         return EXIT_FAIL

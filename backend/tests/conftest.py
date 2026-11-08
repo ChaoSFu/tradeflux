@@ -30,7 +30,8 @@ from app.models.weak_to_strong_radar import (
 )
 from app.models.large_cap import LargeCapMarketDaily, LargeCapStockBoards, LargeCapSyncBatch
 from app.models.market_recap import (
-    LeaderRelation, LeaderResponseDaily, MarketRecap, NextDayPlan, RecapLockedVersion, RecapWatchStock,
+    LeaderActivationEvent, LeaderRelation, LeaderResponseDaily, MarketPopularCoreDaily, MarketPopularCoreRun,
+    MarketRecap, NextDayPlan, RecapLockedVersion, RecapWatchStock,
 )
 
 _TABLES = [
@@ -51,6 +52,7 @@ _TABLES = [
     LargeCapMarketDaily.__table__, LargeCapSyncBatch.__table__, LargeCapStockBoards.__table__,
     MarketRecap.__table__, RecapWatchStock.__table__, LeaderRelation.__table__,
     LeaderResponseDaily.__table__, NextDayPlan.__table__, RecapLockedVersion.__table__,
+    MarketPopularCoreRun.__table__, MarketPopularCoreDaily.__table__, LeaderActivationEvent.__table__,
 ]
 
 
