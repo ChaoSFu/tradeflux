@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ChevronDown, ChevronUp } from 'lucide-react'
+import { ChevronDown, ChevronUp, ExternalLink } from 'lucide-react'
 import { cn } from '@/utils/cn'
 
 export const NUM = 'font-mono tabular-nums'
@@ -58,12 +58,25 @@ export function SortTh<K extends string>({ label, col, sort, title, className }:
   )
 }
 
-export function StockLink({ code, name }: { code: string; name: string | null }) {
-  return (
-    <Link to={`/stocks/${code}`} className="hover:text-accent">
+const emQuoteUrl = (code: string) => `https://quote.eastmoney.com/${code.startsWith('6') ? 'sh' : 'sz'}${code}.html`
+
+/**
+ * 有个股详情就进详情页；没有的（本系统只收录进过候选池的股票）开东财行情页，
+ * 不让人点进一个「未找到该股票」
+ */
+export function StockLink({ code, name, hasDetail = true }: { code: string; name: string | null; hasDetail?: boolean }) {
+  const inner = (
+    <>
       <span className="text-text-primary">{name || code}</span>
       <span className={cn('ml-1 text-[10px] text-text-muted', NUM)}>{code}</span>
-    </Link>
+    </>
+  )
+  if (hasDetail) return <Link to={`/stocks/${code}`} className="hover:text-accent">{inner}</Link>
+  return (
+    <a href={emQuoteUrl(code)} target="_blank" rel="noopener noreferrer" className="hover:text-accent"
+       title="本系统的个股详情只收录进过候选池的股票，这只没有；点开东方财富行情页">
+      {inner}<ExternalLink className="inline w-2.5 h-2.5 ml-0.5 text-text-muted align-baseline" />
+    </a>
   )
 }
 

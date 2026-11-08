@@ -141,6 +141,7 @@ export default function LargeCapOverview() {
   const [minCount, setMinCount] = useState<number | null>(null)
   const [tab, setTab] = useState<'overview' | 'stocks'>('overview')
   const [industryFilter, setIndustryFilter] = useState('')
+  const [search, setSearch] = useState('')
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['large-cap-overview', date ?? null, threshold ?? null],
@@ -163,9 +164,11 @@ export default function LargeCapOverview() {
   // 今天没成员、只有跨出的组照样留着（不然跨出的方向就从表里消失了）
   const groups = useMemo(() => scoped.filter((g) => g.count >= minMembers || (g.exited ?? 0) > 0),
     [scoped, minMembers])
-  const filteredStocks = useMemo(
-    () => (ok?.stocks ?? []).filter((s) => !industryFilter || s.industry_l1 === industryFilter),
-    [ok, industryFilter])
+  const filteredStocks = useMemo(() => {
+    const q = search.trim()
+    return (ok?.stocks ?? []).filter((s) => (!industryFilter || s.industry_l1 === industryFilter)
+      && (!q || s.code.includes(q) || (s.name ?? '').includes(q) || s.industry_l2.includes(q)))
+  }, [ok, industryFilter, search])
 
   if (isLoading && !data) return <LoadingSpinner />
   if (isError) {
@@ -280,7 +283,9 @@ export default function LargeCapOverview() {
         <Kpi label="池内总市值" value={fmtCap(s.total_cap)} sub={`成交额 ${fmtAmt(s.amount)}`} />
         <Kpi label="上涨 / 平 / 下跌" value={<><span className="text-up">{s.up}</span><span className="text-text-muted"> / {s.flat} / </span><span className="text-down">{s.down}</span></>}
              sub={`有效 ${s.n_pct}/${s.count}`} />
-        <Kpi label="今日中位涨幅" value={fmtPct(s.median_pct)} cls={pctCls(s.median_pct)} sub="大小公司一视同仁" />
+        <Kpi label="今日中位涨幅" value={fmtPct(s.median_pct)} cls={pctCls(s.median_pct)}
+             sub={<>5D <span className={pctCls(s.median_5d)}>{fmtPct(s.median_5d)}</span> · 20D <span className={pctCls(s.median_20d)}>{fmtPct(s.median_20d)}</span></>}
+             title="池内公司涨跌幅的中位数，大小公司一视同仁；5D / 20D 是当前成员回看近 N 日的中位数" />
         <Kpi label="今日市值加权" value={fmtPct(s.weighted_pct)} cls={pctCls(s.weighted_pct)}
              sub={`参与 ${s.n_weighted}/${s.count}`} title={weightText} />
         <Kpi label={`跨入 ${fmtCap(thr)}`} value={s.entered ?? '—'} cls={s.entered ? 'text-up' : undefined}
@@ -296,6 +301,15 @@ export default function LargeCapOverview() {
           {d.warnings.map((w) => (
             <div key={w} className="text-xs text-warn flex items-start gap-1.5">
               <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />{w}
+            </div>
+          ))}
+        </div>
+      )}
+      {d.notes.length > 0 && (
+        <div className="px-1 space-y-0.5">
+          {d.notes.map((n) => (
+            <div key={n} className="text-[11px] text-text-muted flex items-start gap-1.5">
+              <Info className="w-3 h-3 shrink-0 mt-0.5" />{n}
             </div>
           ))}
         </div>
@@ -338,6 +352,7 @@ export default function LargeCapOverview() {
             <GroupTable groups={groups} stocksByCode={stocksByCode} window={window}
                         eventsAvailable={d.events.available} multipleReady={multipleReady}
                         label={KINDS.find((k) => k.key === kind)!.label} maxHeight={560}
+                        weightBasis={d.weight_basis}
                         emptyText={kind !== 'concept' ? undefined
                           : d.classification.with_concept === 0 ? '这一天的快照没有概念数据'
                           : conceptScope === 'watched' ? `关注概念里没有 ≥${minMembers} 家成员的，可以切到「全部概念」或调低成员数`
@@ -349,18 +364,22 @@ export default function LargeCapOverview() {
             </div>
           </div>
 
-          <ChangeLists events={d.events} threshold={thr} prevDate={d.prev_date} />
+          <ChangeLists events={d.events} threshold={thr} />
           <Movers stocks={d.stocks} />
           <VolumeSurges rows={d.volume_surges} multipleReady={multipleReady}
                         multiple={d.config.surge_amount_multiple} ratio={d.config.surge_volume_ratio} />
         </>
       ) : (
-        <Card title="全部公司" action={
-          <select value={industryFilter} onChange={(e) => setIndustryFilter(e.target.value)}
-                  className="bg-bg-elevated border border-bg-border rounded px-1.5 py-0.5 text-xs text-text-primary">
-            <option value="">全部一级行业</option>
-            {l1Options.map((x) => <option key={x} value={x}>{x}</option>)}
-          </select>
+        <Card title={`全部公司（${filteredStocks.length}）`} action={
+          <div className="flex items-center gap-2">
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="名称 / 代码 / 二级行业"
+                   className="w-40 bg-bg-elevated border border-bg-border rounded px-2 py-0.5 text-xs text-text-primary placeholder:text-text-muted" />
+            <select value={industryFilter} onChange={(e) => setIndustryFilter(e.target.value)}
+                    className="bg-bg-elevated border border-bg-border rounded px-1.5 py-0.5 text-xs text-text-primary">
+              <option value="">全部一级行业</option>
+              {l1Options.map((x) => <option key={x} value={x}>{x}</option>)}
+            </select>
+          </div>
         } className="p-0 [&>div:first-child]:px-3 [&>div:first-child]:pt-3">
           <StockTable rows={filteredStocks} showIndustry maxHeight={720} />
         </Card>

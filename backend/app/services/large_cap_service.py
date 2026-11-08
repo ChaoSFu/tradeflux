@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from ..models.app_config import AppConfig
 from ..models.large_cap import LargeCapMarketDaily, LargeCapStockBoards, LargeCapSyncBatch
 from ..models.sector import Sector
+from ..models.stock import Stock
 
 UNIVERSE_SCOPE = "沪深主板 + 科创板 + 创业板（不含北交所）"
 
@@ -154,6 +155,7 @@ class Obs:
     industry: Optional[str] = None
     is_st: bool = False
     concepts: Optional[List[str]] = None    # None = 没存（<300 亿）/ 源没给；[] = 确实没有
+    listing_date: Optional[date] = None
 
 
 _OBS_COLS = (
@@ -164,7 +166,7 @@ _OBS_COLS = (
     LargeCapMarketDaily.pct_change_20d, LargeCapMarketDaily.pct_change_60d,
     LargeCapMarketDaily.amount, LargeCapMarketDaily.turnover_rate,
     LargeCapMarketDaily.volume_ratio, LargeCapMarketDaily.industry, LargeCapMarketDaily.is_st,
-    LargeCapMarketDaily.concepts,
+    LargeCapMarketDaily.concepts, LargeCapMarketDaily.listing_date,
 )
 
 
@@ -175,7 +177,8 @@ def load_obs(db: Session, d: date) -> Dict[str, Obs]:
         out[r[0]] = Obs(code=r[0], name=r[1], market=r[2], total_cap=r[3], float_cap=r[4],
                         price=r[5], pct=r[6], pct_5d=r[7], pct_10d=r[8], pct_20d=r[9],
                         pct_60d=r[10], amount=r[11], turnover_rate=r[12], volume_ratio=r[13],
-                        industry=r[14], is_st=bool(r[15]), concepts=_json_list(r[16]))
+                        industry=r[14], is_st=bool(r[15]), concepts=_json_list(r[16]),
+                        listing_date=r[17])
     return out
 
 
@@ -417,9 +420,13 @@ def _applied_batch(db: Session, d: date) -> Optional[LargeCapSyncBatch]:
 
 
 def _stock_row(o: Obs, l1: str, l2: str, concepts: List[str],
-               mult: Tuple[Optional[float], Optional[float]], prev_cap: Optional[float]) -> dict:
+               mult: Tuple[Optional[float], Optional[float]], prev_cap: Optional[float],
+               has_detail: bool) -> dict:
     return {
         "code": o.code, "name": o.name, "market": o.market,
+        # 本系统的个股详情只收录进过候选池的股票（11-08 生产：162 只里 47 只没有），
+        # 没有的前端改链到东财行情页，不能点进一个「未找到该股票」
+        "has_detail": has_detail, "listing_date": o.listing_date,
         "total_cap": o.total_cap, "float_cap": o.float_cap, "prev_cap": prev_cap,
         "price": o.price, "pct": o.pct, "pct_5d": o.pct_5d, "pct_10d": o.pct_10d,
         "pct_20d": o.pct_20d, "pct_60d": o.pct_60d,
@@ -569,9 +576,20 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
                    first_observed=len(events["first_observed"]) if events else None,
                    unknown_cap=unknown_cap, universe_count=len(today))
 
+    linked = set(member_codes)
+    if events:
+        for k in ("entered", "exited", "first_observed", "missing_today", "st_change"):
+            linked |= {e["code"] for e in events[k]}
+    detail_codes = {c for (c,) in db.query(Stock.code).filter(Stock.code.in_(linked))} if linked else set()
+    if events:
+        for k in ("entered", "exited", "first_observed", "missing_today", "st_change"):
+            for e in events[k]:
+                e["has_detail"] = e["code"] in detail_codes
+
     stocks = [_stock_row(o, l1_of(o), o.industry or "未分类", concepts_of(o),
                          mults.get(o.code, (None, None)),
-                         prev[o.code].total_cap if prev and o.code in prev else None)
+                         prev[o.code].total_cap if prev and o.code in prev else None,
+                         o.code in detail_codes)
               for o in members]
 
     surges = [s for s in stocks
@@ -589,23 +607,30 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
                 "一级行业按东财行业层级由二级映射。概念存在多重归属，各概念的家数和市值不能相加。",
     }
 
+    # warnings = 数据有问题、要人去看；notes = 正常的状态说明（第一天、历史还在攒）。
+    # 混在一个黄框里，真出问题时反而看不出来
     warnings: List[str] = []
+    notes: List[str] = []
+    events_reason: Optional[str] = None
     if stale:
         warnings.append(f"最新收盘快照是 {applied[0]}，{exp_latest} 的还没同步成功")
     if pending_today and is_latest_view and applied[0] < now.date():
-        warnings.append("今天的收盘快照在盘后日更之后同步（约 15:45），现在显示的是上一交易日")
+        notes.append("今天的收盘快照在盘后日更之后同步（约 15:45），现在显示的是上一交易日")
     if prev_d is None:
         why = (f"交易日历没覆盖到 {D}（缓存止于 {cal[-1]}）" if cal and not cal_covers
                else "交易日历不可用")
-        warnings.append(f"{why}，无法确定前一交易日：跨入跨出不生成，加权涨幅改用当日市值权重")
+        events_reason = f"{why}，无法确定前一交易日"
+        warnings.append(f"{events_reason}：跨入跨出不生成，加权涨幅改用当日市值权重")
     elif prev_batch is None:
         if D == applied[-1]:
-            warnings.append("这是第一份收盘快照：跨入跨出从下一个交易日起才有，今日加权涨幅暂用当日市值权重")
+            events_reason = "这是第一份收盘快照，跨入 / 跨出从下一个交易日起才有"
+            notes.append(f"{events_reason}；今日加权涨幅暂用当日市值权重")
         else:
-            warnings.append(f"前一交易日 {prev_d} 没有完整快照：跨入跨出不生成，加权涨幅改用当日市值权重")
+            events_reason = f"前一交易日 {prev_d} 没有完整快照，不拿更早的市值冒充昨日"
+            warnings.append(f"{events_reason}：跨入跨出不生成，加权涨幅改用当日市值权重")
     if len(have_days) < AMOUNT_HISTORY_DAYS:
-        warnings.append(f"20 日成交额倍数需要前 20 个交易日都有完整快照，现在只有 {len(have_days)} 天，"
-                        "放量先按量比看")
+        notes.append(f"20 日成交额倍数还在攒历史（{len(have_days)}/{AMOUNT_HISTORY_DAYS} 个交易日），"
+                     "放量先按量比看")
     if batch is not None and batch.source != "eastmoney_clist":
         warnings.append("这一天的快照来自腾讯行情备用源：没有 5/10/20/60 日涨跌幅，行业沿用之前的东财分类")
     if classification["concept_unknown"]:
@@ -623,9 +648,9 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
         "weight_basis": weight_basis,
         "amount_history": {"required": AMOUNT_HISTORY_DAYS, "available": len(have_days)},
         "summary": summary, "groups": groups,
-        "events": ({**events, "available": True} if events else
-                   {"available": False, "entered": [], "exited": [], "first_observed": [],
-                    "missing_today": [], "st_change": []}),
+        "events": ({**events, "available": True, "reason": None} if events else
+                   {"available": False, "reason": events_reason, "entered": [], "exited": [],
+                    "first_observed": [], "missing_today": [], "st_change": []}),
         "volume_surges": surges, "stocks": stocks,
-        "classification": classification, "warnings": warnings,
+        "classification": classification, "warnings": warnings, "notes": notes,
     }

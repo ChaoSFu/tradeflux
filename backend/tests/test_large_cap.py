@@ -533,9 +533,29 @@ class TestOverview:
         assert l1 == {"A": "银行", "B": "食品饮料", "C": "一级未映射"}
         assert any("一级行业没映射上" in w for w in ov["warnings"])
 
-    def test_第一份快照的提示(self, db, cal):
+    def test_第一份快照是说明不是警告(self, db, cal):
+        """第一天、历史在攒都是正常状态，跟数据出错混在一个黄框里，真出错时就看不出来。"""
         _seed(db, D3, [("A", 2000, 1.0, "银行Ⅱ")])
-        assert any("第一份收盘快照" in w for w in svc.build_overview(db, now=NOW)["warnings"])
+        ov = svc.build_overview(db, now=NOW)
+        assert any("第一份收盘快照" in n for n in ov["notes"])
+        assert not any("第一份" in w or "20 日成交额" in w for w in ov["warnings"])
+        assert "第一份" in ov["events"]["reason"]
+
+    def test_前一交易日缺快照是警告(self, db, cal):
+        _seed(db, D1, [("A", 970, 0, "银行Ⅱ")])
+        _seed(db, D3, [("A", 1030, 6.19, "银行Ⅱ")])
+        ov = svc.build_overview(db, now=NOW)
+        assert any("前一交易日" in w for w in ov["warnings"]) and "冒充" in ov["events"]["reason"]
+
+    def test_没有个股详情的要标出来(self, db, cal):
+        from app.models.stock import Stock
+        db.add(Stock(code="A", name="有详情", market="SH"))
+        _seed(db, D2, [("A", 2000, 0, "银行Ⅱ"), ("B", 970, 0, "银行Ⅱ")])
+        _seed(db, D3, [("A", 2000, 1.0, "银行Ⅱ"), ("B", 1030, 6.19, "银行Ⅱ")])
+        ov = svc.build_overview(db, now=NOW)
+        flags = {s["code"]: s["has_detail"] for s in ov["stocks"]}
+        assert flags == {"A": True, "B": False}
+        assert ov["events"]["entered"][0]["has_detail"] is False
 
     def test_过期标记(self, db, cal):
         _seed(db, D2, [("A", 1030, 1.0, "银行Ⅱ")])
