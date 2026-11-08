@@ -8,7 +8,8 @@ import {
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 import { EventBadge } from './CorePoolPanel'
-import { ATTR_LABEL, BASIS_LABEL, BASIS_OF, INPUT, Manual, NUM, RESPONSE_LABEL, StockLink, fmtPct, pctCls } from './shared'
+import { SectorPeersPanel } from './SectorPeersPanel'
+import { ATTR_LABEL, BASIS_LABEL, BASIS_OF, Facts, INPUT, Manual, NUM, RESPONSE_LABEL, StockLink, fmtPct, pctCls } from './shared'
 
 const ATTR_ORDER: AttributeType[] = ['industry', 'event', 'concept', 'history', 'structure', 'name']
 const TIMED: ResponseStatus[] = ['leading', 'sync', 'lagging']
@@ -164,6 +165,18 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
     } catch (e: any) { setFormErr(e?.message ?? '保存失败') }  // eslint-disable-line @typescript-eslint/no-explicit-any
   }
   const onWatch = async (r: Row) => { await addWatch({ code: r.related_code, date, name: r.related_name }); onPoolChanged() }
+  const watchCode = async (c: string, name: string | null) => { await addWatch({ code: c, date, name }); onPoolChanged() }
+  const adoptSector = async (sec: { name: string; type: string }, c: string, name: string | null, active: string) => {
+    setFormErr('')
+    try {
+      await save({ attribute_type: sec.type === 'industry' ? 'industry' : 'concept', attribute_value: sec.name,
+                   related_code: c, related_name: name, source: 'sector_relation',
+                   evidence: `同属关注板块「${sec.name}」（${date} 当天${active}）` })
+      refresh()
+    } catch (e: any) { setFormErr(e?.message ?? '保存失败') }  // eslint-disable-line @typescript-eslint/no-explicit-any
+  }
+  const adopted = new Set((data?.relations ?? []).filter((r) => r.attribute_type === 'industry' || r.attribute_type === 'concept')
+    .map((r) => `${r.attribute_value}|${r.related_code}`))
   const onPlan = (r: Row) => onAddPlan({
     stock_code: r.related_code, stock_name: r.related_name ?? r.facts?.name ?? null, leader_code: code,
     relation_note: `${ATTR_LABEL[r.attribute_type]}：${r.attribute_value}（${r.relation_basis} 类依据）${r.evidence ? `；${r.evidence}` : ''}`,
@@ -193,7 +206,7 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
           </div>
           {sum && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-secondary">
-              <span>关联股 <b className={NUM}>{sum.stocks}</b> 只（按股票去重）：</span>
+              <span>已记录的关联 <b className={NUM}>{sum.stocks}</b> 只（按股票去重）：</span>
               {Object.entries(sum.by_type).map(([t, n]) => <span key={t}>{ATTR_LABEL[t as AttributeType]} {n}</span>)}
               <span className="text-text-muted">|</span>
               {(Object.keys(sum.response_labels) as SystemResponse[]).filter((k) => sum.by_response[k]).map((k) => (
@@ -210,7 +223,16 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
             首封时间只能说明谁先封板，证明不了谁带动谁。高标活跃只是该来看这张表的提醒，关联股要过它自己的买入检查。
           </div>
 
-          {!grouped.length ? <div className="text-xs text-text-muted">这只还没有关联关系。</div> : grouped.map(([t, rs]) => (
+          <Facts title="① 板块关联（自动）：高标所在的每个板块，当天同板块的活跃股">
+            <SectorPeersPanel code={code!} date={date} adopted={adopted} readOnly={readOnly}
+                              onWatch={watchCode} onPlan={onAddPlan} onAdopt={adoptSector} />
+          </Facts>
+
+          <div className="flex items-center gap-2 pt-1">
+            <span className="text-[10px] px-1 rounded bg-purple-400/15 text-purple-300">人工</span>
+            <span className="text-xs font-medium text-text-primary">② 其他关联（人工录入的长期知识：产业链、事件、名称、历史联动……）</span>
+          </div>
+          {!grouped.length ? <div className="text-xs text-text-muted">还没有录入其他关联。板块关联里点「记为关联」也会进这里。</div> : grouped.map(([t, rs]) => (
             <div key={t}>
               <div className="text-[11px] text-text-secondary mb-1">{ATTR_LABEL[t]} <span className="text-text-muted">（{rs.length}）</span></div>
               <div className="overflow-x-auto">
@@ -252,7 +274,7 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
           {!readOnly && (
             <div>
               <button onClick={() => setShowSugg(!showSugg)} className="inline-flex items-center gap-1 text-[11px] text-accent">
-                <Lightbulb className="w-3 h-3" />关联建议（{data.suggestions.length}）：名称里相同的字（带全市场重名数，越少越具体）、同概念且当天也涨停的
+                <Lightbulb className="w-3 h-3" />名称联想建议（{data.suggestions.length}）：名称里相同的字，带重名数（越少越具体）；只是建议，采纳了才记
               </button>
               {showSugg && (
                 <div className="mt-1.5 space-y-1">

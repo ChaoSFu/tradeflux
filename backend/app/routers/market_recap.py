@@ -103,8 +103,8 @@ def leader_relations(code: str, date_: date = Query(..., alias="date"), name: Op
     leader_events = [e for (e,) in db.query(LeaderActivationEvent.event_type)
                      .filter(LeaderActivationEvent.trade_date == date_, LeaderActivationEvent.leader_code == code)]
     have = {(r.attribute_type, r.related_code) for r in all_rels}
-    sugg = [s for s in (ctx_svc.name_suggestions(db, code, leader_name or "", date_)
-                        + ctx_svc.concept_suggestions(db, code, date_))
+    # 同板块的票已经在「板块关联」里按板块列出来了，这里只给名称联想建议
+    sugg = [s for s in ctx_svc.name_suggestions(db, code, leader_name or "", date_)
             if (s["attribute_type"], s["related_code"]) not in have]
     rows = [{**store.relation_dict(r), "facts": facts.get(r.related_code),
              "system_response": classify_response(facts.get(r.related_code), leader, leader_events),
@@ -123,6 +123,21 @@ def leader_relations(code: str, date_: date = Query(..., alias="date"), name: Op
                         "by_response": by_resp, "response_labels": RESPONSE_LABEL,
                         "manual_pending": sum(1 for x in active
                                               if (x["response"] or {}).get("response_status") == "pending")}}
+
+
+@router.get("/leader-sectors/{code}")
+def leader_sectors(code: str, date_: date = Query(..., alias="date"), db: Session = Depends(get_db),
+                   user: str = Depends(require_auth)):
+    """板块关联（自动）：高标所在的每个板块里，当天的活跃股；每只带系统响应分类。"""
+    from ..models.market_recap import LeaderActivationEvent
+    from ..services.popular_core_service import RESPONSE_LABEL, classify_response
+    res = ctx_svc.sector_peers(db, code, date_)
+    events = [e for (e,) in db.query(LeaderActivationEvent.event_type)
+              .filter(LeaderActivationEvent.trade_date == date_, LeaderActivationEvent.leader_code == code)]
+    for g in res["groups"]:
+        for st in g["stocks"]:
+            st["system_response"] = classify_response(st["facts"], res.get("leader"), events)
+    return {**res, "response_labels": RESPONSE_LABEL}
 
 
 class RelationIn(BaseModel):

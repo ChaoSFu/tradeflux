@@ -448,3 +448,20 @@ export interface LockedPayload {
   watch_pool: { code: string; name: string | null; deep: boolean }[]
   relations: unknown[]
 }
+
+export interface SectorPeers {
+  status: 'ok' | 'missing'
+  note?: string
+  leader?: StockFacts | null
+  groups: {
+    sector: { code: string; name: string; type: 'industry' | 'concept' | 'region' | string; primary: boolean }
+    stocks: { code: string; active: ('strong' | 'limit_up' | 'limit_down')[]; also_in: string[]; facts: StockFacts | null; system_response: SystemResponse }[]
+  }[]
+  active_total?: number
+  peers_total?: number
+  notes?: string[]
+  response_labels: Record<SystemResponse, string>
+}
+
+export const fetchSectorPeers = (code: string, date: string) =>
+  client.get<SectorPeers>(`/market-recap/leader-sectors/${code}`, { params: { date } }).then((r) => r.data)

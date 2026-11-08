@@ -366,3 +366,53 @@ class TestApiSave:
         assert g["recap"]["key_points"] == ["看回封"]
         assert g["plans"][0]["watch_trigger"] == "高标回封"
         assert g["recap"]["scenarios"]["by_leader"]["002086"]["A"]["trigger"] == "x"
+
+
+class TestSectorPeers:
+    """高标所在每个板块里当天的活跃股：强势池 / 涨停 / 跌停，按当天算。"""
+
+    def _seed(self, db):
+        from app.models.leader_cycle import LeaderCycleSnapshot
+        from app.models.sector import Sector, StockSectorRelation
+        ind = Sector(code="BK1", name="家用电器", sector_type="industry", is_watched=True)
+        con = Sector(code="BK2", name="智能家居", sector_type="concept", is_watched=True)
+        hidden = Sector(code="BK3", name="没关注的", sector_type="concept", is_watched=False)
+        db.add_all([ind, con, hidden])
+        db.flush()
+        st = {c: Stock(code=c, name=f"股{c}", market="SZ") for c in ("002242", "000001", "000002", "000003", "000004")}
+        db.add_all(st.values())
+        db.flush()
+        st["002242"].primary_sector_id = ind.id
+        rel = [("002242", ind), ("002242", con), ("002242", hidden),
+               ("000001", ind), ("000001", con), ("000002", con), ("000003", ind), ("000004", hidden)]
+        for c, s in rel:
+            db.add(StockSectorRelation(stock_id=st[c].id, sector_id=s.id))
+        # 000001 强势池（D3），000002 当天涨停，000003 只在 D2 是强势池（D3 不活跃），000004 在没关注的板块
+        db.add(LeaderCycleSnapshot(date=D3, stock_id=st["000001"].id, stock_code="000001"))
+        db.add(LeaderCycleSnapshot(date=D2, stock_id=st["000003"].id, stock_code="000003"))
+        db.add(LimitUpDailyDetail(stock_id=st["000002"].id, stock_code="000002", stock_name="股000002",
+                                  trade_date=D3, first_limit_time=dtime(10, 1), pct_change=10.0, board_count=2))
+        db.add(LimitUpDailyDetail(stock_id=st["002242"].id, stock_code="002242", stock_name="九阳股份",
+                                  trade_date=D3, first_limit_time=dtime(9, 40), pct_change=10.0, board_count=1))
+        db.add(LimitUpDailyDetail(stock_id=st["000004"].id, stock_code="000004", stock_name="股000004",
+                                  trade_date=D3, pct_change=10.0))
+        db.commit()
+
+    def test_每个板块各列当天活跃股(self, db):
+        self._seed(db)
+        r = ctx.sector_peers(db, "002242", D3)
+        groups = {g["sector"]["name"]: g for g in r["groups"]}
+        assert list(groups) == ["家用电器", "智能家居"], "主板块在前；没关注的板块不出现"
+        assert groups["家用电器"]["sector"]["primary"] is True
+        assert [s["code"] for s in groups["家用电器"]["stocks"]] == ["000001"], "000003 只在前一天活跃"
+        assert [s["code"] for s in groups["智能家居"]["stocks"]] == ["000002", "000001"], "涨停的排前面"
+        one = next(s for s in groups["智能家居"]["stocks"] if s["code"] == "000001")
+        assert one["also_in"] == ["家用电器"] and one["active"] == ["strong"]
+        assert all(s["code"] != "002242" for g in r["groups"] for s in g["stocks"]), "不列高标自己"
+        assert r["peers_total"] == 2
+
+    def test_没有板块归属要说清楚(self, db):
+        db.add(Stock(code="600001", name="孤零零", market="SH"))
+        db.commit()
+        r = ctx.sector_peers(db, "600001", D3)
+        assert r["status"] == "missing" and r["groups"] == [] and "手动录入" in r["note"]
