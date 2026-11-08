@@ -18,6 +18,7 @@ import LimitMovesAnalysis from '@/pages/LimitMovesAnalysis'
 import TradeJournal from '@/pages/TradeJournal'
 import TurnoverOverview from '@/pages/TurnoverOverview'
 import LargeCapOverview from '@/pages/LargeCapOverview'
+import MarketRecap from '@/pages/MarketRecap'
 import WeakToStrongRadar from '@/pages/WeakToStrongRadar'
 import SpeculationRadar from '@/pages/SpeculationRadar'
 import LimitUpSectorRadar from '@/pages/LimitUpSectorRadar'
@@ -51,6 +52,7 @@ export default function App() {
               这个 Route 底下的页面默认受保护。
               **只挡界面**：后端数据接口除管理类外目前仍公开。 */}
           <Route element={<RequireLogin />}>
+            <Route path="market-recap" element={<MarketRecap />} />
             <Route path="market-trend" element={<MarketTrend />} />
             <Route path="strong" element={<Dashboard />} />
             <Route path="stocks" element={<StockPool />} />

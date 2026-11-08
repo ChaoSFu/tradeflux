@@ -29,6 +29,9 @@ from app.models.weak_to_strong_radar import (
     WeakToStrongCandidate, WeakToStrongEvent, WeakToStrongDiscoveryRun,
 )
 from app.models.large_cap import LargeCapMarketDaily, LargeCapStockBoards, LargeCapSyncBatch
+from app.models.market_recap import (
+    LeaderRelation, LeaderResponseDaily, MarketRecap, NextDayPlan, RecapLockedVersion, RecapWatchStock,
+)
 
 _TABLES = [
     Stock.__table__, StockDailySnapshot.__table__, StockSuspensionDay.__table__,
@@ -46,6 +49,8 @@ _TABLES = [
     CohortOutcomeQuote.__table__,
     TradeJournal.__table__, PreTradeCheck.__table__,
     LargeCapMarketDaily.__table__, LargeCapSyncBatch.__table__, LargeCapStockBoards.__table__,
+    MarketRecap.__table__, RecapWatchStock.__table__, LeaderRelation.__table__,
+    LeaderResponseDaily.__table__, NextDayPlan.__table__, RecapLockedVersion.__table__,
 ]
 
 
