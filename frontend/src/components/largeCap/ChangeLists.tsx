@@ -2,7 +2,7 @@ import { AlertTriangle } from 'lucide-react'
 import type { LargeCapCrossEvent, LargeCapEvents, LargeCapStock } from '@/api/largeCap'
 import { Card } from '@/components/ui/card'
 import { cn } from '@/utils/cn'
-import { NUM, StockLink, fmtAmt, fmtCap, fmtNum, fmtPct, pctCls } from './shared'
+import { NUM, StockLink, fmtAmt, fmtCap, fmtNum, fmtPct, pctCls, sortRows } from './shared'
 
 function CrossTable({ rows }: { rows: LargeCapCrossEvent[] }) {
   if (!rows.length) return <div className="text-xs text-text-muted py-3">无</div>
@@ -161,5 +161,50 @@ export function VolumeSurges({ rows, multipleReady, multiple, ratio }: {
       )}
       <div className="mt-2 text-[11px] text-text-muted">放量只是成交事实，上涨放量和下跌放量都列出，不代表资金净流入。</div>
     </Card>
+  )
+}
+
+/** 池内今日涨幅居前 / 居后。只是排序后的事实，不是信号 */
+export function Movers({ stocks, n = 8 }: { stocks: LargeCapStock[]; n?: number }) {
+  const ranked = sortRows(stocks, (s) => s.pct, 'desc').filter((s) => s.pct != null)
+  const lists: [string, LargeCapStock[]][] = [
+    ['今日涨幅居前', ranked.slice(0, n)],
+    ['今日跌幅居前', [...ranked].reverse().slice(0, n)],
+  ]
+  return (
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+      {lists.map(([title, rows]) => (
+        <Card key={title} title={title}>
+          {!rows.length ? <div className="text-xs text-text-muted py-3">无</div> : (
+            <table className="w-full text-xs [&_td]:whitespace-nowrap">
+              <thead>
+                <tr className="border-b border-bg-border text-text-muted">
+                  <th className="px-1.5 py-1 text-left font-medium">股票</th>
+                  <th className="px-1.5 py-1 text-left font-medium">行业</th>
+                  <th className="px-1.5 py-1 text-right font-medium">总市值</th>
+                  <th className="px-1.5 py-1 text-right font-medium">今日</th>
+                  <th className="px-1.5 py-1 text-right font-medium">20D</th>
+                  <th className="px-1.5 py-1 text-right font-medium">成交额</th>
+                  <th className="px-1.5 py-1 text-right font-medium">量比</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((s) => (
+                  <tr key={s.code} className="border-b border-bg-border/50 last:border-0">
+                    <td className="px-1.5 py-1"><StockLink code={s.code} name={s.name} /></td>
+                    <td className="px-1.5 py-1 text-text-muted max-w-[7rem] truncate" title={`${s.industry_l1} / ${s.industry_l2}`}>{s.industry_l2}</td>
+                    <td className={cn('px-1.5 py-1 text-right text-text-secondary', NUM)}>{fmtCap(s.total_cap)}</td>
+                    <td className={cn('px-1.5 py-1 text-right', NUM, pctCls(s.pct))}>{fmtPct(s.pct)}</td>
+                    <td className={cn('px-1.5 py-1 text-right', NUM, pctCls(s.pct_20d))}>{fmtPct(s.pct_20d)}</td>
+                    <td className={cn('px-1.5 py-1 text-right text-text-secondary', NUM)}>{fmtAmt(s.amount)}</td>
+                    <td className={cn('px-1.5 py-1 text-right text-text-secondary', NUM)}>{fmtNum(s.volume_ratio)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      ))}
+    </div>
   )
 }

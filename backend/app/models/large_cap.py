@@ -44,6 +44,8 @@ class LargeCapMarketDaily(Base):
     turnover_rate = Column(Float, nullable=True)         # 换手率 %
     volume_ratio = Column(Float, nullable=True)          # 量比
     industry = Column(String(50), nullable=True)         # 东财二级行业（clist f100），当天的分类
+    # 东财概念（clist f103）JSON 数组，当天的分类。只给总市值 ≥300 亿的存（省空间）；None = 没存 / 源没给
+    concepts = Column(Text, nullable=True)
     is_st = Column(Boolean, nullable=True)
     listing_date = Column(Date, nullable=True)           # 上市日（clist f26）
     source = Column(String(20), nullable=False)          # eastmoney_clist | tencent_quote

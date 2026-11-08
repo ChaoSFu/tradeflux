@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, time as dtime
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from pathlib import Path
+
 from sqlalchemy.orm import Session
 
 from ..models.app_config import AppConfig
@@ -49,6 +51,19 @@ AMOUNT_HISTORY_DAYS = 20
 CAP_PRICE_TOLERANCE = 0.5
 # 今天的收盘快照最晚这个点该有了（15:30 日更跑完后接着同步）；之前只算「待同步」
 EXPECT_TODAY_AFTER = dtime(16, 30)
+
+# 东财行业层级：二级 → 一级（128 个二级 → 31 个一级）。2026-11-08 从东财 F10 采集：每个
+# 二级行业取一只成分股，F10 板块列表里排在二级前一位的就是一级。层级很少变，所以随代码
+# 发版；生产上 F10 被掐（11-08 每个请求都读超时）也不影响一级行业。F10 缓存里有更新的
+# 映射时以缓存为准。
+_L2_TO_L1_FILE = Path(__file__).parent / "data" / "em_industry_l2_to_l1.json"
+
+
+def bundled_l2_to_l1() -> Dict[str, str]:
+    try:
+        return json.loads(_L2_TO_L1_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 # ── 配置 ────────────────────────────────────────────────────────────────────
@@ -138,6 +153,7 @@ class Obs:
     volume_ratio: Optional[float] = None
     industry: Optional[str] = None
     is_st: bool = False
+    concepts: Optional[List[str]] = None    # None = 没存（<300 亿）/ 源没给；[] = 确实没有
 
 
 _OBS_COLS = (
@@ -148,6 +164,7 @@ _OBS_COLS = (
     LargeCapMarketDaily.pct_change_20d, LargeCapMarketDaily.pct_change_60d,
     LargeCapMarketDaily.amount, LargeCapMarketDaily.turnover_rate,
     LargeCapMarketDaily.volume_ratio, LargeCapMarketDaily.industry, LargeCapMarketDaily.is_st,
+    LargeCapMarketDaily.concepts,
 )
 
 
@@ -158,8 +175,18 @@ def load_obs(db: Session, d: date) -> Dict[str, Obs]:
         out[r[0]] = Obs(code=r[0], name=r[1], market=r[2], total_cap=r[3], float_cap=r[4],
                         price=r[5], pct=r[6], pct_5d=r[7], pct_10d=r[8], pct_20d=r[9],
                         pct_60d=r[10], amount=r[11], turnover_rate=r[12], volume_ratio=r[13],
-                        industry=r[14], is_st=bool(r[15]))
+                        industry=r[14], is_st=bool(r[15]), concepts=_json_list(r[16]))
     return out
+
+
+def _json_list(text: Optional[str]) -> Optional[List[str]]:
+    if not text:
+        return None
+    try:
+        v = json.loads(text)
+    except ValueError:
+        return None
+    return [x for x in v if isinstance(x, str)] if isinstance(v, list) else None
 
 
 def membership(o: Obs, threshold: float, include_st: bool) -> Optional[bool]:
@@ -275,6 +302,7 @@ def group_stats(members: Sequence[Obs], weights: Dict[str, float],
     valid_pct = [p for p in pcts if p is not None]
     num = den = 0.0
     n_w = 0
+    contrib: List[Tuple[float, Obs]] = []
     for o in members:
         w = weights.get(o.code)
         if o.pct is None or w is None or w <= 0:
@@ -282,6 +310,11 @@ def group_stats(members: Sequence[Obs], weights: Dict[str, float],
         num += w * o.pct
         den += w
         n_w += 1
+        contrib.append((w * o.pct, o))
+    top = None
+    if den > 0 and contrib:
+        c, t = max(contrib, key=lambda x: abs(x[0]))
+        top = {"code": t.code, "name": t.name, "pp": round(c / den, 2)}
     med, n_pct = _median(pcts)
     amounts = [o.amount for o in members if o.amount is not None]
     have_mult = [multiples.get(o.code, (None, None))[1] for o in members]
@@ -294,6 +327,9 @@ def group_stats(members: Sequence[Obs], weights: Dict[str, float],
         "down": sum(1 for p in valid_pct if p < 0),
         "median_pct": med, "n_pct": n_pct,
         "weighted_pct": round(num / den, 2) if den > 0 else None, "n_weighted": n_w,
+        # 对加权涨幅贡献最大（按绝对值）的那一只，单位是百分点：一组的加权涨幅是不是被
+        # 一只巨头拉出来的，跟中位数、上涨家数对着看就知道
+        "top_contributor": top,
         "amount": round(sum(amounts), 2) if amounts else None, "n_amount": len(amounts),
         "surge_multiple": (sum(1 for m in have_mult if m is not None and m >= surge_multiple)
                            if any_mult else None),
@@ -465,26 +501,29 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
         history = [by_day[d] for d in hist_days]
     mults = amount_multiples({o.code: o.amount for o in members}, history)
 
-    # 分类：一级行业由 F10 推，二级是当天快照里的东财行业，概念来自 F10 + sectors 表的类型
+    # 分类：二级行业、概念都是当天快照里的（clist f100 / f103，按日保存）；
+    # 一级行业 = 二级按东财层级映射，F10 缓存里有更新的映射时以缓存为准
     cache_rows = db.query(LargeCapStockBoards.stock_code, LargeCapStockBoards.boards,
-                          LargeCapStockBoards.status, LargeCapStockBoards.fetched_at).all()
-    cache = {c: parse_boards(b) for c, b, s, _ in cache_rows if s == "ok"}
-    fetched = {c: f for c, _, s, f in cache_rows if s == "ok"}
-    sectors = {s.code: s for s in db.query(Sector.code, Sector.name, Sector.sector_type,
-                                           Sector.is_watched)}
-    l1_map = l2_to_l1(cache, {c: o.industry for c, o in today.items()})
+                          LargeCapStockBoards.status).all()
+    cache = {c: parse_boards(b) for c, b, st_ in cache_rows if st_ == "ok"}
+    l1_map = {**bundled_l2_to_l1(), **l2_to_l1(cache, {c: o.industry for c, o in today.items()})}
+    # 概念板块按名字对 sectors 表，拿 BK 码和是否关注；表里没有的就用名字当键
+    concept_sec: Dict[str, Sector] = {}
+    for sec in db.query(Sector.code, Sector.name, Sector.is_watched).filter(Sector.sector_type == "concept"):
+        if sec.name not in concept_sec or sec.is_watched:
+            concept_sec[sec.name] = sec
+
+    concept_name_by_code = {sec.code: name for name, sec in concept_sec.items()}
 
     def l1_of(o: Obs) -> str:
         return l1_map.get(o.industry, "一级未映射") if o.industry else "未分类"
 
-    def concepts_of(code: str) -> List[str]:
-        seen, out = set(), []
-        for bk, _name, _rank in cache.get(code, []):
-            s = sectors.get(bk)
-            if s is not None and s.sector_type == "concept" and bk not in seen:
-                seen.add(bk)
-                out.append(bk)
-        return out
+    def concept_key(name: str) -> str:
+        sec = concept_sec.get(name)
+        return sec.code if sec is not None else f"name:{name}"
+
+    def concepts_of(o: Obs) -> List[str]:
+        return list(dict.fromkeys(concept_key(n) for n in (o.concepts or [])))
 
     ev_codes = {"entered": set(), "exited": set()}
     if events:
@@ -496,7 +535,7 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
         ev_count: Dict[str, Counter] = defaultdict(Counter)
         key_of = {"industry_l1": lambda o: [l1_of(o)],
                   "industry_l2": lambda o: [o.industry or "未分类"],
-                  "concept": lambda o: concepts_of(o.code)}[kind]
+                  "concept": concepts_of}[kind]
         for o in members:
             for k in key_of(o):
                 buckets[k].append(o)
@@ -514,8 +553,9 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
                    "entered": ev_count[k]["entered"] if events else None,
                    "exited": ev_count[k]["exited"] if events else None}
             if kind == "concept":
-                s = sectors.get(k)
-                row.update(name=s.name if s else k, watched=bool(s and s.is_watched))
+                name = k[5:] if k.startswith("name:") else concept_name_by_code.get(k, k)
+                sec = concept_sec.get(name)
+                row.update(name=name, watched=bool(sec and sec.is_watched))
             rows.append(row)
         rows.sort(key=lambda r: (-r["count"], -(r["total_cap"] or 0)))
         return rows
@@ -529,7 +569,7 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
                    first_observed=len(events["first_observed"]) if events else None,
                    unknown_cap=unknown_cap, universe_count=len(today))
 
-    stocks = [_stock_row(o, l1_of(o), o.industry or "未分类", concepts_of(o.code),
+    stocks = [_stock_row(o, l1_of(o), o.industry or "未分类", concepts_of(o),
                          mults.get(o.code, (None, None)),
                          prev[o.code].total_cap if prev and o.code in prev else None)
               for o in members]
@@ -539,16 +579,14 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
               or (s["volume_ratio"] is not None and s["volume_ratio"] >= cfg["surge_volume_ratio"])]
     surges.sort(key=lambda s: (-(s["amount_multiple"] or 0), -(s["volume_ratio"] or 0)))
 
-    with_cache = [c for c in member_codes if c in cache]
     classification = {
         "members": len(members),
-        "with_f10": len(with_cache),
-        "with_concept": sum(1 for c in member_codes if concepts_of(c)),
+        "with_concept": sum(1 for o in members if o.concepts),
+        "concept_unknown": sum(1 for o in members if o.concepts is None),
         "with_industry_l2": sum(1 for o in members if o.industry),
         "with_industry_l1": sum(1 for o in members if o.industry and o.industry in l1_map),
-        "f10_as_of": max((fetched[c] for c in with_cache if fetched.get(c)), default=None),
-        "note": "二级行业取当天快照里的东财行业（随快照按日保存）；一级行业和概念是当前 F10 口径，"
-                "回看历史日期时也用当前分类。概念存在多重归属，各概念的家数和市值不能相加。",
+        "note": "二级行业和概念取当天快照里的东财分类（随快照按日保存，回看历史就是当时的分类）；"
+                "一级行业按东财行业层级由二级映射。概念存在多重归属，各概念的家数和市值不能相加。",
     }
 
     warnings: List[str] = []
@@ -561,15 +599,21 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
                else "交易日历不可用")
         warnings.append(f"{why}，无法确定前一交易日：跨入跨出不生成，加权涨幅改用当日市值权重")
     elif prev_batch is None:
-        warnings.append(f"前一交易日 {prev_d} 没有完整快照：跨入跨出不生成，加权涨幅改用当日市值权重")
+        if D == applied[-1]:
+            warnings.append("这是第一份收盘快照：跨入跨出从下一个交易日起才有，今日加权涨幅暂用当日市值权重")
+        else:
+            warnings.append(f"前一交易日 {prev_d} 没有完整快照：跨入跨出不生成，加权涨幅改用当日市值权重")
     if len(have_days) < AMOUNT_HISTORY_DAYS:
         warnings.append(f"20 日成交额倍数需要前 20 个交易日都有完整快照，现在只有 {len(have_days)} 天，"
                         "放量先按量比看")
     if batch is not None and batch.source != "eastmoney_clist":
         warnings.append("这一天的快照来自腾讯行情备用源：没有 5/10/20/60 日涨跌幅，行业沿用之前的东财分类")
-    if classification["with_f10"] < len(members):
-        warnings.append(f"{len(members) - classification['with_f10']} 只还没有 F10 分类，"
-                        "不在一级行业 / 概念统计里（二级行业不受影响）")
+    if classification["concept_unknown"]:
+        warnings.append(f"{classification['concept_unknown']} 只没有概念数据"
+                        "（快照只给总市值 ≥300 亿的存概念，或那天走的备用源），不在概念统计里")
+    unmapped = len(members) - classification["with_industry_l1"]
+    if unmapped:
+        warnings.append(f"{unmapped} 只的一级行业没映射上（二级行业不受影响）")
 
     return {
         **base, "status": "ok", "date": D,
