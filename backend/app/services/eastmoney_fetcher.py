@@ -13,9 +13,10 @@
   - 北交所：±30%（含ST/*ST）
   - 炸板判断：当日最高价触及涨停价，但收盘未封板
 
-若东方财富 clist 接口被封锁，自动切换 AkShare/新浪备用（约 30s）。
+股票列表主力是 AkShare/新浪（约 30s），AkShare 失败才退到东方财富 clist。
 """
 import httpx
+import math
 import time
 import random
 import string
@@ -34,7 +35,15 @@ HEADERS = {
     ),
 }
 
-CLIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
+# 全市场列表 clist 的主机，push2delay 在前：2026-11-08 本机实测 push2 的 clist 回
+# 302 空包、push2delay 正常（09-04 生产上 push2 列表端点也整片 502 过，见 ULIST_HOSTS）。
+# push2delay 只是行情延迟；用到这份列表的地方目前只取代码和名字。
+CLIST_HOSTS = ("push2delay.eastmoney.com", "push2.eastmoney.com")
+# **单页上限 100 条**：2026-11-08 实测 pz=200 / pz=500 都只回 100。按 pz=200 翻页、
+# "不满 200 条就停"的写法每个市场只拿得到第 1 页
+CLIST_PAGE_SIZE = 100
+CLIST_PAGE_TRIES = 4
+_CLIST_BACKOFF = (1.0, 3.0, 6.0)
 from .rate_limiter import AdaptiveRateLimiter, Outcome  # noqa: E402
 
 KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
@@ -221,6 +230,17 @@ def _num_or_none(v) -> Optional[float]:
     return f if f > 0 else None
 
 
+def _float_or_none(v) -> Optional[float]:
+    """
+    跟 _num_or_none 一样把 "-" / 缺失转成 None，但**保留 0 和负数**——涨跌幅可以是
+    0 和负数；停牌股东财给的换手率就是 0.0（没成交），那是真值不是"不知道"。
+    """
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_bj_code(code: str) -> bool:
     return code.startswith(_BJ_PREFIXES)
 
@@ -232,8 +252,11 @@ class StockBasicInfo:
     name: str
     market: int               # 1=SH, 0=SZ
     is_st: bool
-    pct_change: float         # 今日涨跌幅 %
-    turnover_rate: float      # 今日换手率 %（AkShare 备用来源可能为 0）
+    # 今日涨跌幅 % / 今日换手率 %。东财 clist 路径：停牌股涨幅是 None（东财给 "-"），
+    # 换手率取 f8（**f10 是量比**，2026-11-08 前这里一直把量比当换手率）。
+    # AkShare 主力路径和各处手工构造仍写 0.0 占位——目前全仓没有任何地方读这两个字段
+    pct_change: Optional[float]
+    turnover_rate: Optional[float]
     listing_date: date | None = None  # 上市日期（AkShare 备用路径可获取；东方财富路径为 None）
     # 流通市值（元）与最新价。用来推算流通股本 → 换手率。
     # None = 这条路径没给（AkShare 备用路径、以及各处手工构造的 info），
@@ -625,7 +648,7 @@ def kline_bar_from_quote(
 
 
 # ---------------------------------------------------------------------------
-# 股票列表抓取（主力：东方财富；备用：AkShare/新浪）
+# 股票列表抓取（主力：AkShare/新浪；备用：东方财富 clist）
 # ---------------------------------------------------------------------------
 
 # 东财 clist 的板块筛选（fs 参数）。提成模块常量是为了能直接测——写成函数内的
@@ -638,6 +661,112 @@ EM_MARKET_CONFIGS: List[Tuple[str, int]] = [
     ("m:0+t:80", 0),   # 创业板
     # 刻意不含北交所 m:0+t:81+s:2048，理由见 _fetch_from_eastmoney docstring
 ]
+EM_MARKET_LABELS: Dict[str, str] = {
+    "m:1+t:2": "沪主板", "m:1+t:23": "科创板", "m:0+t:6": "深主板", "m:0+t:80": "创业板",
+}
+
+# f8=换手率（等于 K 线 f61）、f10=量比，**别弄反**（2026-11-08 用贵州茅台实测：
+# f8=0.34、f10=0.65）。f21=流通市值、f2=最新价
+_CLIST_FIELDS = "f12,f13,f14,f2,f3,f8,f21"
+
+
+class ClistPageError(ValueError):
+    """clist 某一页在所有主机上都没拿到。继承 ValueError 的理由同 ResponseNotJSON。"""
+
+
+def _clist_page_getter(client, *, hosts: Sequence[str] = CLIST_HOSTS,
+                       tries: int = CLIST_PAGE_TRIES,
+                       sleep: Callable[[float], None] = time.sleep):
+    """
+    返回 get(fs, pn) -> data。每页最多试 tries 次、主机轮换，**上一页成功的主机先试**
+    ——push2 整片挂掉时不必每页都先白打它一次。
+
+    按代码升序排（fid=f12, po=0）。原来按涨幅 f3 排，盘中翻页时行情一变，同一只票
+    会跨页漂移：有的被拿两次、有的一次都没拿到，去重后就对不上 total。
+    """
+    state = {"host": 0}
+
+    def get(fs: str, pn: int) -> dict:
+        last = ""
+        for attempt in range(tries):
+            hi = (state["host"] + attempt) % len(hosts)
+            host = hosts[hi]
+            try:
+                resp = client.get(f"https://{host}/api/qt/clist/get", params={
+                    "pn": pn, "pz": CLIST_PAGE_SIZE, "po": 0, "np": 1,
+                    "fltt": 2, "invt": 2, "fid": "f12",
+                    "fs": fs, "fields": _CLIST_FIELDS,
+                })
+                data = json_or_explain(resp, f"东财全市场列表 {host} ").get("data") or {}
+                if data.get("diff"):
+                    state["host"] = hi
+                    return data
+                last = f"{host} 空页"
+            except Exception as e:  # noqa: BLE001
+                last = f"{host} {type(e).__name__}: {str(e)[:80]}"
+            if attempt < tries - 1:
+                sleep(_CLIST_BACKOFF[min(attempt, len(_CLIST_BACKOFF) - 1)])
+        raise ClistPageError(
+            f"{EM_MARKET_LABELS.get(fs, fs)} 第 {pn} 页 {tries} 次都没拿到（{last}）")
+    return get
+
+
+def _collect_clist(get_page: Callable[[str, int], dict],
+                   markets: Sequence[Tuple[str, int]] = EM_MARKET_CONFIGS,
+                   pause: Callable[[], None] = lambda: time.sleep(0.3),
+                   ) -> List[Tuple[int, List[dict]]]:
+    """
+    逐个市场翻完全部页，返回 [(market_id, 去重后的原始条目), ...]。
+
+    **完整 = 每个市场去重后的条数等于源头报的 total**，不是"凑够 800 只"。任何一页
+    拿不到、或条数对不上，整趟作废（抛异常）——残缺名单跟"这只票不存在"看起来一样。
+    计数用的是源头返回的全部条目，范围过滤（如 689 开头的科创板 CDR）在这之后做。
+    """
+    out: List[Tuple[int, List[dict]]] = []
+    for fs, market_id in markets:
+        label = EM_MARKET_LABELS.get(fs, fs)
+        first = get_page(fs, 1)
+        total = int(first.get("total") or 0)
+        n_pages = math.ceil(total / CLIST_PAGE_SIZE)
+        seen: Dict[str, dict] = {}
+        for pn in range(1, n_pages + 1):
+            if pn == 1:
+                data = first
+            else:
+                pause()
+                data = get_page(fs, pn)
+            for item in data.get("diff") or []:
+                code = str(item.get("f12") or "")
+                if code:
+                    seen[code] = item
+        if total <= 0 or len(seen) != total:
+            raise ValueError(
+                f"东方财富 clist {label} 不完整：源头报 {total} 只，"
+                f"翻完 {n_pages} 页去重后 {len(seen)} 只")
+        out.append((market_id, list(seen.values())))
+    return out
+
+
+def _stocks_from_clist(markets_items: Sequence[Tuple[int, List[dict]]]) -> List[StockBasicInfo]:
+    results: List[StockBasicInfo] = []
+    for market_id, items in markets_items:
+        for item in items:
+            code = str(item.get("f12", ""))
+            if not _should_include_stock(code, market_id):
+                continue
+            name = str(item.get("f14", ""))
+            results.append(StockBasicInfo(
+                code=code,
+                name=name,
+                market=market_id,
+                is_st="ST" in name,
+                # 东财对停牌/无数据的字段返回字符串 "-"：拿不到就是 None，不填 0
+                pct_change=_float_or_none(item.get("f3")),
+                turnover_rate=_float_or_none(item.get("f8")),
+                float_market_cap=_num_or_none(item.get("f21")),
+                last_price=_num_or_none(item.get("f2")),
+            ))
+    return results
 
 
 def _fetch_from_eastmoney(timeout: int = 10) -> List[StockBasicInfo]:
@@ -664,58 +793,19 @@ def _fetch_from_eastmoney(timeout: int = 10) -> List[StockBasicInfo]:
     而主板 10% 的 3 连板是 +33%。破局雷达要回答"市场投机高度的天花板"，两种板
     混进同一个「最高连板」指标会让曲线失去可比性——东财天梯 08-28 给 920895 记
     2 板，那是 +69%，在主板口径下相当于五六个板。
+
+    2026-11-08 修过三个叠在一起的 bug（按当天实测的接口行为，修之前这条备用路径
+    **不可能成功**；东财是哪天把单页压到 100 的不知道，旧注释写过"每天跑 25 页"）：
+      · 按 pz=200 请求、"不满 200 条就停"——东财单页上限 100，每个市场只拿到第 1 页，
+        四个市场共约 400 只，必然撞上下面"低于 800 只"的门槛抛异常；
+      · 把 f10（量比）当换手率；
+      · `float(f3 or 0)` 遇到停牌股的 "-" 直接抛 ValueError（只翻第 1 页时按涨幅
+        倒序排，停牌股排在最后，碰不到）。
     """
-    results: List[StockBasicInfo] = []
-    market_configs = EM_MARKET_CONFIGS
-
     with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
-        for fs, market_id in market_configs:
-            page = 1
-            while True:
-                resp = client.get(CLIST_URL, params={
-                    "pn": page, "pz": 200, "po": 1, "np": 1,
-                    "fltt": 2, "invt": 2, "fid": "f3",
-                    "fs": fs,
-                    # f21=流通市值、f2=最新价，两个一起才能推流通股本。
-                    # **不是新增请求**：这个 clist 扫全市场每天本来就要跑 25 页，
-                    # 多要两个字段是免费的。而流通股本原来只能从涨停池/炸板池明细
-                    # 里取，那两张表 08-25 才建、历史浅，强势池 61 只只覆盖到 38 只
-                    "fields": "f12,f13,f14,f3,f10,f21,f2",
-                })
-                data = json_or_explain(resp, "东财全市场列表 ").get("data") or {}
-                items = data.get("diff") or []
-                if not items:
-                    break
+        results = _stocks_from_clist(_collect_clist(_clist_page_getter(client)))
 
-                for item in items:
-                    code = str(item.get("f12", ""))
-                    name = str(item.get("f14", ""))
-                    pct  = float(item.get("f3") or 0)
-                    turn = float(item.get("f10") or 0)
-                    # 东财对停牌/无数据的字段返回字符串 "-"，float() 会抛。
-                    # 拿不到就是 None，不填 0
-                    fmc = _num_or_none(item.get("f21"))
-                    px = _num_or_none(item.get("f2"))
-
-                    if not _should_include_stock(code, market_id):
-                        continue
-
-                    results.append(StockBasicInfo(
-                        code=code,
-                        name=name,
-                        market=market_id,
-                        is_st="ST" in name,
-                        pct_change=pct,
-                        turnover_rate=turn,
-                        float_market_cap=fmc,
-                        last_price=px,
-                    ))
-
-                if len(items) < 200:
-                    break
-                page += 1
-
-    # 全市场应有 4500+ 只；低于 800 说明被严重限流，数据残缺
+    # 四个市场每个都已核对过 total；这道门槛只防 fs 口径整体变了（全市场应有 5000+ 只）
     if len(results) < 800:
         raise ValueError(f"东方财富 clist 返回数据不完整（仅 {len(results)} 只），切换备用")
     return results
@@ -954,7 +1044,8 @@ def fetch_main_board_stocks(timeout: int = 60) -> List[StockBasicInfo]:
     获取 A 股全市场（主板 + 科创板 + 创业板）全部股票的当日基础信息。
 
     主力：AkShare（交易所官方列表 + 新浪涨跌幅），完整约 4500 只，耗时约 30s。
-    备用：东方财富 clist，速度快但受 TLS 指纹 + 分页限流影响，数据可能不完整。
+    备用：东方财富 clist，四个市场逐页翻完（单页 100 条，约 50 多页），每个市场条数
+    都要对上源头 total，否则整趟失败——成功返回的就是完整名单。
     """
     try:
         result = _fetch_from_akshare()
@@ -965,7 +1056,8 @@ def fetch_main_board_stocks(timeout: int = 60) -> List[StockBasicInfo]:
 
     try:
         result = _fetch_from_eastmoney(timeout=min(timeout, 15))
-        print(f"[fetcher] 东方财富列表接口成功（数据可能不完整）: {len(result)} 只")
+        # 保留"东方财富列表接口成功"这个前缀：grep 生产日志看备用路径有没有被走到靠它
+        print(f"[fetcher] 东方财富列表接口成功（四个市场均已对上 total）: {len(result)} 只")
         return result
     except Exception as e:
         raise RuntimeError(f"主板列表获取失败（AkShare + 东方财富均不可用）: {e}") from e

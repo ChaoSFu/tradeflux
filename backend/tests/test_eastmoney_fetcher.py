@@ -716,3 +716,197 @@ class TestBeijingExchangeCoverage:
         """东财 secid 对北交所用 market=0（同深）；腾讯/新浪那三条路按代码前缀短路。"""
         from app.services.eastmoney_fetcher import market_int
         assert market_int("BJ", "920510") == 0
+
+
+class TestClistFallback:
+    """
+    `_fetch_from_eastmoney`（fetch_main_board_stocks 的备用路径）2026-11-08 修的三个 bug：
+
+    1. 东财 clist 单页上限 100 条（实测 pz=200/500 都只回 100）。旧代码按 pz=200 请求、
+       "不满 200 条就停"，每个市场只拿第 1 页，四个市场约 400 只，必然撞上 800 只门槛
+       抛异常——这条备用路径不可能成功。
+    2. 把 f10（量比）当换手率。f8 才是换手率（= K 线 f61），贵州茅台实测 f8=0.34、f10=0.65。
+    3. `float(f3 or 0)` 遇到停牌股的 "-" 直接抛错。
+
+    下面的假服务器**跟真东财一样把每页压到 100 条**，不管请求的 pz 是多少。
+    """
+    SH = [("m:1+t:2", 1)]
+
+    @staticmethod
+    def _item(code, name="股", f3=1.0, f8=1.0, f10=9.9, f21=1e10, f2=10.0):
+        return {"f12": code, "f13": 1, "f14": name, "f3": f3, "f8": f8, "f10": f10,
+                "f21": f21, "f2": f2}
+
+    def _server(self, items, total=None, fail_on=None):
+        """假 get_page：按真实上限每页最多 100 条；fail_on 那一页抛 ClistPageError。"""
+        from app.services.eastmoney_fetcher import ClistPageError
+        calls = []
+
+        def get(fs, pn):
+            calls.append(pn)
+            if pn == fail_on:
+                raise ClistPageError(f"第 {pn} 页拿不到")
+            page = items[(pn - 1) * 100: pn * 100]
+            return {"total": len(items) if total is None else total, "diff": page}
+        return get, calls
+
+    def _many(self, n, start=600000):
+        return [self._item(str(start + i)) for i in range(n)]
+
+    def test_翻完全部页才停_不是不满200就停(self):
+        from app.services.eastmoney_fetcher import _collect_clist
+        get, calls = self._server(self._many(250))
+        out = _collect_clist(get, self.SH, pause=lambda: None)
+        assert calls == [1, 2, 3]
+        assert len(out[0][1]) == 250
+
+    def test_中间一页拿不到整趟作废(self):
+        import pytest
+        from app.services.eastmoney_fetcher import ClistPageError, _collect_clist
+        get, _ = self._server(self._many(250), fail_on=2)
+        with pytest.raises(ClistPageError):
+            _collect_clist(get, self.SH, pause=lambda: None)
+
+    def test_去重后条数和源头total对不上就失败(self):
+        import pytest
+        from app.services.eastmoney_fetcher import _collect_clist
+        get, _ = self._server(self._many(150), total=180)
+        with pytest.raises(ValueError, match="源头报 180 只.*去重后 150 只"):
+            _collect_clist(get, self.SH, pause=lambda: None)
+
+    def test_跨页重复的票不能凑数(self):
+        """盘中按涨幅排序翻页会有票跨页漂移：拿到 200 行但只有 199 只不同的票。"""
+        import pytest
+        from app.services.eastmoney_fetcher import _collect_clist
+        items = self._many(200)
+        items[150] = dict(items[10])
+        get, _ = self._server(items)
+        with pytest.raises(ValueError, match="去重后 199 只"):
+            _collect_clist(get, self.SH, pause=lambda: None)
+
+    def test_源头total为0也算不完整(self):
+        import pytest
+        from app.services.eastmoney_fetcher import _collect_clist
+        with pytest.raises(ValueError):
+            _collect_clist(lambda fs, pn: {"total": 0, "diff": [self._item("600000")]},
+                           self.SH, pause=lambda: None)
+
+    def test_完整性按源头全部条目算_范围过滤在之后(self):
+        """科创板里的 689009（CDR）源头算在 total 里，但不在我们的纳入范围。"""
+        from app.services.eastmoney_fetcher import _collect_clist, _stocks_from_clist
+        items = [self._item("688001"), self._item("689009")]
+        get, _ = self._server(items)
+        stocks = _stocks_from_clist(_collect_clist(get, [("m:1+t:23", 1)], pause=lambda: None))
+        assert [s.code for s in stocks] == ["688001"]
+
+    def test_换手率取f8不取f10(self):
+        from app.services.eastmoney_fetcher import _stocks_from_clist
+        [s] = _stocks_from_clist([(1, [self._item("600519", "贵州茅台", f8=0.34, f10=0.65)])])
+        assert s.turnover_rate == 0.34
+
+    def test_停牌的横杠是None不是0_真0和负数保留(self):
+        from app.services.eastmoney_fetcher import _stocks_from_clist
+        suspended = self._item("688086", "退市紫晶", f3="-", f8=0.0, f10="-", f21="-", f2="-")
+        flat = self._item("600000", f3=0.0, f8=0.12)
+        down = self._item("600001", f3=-3.5)
+        no_f8 = self._item("600002")
+        del no_f8["f8"]
+        s, f, d, n = _stocks_from_clist([(1, [suspended, flat, down, no_f8])])
+        assert s.pct_change is None and s.float_market_cap is None and s.last_price is None
+        assert s.turnover_rate == 0.0      # 东财对停牌股给的就是 0.0：没成交，是真值
+        assert s.is_st is False            # "退市紫晶" 不含 ST
+        assert f.pct_change == 0.0 and d.pct_change == -3.5
+        assert n.turnover_rate is None
+
+    def test_请求参数_单页100_按代码排序_要f8(self):
+        from app.services.eastmoney_fetcher import _clist_page_getter
+        client = _FakeClient({"push2delay.eastmoney.com": [_ok_page()]})
+        _clist_page_getter(client, sleep=lambda s: None)("m:1+t:2", 3)
+        _url, params = client.calls[0]
+        assert params["pz"] == 100 and params["pn"] == 3
+        assert params["fid"] == "f12" and params["po"] == 0
+        fields = params["fields"].split(",")
+        assert "f8" in fields and "f10" not in fields
+
+    def test_第一个主机空包就换下一个_之后先用好的那个(self):
+        from app.services.eastmoney_fetcher import _clist_page_getter
+        client = _FakeClient({
+            "push2delay.eastmoney.com": [_R(200, "")],
+            "push2.eastmoney.com": [_ok_page(), _ok_page()],
+        })
+        sleeps = []
+        get = _clist_page_getter(client, sleep=sleeps.append)
+        assert get("m:1+t:2", 1)["total"] == 1
+        assert get("m:1+t:2", 2)["total"] == 1
+        assert [h for h, _ in client.calls] == [
+            "push2delay.eastmoney.com", "push2.eastmoney.com", "push2.eastmoney.com"]
+        assert len(sleeps) == 1
+
+    def test_所有主机都拿不到就抛_错误说得出哪一页(self):
+        import pytest
+        from app.services.eastmoney_fetcher import ClistPageError, _clist_page_getter
+        client = _FakeClient({"push2delay.eastmoney.com": [_R(200, '{"data": null}')] * 2,
+                              "push2.eastmoney.com": [_R(502, "<html>502</html>")] * 2})
+        sleeps = []
+        get = _clist_page_getter(client, sleep=sleeps.append)
+        with pytest.raises(ClistPageError, match="科创板 第 4 页 4 次都没拿到"):
+            get("m:1+t:23", 4)
+        assert len(client.calls) == 4 and len(sleeps) == 3
+
+    def test_备用路径整体_AkShare失败时能拿到完整名单(self, monkeypatch):
+        from app.services import eastmoney_fetcher as ef
+
+        def boom():
+            raise RuntimeError("akshare down")
+        markets = {"m:1+t:2": self._many(500, 600000), "m:1+t:23": self._many(300, 688000),
+                   "m:0+t:6": [self._item(f"{i:06d}") for i in range(1, 251)],
+                   "m:0+t:80": self._many(150, 300000)}
+
+        class _Client(_FakeClient):
+            def get(self, url, params=None):
+                host = url.split("/")[2]
+                self.calls.append((host, params))
+                items = markets[params["fs"]]
+                pn = params["pn"]
+                import json as _j
+                return _R(200, _j.dumps({"data": {
+                    "total": len(items), "diff": items[(pn - 1) * 100: pn * 100]}}))
+
+        monkeypatch.setattr(ef, "_fetch_from_akshare", boom)
+        monkeypatch.setattr(ef.httpx, "Client", lambda **kw: _Client({}))
+        monkeypatch.setattr(ef.time, "sleep", lambda s: None)
+        stocks = ef.fetch_main_board_stocks()
+        assert len(stocks) == 1200
+        assert len({s.code for s in stocks}) == 1200
+
+
+class _R:
+    def __init__(self, code, body):
+        self.status_code, self.text = code, body
+        self.content = body.encode()
+
+    def json(self):
+        import json as _j
+        return _j.loads(self.text)
+
+
+def _ok_page():
+    return _R(200, '{"data": {"total": 1, "diff": [{"f12": "600000", "f14": "浦发银行"}]}}')
+
+
+class _FakeClient:
+    """按主机排队回放响应；记录 (host, params)。可当 context manager 用。"""
+    def __init__(self, responses):
+        self.responses = {h: list(v) for h, v in responses.items()}
+        self.calls = []
+
+    def get(self, url, params=None):
+        host = url.split("/")[2]
+        self.calls.append((host, params))
+        return self.responses[host].pop(0)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
