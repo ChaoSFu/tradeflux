@@ -39,7 +39,8 @@ def _classify(db, codes_by_cap, limit: int) -> None:
     floor = min(float(cfg["threshold_yi"]), 500.0) * 0.8
     st = sync.refresh_classification(db, codes_by_cap, floor_yi=floor, limit=limit, log=_log)
     _log(f"[大市值] F10 分类：≥{floor:.0f}亿 {st['targets']} 只，本次试 {st['tried']}，"
-         f"成功 {st['ok']}，拉空 {st['empty']}，失败 {st['error']}，还差 {st['remaining_missing']} 只没分类")
+         f"成功 {st['ok']}，拉空 {st['empty']}，失败 {st['error']}，还差 {st['remaining_missing']} 只没分类"
+         + ("（连续失败，提前停手）" if st.get("aborted") else ""))
 
 
 def _already_have(db) -> bool:

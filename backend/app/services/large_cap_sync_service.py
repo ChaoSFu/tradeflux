@@ -584,12 +584,17 @@ def refresh_classification(db: Session, codes_by_cap: Sequence[Tuple[str, float]
                            floor_yi: float, limit: int = 150, stale_days: int = 30,
                            stale_limit: int = 30, log: Callable[[str], None] = print,
                            fetch: Optional[Callable[[str], List[list]]] = None,
-                           pause: Callable[[], None] = lambda: time.sleep(0.25)) -> dict:
+                           pause: Callable[[], None] = lambda: time.sleep(0.25),
+                           max_consecutive_bad: int = 5) -> dict:
     """
     给市值 ≥ floor_yi 的股票补 F10 板块。先补没有的（大的先），再轮换刷新旧的。
 
     **F10 拉空不覆盖旧值**：2026-11-02 板块同步就因为 F10 被掐拉空、把关联删光过。
     分类失败不影响行情快照，这一步只记数。
+
+    **连续 max_consecutive_bad 只失败或拉空就停手**：2026-11-08 生产上 F10 每个请求都读超时，
+    不停的话 435 只 × 10 秒要跑一个多小时，盘后那个线程和几次重试会一直挂着。
+    A 股不存在一个板块都没有的股票，所以拉空也当失败数——那是被掐的样子。
     """
     targets = [c for c, cap in codes_by_cap if cap >= floor_yi]
     have = {r.stock_code: r for r in db.query(LargeCapStockBoards)
@@ -602,7 +607,8 @@ def refresh_classification(db: Session, codes_by_cap: Sequence[Tuple[str, float]
                    key=lambda r: r.fetched_at)[:stale_limit]
     todo = missing + [r.stock_code for r in stale]
     stats = {"targets": len(targets), "tried": 0, "ok": 0, "empty": 0, "error": 0,
-             "remaining_missing": len(all_missing) - len(missing)}
+             "remaining_missing": len(all_missing) - len(missing), "aborted": False}
+    bad_streak = 0
     if not todo:
         return stats
 
@@ -623,6 +629,7 @@ def refresh_classification(db: Session, codes_by_cap: Sequence[Tuple[str, float]
                 boards = fetch(code)
             except Exception as e:  # noqa: BLE001
                 stats["error"] += 1
+                bad_streak += 1
                 if row.status != "ok":
                     row.status = "error"
                 log(f"  F10 {code} 失败：{type(e).__name__}: {str(e)[:60]}")
@@ -631,10 +638,17 @@ def refresh_classification(db: Session, codes_by_cap: Sequence[Tuple[str, float]
                     row.boards = json.dumps(boards, ensure_ascii=False)
                     row.status, row.fetched_at = "ok", now
                     stats["ok"] += 1
+                    bad_streak = 0
                 else:
                     stats["empty"] += 1
+                    bad_streak += 1
                     if row.status != "ok":
                         row.status = "empty"
+            if bad_streak >= max_consecutive_bad:
+                stats["aborted"] = True
+                stats["remaining_missing"] += sum(1 for c in todo[i + 1:] if c in missing)
+                log(f"  F10 连续 {bad_streak} 只失败或拉空，像是被掐了，本次停手（快照不受影响，下次同步接着补）")
+                break
             if i + 1 < len(todo):
                 pause()
             if (i + 1) % 50 == 0:

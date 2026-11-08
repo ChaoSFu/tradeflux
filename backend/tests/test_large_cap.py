@@ -387,6 +387,31 @@ class TestClassificationCache:
         assert st["targets"] == 2, "C 在分类下限以下"
         assert db.query(LargeCapStockBoards).filter_by(stock_code="B").one().status == "error"
 
+    def test_连续失败就停手(self, db):
+        """生产 11-08：F10 全部读超时，不停的话 435 只 × 10 秒。"""
+        calls = []
+
+        def fetch(code):
+            calls.append(code)
+            raise TimeoutError("read timed out")
+        codes = [(f"{600000 + i}", 3000 - i) for i in range(40)]
+        st = sync.refresh_classification(db, codes, floor_yi=500, fetch=fetch,
+                                         pause=lambda: None, log=lambda m: None)
+        assert len(calls) == 5 and st["aborted"] is True
+        assert st["remaining_missing"] == 35
+
+    def test_中间成功一只就重新计数(self, db):
+        seq = iter([RuntimeError, RuntimeError, RuntimeError, RuntimeError, "ok"] + [RuntimeError] * 3)
+
+        def fetch(code):
+            r = next(seq)
+            if r == "ok":
+                return [["BK1", "x", 1]]
+            raise r("x")
+        st = sync.refresh_classification(db, [(f"{600000 + i}", 3000 - i) for i in range(8)],
+                                         floor_yi=500, fetch=fetch, pause=lambda: None, log=lambda m: None)
+        assert st["tried"] == 8 and st["aborted"] is False and st["ok"] == 1
+
 
 # ── 组装（库） ──────────────────────────────────────────────────────────────
 
