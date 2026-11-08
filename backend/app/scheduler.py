@@ -68,7 +68,55 @@ def _do_update(log_path: str, today: date) -> dict:
     except Exception as exc:  # noqa: BLE001
         _log(log_path, "SCHED", f"⚠️ 数据体检失败（不影响日更）: {exc}")
     _catch_up_sector_index(log_path, result)
+    _sync_large_cap(log_path)
     return result
+
+
+def _sync_large_cap(log_path: str, now=None, wait: bool = False) -> None:
+    """
+    大市值概览的全市场收盘快照。独立一步：失败只记日志，不影响日更结果，也不亮「数据降级」
+    ——页面自己会标「数据过期」。
+
+    **另起线程跑，不拖着日更**：翻 58 页 + 补分类要 2~6 分钟，同步跑的话日更那把锁要多拿
+    这么久，手动更新也得一直排队。它有自己的锁（/tmp/tradeflux_large_cap.lock），用不着日更的。
+
+    只在收盘后跑：盘前那次拿到的是集合竞价价格，不是收盘市值。
+    """
+    import threading
+    from app.services.eastmoney_fetcher import SH_TZ
+    if (now or datetime.now(SH_TZ)).hour < 15:
+        return
+    t = threading.Thread(target=_run_large_cap_sync, args=(log_path, ("--apply",)),
+                         daemon=True, name="large-cap-sync")
+    t.start()
+    if wait:
+        t.join()
+
+
+def _run_large_cap_sync(log_path: str, args) -> None:
+    from app.services.daily_update_runner import run_script_subprocess
+    try:
+        code = run_script_subprocess(["-m", "scripts.large_cap_sync", *args],
+                                     on_line=lambda ln: _log(log_path, "LARGECAP", ln))
+        _log(log_path, "SCHED", "✅ 大市值快照完成" if code == 0
+             else f"⚠️ 大市值快照没写入（退出码 {code}，不影响日更，稍后定时重试）")
+    except Exception as exc:  # noqa: BLE001
+        _log(log_path, "SCHED", f"⚠️ 大市值快照失败（不影响日更）: {exc}")
+
+
+def _run_large_cap_retry() -> None:
+    """
+    东财 clist 经常被掐（2026-10 板块同步 15 天里 12 天），盘后那一次没拿到就靠这几次补。
+    收盘数据到第二天开盘前都不会变，所以晚上和次日 08:45 再试都拿得到同一份。
+    已经有东财完整快照就什么都不做（--if-missing）。
+    """
+    backend_dir = os.path.dirname(os.path.dirname(__file__))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    log_dir = os.path.join(backend_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"large_cap_{date.today().isoformat()}.log")
+    _run_large_cap_sync(log_path, ("--apply", "--if-missing"))
 
 
 def _catch_up_sector_index(log_path: str, result: dict, now=None) -> None:
@@ -281,6 +329,7 @@ def create_scheduler() -> BackgroundScheduler:
     - 盘前 09:26 触发每日数据更新（集合竞价 9:25 之后、开盘 9:30 之前）
     - 周六 10:00 触发板块全量同步（周度兜底，见 BACKEND.md §0.3）
     - 周六 11:00 数据体检（周度兜底；平时每次日更跑完都会接着体检一次）
+    - 工作日 16:40 / 18:40 / 21:40 / 08:45 大市值快照重试（已有就秒退，自己一把锁）
     前三者共享同一把文件锁互斥；max_instances=1；每日更新失败后 10 分钟自动重试
     最多 3 次，周度兜底失败不重试（下周还会再跑，非关键路径）。
 
@@ -359,4 +408,16 @@ def create_scheduler() -> BackgroundScheduler:
         replace_existing=True,
         misfire_grace_time=3600 * 6,
     )
+    # 大市值快照重试：盘后日更里那一次没拿全时补（已有就秒退）。不拿日更的锁，
+    # 有自己的锁；08:45 那次补的是上一个交易日（开盘前行情还停在昨天收盘）
+    for hh, mm in ((16, 40), (18, 40), (21, 40), (8, 45)):
+        scheduler.add_job(
+            _run_large_cap_retry,
+            trigger=CronTrigger(day_of_week="mon-fri", hour=hh, minute=mm, timezone="Asia/Shanghai"),
+            max_instances=1,
+            id=f"large_cap_retry_{hh:02d}{mm:02d}",
+            name=f"大市值快照重试 {hh:02d}:{mm:02d}",
+            replace_existing=True,
+            misfire_grace_time=1800,
+        )
     return scheduler

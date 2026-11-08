@@ -6,6 +6,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 import { useAuthStore } from '@/store/auth'
 import { RotateCcw, Save, Info, Lock } from 'lucide-react'
+import { LargeCapSettings } from '@/components/largeCap/LargeCapSettings'
 
 interface FieldProps {
   title: string
@@ -154,6 +155,8 @@ export default function PoolConfig() {
         {mut.isError && <span className="text-sm text-down">保存失败（需登录权限）</span>}
       </div>
       )}
+
+      <LargeCapSettings editable={isLoggedIn} />
     </div>
   )
 }
