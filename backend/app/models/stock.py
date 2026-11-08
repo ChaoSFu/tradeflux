@@ -36,6 +36,7 @@ class Stock(Base):
     pct_change_60d = Column(Float, default=0.0, nullable=False)    # 近60日累计涨幅 %
     pct_change_20d = Column(Float, default=0.0, nullable=False)    # 近20日累计涨幅 %
     pct_change_10d = Column(Float, default=0.0, nullable=False)    # 近10日累计涨幅 %
+    pct_change_5d = Column(Float, nullable=True)                   # 近5日累计涨幅 %（None = 还没算过）
     top_10_pct_change_20d = Column(Boolean, default=False, nullable=False)
     # 股性：库里有记录的每次涨停，次一交易日的平均涨跌幅 %（limit_up_premium_service，日更收盘后重算）。
     # 没有样本是 None 不是 0；样本数单独存——只涨停过一两次的平均值参考意义有限
@@ -132,6 +133,7 @@ class StockDailySnapshot(Base):
     pct_change_60d = Column(Float, default=0.0, nullable=False)     # 近60日累计涨幅 %
     pct_change_20d = Column(Float, default=0.0, nullable=False)     # 近20日累计涨幅 %
     pct_change_10d = Column(Float, default=0.0, nullable=False)     # 近10日累计涨幅 %
+    pct_change_5d = Column(Float, nullable=True)                    # 近5日累计涨幅 %（None = 没算）
     top_10_pct_change_20d = Column(Boolean, default=False, nullable=False)  # 20日涨幅进前10%
 
     # 阶段（与 Stock.phase 同步写入，用于历史查询）

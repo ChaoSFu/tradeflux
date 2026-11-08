@@ -40,6 +40,7 @@ class StockResponse(StockBase):
     pct_change_60d: float = 0.0
     pct_change_20d: float = 0.0
     pct_change_10d: float = 0.0
+    pct_change_5d: Optional[float] = None      # None = 还没算过（新列，下一次日更才有）
     top_10_pct_change_20d: bool
     # 股性：有记录的每次涨停，次一交易日的平均涨跌幅 %；没有样本为 None（样本数见下一个字段）
     limit_up_next_avg_pct: Optional[float] = None

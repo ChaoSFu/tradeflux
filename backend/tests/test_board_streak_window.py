@@ -155,3 +155,14 @@ class TestGapBreaksStreak:
         """旧行为只在确知序列无空洞时才对，但不能让缺参数直接报错。"""
         bars = self._bars_on([0, 2], ups={0, 2})
         assert [s[2] for s in board_streaks(bars)] == [2]
+
+
+class TestPct5d:
+    """近5日累计涨幅：跟 10/20/60 同口径（日涨跌幅相加），不足 5 根就是不知道。"""
+
+    def test_取最后5根(self):
+        s = _stats(_series("UU....UU.U"))
+        assert s.pct_change_5d == 30.0 and s.pct_change_10d == 50.0
+
+    def test_不足5根是None不是0(self):
+        assert _stats(_series("UUU.")).pct_change_5d is None

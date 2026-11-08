@@ -4,12 +4,12 @@ import { useNavigate } from 'react-router-dom'
 import { fetchStrongPool, fetchLimitMoves, fetchLeaderCycle } from '@/api/stocks'
 import { shownState } from '@/lib/lifecycle'
 import { LoadingRows } from '@/components/common/LoadingSpinner'
-import { SectorTag, OverflowBadge, LeaderTag, SectorLeaderTag, RegulatoryTag, YesterdayLimitTag, SevereTargetTag } from '@/components/common/SectorTags'
+import { SectorTag, OverflowBadge, LeaderTag, GainLeaderTag, SectorLeaderTag, RegulatoryTag, YesterdayLimitTag, SevereTargetTag } from '@/components/common/SectorTags'
 import { useSectorLeaders } from '@/hooks/useSectorLeaders'
 import { useRegulatoryStatus, type RegStatus } from '@/hooks/useRegulatoryStatus'
 import { useSevereTargets, type SevereTarget } from '@/hooks/useSevereTargets'
 import {
-  useLeaderUniverseMaxes, getLeaderTags, dragonPrimary,
+  useLeaderUniverseMaxes, getLeaderTags, getGainLeaderTags, dragonPrimary,
   type LeaderMaxes,
 } from '@/hooks/useLeaderUniverseMaxes'
 import { Search, Star, Flame, Crown, Info, ChevronUp, ChevronDown, ChevronsUpDown, TrendingDown } from 'lucide-react'
@@ -27,6 +27,7 @@ type SortKey =
   | 'limit_up_days_60d'
   | 'board_count_60d'
   | 'limit_up_next_avg_pct'
+  | 'pct_change_5d'
   | 'pct_change_10d'
   | 'pct_change_20d'
   | 'pct_change_60d'
@@ -511,6 +512,7 @@ export default function StockPool() {
                       />
                     </span>
                   </th>
+                  <SortTh col="pct_change_5d"     label="5日涨幅"   sort={headerSort} onSort={handleSort} />
                   <SortTh col="pct_change_10d"    label="10日涨幅"  sort={headerSort} onSort={handleSort} />
                   <SortTh col="pct_change_20d"    label="20日涨幅"  sort={headerSort} onSort={handleSort} />
                   <SortTh col="pct_change_60d"    label="60日涨幅"  sort={headerSort} onSort={handleSort} />
@@ -532,7 +534,7 @@ export default function StockPool() {
               <tbody>
                 {activeStocks.length === 0 ? (
                   <tr>
-                    <td colSpan={15} className="py-16 text-center text-text-muted text-sm">暂无数据</td>
+                    <td colSpan={16} className="py-16 text-center text-text-muted text-sm">暂无数据</td>
                   </tr>
                 ) : (
                   activeStocks.map((stock) => (
@@ -626,6 +628,7 @@ function StockRow({
   const overflow = sectors.length - MAX_VISIBLE_SECTORS
 
   const leaderTags = getLeaderTags(stock, leaderMaxes)
+  const gainTags = getGainLeaderTags(stock, leaderMaxes)
   // 一只股票可能同时属于状态组和涨跌停组；行内标签展示**状态**那个
   // ——涨跌停当天有单独的涨/跌幅列和标记，不必再占这一格
   const phaseGroup = getGroupKeys(stock, lifeStates)[0]
@@ -648,12 +651,13 @@ function StockRow({
           )}
           {regStatus && <RegulatoryTag status={regStatus} />}
         </div>
-        {(leaderTags.length > 0 || leadSectors.length > 0 || stock.yesterday_is_limit_up || stock.yesterday_is_limit_down || severe || stock.severe_up_room != null) && (
+        {(leaderTags.length > 0 || gainTags.length > 0 || leadSectors.length > 0 || stock.yesterday_is_limit_up || stock.yesterday_is_limit_down || severe || stock.severe_up_room != null) && (
           <div className="flex flex-wrap gap-0.5 mt-0.5">
             <SevereTargetTag target={severe?.target_rate} approach={severe?.approach} room={stock.severe_up_room} />
             {stock.yesterday_is_limit_up && <YesterdayLimitTag dir="up" />}
             {stock.yesterday_is_limit_down && <YesterdayLimitTag dir="down" />}
             {leaderTags.map(t => <LeaderTag key={t} label={t} />)}
+            {gainTags.map(t => <GainLeaderTag key={t} label={t} />)}
             {leadSectors.map(n => <SectorLeaderTag key={n} name={n} />)}
           </div>
         )}
@@ -752,6 +756,15 @@ function StockRow({
             <span className="ml-1 text-[10px] text-text-muted">{stock.limit_up_next_samples}次</span>
           </span>
         ) : <span className="text-text-secondary">—</span>}
+      </td>
+
+      {/* 5日涨幅：新字段，下一次日更前是 null，显示 — 不是 0 */}
+      <td className="px-3 py-2.5 text-right font-mono text-xs">
+        {stock.pct_change_5d != null ? (
+          <span className={cn('font-medium', stock.pct_change_5d > 0 ? 'text-up' : stock.pct_change_5d < 0 ? 'text-down' : 'text-text-muted')}>
+            {stock.pct_change_5d > 0 ? '+' : ''}{stock.pct_change_5d.toFixed(1)}%
+          </span>
+        ) : <span className="text-text-muted">—</span>}
       </td>
 
       {/* 10日涨幅 */}
