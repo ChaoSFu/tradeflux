@@ -18,8 +18,8 @@
 19 根日 K，东财照样给 20 日 = 60 日 = 年初至今 = 128.14%（上市以来）。写库前按交易日历
 数一下上市以来的交易日，不够 N+1 根就把 N 日涨跌幅置空（见 mask_young_returns）。
 
-**注意 f8 / f10 别弄反**：eastmoney_fetcher._fetch_from_eastmoney 把 f10 当换手率用了，
-那其实是量比。这里按实测映射，不照抄那一处。
+**注意 f8 / f10 别弄反**：f8 是换手率、f10 是量比。eastmoney_fetcher._fetch_from_eastmoney
+曾把 f10 当换手率用，2026-11-08 已改成 f8。
 
 ## 什么叫「完整」
 
