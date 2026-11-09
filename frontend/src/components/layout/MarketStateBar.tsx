@@ -21,7 +21,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { fetchProfitEffect } from '@/api/marketState'
 import { fetchTurnoverOverview } from '@/api/turnover'
-import { fetchLimitMoves, fetchLimitMovesTrend, fetchStrongPool, fetchLifecycleEffect } from '@/api/stocks'
+import { fetchLimitMoves, fetchLimitMovesSectorCounts, fetchLimitMovesTrend, fetchStrongPool, fetchLifecycleEffect } from '@/api/stocks'
 import { LIFECYCLE_ZH } from '@/lib/lifecycle'
 import { fetchMarketEffectLatest } from '@/api/marketEffects'
 import { useSectorTags } from '@/hooks/useSectorTags'
@@ -125,6 +125,9 @@ export function MarketStateBar() {
   // ── 板块展开用的三份名单：**点开才取** ───────────────────────────────────
   // 它们只喂 sectorGroupMap，而那个只在 expandedSector 非空时才用得到（见文件
   // 末尾的展开区）。默认是收起的，所以原来每进一个页面都白拉 146KB。
+  // **别再从这三份名单里算常驻显示的东西**：它们没点开就是空的。「今日涨停最多」
+  // 当初就是从 up 里数的，09-07 改成懒加载后，它只在涨跌停分析页（自己取同一份
+  // 名单、缓存共用）才出来，别的页面一直空着——2026-11-09 改走下面的板块计数接口。
   //
   // queryKey 跟「涨跌停分析」页对齐，两边共享同一次请求——同一份涨停名单原来
   // 有三个不同的 key，各取各的。
@@ -238,14 +241,19 @@ export function MarketStateBar() {
     .slice(0, 5)
     .map(([name]) => name)
 
-  // 今日涨停最多前 5：当日涨停股所属板块出现次数最高的 5 个（与「涨跌停概览」板块统计同口径）
-  const todayLimitUpTop5: [string, number][] = useMemo(() => {
-    const cnt = new Map<string, number>()
-    for (const s of ((up as any)?.items ?? []) as Stock[]) {
-      for (const sec of s.sectors ?? []) cnt.set(sec, (cnt.get(sec) ?? 0) + 1)
-    }
-    return [...cnt.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 5)
-  }, [up])
+  // 今日涨停最多前 5：当日涨停股所属板块出现次数最高的 5 个。后端直接按板块数好
+  // （成员、板块口径跟涨停名单相同），几百字节；不再拉整份名单在这里数
+  const { data: luSectors } = useQuery({
+    queryKey: ['limit-moves-sector-counts', 'limit_up'],
+    queryFn: () => fetchLimitMovesSectorCounts('limit_up', 5),
+  })
+  const todayLimitUpTop5: [string, number][] = useMemo(
+    () => [...(luSectors?.sectors ?? [])]
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+      .slice(0, 5)
+      .map((x) => [x.name, x.count] as [string, number]),
+    [luSectors],
+  )
 
   // 成交额板块效应前 5：成交额概览页「成交额板块效应」默认排序（赚钱效应 avg_pct_change）前5
   // 保留完整 group（而非只取 name），行内括号展示赚钱效应/大成交额只数，跟板块自身涨幅区分

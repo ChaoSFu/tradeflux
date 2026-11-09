@@ -358,6 +358,67 @@ def get_all_stocks(
     )
 
 
+def _limit_moves_query(db: Session, target_date, move_type: Optional[str]):
+    """涨跌停名单的成员：非 ST、target_date 那天快照涨停 / 跌停（move_type=None 两者都要）。
+    名单接口和板块计数接口共用这一份，两边的成员永远是同一批。"""
+    q = (
+        db.query(Stock)
+        .join(StockDailySnapshot, StockDailySnapshot.stock_id == Stock.id)
+        .filter(StockDailySnapshot.date == target_date)
+        .filter(Stock.is_st == False)  # noqa: E712
+    )
+    if move_type == "limit_up":
+        return q.filter(StockDailySnapshot.is_limit_up == True)  # noqa: E712
+    if move_type == "limit_down":
+        return q.filter(StockDailySnapshot.is_limit_down == True)  # noqa: E712
+    return q.filter(
+        or_(
+            StockDailySnapshot.is_limit_up == True,   # noqa: E712
+            StockDailySnapshot.is_limit_down == True, # noqa: E712
+        )
+    )
+
+
+def limit_moves_sector_counts(db: Session, move_type: str = "limit_up", date=None,
+                              top: Optional[int] = None) -> dict:
+    """
+    指定交易日（默认最新）的涨停 / 跌停股，按板块数只数——顶栏「今日涨停最多」用。
+
+    成员跟 get_limit_moves_pool 同一个查询；板块跟名单里每只股票的 sectors 同一条规则
+    （_should_show_sector_tag：只算关注的板块）。一只股票在同一个板块只算一次。
+
+    为什么单开一个接口（2026-11-09）：顶栏原来拿完整名单在前端数（生产 54 只涨停就 56KB），
+    09-07 那次性能优化把名单改成「点开板块才取」，可「今日涨停最多」也靠它——之后这一行
+    只有在涨跌停分析页（它自己取同一份名单、缓存共用）才显示，别的页面一直是空的。
+    """
+    target_date = date or db.query(sqlfunc.max(StockDailySnapshot.date)).scalar()
+    if not target_date:
+        return {"trade_date": None, "is_settled": None, "move_type": move_type, "members": 0, "sectors": []}
+    stock_ids = [sid for (sid,) in _limit_moves_query(db, target_date, move_type).with_entities(Stock.id)]
+    by_stock: dict[int, set] = defaultdict(set)
+    if stock_ids:
+        rels = (db.query(StockSectorRelation.stock_id, StockSectorRelation.sector_id)
+                .filter(StockSectorRelation.stock_id.in_(stock_ids)).all())
+        sectors = {s.id: s for s in db.query(Sector)
+                   .filter(Sector.id.in_({r.sector_id for r in rels})).all()} if rels else {}
+        for sid, sec_id in rels:
+            sec = sectors.get(sec_id)
+            if sec is not None and _should_show_sector_tag(sec):
+                by_stock[sid].add(sec.name)
+    counts: dict[str, int] = defaultdict(int)
+    for names in by_stock.values():
+        for n in names:
+            counts[n] += 1
+    rows = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+    if top and len(rows) > top:
+        # 只要前 top 名，但跟第 top 名同只数的全带上：并列怎么排由调用方定，不在这里替它砍
+        cutoff = rows[top - 1][1]
+        rows = [r for r in rows if r[1] >= cutoff]
+    return {"trade_date": target_date, "is_settled": date_is_settled(db, target_date), "move_type": move_type,
+            "members": len(stock_ids), "sectors_total": len(counts),
+            "sectors": [{"name": n, "count": c} for n, c in rows]}
+
+
 def get_limit_moves_pool(
     db: Session,
     page: int = 1,
@@ -381,26 +442,7 @@ def get_limit_moves_pool(
     # None 不是 False"）统一在 snapshot_settlement 里，这里不重写一遍
     is_settled = date_is_settled(db, target_date)
 
-    q = (
-        db.query(Stock)
-        .join(StockDailySnapshot, StockDailySnapshot.stock_id == Stock.id)
-        .filter(StockDailySnapshot.date == target_date)
-        .filter(Stock.is_st == False)  # noqa: E712
-    )
-
-    if move_type == "limit_up":
-        q = q.filter(StockDailySnapshot.is_limit_up == True)  # noqa: E712
-    elif move_type == "limit_down":
-        q = q.filter(StockDailySnapshot.is_limit_down == True)  # noqa: E712
-    else:
-        q = q.filter(
-            or_(
-                StockDailySnapshot.is_limit_up == True,   # noqa: E712
-                StockDailySnapshot.is_limit_down == True, # noqa: E712
-            )
-        )
-
-    q = q.order_by(StockDailySnapshot.pct_change.desc())
+    q = _limit_moves_query(db, target_date, move_type).order_by(StockDailySnapshot.pct_change.desc())
 
     if search:
         q = q.filter(
