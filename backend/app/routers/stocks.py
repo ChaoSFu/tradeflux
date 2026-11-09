@@ -167,6 +167,18 @@ def list_limit_moves(
                                 date=_parse_date(date))
 
 
+@router.get("/limit-moves/sector-counts")
+def limit_moves_sector_counts(
+    move_type: str = Query("limit_up", pattern="^(limit_up|limit_down)$"),
+    date: Optional[str] = Query(None, description="历史交易日 YYYY-MM-DD，不传=最新"),
+    top: Optional[int] = Query(None, ge=1, le=100, description="只要前 N 名（跟第 N 名同只数的都带上）"),
+    db: Session = Depends(get_db),
+):
+    """涨停 / 跌停股按板块数只数（顶栏「今日涨停最多」）。成员、板块口径跟 /limit-moves 名单相同。"""
+    from ..services.strong_stock_service import limit_moves_sector_counts as counts
+    return counts(db, move_type, date=_parse_date(date), top=top)
+
+
 @router.get("/{code}", response_model=StockResponse)
 def get_stock(code: str, db: Session = Depends(get_db)):
     stock = db.query(Stock).filter(Stock.code == code).first()

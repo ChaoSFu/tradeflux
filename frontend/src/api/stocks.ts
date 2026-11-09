@@ -37,6 +37,19 @@ export const fetchLimitMoves = (params?: {
   date?: string   // 历史交易日 YYYY-MM-DD，不传=最新
 }) => client.get<StockListResponse>('/stocks/limit-moves', { params }).then((r) => r.data)
 
+/** 涨停 / 跌停股按板块数只数（成员、板块口径跟 /stocks/limit-moves 名单相同），顶栏「今日涨停最多」用 */
+export interface LimitMovesSectorCounts {
+  trade_date: string | null
+  is_settled: boolean | null
+  move_type: 'limit_up' | 'limit_down'
+  members: number
+  sectors_total: number
+  /** 传了 top 时：前 top 名，跟第 top 名同只数的都在 */
+  sectors: { name: string; count: number }[]
+}
+export const fetchLimitMovesSectorCounts = (move_type: 'limit_up' | 'limit_down' = 'limit_up', top?: number) =>
+  client.get<LimitMovesSectorCounts>('/stocks/limit-moves/sector-counts', { params: { move_type, top } }).then((r) => r.data)
+
 export const fetchLimitMovesTrend = (days = 20) =>
   client.get<LimitMoveTrendPoint[]>('/stocks/limit-moves/trend', { params: { days } }).then((r) => r.data)
 
