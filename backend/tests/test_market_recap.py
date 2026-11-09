@@ -416,3 +416,13 @@ class TestSectorPeers:
         db.commit()
         r = ctx.sector_peers(db, "600001", D3)
         assert r["status"] == "missing" and r["groups"] == [] and "手动录入" in r["note"]
+
+
+class TestSealRate:
+    @pytest.mark.parametrize("lu,broken,expected", [
+        (54, 0, (None, None)),      # 11-09：炸板池超时，涨停照常——不是 100%
+        (0, 12, (None, None)),
+        (54, 6, (6, 0.9)),
+    ])
+    def test_任一明细0行就算不出(self, lu, broken, expected):
+        assert ctx.seal_rate_of(lu, broken) == expected

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import statistics
 from datetime import date, datetime, time as dtime
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import func as sqlfunc
 from sqlalchemy.orm import Session
@@ -136,23 +136,37 @@ def index_module(db: Session, d: date) -> dict:
 
 # ── 模块：宽度 + 成交 ───────────────────────────────────────────────────────
 
+def seal_rate_of(lu: int, broken: int) -> Tuple[Optional[int], Optional[float]]:
+    """
+    (炸板数, 封板率)。涨停明细或炸板明细任一天 0 行都当「没抓到」，两个都给 None：
+    炸板池跟涨停池是两次请求，可能只挂一个（2026-11-09 炸板池超时、涨停 54 只照常写入），
+    按 0 炸板算就是假的 100% 封板率。
+    """
+    if lu <= 0 or broken <= 0:
+        return None, None
+    return broken, round(lu / (lu + broken), 3)
+
+
 def breadth_module(db: Session, d: date) -> dict:
     row = db.query(MarketBreadthDaily).filter(MarketBreadthDaily.date == d).first()
     lu = db.query(sqlfunc.count(LimitUpDailyDetail.id)).filter(LimitUpDailyDetail.trade_date == d).scalar() or 0
     broken = db.query(sqlfunc.count(BrokenBoardDailyDetail.id)).filter(BrokenBoardDailyDetail.trade_date == d).scalar() or 0
     notes = []
-    # 涨停明细一天 0 行 = 没抓到，不是一只都没涨停（体检也是这么判的）
-    seal_rate = round(lu / (lu + broken), 3) if lu > 0 else None
+    # 明细一天 0 行 = 没抓到，不是一只都没有（体检也是这么判的）。炸板池跟涨停池是两次请求，
+    # 可能只挂一个：2026-11-09 炸板池超时、涨停 54 只照常写入，按 0 炸板算封板率就是假的 100%
+    broken_count, seal_rate = seal_rate_of(lu, broken)
     if lu == 0:
         notes.append("这天没有涨停明细，炸板数、封板率算不出")
+    elif broken == 0:
+        notes.append("这天没有炸板明细（拉取失败或还没补），炸板数、封板率算不出——不按 0 炸板算成 100%")
     counts = {k: getattr(row, k) if row else None
               for k in ("up_count", "down_count", "flat_count", "limit_up_count", "limit_down_count")}
     if row is None or counts["up_count"] is None:
         notes.append("这天没有涨跌家数统计")
-    have = sum(v is not None for v in counts.values()) + (lu > 0)
-    status = OK if have == 6 else MISSING if have == 0 else PARTIAL
+    have = sum(v is not None for v in counts.values()) + (lu > 0) + (broken > 0)
+    status = OK if have == 7 else MISSING if have == 0 else PARTIAL
     return {"meta": _meta(status, d, "market_breadth_daily + 涨停/炸板明细", "；".join(notes) or None),
-            **counts, "broken_count": broken if lu > 0 else None,
+            **counts, "broken_count": broken_count,
             "limit_up_detail_count": lu if lu > 0 else None, "seal_rate": seal_rate}
 
 

@@ -400,3 +400,31 @@ class Test接口:
         monkeypatch.setitem(router_mod._job, "status", "idle")
         r = client.post("/admin/data-audit/run", headers=_auth()).json()
         assert r["ok"] is False and "日更" in r["message"]
+
+
+class Test涨停炸板明细:
+    """2026-11-09：炸板池 ConnectTimeout，涨停 54 只写进去、炸板 0 行。只看涨停表这天永远报不出来。"""
+
+    def _seed(self, db, days, broken_days):
+        from app.models.limit_up_detail import BrokenBoardDailyDetail, LimitUpDailyDetail
+        from app.models.stock import Stock
+        st = Stock(code="600000", name="浦发银行", market="SH")
+        db.add(st)
+        db.flush()
+        for d in days:
+            db.add(LimitUpDailyDetail(stock_id=st.id, stock_code="600000", trade_date=d))
+        for d in broken_days:
+            db.add(BrokenBoardDailyDetail(stock_id=st.id, stock_code="600000", trade_date=d))
+        db.commit()
+
+    def test_涨停在炸板缺也算缺口(self, db):
+        window = DAYS[-65:]
+        self._seed(db, window, [d for d in window if d != TODAY])
+        c = svc.run_check(db, "limit_up_details", now=AFTER_CLOSE)
+        assert c["status"] == svc.GAP and c["missing_dates"] == [TODAY.isoformat()]
+        assert "炸板 0 行" in c["summary"]
+
+    def test_都齐就不报(self, db):
+        window = DAYS[-65:]
+        self._seed(db, window, window)
+        assert svc.run_check(db, "limit_up_details", now=AFTER_CLOSE)["status"] == svc.OK

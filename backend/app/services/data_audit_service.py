@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..models.app_config import AppConfig
 from ..models.leader_cycle import LeaderCycleSnapshot
-from ..models.limit_up_detail import LimitUpDailyDetail
+from ..models.limit_up_detail import BrokenBoardDailyDetail, LimitUpDailyDetail
 from ..models.market_effect import MarketEffectDaily
 from ..models.market_index import IndexDailySnapshot, MarketBreadthDaily, SectorIndexDaily
 from ..models.regulatory import RegulatoryStatusDaily
@@ -226,6 +226,32 @@ def _same_day(col) -> Callable[[AuditContext, Check], dict]:
 
 
 # ── 各项检测 ─────────────────────────────────────────────────────────────────
+
+def _check_limit_up_details(ctx: AuditContext, chk: Check) -> dict:
+    """
+    涨停、炸板两张表分别按天查。**只看涨停表会漏**：2026-11-09 炸板池 ConnectTimeout，
+    涨停 54 只照常写进去、炸板 0 行——按天看涨停表是齐的，这一天就永远不会被报出来，
+    而封板率 = 涨停 ÷（涨停 + 炸板）会被算成 100%。
+    补法是同一个：逐日重拉涨停池和炸板池。真的一只都没炸板的日子极少，重拉后东财还给 0
+    就会一直报着——宁可多报，也不让一个假 100% 混过去。
+    """
+    first, miss_lu = _missing_days(ctx.db, LimitUpDailyDetail.trade_date, ctx.window)
+    if first is None:
+        return _empty_table(chk)
+    _bfirst, miss_bb = _missing_days(ctx.db, BrokenBoardDailyDetail.trade_date, ctx.window)
+    miss = sorted(set(miss_lu) | set(miss_bb))
+    if not miss:
+        return _all_there(ctx, chk, first)
+    only_bb = sorted(set(miss_bb) - set(miss_lu))
+    parts = [f"缺 {len(miss)} 个交易日：{_brief(miss)}"]
+    if only_bb:
+        parts.append(f"其中 {len(only_bb)} 天涨停在、炸板 0 行（像是炸板池拉取失败，封板率会被算成 100%）")
+    return _res(chk, GAP, "；".join(parts),
+                fix=_fix_server("逐日补涨停 / 炸板明细",
+                                "东财涨停池、炸板池都支持历史日期；太久远的日子东财也可能不给，每天成功与否如实报"),
+                missing_dates=_iso(miss), first_date=first.isoformat())
+
+
 
 def _check_calendar(ctx: AuditContext, chk: Check) -> dict:
     c = ctx.calendar
@@ -496,9 +522,8 @@ CHECKS: List[Check] = [
     Check("market_breadth", "市场宽度（两融 / 成交额 / 涨跌统计）", "market_breadth_daily",
           "三个模块各自独立，哪个接口那天挂了，那天那几列就是空的", _check_market_breadth),
     Check("limit_up_details", "涨停 / 炸板明细", "limit_up_daily_details",
-          "涨停明细归档是独立步骤，东财接口挂了那天就没有",
-          _server_per_day(LimitUpDailyDetail.trade_date, "逐日补涨停 / 炸板明细",
-                          "东财涨停池接口支持历史日期；太久远的日子东财也可能不给，每天成功与否如实报")),
+          "涨停明细归档是独立步骤，东财接口挂了那天就没有；涨停池和炸板池是两次请求，可能只挂一个",
+          _check_limit_up_details),
     Check("market_effect", "市场效应", "market_effect_daily",
           "按天缓存，某天没被算过就一直空着",
           _server_per_day(MarketEffectDaily.trade_date, "重算市场效应",
