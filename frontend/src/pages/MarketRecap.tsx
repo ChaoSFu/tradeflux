@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { BookOpenCheck, Lock, Save } from 'lucide-react'
+import { BookOpenCheck, Lock, Radio, Save } from 'lucide-react'
 import {
   fetchRecapContext, fetchRecapDates, fetchRecapDay, fetchVerification, lockRecap, saveRecap,
   type Plan, type RecapDay, type RecapDraft,
@@ -11,6 +11,7 @@ import { CorePanel } from '@/components/marketRecap/CorePanel'
 import { MarketPanel } from '@/components/marketRecap/MarketPanel'
 import { PlanPanel, ScenarioPanel, emptyPlan } from '@/components/marketRecap/PlanPanel'
 import { CorePoolPanel } from '@/components/marketRecap/CorePoolPanel'
+import { LivePanel } from '@/components/marketRecap/LivePanel'
 import { DecisionSummary, PreparePanel } from '@/components/marketRecap/PreparePanel'
 import { RelationPanel } from '@/components/marketRecap/RelationPanel'
 import { ReflectPanel, SummaryCard, VerificationCard, VersionList } from '@/components/marketRecap/ReviewPanel'
@@ -18,8 +19,16 @@ import { MetaBadge, Section } from '@/components/marketRecap/shared'
 import { cn } from '@/utils/cn'
 
 const NAV = [['market', '市场判断'], ['cores', '人气核心'], ['core', '主线与观察池'], ['relations', '关联研究'], ['plan', '次日预案'], ['review', '复盘总结']] as const
-const MODES = [['research', '盘后研究'], ['prepare', '次日准备'], ['verify', '结果验证']] as const
+const MODES = [['research', '盘后研究'], ['prepare', '次日准备'], ['live', '盘中跟踪'], ['verify', '结果验证']] as const
 type Mode = typeof MODES[number][0]
+const isMode = (v: string | null): v is Mode => MODES.some(([m]) => m === v)
+
+/** 工作日 09:15–15:00（上海时间）打开页面，默认进盘中跟踪。只是默认，是不是交易日以后端的行情时间为准 */
+function defaultMode(): Mode {
+  const sh = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }))
+  const hm = sh.getHours() * 100 + sh.getMinutes()
+  return sh.getDay() >= 1 && sh.getDay() <= 5 && hm >= 915 && hm < 1500 ? 'live' : 'research'
+}
 
 const emptyDraft = (): RecapDraft => ({
   market_posture: null, market_evidence: [], evidence_note: null, invalidation: [], sector_picks: [],
@@ -45,18 +54,24 @@ export default function MarketRecap() {
   const { data: dates } = useQuery({ queryKey: ['recap-dates'], queryFn: fetchRecapDates })
   const date = params.get('date') ?? dates?.[0]?.date ?? null
 
+  const modeParam = params.get('mode')
+  const [mode, setModeState] = useState<Mode>(isMode(modeParam) ? modeParam : defaultMode)
+  const setMode = (m: Mode) => {
+    setModeState(m)
+    setParams((p) => { const n = new URLSearchParams(p); n.set('mode', m); return n }, { replace: true })
+  }
   const day = useQuery({ queryKey: ['recap-day', date], queryFn: () => fetchRecapDay(date!), enabled: !!date })
-  const ctx = useQuery({ queryKey: ['recap-context', date], queryFn: () => fetchRecapContext(date!), enabled: !!date })
+  // 盘中跟踪用不到选中日期的市场事实：不在交易时段里白算一份
+  const ctx = useQuery({ queryKey: ['recap-context', date], queryFn: () => fetchRecapContext(date!), enabled: !!date && mode !== 'live' })
   const verifySelf = useQuery({
     queryKey: ['recap-verify', date], queryFn: () => fetchVerification(date!),
-    enabled: !!date && !!day.data?.locked_versions.length,
+    enabled: !!date && mode !== 'live' && !!day.data?.locked_versions.length,
   })
 
   const [draft, setDraft] = useState<RecapDraft>(emptyDraft())
   const [saved, setSaved] = useState<string>(JSON.stringify(emptyDraft()))
   const [msg, setMsg] = useState<{ text: string; err?: boolean } | null>(null)
   const [busy, setBusy] = useState(false)
-  const [mode, setMode] = useState<Mode>('research')
   const [leaderSel, setLeaderSel] = useState<string | null>(null)
   const [extraLeader, setExtraLeader] = useState<{ code: string; name: string | null } | null>(null)
   // 只在换日期 / 首次载入时用服务器的草稿覆盖本地；之后的重新拉取（比如加观察股）不冲掉没保存的修改
@@ -72,7 +87,7 @@ export default function MarketRecap() {
 
   const switchDate = (d: string) => {
     if (dirty && !window.confirm('有没保存的修改，切换日期会丢掉。继续？')) return
-    setParams({ date: d }); setMsg(null)
+    setParams({ date: d, mode }); setMsg(null)
   }
   const refreshDay = () => {
     qc.invalidateQueries({ queryKey: ['recap-day', date] })
@@ -122,6 +137,32 @@ export default function MarketRecap() {
     } finally { setBusy(false) }
   }
 
+  const modeBar = (
+    <div className="inline-flex rounded border border-bg-border overflow-hidden mr-2 text-xs">
+      {MODES.map(([m, l]) => (
+        <button key={m} onClick={() => setMode(m)}
+                className={cn('px-2 py-0.5 inline-flex items-center gap-1', mode === m ? 'bg-purple-400/15 text-purple-200' : 'text-text-muted hover:text-text-secondary')}>
+          {m === 'live' && <Radio className="w-3 h-3" />}{l}
+        </button>
+      ))}
+    </div>
+  )
+  // 盘中跟踪不依赖选中的复盘日期，也不依赖那天的市场事实——单独渲染，那边读取失败不拦着这边
+  if (mode === 'live') {
+    return (
+      <div className="space-y-3 animate-fade-in">
+        <div className="card p-3 sticky top-0 z-20 flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div className="flex items-center gap-2">
+            <BookOpenCheck className="w-4 h-4 text-accent" />
+            <h1 className="text-base font-semibold text-text-primary">每日复盘</h1>
+          </div>
+          {modeBar}
+          {dirty && <span className="text-[11px] text-warn">{date} 的草稿有没保存的修改：切回「盘后研究」保存</span>}
+        </div>
+        <LivePanel onOpenPrepare={(d) => { setParams({ date: d, mode: 'prepare' }); setModeState('prepare') }} />
+      </div>
+    )
+  }
   if (!dates) return <LoadingSpinner />
   if (!dates.length) return <div className="card p-6 text-sm text-text-muted">还没有可以复盘的交易日（需要已收盘、有股票日快照）。</div>
   if (!date || day.isLoading || ctx.isLoading) return <LoadingSpinner />
@@ -167,12 +208,7 @@ export default function MarketRecap() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1 text-xs">
-          <div className="inline-flex rounded border border-bg-border overflow-hidden mr-2">
-            {MODES.map(([m, l]) => (
-              <button key={m} onClick={() => setMode(m)}
-                      className={cn('px-2 py-0.5', mode === m ? 'bg-purple-400/15 text-purple-200' : 'text-text-muted hover:text-text-secondary')}>{l}</button>
-            ))}
-          </div>
+          {modeBar}
           {mode === 'research' && NAV.map(([id, label], i) => (
             <a key={id} href={`#${id}`} className="px-2 py-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-elevated">
               {'①②③④⑤⑥'[i]} {label}
