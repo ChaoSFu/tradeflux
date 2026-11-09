@@ -3,7 +3,7 @@
 
     cd /opt/code/tradeflux/backend
     .venv/bin/python -m scripts.large_cap_sync                         # 试跑：抓全市场、判完整，不写库
-    .venv/bin/python -m scripts.large_cap_sync --apply                 # 写快照 + 补 F10 分类
+    .venv/bin/python -m scripts.large_cap_sync --apply                 # 写快照 + 冻结当天人气核心池（F10 分类默认不补，要补加 --classify）
     .venv/bin/python -m scripts.large_cap_sync --apply --if-missing    # 最近一个收盘日已有东财完整快照就不动（定时重试用）
     .venv/bin/python -m scripts.large_cap_sync --apply --source tencent   # 只走腾讯备用
     .venv/bin/python -m scripts.large_cap_sync --classify-only         # 只补 F10 分类（按库里最新快照）
@@ -104,7 +104,10 @@ def main() -> int:
     ap.add_argument("--source", choices=["auto", "eastmoney", "tencent"], default="auto")
     ap.add_argument("--if-missing", action="store_true", help="最近收盘日已有东财完整快照就什么都不做")
     ap.add_argument("--classify-limit", type=int, default=150, help="本次最多补多少只 F10 分类")
-    ap.add_argument("--no-classify", action="store_true")
+    # F10 分类默认不跑：概念取快照里的 f103、一级行业走随代码发版的东财层级表，F10 只剩「发现行业
+    # 层级变了」这一个用处，而生产上它常年超时。要刷新时加 --classify，或单独跑 --classify-only
+    ap.add_argument("--classify", action="store_true", help="同步完顺带补 F10 分类（默认不补）")
+    ap.add_argument("--no-classify", action="store_true", help="兼容旧参数，现在默认就不补")
     ap.add_argument("--classify-only", action="store_true")
     a = ap.parse_args()
 
@@ -143,15 +146,17 @@ def main() -> int:
                 return 0
             _log("[试跑] 没拿到完整数据")
             return EXIT_FAIL
-        if out.get("applied") and not a.no_classify:
-            try:
-                _classify(db, out.get("codes_by_cap") or [], a.classify_limit)
-            except Exception as e:  # noqa: BLE001 —— 分类失败不影响已经写好的行情快照
-                db.rollback()
-                _log(f"[大市值] ⚠️ F10 分类失败（快照已写好，不受影响）：{type(e).__name__}: {e}")
         if out.get("applied") or out["status"] == "kept_existing":
             _log(f"[大市值] ✅ {out.get('trade_date')} 收盘快照就绪")
+            # 先冻结人气核心池：它只要这份快照。分类放最后、默认不跑——11-09 生产上 F10 每个
+            # 请求都读超时，排在前面时人等不及 Ctrl+C，核心池就跟着没冻结
             _freeze_cores(db, out.get("trade_date"))
+            if out.get("applied") and a.classify:
+                try:
+                    _classify(db, out.get("codes_by_cap") or [], a.classify_limit)
+                except Exception as e:  # noqa: BLE001 —— 分类失败不影响已经写好的快照和核心池
+                    db.rollback()
+                    _log(f"[大市值] ⚠️ F10 分类失败（快照、核心池已写好，不受影响）：{type(e).__name__}: {e}")
             return 0
         _log(f"[大市值] ❌ 没写入：{out['status']}")
         return EXIT_FAIL

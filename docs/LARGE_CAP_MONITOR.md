@@ -72,7 +72,7 @@ clist 经常被掐（2026-10 板块同步 15 个交易日里 12 天），所以�
 ```bash
 cd /opt/code/tradeflux/backend
 .venv/bin/python -m scripts.large_cap_sync                        # 试跑：抓 + 判完整，不写库
-.venv/bin/python -m scripts.large_cap_sync --apply                # 写快照 + 补 F10 分类
+.venv/bin/python -m scripts.large_cap_sync --apply                # 写快照 + 冻结人气核心池（F10 分类默认不补，要补加 --classify）
 .venv/bin/python -m scripts.large_cap_sync --classify-only --classify-limit 500   # 只补分类
 ```
 
