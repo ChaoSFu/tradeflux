@@ -2,7 +2,7 @@
 每日盘面复盘接口。**全部要登录**，人工数据按用户名隔离——个人交易研究不能只靠前端
 RequireLogin 挡着。市场事实（/context）也跟着要登录，是为了整个复盘流程一个口径。
 
-静态路径（/dates /context /watch /leader-relations /responses）写在 /{trade_date} 前面，
+静态路径（/dates /context /live /watch /leader-relations /responses）写在 /{trade_date} 前面，
 不然会被当成日期去解析。
 """
 from datetime import date, datetime
@@ -53,6 +53,16 @@ def recap_context(date_: date = Query(..., alias="date"), db: Session = Depends(
                   user: str = Depends(require_auth)):
     watched = [w.stock_code for w in store.watch_pool(db, user, date_)]
     return ctx_svc.build_context(db, date_, watched=watched, now=_now())
+
+
+@router.get("/live")
+def recap_live(db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """
+    盘中跟踪：上一交易日锁定的预案、观察池、重点高标的关联股、人气核心池 × 实时行情。
+    **只读**：不落库、不冻结、不改锁定版本；盘中事件全部标临时（provisional）。
+    """
+    from ..services import market_recap_live_service as live_svc
+    return live_svc.build_live(db, user)
 
 
 # ── 观察池 ──────────────────────────────────────────────────────────────────

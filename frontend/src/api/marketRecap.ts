@@ -465,3 +465,82 @@ export interface SectorPeers {
 
 export const fetchSectorPeers = (code: string, date: string) =>
   client.get<SectorPeers>(`/market-recap/leader-sectors/${code}`, { params: { date } }).then((r) => r.data)
+
+// ─── 盘中跟踪（只读；盘中事件全部是临时的，不是收盘结论）──────────────────────
+
+export type LivePhase = 'pre_open' | 'auction' | 'auction_done' | 'trading' | 'lunch' | 'closing_auction'
+  | 'closed' | 'non_trading' | 'stale' | 'unknown'
+export interface LiveMeta { status: 'ok' | 'partial' | 'missing'; source: string; observed_at: string | null; note: string | null; provisional: true }
+export interface LiveEvent { event_type: string; evidence: string; time: string | null; provisional: true }
+export interface LiveFact {
+  code: string
+  name: string | null
+  /** ok 有今天的行情 / missing 没拿到 / stale 行情不是今天的 / no_trade 今天还没成交 */
+  status: 'ok' | 'missing' | 'stale' | 'no_trade'
+  price: number | null
+  pct: number | null
+  open: number | null
+  high: number | null
+  low: number | null
+  prev_close: number | null
+  amount_yi: number | null
+  is_limit_up: boolean | null
+  /** sealed 此刻封涨停 / broken 摸过涨停没封住 / limit_down 此刻跌停 */
+  limit: 'sealed' | 'broken' | 'limit_down' | null
+  first_limit_time: string | null
+  observed_at: string | null
+  note: string | null
+  events: LiveEvent[]
+  prev: { pct: number | null; is_limit_up: boolean; board_count: number | null } | null
+}
+export interface LiveCohort {
+  members: number; quoted: number; median_pct: number | null; red_ratio: number | null
+  sealed: number; broken: number; limit_down: number
+}
+export interface LivePlanRow {
+  stock_code: string; stock_name: string | null; scenario: Scenario | null; sector_name: string | null; reason: string | null
+  entry_trigger: string; invalidation: string; planned_stop: number | null; risk_budget: number | null
+  position_limit: number | null; leader_code: string | null; relation_note: string | null; watch_trigger: string | null
+  live: LiveFact; below_stop: boolean | null; to_stop_pct: number | null
+}
+export interface LiveData {
+  session: {
+    phase: LivePhase; phase_zh: string; live: boolean; data_date: string | null; ref_date: string | null
+    target_date: string | null; target_is_provisional: boolean; market_time: string | null; server_time: string
+    poll_seconds: number | null; calendar_behind: boolean; calendar_last: string | null; note: string
+  }
+  provisional_note: string
+  quotes: { requested: number; ok: number; missing: string[]; stale: string[]; no_trade: string[]; error: string | null; source: string }
+  market: {
+    indices: { code: string; name: string; price: number | null; pct: number | null; amount_yi: number | null; status: string }[]
+    indices_meta: LiveMeta
+    breadth?: { up?: number; down?: number; flat?: number; limit_up?: number; limit_down?: number; meta: LiveMeta }
+    limit?: { sealed?: number; broken?: number; seal_rate?: number | null; max_board?: number | null; meta: LiveMeta }
+    amount?: { amount?: number; estimate?: number | null; is_trading?: boolean; prev_date: string | null
+      prev_amount: number | null; estimate_vs_prev_pct?: number | null; meta: LiveMeta }
+    cohorts: Partial<Record<'limit_up' | 'multi_board' | 'broken_board', LiveCohort>>
+  }
+  plan: {
+    source: 'locked' | 'draft' | null; ref_date: string | null; version?: number; locked_at?: string
+    pre_open?: boolean; backfilled?: boolean; posture?: Posture | null; key_points?: string[]
+    invalidation?: string[]; flat_plan?: boolean; rows: LivePlanRow[]
+  }
+  leaders: {
+    code: string; name: string | null; live: LiveFact; by_response: Partial<Record<SystemResponse, number>>
+    relations: { code: string; name: string | null; live: LiveFact; system_response: SystemResponse | null
+      attributes: { type: AttributeType; value: string; basis: 'A' | 'B' | 'C' }[] }[]
+  }[]
+  watch: { code: string; name: string | null; deep: boolean; note: string | null; live: LiveFact }[]
+  cores: {
+    ref_date: string | null; frozen: boolean | null; built_at: string | null; note: string | null
+    source_labels: Record<string, string>
+    rows: { code: string; name: string | null; board: string; sources: string[]; lifecycle_state: string | null
+      sector: string | null; ref_pct: number | null; ref_board: number | null; watched: boolean; live: LiveFact }[]
+  }
+  limit_pool: { code: string; name: string; board: number | null; first_time: string | null; last_time: string | null
+    broken_times: number | null; industry: string | null; pct: number | null
+    in_core: boolean; watched: boolean }[]
+  labels: { events: Record<string, string>; responses: Record<SystemResponse, string>; phases: Record<LivePhase, string> }
+}
+
+export const fetchLive = () => client.get<LiveData>('/market-recap/live').then((r) => r.data)
