@@ -175,6 +175,39 @@ def _write_log_file(target_date: date, message: str) -> None:
         pass
 
 
+def _sh_now() -> datetime:
+    from ..services.eastmoney_fetcher import SH_TZ
+    return datetime.now(SH_TZ)
+
+
+def _chain_large_cap(target_date: date, flush) -> None:
+    """
+    收盘后的手动更新也接上大市值收盘快照——定时日更那条链（scheduler._do_update）本来就有，
+    手动这条一直没接：2026-11-11 15:17 手动更新跑完，大市值概览还停在前一天。
+
+    **同步跑、跑完才报「更新完成」**：顶栏在更新完成时刷新全部页面数据，后台另起线程的话，
+    页面刷新那一刻快照还没写，照样是旧的。日更的锁在调用前已经放掉了。
+    `--if-missing`：今天已经有东财完整快照就秒退，重复点更新不会重复翻 58 页。
+    收盘前不跑（拿到的不是收盘市值）。失败只记日志，不影响这次日更的结果。
+    """
+    if _sh_now().hour < 15:
+        return
+    from ..services.daily_update_runner import run_script_subprocess
+    with _lock:
+        _job["message"] = "日更已完成，正在同步大市值收盘快照……"
+    _write_log_file(target_date, "收盘后手动更新：接着同步大市值收盘快照（今天已有就跳过）")
+
+    def on_line(ln: str) -> None:
+        flush(f"[大市值] {ln}\n")
+        _write_log_file(target_date, f"[LARGECAP] {ln}")
+    try:
+        code = run_script_subprocess(["-m", "scripts.large_cap_sync", "--apply", "--if-missing"], on_line=on_line)
+        _write_log_file(target_date, "✅ 大市值快照就绪" if code == 0
+                        else f"⚠️ 大市值快照没写入（退出码 {code}，不影响日更，定时任务会重试）")
+    except Exception as exc:  # noqa: BLE001
+        _write_log_file(target_date, f"⚠️ 大市值快照失败（不影响日更）: {exc}")
+
+
 def _capture_update(target_date: date, skip_boards: bool, source: str = "manual") -> None:
     """
     起一个线程跑日更，把子进程的 stdout 逐行收进 _job['log_lines']。
@@ -221,6 +254,11 @@ def _capture_update(target_date: date, skip_boards: bool, source: str = "manual"
 
         degraded = bool(result and result.get("degraded"))
         warnings = list((result or {}).get("warnings") or [])
+        # 先放掉日更的锁再接大市值同步：它有自己的锁，不该拦着 15:30 的定时日更
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+        lock_fd = None
+        _chain_large_cap(target_date, _flush)
         finished = datetime.now().isoformat(timespec="seconds")
         _write_log_file(target_date, f"✅ {source} 触发完成"
                         + (f"（数据降级：{'；'.join(warnings)}）" if degraded else ""))

@@ -1,9 +1,23 @@
-import { useState } from 'react'
+import { createContext, useContext, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ChevronDown, ChevronUp, ExternalLink } from 'lucide-react'
 import { cn } from '@/utils/cn'
 
 export const NUM = 'font-mono tabular-nums'
+
+/**
+ * 快照那天怎么称呼。是今天就叫「今日」；不是（今天的收盘快照还没同步、或在看历史）就写日期——
+ * 2026-11-11 15:17 页面写着「今日 +6.29%」，其实是 11-10 的收盘，用户以为今天的数据没更新。
+ */
+export interface DayLabels { day: string; prev: string; isToday: boolean }
+const TODAY_LABELS: DayLabels = { day: '今日', prev: '昨日', isToday: true }
+export const DayLabelContext = createContext<DayLabels>(TODAY_LABELS)
+export const useDayLabels = () => useContext(DayLabelContext)
+export const shanghaiToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
+export function dayLabelsOf(date: string, prevDate: string | null | undefined, today = shanghaiToday()): DayLabels {
+  if (date === today) return TODAY_LABELS
+  return { day: date.slice(5), prev: prevDate ? prevDate.slice(5) : '前一日', isToday: false }
+}
 
 // null = 没有这个数据，一律显示 —，不显示成 0
 export const fmtPct = (v: number | null | undefined) =>
