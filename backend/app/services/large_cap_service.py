@@ -615,7 +615,8 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
     if stale:
         warnings.append(f"最新收盘快照是 {applied[0]}，{exp_latest} 的还没同步成功")
     if pending_today and is_latest_view and applied[0] < now.date():
-        notes.append("今天的收盘快照在盘后日更之后同步（约 15:45），现在显示的是上一交易日")
+        notes.append(f"今天的收盘快照还没同步，下面是上一交易日 {applied[0]} 的收盘数：收盘后日更跑完会接着同步"
+                     "（定时 15:30 那次约 15:35 写入；收盘后手动「更新数据」也会顺带同步）")
     if prev_d is None:
         why = (f"交易日历没覆盖到 {D}（缓存止于 {cal[-1]}）" if cal and not cal_covers
                else "交易日历不可用")

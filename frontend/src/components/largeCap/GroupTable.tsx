@@ -3,7 +3,7 @@ import { ChevronRight } from 'lucide-react'
 import type { LargeCapGroup, LargeCapStock } from '@/api/largeCap'
 import { cn } from '@/utils/cn'
 import { StockTable } from './StockTable'
-import { NUM, SortTh, UpFlatDown, fmtAmt, fmtCap, fmtPct, pctCls, sortRows, useSort } from './shared'
+import { NUM, SortTh, UpFlatDown, fmtAmt, fmtCap, fmtPct, pctCls, sortRows, useDayLabels, useSort } from './shared'
 
 export type Window = 'pct' | '5d' | '10d' | '20d' | '60d'
 type Col = 'count' | 'total_cap' | 'weighted_pct' | 'median_pct' | 'median_5d' | 'median_10d'
@@ -39,6 +39,7 @@ export function GroupTable({ groups, stocksByCode, window, eventsAvailable, mult
   maxHeight?: number
   emptyText?: string
 }) {
+  const { day } = useDayLabels()
   const sort = useSort<Col>(windowCol(window))
   useEffect(() => { sort.setKey(windowCol(window)) }, [window]) // eslint-disable-line react-hooks/exhaustive-deps
   const [open, setOpen] = useState<string | null>(null)
@@ -61,14 +62,14 @@ export function GroupTable({ groups, stocksByCode, window, eventsAvailable, mult
             <th className="px-2 py-1.5 text-left font-medium">{label}</th>
             <SortTh label="公司数" col="count" sort={sort} title="达到市值门槛的大市值公司数，不是行业全部上市公司" />
             <SortTh label="总市值" col="total_cap" sort={sort} />
-            <SortTh label="今日加权" col="weighted_pct" sort={sort}
-                    title="Σ(权重 × 今日涨幅) / Σ权重。权重口径见页面顶部说明；缺涨幅或缺权重的不参与" />
+            <SortTh label={`${day}加权`} col="weighted_pct" sort={sort}
+                    title={`Σ(权重 × ${day}涨幅) / Σ权重。权重口径见页面顶部说明；缺涨幅或缺权重的不参与`} />
             <th className="px-2 py-1.5 text-left font-medium whitespace-nowrap"
-                title="对今日加权涨幅贡献最大的成员和它贡献的百分点。加权涨幅大部分来自它、而中位数方向相反时，就是一只权重股在拉">
+                title={`对${day}加权涨幅贡献最大的成员和它贡献的百分点。加权涨幅大部分来自它、而中位数方向相反时，就是一只权重股在拉`}>
               主要贡献
             </th>
-            <SortTh label="今日中位" col="median_pct" sort={sort} className={hl('median_pct')} />
-            <th className="px-2 py-1.5 text-right font-medium whitespace-nowrap" title="今日上涨 / 平盘 / 下跌家数">上/平/下</th>
+            <SortTh label={`${day}中位`} col="median_pct" sort={sort} className={hl('median_pct')} />
+            <th className="px-2 py-1.5 text-right font-medium whitespace-nowrap" title={`${day}上涨 / 平盘 / 下跌家数`}>上/平/下</th>
             <SortTh label="5D中位" col="median_5d" sort={sort} className={hl('median_5d')}
                     title="当前成员回看近 5 个交易日涨跌幅的中位数（不是板块指数收益）" />
             <SortTh label="10D中位" col="median_10d" sort={sort} className={hl('median_10d')} />

@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { LargeCapStock } from '@/api/largeCap'
 import { cn } from '@/utils/cn'
-import { NUM, SortTh, StockLink, fmtAmt, fmtCap, fmtNum, fmtPct, pctCls, sortRows, useSort } from './shared'
+import { NUM, SortTh, StockLink, fmtAmt, fmtCap, fmtNum, fmtPct, pctCls, sortRows, useDayLabels, useSort } from './shared'
 
 type Col = 'total_cap' | 'pct' | 'pct_5d' | 'pct_10d' | 'pct_20d' | 'pct_60d' | 'amount'
   | 'volume_ratio' | 'turnover_rate' | 'amount_multiple'
@@ -30,6 +30,7 @@ export function StockTable({ rows, showIndustry = false, initialSort = 'total_ca
   /** 组内权重（0~1），给了就多一列「组内权重」——一组的涨跌是不是一只巨头说了算，看这列 */
   shares?: Map<string, number>
 }) {
+  const { day } = useDayLabels()
   const sort = useSort<Col>(initialSort)
   const sorted = useMemo(() => sortRows(rows, (r) => r[sort.key], sort.dir), [rows, sort.key, sort.dir])
   if (!rows.length) return <div className="px-3 py-4 text-xs text-text-muted">没有成员</div>
@@ -43,9 +44,9 @@ export function StockTable({ rows, showIndustry = false, initialSort = 'total_ca
             <SortTh label="总市值" col="total_cap" sort={sort} />
             {shares && (
               <th className="px-2 py-1.5 text-right font-medium whitespace-nowrap text-text-muted"
-                  title="这只在组内加权涨幅里的权重（跟「今日加权」用同一套权重）">组内权重</th>
+                  title={`这只在组内加权涨幅里的权重（跟「${day}加权」用同一套权重）`}>组内权重</th>
             )}
-            <SortTh label="今日" col="pct" sort={sort} />
+            <SortTh label={day} col="pct" sort={sort} />
             <SortTh label="5D" col="pct_5d" sort={sort} />
             <SortTh label="10D" col="pct_10d" sort={sort} />
             <SortTh label="20D" col="pct_20d" sort={sort} />

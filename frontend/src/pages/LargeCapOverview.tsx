@@ -10,7 +10,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { GroupTable, type Window } from '@/components/largeCap/GroupTable'
 import { StockTable } from '@/components/largeCap/StockTable'
 import { ChangeLists, Movers, VolumeSurges } from '@/components/largeCap/ChangeLists'
-import { NUM, fmtAmt, fmtCap, fmtPct, pctCls } from '@/components/largeCap/shared'
+import { DayLabelContext, NUM, dayLabelsOf, fmtAmt, fmtCap, fmtPct, pctCls } from '@/components/largeCap/shared'
 import { useAuthStore } from '@/store/auth'
 import { cn } from '@/utils/cn'
 
@@ -21,7 +21,7 @@ const SOURCE_LABEL: Record<string, string> = {
   tencent_quote: '腾讯行情（备用）',
 }
 const WINDOWS: { key: Window; label: string }[] = [
-  { key: 'pct', label: '今日' }, { key: '5d', label: '5D' }, { key: '10d', label: '10D' },
+  { key: 'pct', label: '当天' }, { key: '5d', label: '5D' }, { key: '10d', label: '10D' },
   { key: '20d', label: '20D' }, { key: '60d', label: '60D' },
 ]
 const KINDS: { key: Kind; label: string }[] = [
@@ -242,8 +242,12 @@ export default function LargeCapOverview() {
     ? `权重 = 前一交易日（${d.prev_date}）总市值`
     : '权重 = 当日总市值（前一交易日没有快照；这是当前市值权重的截面统计，不是组合收益）'
   const l1Options = [...new Set(d.stocks.map((x) => x.industry_l1))].sort()
+  // 快照不是今天的（今天的还没同步、或在看历史），所有写「今日」的地方改写日期
+  const labels = dayLabelsOf(d.date, d.prev_date)
+  const windows = WINDOWS.map((w) => (w.key === 'pct' ? { ...w, label: labels.day } : w))
 
   return (
+    <DayLabelContext.Provider value={labels}>
     <div className="space-y-3 animate-fade-in">
       {/* ── 顶部：标题 / 状态 / 筛选 ─────────────────────────────────── */}
       <div className="card p-3 space-y-2">
@@ -276,6 +280,17 @@ export default function LargeCapOverview() {
         </div>
       </div>
 
+      {/* 最新一份快照不是今天的：一眼说清楚下面的涨跌是哪天的（灰字说明里还有什么时候同步） */}
+      {!labels.isToday && d.pending_today && d.date === d.available_dates[0] && (
+        <div className="card px-3 py-2 border border-accent/40 text-xs text-accent flex items-start gap-1.5">
+          <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <span>
+            下面显示的是 <b className={NUM}>{d.date}</b>（上一交易日）的收盘数，表头写「{labels.day}」的那些列都是那天的涨跌，不是今天的。
+            这页只看收盘快照，盘中不更新。
+          </span>
+        </div>
+      )}
+
       {/* ── KPI ────────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2">
         <Kpi label="池内公司" value={s.count}
@@ -283,10 +298,10 @@ export default function LargeCapOverview() {
         <Kpi label="池内总市值" value={fmtCap(s.total_cap)} sub={`成交额 ${fmtAmt(s.amount)}`} />
         <Kpi label="上涨 / 平 / 下跌" value={<><span className="text-up">{s.up}</span><span className="text-text-muted"> / {s.flat} / </span><span className="text-down">{s.down}</span></>}
              sub={`有效 ${s.n_pct}/${s.count}`} />
-        <Kpi label="今日中位涨幅" value={fmtPct(s.median_pct)} cls={pctCls(s.median_pct)}
+        <Kpi label={`${labels.day}中位涨幅`} value={fmtPct(s.median_pct)} cls={pctCls(s.median_pct)}
              sub={<>5D <span className={pctCls(s.median_5d)}>{fmtPct(s.median_5d)}</span> · 20D <span className={pctCls(s.median_20d)}>{fmtPct(s.median_20d)}</span></>}
              title="池内公司涨跌幅的中位数，大小公司一视同仁；5D / 20D 是当前成员回看近 N 日的中位数" />
-        <Kpi label="今日市值加权" value={fmtPct(s.weighted_pct)} cls={pctCls(s.weighted_pct)}
+        <Kpi label={`${labels.day}市值加权`} value={fmtPct(s.weighted_pct)} cls={pctCls(s.weighted_pct)}
              sub={`参与 ${s.n_weighted}/${s.count}`} title={weightText} />
         <Kpi label={`跨入 ${fmtCap(thr)}`} value={s.entered ?? '—'} cls={s.entered ? 'text-up' : undefined}
              sub={s.entered == null ? '前一交易日无快照' : `首次观测 ${s.first_observed}`} />
@@ -339,7 +354,7 @@ export default function LargeCapOverview() {
               </div>
               <div className="flex items-center gap-1.5 text-xs">
                 <span className="text-text-muted">统计窗口</span>
-                <Seg options={WINDOWS} value={window} onChange={setWin} />
+                <Seg options={windows} value={window} onChange={setWin} />
               </div>
               <span className="text-[11px] text-text-muted ml-auto flex items-center gap-1">
                 <Info className="w-3 h-3" />
@@ -385,5 +400,6 @@ export default function LargeCapOverview() {
         </Card>
       )}
     </div>
+    </DayLabelContext.Provider>
   )
 }
