@@ -78,6 +78,23 @@ class TestWatchPool:
         assert store.watch_pool(db, U, D3) == []
         assert [w.stock_code for w in store.watch_pool(db, U, D2)] == ["600001"], "之前那些天照样查得到"
 
+    def test_撤销取消观察_加入日期和星标都是原来的(self, db):
+        store.add_watch(db, U, "600001", D1, name="东方海洋", deep=True, note="主线")
+        store.remove_watch(db, U, "600001", D3)
+        assert store.restore_watch(db, U, "600001", D3)
+        w = store.watch_pool(db, U, D3)
+        assert [(x.stock_code, x.added_date, x.deep, x.note) for x in w] == [("600001", D1, True, "主线")], \
+            "不是重新加一行：加入日期还是 D1"
+        assert not store.restore_watch(db, U, "600001", D3), "已经在池里就不动"
+
+    def test_只撤销那一天的取消(self, db):
+        store.add_watch(db, U, "600001", D1)
+        store.remove_watch(db, U, "600001", D2)
+        assert not store.restore_watch(db, U, "600001", D3), "D3 没取消过它"
+        store.add_watch(db, U, "600001", D3)
+        assert not store.restore_watch(db, U, "600001", D2), "之后又加回来过，再撤销就成两行了"
+        assert len(store.watch_pool(db, U, D3)) == 1
+
     def test_按用户隔离(self, db):
         store.add_watch(db, "alice", "600001", D1)
         assert store.watch_pool(db, U, D3) == []
@@ -305,7 +322,8 @@ class TestApiAuth:
         for method, url in (("get", "/market-recap/dates"), ("get", "/market-recap/2026-11-06"),
                             ("get", "/market-recap/context?date=2026-11-06"),
                             ("put", "/market-recap/2026-11-06"), ("post", "/market-recap/2026-11-06/lock"),
-                            ("get", "/market-recap/leader-relations/002086?date=2026-11-06")):
+                            ("get", "/market-recap/leader-relations/002086?date=2026-11-06"),
+                            ("post", "/market-recap/watch/600001/restore?date=2026-11-06")):
             r = getattr(c, method)(url, **({"json": {}} if method in ("put", "post") else {}))
             assert r.status_code in (401, 403), f"{method} {url} 没登录也能访问"
 

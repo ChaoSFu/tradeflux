@@ -98,6 +98,30 @@ def remove_watch(db: Session, owner: str, code: str, d: date) -> bool:
     return True
 
 
+def restore_watch(db: Session, owner: str, code: str, d: date) -> bool:
+    """
+    撤销 d 这天的「取消观察」：把那天写上的 removed_date 清掉。加入日期、★、备注都是原来的——
+    不能用重新加入代替，那会新起一行，加入日期变成今天，之前跟踪了多久就看不出来了。
+    这只票 d 这天已经又在观察池里、或者取消后又手动加回来过，就不动。
+    """
+    if any(r.stock_code == code for r in watch_pool(db, owner, d)):
+        return False
+    row = (db.query(RecapWatchStock)
+           .filter(RecapWatchStock.owner == owner, RecapWatchStock.stock_code == code,
+                   RecapWatchStock.removed_date == d)
+           .order_by(RecapWatchStock.id.desc()).first())
+    if row is None:
+        return False
+    # 取消之后又手动加回来过（新起了一行）：再撤销就是两行，不动
+    if (db.query(RecapWatchStock.id)
+            .filter(RecapWatchStock.owner == owner, RecapWatchStock.stock_code == code,
+                    RecapWatchStock.id != row.id, RecapWatchStock.added_date >= d).first()):
+        return False
+    row.removed_date = None
+    db.commit()
+    return True
+
+
 # ── 草稿 ────────────────────────────────────────────────────────────────────
 
 def _plans(db: Session, owner: str, d: date) -> List[NextDayPlan]:

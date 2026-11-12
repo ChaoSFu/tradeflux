@@ -428,6 +428,9 @@ export const addWatch = (body: { code: string; date: string; name?: string | nul
   client.post('/market-recap/watch', body).then((r) => r.data)
 export const removeWatch = (code: string, date: string) =>
   client.delete(`/market-recap/watch/${code}`, { params: { date } }).then((r) => r.data)
+/** 撤销这一天的取消观察：加入日期、★、备注都是原来的（不是重新加一行） */
+export const restoreWatch = (code: string, date: string) =>
+  client.post(`/market-recap/watch/${code}/restore`, null, { params: { date } }).then((r) => r.data)
 export const fetchLeaderRelations = (code: string, date: string, name?: string | null, includeRejected = false) =>
   client.get<LeaderRelations>(`/market-recap/leader-relations/${code}`, {
     params: { date, name: name ?? undefined, include_rejected: includeRejected || undefined },
