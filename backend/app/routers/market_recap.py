@@ -92,6 +92,15 @@ def remove_watch(code: str, date_: date = Query(..., alias="date"), db: Session 
     return {"ok": True}
 
 
+@router.post("/watch/{code}/restore")
+def restore_watch(code: str, date_: date = Query(..., alias="date"), db: Session = Depends(get_db),
+                  user: str = Depends(require_auth)):
+    """撤销这一天的取消观察（加入日期、★、备注保持原样）。"""
+    if not store.restore_watch(db, user, code, date_):
+        raise HTTPException(status_code=404, detail="这一天没有取消过这只，或者它已经在观察池里")
+    return {"ok": True}
+
+
 # ── 高标关联 ────────────────────────────────────────────────────────────────
 
 @router.get("/leader-relations/{code}")

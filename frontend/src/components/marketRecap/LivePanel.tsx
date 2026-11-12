@@ -1,8 +1,8 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Radio, RefreshCw } from 'lucide-react'
-import { fetchLive, type LiveData, type LiveEvent, type LiveFact, type LiveMeta, type SystemResponse } from '@/api/marketRecap'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertTriangle, Radio, RefreshCw, X } from 'lucide-react'
+import { fetchLive, removeWatch, restoreWatch, type LiveData, type LiveEvent, type LiveFact, type LiveMeta, type SystemResponse } from '@/api/marketRecap'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { ATTR_LABEL, NUM, POSTURE_LABEL, Section, StockLink, fmtPct, pctCls } from '@/components/marketRecap/shared'
 import { cn } from '@/utils/cn'
@@ -341,19 +341,74 @@ function LeadersNow({ d }: { d: LiveData }) {
 
 // ── ④ 观察池 / ⑤ 人气核心池 / ⑥ 涨停池 ─────────────────────────────────────
 
+/**
+ * 观察池：盘中可以直接把走弱的取消观察。取消只写今天的 removed_date（之前那些天的观察池、锁定版本
+ * 都不变），跟盘后研究里的「×」是同一个接口；点错了可以撤销，加入日期和 ★ 还是原来的。
+ */
 function WatchNow({ d }: { d: LiveData }) {
-  if (!d.watch.length) return <div className="text-xs text-text-muted">观察池是空的</div>
-  const rows = [...d.watch].sort((a, b) => (b.live?.pct ?? -999) - (a.live?.pct ?? -999))
+  const qc = useQueryClient()
+  const today = d.session.server_time.slice(0, 10)       // 服务器的上海日期，跟观察池查询同一个口径
+  const [busy, setBusy] = useState<string | null>(null)
+  const [hidden, setHidden] = useState<Set<string>>(new Set())
+  const [undo, setUndo] = useState<{ code: string; name: string | null } | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  // 盘后研究的观察池、人气核心池的「我的观察」标记也跟着刷新
+  const refresh = () => Promise.all(['recap-live', 'recap-day', 'recap-cores'].map((k) => qc.invalidateQueries({ queryKey: [k] })))
+  const remove = async (code: string, name: string | null) => {
+    setBusy(code); setErr(null)
+    try {
+      await removeWatch(code, today)
+      setHidden((s) => new Set(s).add(code))
+      setUndo({ code, name })
+      await refresh()
+    } catch (e: any) {  // eslint-disable-line @typescript-eslint/no-explicit-any
+      setErr(e?.message ?? '取消观察失败')
+    } finally { setBusy(null) }
+  }
+  const restore = async () => {
+    if (!undo) return
+    setBusy(undo.code); setErr(null)
+    try {
+      await restoreWatch(undo.code, today)
+      setHidden((s) => { const n = new Set(s); n.delete(undo.code); return n })
+      setUndo(null)
+      await refresh()
+    } catch (e: any) {  // eslint-disable-line @typescript-eslint/no-explicit-any
+      setErr(e?.message ?? '撤销失败')
+    } finally { setBusy(null) }
+  }
+  const rows = d.watch.filter((w) => !hidden.has(w.code)).sort((a, b) => (b.live?.pct ?? -999) - (a.live?.pct ?? -999))
   return (
-    <div className="flex flex-wrap gap-1.5">
-      {rows.map((w) => (
-        <span key={w.code} className="inline-flex items-center gap-1.5 rounded border border-bg-border px-2 py-1 text-xs" title={w.note ?? ''}>
-          {w.deep && <span className="text-purple-300">★</span>}
-          <StockLink code={w.code} name={w.name} />
-          <Pct f={w.live} /><LimitState f={w.live} />
-          <EventChips events={w.live?.events ?? []} labels={d.labels.events} />
-        </span>
-      ))}
+    <div className="space-y-2">
+      {(undo || err) && (
+        <div className="flex items-center gap-2 text-xs">
+          {undo && (
+            <span className="text-text-secondary">
+              已取消观察 {undo.name ?? undo.code}（之前那些天的记录保留）
+              <button onClick={restore} disabled={busy === undo.code} className="ml-2 text-accent hover:underline disabled:opacity-60">撤销</button>
+            </span>
+          )}
+          {err && <span className="text-down">{err}</span>}
+        </div>
+      )}
+      {!rows.length ? <div className="text-xs text-text-muted">观察池是空的</div> : (
+        <div className="flex flex-wrap gap-1.5">
+          {rows.map((w) => (
+            <span key={w.code} className="inline-flex items-center gap-1.5 rounded border border-bg-border pl-2 pr-1 py-1 text-xs" title={w.note ?? ''}>
+              {w.deep && <span className="text-purple-300">★</span>}
+              <StockLink code={w.code} name={w.name} />
+              <Pct f={w.live} /><LimitState f={w.live} />
+              <EventChips events={w.live?.events ?? []} labels={d.labels.events} />
+              <button onClick={() => remove(w.code, w.name)} disabled={busy === w.code}
+                      title={w.deep ? '取消观察（★ 高标取消后，③ 里不再跟踪它的关联股；关联知识保留）' : '取消观察（之前那些天的记录保留）'}
+                      aria-label={`取消观察 ${w.name ?? w.code}`}
+                      className="ml-0.5 p-0.5 rounded text-text-muted hover:text-down hover:bg-down/10 disabled:opacity-40">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

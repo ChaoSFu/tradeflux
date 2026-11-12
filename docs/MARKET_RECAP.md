@@ -71,7 +71,7 @@ Postgres 事务会回滚，不连累后面的模块）。
 | `GET /market-recap/dates` | 能复盘的交易日 + 我每天的草稿 / 锁定情况 |
 | `GET /market-recap/context?date=` | 当天市场事实 |
 | `GET / PUT /market-recap/{date}` | 读 / 存草稿（含预案） |
-| `POST /market-recap/watch`、`DELETE /market-recap/watch/{code}?date=` | 观察池 |
+| `POST /market-recap/watch`、`DELETE /market-recap/watch/{code}?date=`、`POST /market-recap/watch/{code}/restore?date=` | 观察池（加入 / 取消 / 撤销取消） |
 | `GET /market-recap/leader-relations/{code}?date=` | 关联知识 + 关联股当天事实与响应 + 建议 |
 | `PUT /market-recap/leader-relations`、`DELETE /market-recap/leader-relations/{id}` | 关联增改 / 软删 |
 | `PUT /market-recap/responses` | 当天响应 |
@@ -184,7 +184,7 @@ V2 没做：完整概念成员池（要按板块拉成分股，生产上 F10 被
 | ① 市场此刻 | 四个指数；涨跌家数；封板 / 炸板 / 封板率 / 最高板；两市成交额（此刻累计、预估全天 vs 昨日）；R 的涨停 / 连板 / 炸板那批票此刻的中位涨幅、红盘率、封板数 | 腾讯行情（指数单独一次请求，跟平安银行 000001 不串号）；东财涨跌分布；东财涨停池 + 炸板池；新浪 5 分钟 / 东财分钟成交额（风向标同一个函数，这里不落库）；`_cohort_snapshots`（跟市场效应同一个群体定义） |
 | ② 今天执行的预案 | 姿态、三个观察点、失效条件；每只候选的现价、涨跌、封板状态、距计划止损（已破标红）、入场触发 / 失效条件原文、买入检查入口 | 锁定版本 payload + 实时行情。入场有没有触发要人对照分时判断，系统不替你判 |
 | ③ 重点高标与关联股 | ★ 高标此刻状态 + 临时事件；关联股（一只票多个属性合并一行）此刻涨跌、首封时间、系统响应分类（临时） | 当前关联知识库（不是锁定时的快照）；`classify_response` 同一套条件，高标「暂未连板」等同断板 |
-| ④ 我的观察池 | 观察池全部股票此刻涨跌、状态 | 当前观察池 |
+| ④ 我的观察池 | 观察池全部股票此刻涨跌、状态；每只后面「×」直接取消观察（走弱的盘中就能去掉），点错了可以「撤销」 | 当前观察池。取消只写今天的 removed_date，之前那些天的观察池、锁定版本不变；撤销是清掉那天的 removed_date（`POST /market-recap/watch/{code}/restore`），加入日期、★、备注都是原来的，不是重新加一行。★ 高标取消后 ③ 不再跟踪它的关联股，关联知识保留 |
 | ⑤ 人气核心池 · 此刻 | R 的核心池（冻结的读冻结的）× 此刻行情，默认只看「盘中有事件」 | `popular_core_service.load` |
 | ⑥ 此刻涨停池 | 按连板高度、首封时间排；标出核心池 / 观察池成员 | 东财实时涨停池 |
 
