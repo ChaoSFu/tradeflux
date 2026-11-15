@@ -12,6 +12,7 @@ import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { LifecycleEffectChart } from '@/components/charts/LifecycleEffectChart'
+import { LifecycleCountChart } from '@/components/charts/LifecycleCountChart'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { RiskBadge } from '@/components/common/RiskBadge'
 import { SectorSection, buildSectorGroups } from '@/components/common/SectorSection'
@@ -283,6 +284,16 @@ function LifecycleSeries({ history }: { history: MarketHistoryPoint[] }) {
                                todayEstimate={q.data?.today_estimate} />
 }
 
+/** 逐日各状态只数。同一个 ['lifecycle-effect'] 请求，跟上面那张图同一次状态推演 */
+function LifecycleCounts() {
+  const q = useQuery({
+    queryKey: ['lifecycle-effect'], queryFn: fetchLifecycleEffect,
+    staleTime: 10 * 60 * 1000,
+  })
+  if (q.isPending) return <LoadingSpinner />
+  if (q.error) return <div className="text-center text-warn text-xs py-10">数据获取失败</div>
+  return <LifecycleCountChart data={q.data?.state_counts} />
+}
 
 function LifecycleEffect() {
   const { data } = useQuery({
@@ -1079,6 +1090,25 @@ export default function Dashboard() {
                   </span>
                 </div>
                 <LifecycleSeries history={history ?? []} />
+              </div>
+
+              {/* ── 逐日状态分布：各生命周期状态有多少只（2026-11-15 用户提） ──
+                  标杆穿越成功之后一批票跟着模仿，模仿规模够大时往往是短期顶部——先把
+                  只数摆出来。只是计数，不打分、不判见顶。 */}
+              <div className="card p-3">
+                <div className="flex items-baseline justify-between flex-wrap gap-2 mb-1">
+                  <span className="text-xs font-semibold text-text-primary">
+                    逐日状态分布 · 按生命周期
+                  </span>
+                  <span className="text-[10px] text-text-muted">
+                    每条线 = 当天处于该状态的<span className="text-text-secondary">只数</span>
+                    <span className="text-text-muted/70">
+                      ；统计范围是高标池（近 60 日最高连板 ≥ 4），池子大小每天在变。
+                      只是计数：「模仿规模大 → 接近短期顶部」还没拿历史验证过
+                    </span>
+                  </span>
+                </div>
+                <LifecycleCounts />
               </div>
 
               {/* ── 分组赚钱效应：**按生命周期分组** ──
