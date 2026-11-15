@@ -218,7 +218,25 @@ export interface LifecycleEffectResponse {
   today_estimate: LifecycleTodayEstimate | null
   /** 历史前瞻。**只是线索不是结论**——没做同日同池对照，也没有置信区间 */
   history: LifecycleForward[]
+  /** 逐日各状态的只数（只是计数）。没有快照 / 拿不到日历时为 null */
+  state_counts: LifecycleStateCounts | null
   notes: string[]
+}
+
+export interface LifecycleStateCountPoint {
+  trade_date: string
+  /** 当天高标池只数（那天有快照行的票） */
+  pool: number
+  /** 当天处于该状态的只数（存量）；没有该状态的票时没有这个 key */
+  counts: Record<string, number>
+  /** 当天刚转入该状态的只数（增量） */
+  entered: Record<string, number>
+}
+export interface LifecycleStateCounts {
+  scope: string
+  series: LifecycleStateCountPoint[]
+  /** 最新那天还没收盘（盘中跑过日更）就不出点，日期列在这里 */
+  skipped_unsettled: string[]
 }
 
 export const fetchLifecycleEffect = () =>

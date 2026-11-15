@@ -69,9 +69,20 @@ def _trimmed_mean(vals: List[float]) -> Optional[float]:
 
 def _states_by_date(snaps_by_code: Dict[str, list], days: List[date],
                     cal: List[date],
-                    susp_by_code: Optional[Dict[str, set]] = None) -> Dict[date, Dict[str, str]]:
+                    susp_by_code: Optional[Dict[str, set]] = None,
+                    members: Optional[Dict[date, set]] = None,
+                    entered_out: Optional[Dict[date, Dict[str, str]]] = None) -> Dict[date, Dict[str, str]]:
     """
     {日期: {代码: 状态}}。**每只票只 replay 一趟**。
+
+    `members`：{日期: 那天有快照行的代码}，给了就只要当天在高标池里的票。
+    2026-11-15 补：一只票掉出高标池后那天没有快照行，replay 给的是 UNKNOWN + 最后一次
+    有效状态，而下面「判不出来就用最后一次有效状态」会把它按旧状态一直算下去——本机
+    60 天窗口里 96 条这样的记录。「当天判不出来」只该给当天还在池子里、只是那行事实
+    不完整（停牌、未结算）的票用。
+
+    `entered_out`：顺手收集 {日期: {代码: 状态}}——当天**刚转入**该状态的票（只认当天
+    有效判定出来的转移，不算用旧状态顶上的）。
 
     原来是对窗口里的每一天各调一次 `replay_price_lifecycle`，而那个函数每次都从
     周期起点重新推——59 只 × 60 天 = 3540 次 replay，总步数 O(天²)。
@@ -86,10 +97,14 @@ def _states_by_date(snaps_by_code: Dict[str, list], days: List[date],
         # 按这只票自己的交易日走（停牌日不算），跟龙头周期页面同一个口径
         scal = stock_calendar(cal, (susp_by_code or {}).get(code))
         for d, s in replay_series(rows, days, trading_days=scal).items():
+            if members is not None and code not in members.get(d, ()):
+                continue                 # 当天不在高标池里
             # 当日判不出来时用最近一次有效状态——跟界面同一个口径
             st = s.state if s.state not in ("UNKNOWN",) else s.last_valid_state
             if st:
                 out[d][code] = st
+                if entered_out is not None and s.transitioned_today and s.state == st:
+                    entered_out.setdefault(d, {})[code] = st
     return out
 
 
@@ -127,7 +142,7 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     dates = [d for (d,) in db.query(LeaderCycleSnapshot.date).distinct()
              .order_by(LeaderCycleSnapshot.date).all()]
     if not dates:
-        return {"as_of": None, "prev": None, "cohorts": [], "history": [], "series": [], "today_estimate": None,
+        return {"as_of": None, "prev": None, "cohorts": [], "history": [], "series": [], "today_estimate": None, "state_counts": None,
                 "formula_version": FORMULA_VERSION,
                 "notes": ["暂无生命周期快照", *base_notes]}
     as_of = trade_date or dates[-1]
@@ -149,13 +164,18 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
             .filter(LeaderCycleSnapshot.date >= lower,
                     LeaderCycleSnapshot.date <= as_of).all())
     if not rows:
-        return {"as_of": as_of, "prev": None, "cohorts": [], "history": [], "series": [], "today_estimate": None,
+        return {"as_of": as_of, "prev": None, "cohorts": [], "history": [], "series": [], "today_estimate": None, "state_counts": None,
                 "formula_version": FORMULA_VERSION,
                 "notes": ["窗口内没有生命周期快照", *base_notes]}
 
     snaps: Dict[str, list] = defaultdict(list)
+    members: Dict[date, set] = defaultdict(set)      # 当天高标池 = 那天有快照行的票
+    unsettled_days: set = set()
     for r in rows:
         snaps[r.stock_code].append(r)
+        members[r.date].add(r.stock_code)
+        if r.bar_settled is not True:
+            unsettled_days.add(r.date)
 
     cal_all = get_trading_days(db, need_through=as_of) or []
     cal = [d for d in cal_all if d <= as_of]
@@ -163,7 +183,7 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     if not cal:
         # 没日历就没法判"相邻交易日"，状态机会停在原地——如实说，不硬算
         notes.append("拿不到交易日历，生命周期无法推进")
-        return {"as_of": as_of, "prev": None, "cohorts": [], "history": [], "series": [], "today_estimate": None,
+        return {"as_of": as_of, "prev": None, "cohorts": [], "history": [], "series": [], "today_estimate": None, "state_counts": None,
                 "formula_version": FORMULA_VERSION, "notes": notes + base_notes}
 
     # ── 收盘价：只排除**最新日期上**未结算的行 ──────────────────────────
@@ -239,7 +259,9 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
     need_days = sorted(set(window) | ({prev} if prev else set()))
     from .suspension_service import load_suspensions_by_code
     _susp = load_suspensions_by_code(db, list(snaps), since=cal[0] if cal else None)
-    states = _states_by_date(snaps, need_days, cal, _susp) if need_days else {}
+    entered: Dict[date, Dict[str, str]] = {}
+    states = _states_by_date(snaps, need_days, cal, _susp, members=members,
+                             entered_out=entered) if need_days else {}
 
     # ── 当日 cohort：昨天的状态 → 今天的表现 ────────────────────────────
     cohorts = []
@@ -332,6 +354,39 @@ def compute_effect(db: Session, trade_date: Optional[date] = None,
                 f"现价涨幅。今天还没收盘，这个点不写库、不进任何跨日统计，"
                 f"收盘后会被真实值取代。")
 
+    state_counts = _state_counts(window, states, entered, members, as_of_unsettled=as_of in unsettled_days)
     return {"as_of": as_of, "prev": prev, "formula_version": FORMULA_VERSION,
             "cohorts": cohorts, "history": history, "series": series,
-            "today_estimate": today_estimate, "notes": notes + base_notes}
+            "today_estimate": today_estimate, "state_counts": state_counts,
+            "notes": notes + base_notes}
+
+
+POOL_SCOPE = "高标池 = 近 60 个交易日最高连板 ≥ 4（不含 ST、退市整理期、北交所），每天的成员不一样"
+
+
+def _state_counts(window: List[date], states: Dict[date, Dict[str, str]],
+                  entered: Dict[date, Dict[str, str]], members: Dict[date, set],
+                  as_of_unsettled: bool = False) -> dict:
+    """
+    逐日各状态的只数（2026-11-15 用户提：标杆穿越成功之后一批模仿，模仿规模够大时往往是
+    短期顶部——先把「各状态有多少只」摆出来看）。**只是计数，不打分、不判见顶。**
+
+    · `pool` = 当天高标池的只数（那天有快照行的票）。池子大小每天在变，只数要跟它一起看。
+    · `counts` = 当天处于该状态的只数（存量）；当天判不出来的用最近一次有效状态，跟上面
+      赚钱效应同一个口径。没有周期 / 判不出来又没有有效状态的，只算进 pool。
+    · `entered` = 当天刚转入该状态的只数（增量）。
+    · 最新那天有未收盘的快照行（盘中跑过日更）就**不出那个点**：状态机对未结算的行判
+      UNKNOWN、退回昨天的状态，那天的「只数」其实是昨天的，画出来就是拿昨天冒充今天。
+      只看最新那天：bar_settled 只有当天盘中跑才会是 False / 空，历史行都是 True。
+    """
+    from collections import Counter
+    series, skipped = [], []
+    for d in window:
+        if as_of_unsettled and d == window[-1]:
+            skipped.append(d.isoformat())
+            continue
+        st = states.get(d) or {}
+        series.append({"trade_date": d.isoformat(), "pool": len(members.get(d, ())),
+                       "counts": dict(Counter(st.values())),
+                       "entered": dict(Counter((entered.get(d) or {}).values()))})
+    return {"scope": POOL_SCOPE, "series": series, "skipped_unsettled": skipped}

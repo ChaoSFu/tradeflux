@@ -21,7 +21,7 @@ import type { MarketHistoryPoint } from '@/types'
  * **均值不是中位数**:这条线要跟「强势股均涨幅」那条可比,而那条一直是均值。
  */
 /** 顺序按生命周期推进方向（跟 STATE_ORDER 一致），不是按颜色好看 */
-const LINES: { state: string; color: string; dash?: string }[] = [
+export const LIFECYCLE_LINES: { state: string; color: string; dash?: string }[] = [
   { state: 'STREAKING',       color: '#FF4560' },
   { state: 'BROKEN',          color: '#FB923C', dash: '5 2' },
   { state: 'REPAIRING',       color: '#F59E0B', dash: '4 2' },
@@ -38,7 +38,9 @@ const LINES: { state: string; color: string; dash?: string }[] = [
  * 每一环今天赚不赚钱。基线「强势股均涨幅」也默认收起——七条全开会糊成一团。
  * 其余的点图例就能加回来，**只是默认收起，不是没有**。
  */
-const DEFAULT_ON = new Set(['BROKEN', 'REPAIRING', 'CROSS_SUCCESS'])
+export const LIFECYCLE_DEFAULT_ON = new Set(['BROKEN', 'REPAIRING', 'CROSS_SUCCESS'])
+const LINES = LIFECYCLE_LINES
+const DEFAULT_ON = LIFECYCLE_DEFAULT_ON
 const C_MAIN = '#5EA6FF'
 const L_MAIN = '强势股均涨幅'
 const zh = (st: string) => LIFECYCLE_ZH[st] ?? st
