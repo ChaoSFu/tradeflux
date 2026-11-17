@@ -2,9 +2,7 @@ import { Fragment, useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchMarketState, fetchMarketHistory, fetchProfitEffect } from '@/api/marketState'
-import {
-  fetchStrongPool, fetchLifecycleEffect, fetchLifecycleEvidence, fetchLeaderCycle,
-} from '@/api/stocks'
+import { fetchStrongPool, fetchLifecycleEffect, fetchLifecycleEvidence, fetchLeaderCycle, fetchLimitMovesTrend } from '@/api/stocks'
 import type { EvidenceEvent, EvidenceCell } from '@/api/stocks'
 import { LIFECYCLE_ZH, STATE_ORDER } from '@/lib/lifecycle'
 import LeaderCyclePanel, { LifecycleScopeNote } from '@/components/stockPool/LeaderCyclePanel'
@@ -276,12 +274,17 @@ function LifecycleSeries({ history }: { history: MarketHistoryPoint[] }) {
     queryKey: ['lifecycle-effect'], queryFn: fetchLifecycleEffect,
     staleTime: 10 * 60 * 1000,
   })
+  // 叠加用的跌停家数：跟涨跌停分析页「历史走势」同一个请求（同一个 key，缓存共用）
+  const trend = useQuery({
+    queryKey: ['lma-trend'], queryFn: () => fetchLimitMovesTrend(60),
+    staleTime: 30 * 60 * 1000,
+  })
   if (q.isPending) return <LoadingSpinner />
   if (q.error) {
     return <div className="text-center text-warn text-xs py-10">数据获取失败</div>
   }
   return <LifecycleEffectChart series={q.data?.series ?? []} history={history}
-                               todayEstimate={q.data?.today_estimate} />
+                               todayEstimate={q.data?.today_estimate} limitTrend={trend.data} />
 }
 
 /** 逐日各状态只数。同一个 ['lifecycle-effect'] 请求，跟上面那张图同一次状态推演 */

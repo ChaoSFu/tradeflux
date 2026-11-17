@@ -1,13 +1,13 @@
 import { useCallback, useMemo, useState } from 'react'
 import {
-  ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  ComposedChart, Area, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from 'recharts'
 import { format } from 'date-fns'
 import { cn } from '@/utils/cn'
 import { LIFECYCLE_ZH } from '@/lib/lifecycle'
 import type { LifecycleSeriesPoint, LifecycleTodayEstimate } from '@/api/stocks'
-import type { MarketHistoryPoint } from '@/types'
+import type { LimitMoveTrendPoint, MarketHistoryPoint } from '@/types'
 
 /**
  * 逐日赚钱效应,按**生命周期状态**分组。
@@ -43,6 +43,13 @@ const LINES = LIFECYCLE_LINES
 const DEFAULT_ON = LIFECYCLE_DEFAULT_ON
 const C_MAIN = '#5EA6FF'
 const L_MAIN = '强势股均涨幅'
+/**
+ * 叠加跌停家数（2026-11-17 用户要的）：跟涨跌停分析页「历史走势」、顶栏「跌停 · 极端做空」
+ * 同一份数（本系统判定、非 ST）。画成柱子、走右轴——单位是「只」，跟左边的涨幅 % 不能共用
+ * 一根轴。默认收起，点图例才叠上。
+ */
+const C_LD = '#26C281'
+const L_LD = '跌停家数'
 const zh = (st: string) => LIFECYCLE_ZH[st] ?? st
 
 interface Row {
@@ -50,15 +57,17 @@ interface Row {
   [k: string]: string | number | null
 }
 
-export function LifecycleEffectChart({ series, history, todayEstimate }: {
+export function LifecycleEffectChart({ series, history, todayEstimate, limitTrend }: {
   series: LifecycleSeriesPoint[]
   history: MarketHistoryPoint[]
   /** 未收盘时的当日估算。**它不在 series 里**——盘中价不能进跨日统计 */
   todayEstimate?: LifecycleTodayEstimate | null
+  /** 每日涨跌停家数（/stocks/limit-moves/trend），只用跌停数做叠加 */
+  limitTrend?: LimitMoveTrendPoint[]
 }) {
-  // 默认收起 DEFAULT_ON 之外的线，基线也收起。用 zh(state) 作 key，跟图例/dataKey 一致
+  // 默认收起 DEFAULT_ON 之外的线，基线、跌停家数也收起。用 zh(state) 作 key，跟图例/dataKey 一致
   const [hidden, setHidden] = useState<Set<string>>(
-    () => new Set([L_MAIN, ...LINES.filter((l) => !DEFAULT_ON.has(l.state)).map((l) => zh(l.state))]))
+    () => new Set([L_MAIN, L_LD, ...LINES.filter((l) => !DEFAULT_ON.has(l.state)).map((l) => zh(l.state))]))
   const toggle = useCallback((k: string) => setHidden((p) => {
     const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n
   }), [])
@@ -73,6 +82,7 @@ export function LifecycleEffectChart({ series, history, todayEstimate }: {
 
   const rows = useMemo<Row[]>(() => {
     const avgByDate = new Map(history.map((h) => [h.date.slice(0, 10), h.strong_pool_avg_pct]))
+    const ldByDate = new Map((limitTrend ?? []).map((t) => [t.date.slice(0, 10), t.limit_down_count]))
     // 估算点拼在末尾。**它是另一种东西**（盘中价 vs 收盘价），所以带个标记，
     // tooltip 上要说出来——不说就是拿盘中价冒充当日结果
     const all: (LifecycleSeriesPoint & { __est?: true })[] =
@@ -81,6 +91,8 @@ export function LifecycleEffectChart({ series, history, todayEstimate }: {
       const r: Row = { date: format(new Date(p.trade_date), 'MM/dd') }
       r.__est = ('__est' in p && p.__est) ? 1 : 0
       r[L_MAIN] = avgByDate.get(p.trade_date) ?? null
+      // 没有那天的跌停数就是 null（不画柱子），不当 0
+      r[L_LD] = ldByDate.get(p.trade_date) ?? null
       for (const l of present) {
         // 当天没有该状态的票 → **图上按 0 画**（产品决定：那一组当天没有贡献
         // 赚钱效应）。但数据层不撒谎：后端那边"没有该状态"就是没有这个 key，
@@ -92,7 +104,8 @@ export function LifecycleEffectChart({ series, history, todayEstimate }: {
       }
       return r
     })
-  }, [series, history, present, todayEstimate])
+  }, [series, history, present, todayEstimate, limitTrend])
+  const hasLd = !!limitTrend?.length
 
   if (!series.length) {
     return <div className="h-64 flex items-center justify-center text-text-muted text-sm">
@@ -118,7 +131,12 @@ export function LifecycleEffectChart({ series, history, todayEstimate }: {
             <YAxis tick={{ fill: '#737A96', fontSize: 10 }} axisLine={false}
                    tickLine={false} width={44}
                    tickFormatter={(v: number) => `${v > 0 ? '+' : ''}${v.toFixed(0)}%`} />
+            {/* 跌停家数的右轴：只在叠加时出现 */}
+            <YAxis yAxisId="ld" orientation="right" tick={{ fill: '#4B8F6E', fontSize: 10 }} axisLine={false}
+                   tickLine={false} width={30} allowDecimals={false} hide={!hasLd || hidden.has(L_LD)} />
             <ReferenceLine y={0} stroke="#3A4258" />
+            <Bar yAxisId="ld" dataKey={L_LD} fill={C_LD} fillOpacity={0.4} barSize={6}
+                 isAnimationActive={false} hide={!hasLd || hidden.has(L_LD)} />
             {/* offset 拉开一点、允许溢出绘图区：贴着光标画会正好压在刚才
                 悬停的那几条线上 */}
             <Tooltip content={<Tip present={present} />} offset={24}
@@ -141,7 +159,8 @@ export function LifecycleEffectChart({ series, history, todayEstimate }: {
 
       <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 pt-1">
         {[{ key: L_MAIN, color: C_MAIN, area: true },
-          ...present.map((l) => ({ key: zh(l.state), color: l.color, dash: l.dash, area: false }))]
+          ...present.map((l) => ({ key: zh(l.state), color: l.color, dash: l.dash, area: false })),
+          ...(hasLd ? [{ key: L_LD, color: C_LD, area: false, bar: true }] : [])]
           .map((it) => {
             const off = hidden.has(it.key)
             return (
@@ -150,8 +169,10 @@ export function LifecycleEffectChart({ series, history, todayEstimate }: {
                         off ? 'opacity-25 hover:opacity-50' : 'hover:opacity-75')}
                       title={off ? `显示 ${it.key}` : `隐藏 ${it.key}`}>
                 <svg width="20" height="10" className="shrink-0">
-                  <line x1="0" y1="5" x2="20" y2="5" stroke={it.color} strokeWidth={2}
-                        strokeDasharray={'dash' in it ? it.dash : undefined} />
+                  {'bar' in it
+                    ? <rect x="7" y="1" width="6" height="9" fill={it.color} fillOpacity={0.5} />
+                    : <line x1="0" y1="5" x2="20" y2="5" stroke={it.color} strokeWidth={2}
+                            strokeDasharray={'dash' in it ? it.dash : undefined} />}
                 </svg>
                 <span className="text-text-secondary">{it.key}</span>
               </button>
@@ -172,6 +193,8 @@ interface TipProps {
 function Tip({ active, label, payload, present }: TipProps) {
   if (!active || !payload?.length) return null
   const row = payload[0].payload
+  const ld = payload.find((p) => p.dataKey === L_LD)
+  payload = payload.filter((p) => p.dataKey !== L_LD)
   // **按赚钱效应从大到小。** 图例顺序是生命周期推进方向，那是为了看懂"这条线是
   // 哪一档"；而悬停时要回答的是"这天谁涨得最多"，两件事排序依据不同。
   // 空值沉底——「那天这组没有成员」不是「最低」
@@ -218,6 +241,14 @@ function Tip({ active, label, payload, present }: TipProps) {
         )
       })}
       {present.length === 0 && <div className="text-text-muted">没有分状态数据</div>}
+      {ld && (
+        <div className="flex items-center gap-1.5 whitespace-nowrap border-t border-bg-border pt-0.5 mt-0.5">
+          <span className="w-1.5 h-2 shrink-0" style={{ background: C_LD, opacity: 0.6 }} />
+          <span className="text-text-secondary">{L_LD}</span>
+          <span className="font-mono tabular-nums ml-auto text-down">{ld.value == null ? '—' : `${ld.value} 只`}</span>
+          {row.__est === 1 && ld.value != null && <span className="text-warn/80">盘中</span>}
+        </div>
+      )}
     </div>
   )
 }
