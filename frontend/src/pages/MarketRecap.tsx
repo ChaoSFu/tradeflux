@@ -92,6 +92,7 @@ export default function MarketRecap() {
   const refreshDay = () => {
     qc.invalidateQueries({ queryKey: ['recap-day', date] })
     qc.invalidateQueries({ queryKey: ['recap-context', date] })
+    qc.invalidateQueries({ queryKey: ['recap-relations'] })   // 加进观察池会自动跟同板块的互相关联
   }
   const save = async () => {
     if (!date) return false
