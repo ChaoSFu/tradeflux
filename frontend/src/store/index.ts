@@ -11,6 +11,10 @@ interface AppState {
 
   selectedSectorCode: string | null
   setSelectedSectorCode: (code: string | null) => void
+
+  // 每日复盘（盘后研究）打开时注册：顶部状态条点开的板块按名字加进复盘的主线板块列表，返回提示语
+  recapAddSector: ((name: string) => string) | null
+  setRecapAddSector: (fn: ((name: string) => string) | null) => void
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -23,4 +27,7 @@ export const useAppStore = create<AppState>((set) => ({
 
   selectedSectorCode: null,
   setSelectedSectorCode: (selectedSectorCode) => set({ selectedSectorCode }),
+
+  recapAddSector: null,
+  setRecapAddSector: (recapAddSector) => set({ recapAddSector }),
 }))

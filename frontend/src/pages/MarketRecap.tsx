@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { BookOpenCheck, Lock, Radio, Save } from 'lucide-react'
@@ -7,7 +7,7 @@ import {
   type Plan, type RecapDay, type RecapDraft,
 } from '@/api/marketRecap'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
-import { CorePanel } from '@/components/marketRecap/CorePanel'
+import { CorePanel, addSectorPick } from '@/components/marketRecap/CorePanel'
 import { MarketPanel } from '@/components/marketRecap/MarketPanel'
 import { PlanPanel, ScenarioPanel, emptyPlan } from '@/components/marketRecap/PlanPanel'
 import { CorePoolPanel } from '@/components/marketRecap/CorePoolPanel'
@@ -16,6 +16,7 @@ import { DecisionSummary, PreparePanel } from '@/components/marketRecap/PrepareP
 import { RelationPanel } from '@/components/marketRecap/RelationPanel'
 import { ReflectPanel, SummaryCard, VerificationCard, VersionList } from '@/components/marketRecap/ReviewPanel'
 import { MetaBadge, Section } from '@/components/marketRecap/shared'
+import { useAppStore } from '@/store'
 import { cn } from '@/utils/cn'
 
 const NAV = [['market', '市场判断'], ['cores', '人气核心'], ['core', '主线与观察池'], ['relations', '关联研究'], ['plan', '次日预案'], ['review', '复盘总结']] as const
@@ -82,6 +83,37 @@ export default function MarketRecap() {
       setDraft(d); setSaved(JSON.stringify(d)); setLoadedFor(date)
     }
   }, [day.data, date, loadedFor])
+
+  // 手动把板块加进主线板块列表（改的是草稿）：高标关联研究的板块卡片按代码加，顶部状态条只有板块名，按名字找关注板块
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+  const ctxOk = ctx.data && ctx.data.status === 'ok' ? ctx.data : null
+  const addSector = useCallback((s: { code: string; name: string }) => {
+    if (!ctxOk) return '复盘的市场事实还没读到'
+    const fact = [...(ctxOk.sectors.items ?? []), ...(ctxOk.sectors.others ?? [])].find((x) => x.code === s.code)
+    const r = addSectorPick(draftRef.current.sector_picks, ctxOk.sectors.items ?? [], { ...s, state_label: fact?.state_label })
+    if (r.picks) { const picks = r.picks; setDraft((d) => ({ ...d, sector_picks: picks })) }
+    setMsg({ text: r.msg })
+    return r.msg
+  }, [ctxOk])
+  const addSectorByName = useCallback((name: string) => {
+    const all = ctxOk ? [...(ctxOk.sectors.items ?? []), ...(ctxOk.sectors.others ?? [])] : []
+    const fact = all.find((x) => x.name === name)
+    if (ctxOk && !fact) {
+      const text = !all.length
+        ? `这天没有板块趋势数据，找不到「${name}」，加不进主线板块`
+        : `「${name}」不在关注板块里，没有板块趋势数据，加不进主线板块（可以先在板块设置里关注它）`
+      setMsg({ text, err: true })
+      return text
+    }
+    return addSector({ code: fact?.code ?? '', name })
+  }, [ctxOk, addSector])
+  const setRecapAddSector = useAppStore((s) => s.setRecapAddSector)
+  useEffect(() => {
+    if (mode !== 'research' || !ctxOk) return
+    setRecapAddSector(addSectorByName)
+    return () => setRecapAddSector(null)
+  }, [mode, ctxOk, addSectorByName, setRecapAddSector])
   const dirty = JSON.stringify(draft) !== saved
   const set = (patch: Partial<RecapDraft>) => setDraft((d) => ({ ...d, ...patch }))
 
@@ -267,7 +299,9 @@ export default function MarketRecap() {
           </Section>
           <Section id="relations" step="④" title="高标关联研究" right={<span className="text-[11px] text-text-muted">关联、响应即时保存（不随草稿）</span>}>
             <RelationPanel pool={d.watch_pool} date={date} readOnly={false} selected={leaderSel} onSelect={setLeaderSel}
-                           extraLeader={extraLeader} onAddPlan={addPlan} onPoolChanged={refreshDay} />
+                           extraLeader={extraLeader} onAddPlan={addPlan} onPoolChanged={refreshDay}
+                           mainline={new Set([...(c.sectors.items ?? []).map((s) => s.code), ...draft.sector_picks.map((p) => p.code)])}
+                           onAddSector={addSector} />
           </Section>
           <Section id="plan" step="⑤" title="次日情景与交易预案">
             <ScenarioPanel draft={draft} set={set} pool={d.watch_pool} readOnly={false} />

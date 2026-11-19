@@ -28,6 +28,7 @@ import { useSectorTags } from '@/hooks/useSectorTags'
 import { SectorTag } from '@/components/common/SectorTags'
 import { SectorSection, buildSectorGroups } from '@/components/common/SectorSection'
 import type { Stock } from '@/types'
+import { useAppStore } from '@/store'
 import { cn } from '@/utils/cn'
 
 const pctColor = (v: number) => (v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-secondary')
@@ -159,6 +160,10 @@ export function MarketStateBar() {
     return new Map(buildSectorGroups(merged).map((g) => [g.name, g]))
   }, [strongPool, up, down])
   const toggleSector = (name: string) => setExpandedSector((p) => (p === name ? null : name))
+  // 每日复盘（盘后研究）开着时，点开的板块可以加进复盘的「主线板块」列表
+  const recapAddSector = useAppStore((s) => s.recapAddSector)
+  const [recapAddMsg, setRecapAddMsg] = useState<string | null>(null)
+  useEffect(() => setRecapAddMsg(null), [expandedSector])
 
   // 30日均值（与走势图同源）→ 比值 = 当日 / 30日均值
   const { data: trend } = useQuery({
@@ -526,6 +531,15 @@ export function MarketStateBar() {
       )}
       </div>
 
+      {expandedSector && recapAddSector && (
+        <div className="flex items-center gap-2 text-xs mb-1.5">
+          <span className="text-text-muted">板块「{expandedSector}」</span>
+          <button onClick={() => setRecapAddMsg(recapAddSector(expandedSector))}
+                  className="px-2 py-0.5 rounded bg-purple-400/15 text-purple-200 hover:bg-purple-400/25"
+                  title="加进下面每日复盘的「主线板块」列表（草稿），再在那里归类">+ 加入复盘主线板块</button>
+          {recapAddMsg && <span className="text-text-secondary">{recapAddMsg}</span>}
+        </div>
+      )}
       {/* 点击板块展开：该板块强势股列表（沿用 SectorSection） */}
       {expandedSector && sectorGroupMap.get(expandedSector) && (
         <SectorSection

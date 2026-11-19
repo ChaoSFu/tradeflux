@@ -101,7 +101,7 @@ function RelationRow({ r, date, leaderTime, labels, onChanged, onWatch, onPlan, 
   )
 }
 
-export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraLeader, onAddPlan, onPoolChanged }: {
+export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraLeader, onAddPlan, onPoolChanged, mainline, onAddSector }: {
   pool: WatchItem[]
   date: string
   readOnly: boolean
@@ -110,6 +110,8 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
   extraLeader: { code: string; name: string | null } | null
   onAddPlan: (p: Partial<Plan>) => void
   onPoolChanged: () => void
+  mainline: Set<string>                                        // 已经在主线板块列表里的板块代码
+  onAddSector: (s: { code: string; name: string }) => void      // 加进主线板块列表（草稿）
 }) {
   const qc = useQueryClient()
   const leaders = useMemo(() => {
@@ -225,7 +227,8 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
 
           <Facts title="① 板块关联（自动）：高标所在的每个板块，当天同板块的活跃股">
             <SectorPeersPanel code={code!} date={date} adopted={adopted} readOnly={readOnly}
-                              onWatch={watchCode} onPlan={onAddPlan} onAdopt={adoptSector} />
+                              onWatch={watchCode} onPlan={onAddPlan} onAdopt={adoptSector}
+                              mainline={mainline} onAddSector={onAddSector} />
           </Facts>
 
           <div className="flex items-center gap-2 pt-1">

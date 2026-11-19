@@ -227,11 +227,13 @@ def sector_module(db: Session, d: date) -> dict:
     from .sector_mainline_service import get_sector_mainline_state
     st = get_sector_mainline_state(db, as_of=d)
     state_date = st.get("state_date")
-    items = [{"code": s["code"], "name": s["name"], "state": s["state"], "state_label": s["state_label"],
-              "reason": s["state_reason"], "trail": s["trail"],
-              "pct": s["facts"]["pct"], "r5": s["facts"]["r5"], "rs20": s["facts"]["rs20"],
-              "lu": s["facts"]["lu"], "height": s["facts"]["height"], "lu_trend": s["facts"]["lu_trend"]}
-             for s in st.get("sectors", []) if s["state"] not in ("NONE", "UNKNOWN")]
+    items, others = [], []
+    for s in st.get("sectors", []):
+        row = {"code": s["code"], "name": s["name"], "state": s["state"], "state_label": s["state_label"],
+               "reason": s["state_reason"], "trail": s["trail"],
+               "pct": s["facts"]["pct"], "r5": s["facts"]["r5"], "rs20": s["facts"]["rs20"],
+               "lu": s["facts"]["lu"], "height": s["facts"]["height"], "lu_trend": s["facts"]["lu_trend"]}
+        (others if s["state"] in ("NONE", "UNKNOWN") else items).append(row)
     if state_date is None:
         status, note = MISSING, "；".join(st.get("notes") or []) or "没有可用的板块状态"
     elif state_date != d.isoformat():
@@ -239,7 +241,9 @@ def sector_module(db: Session, d: date) -> dict:
     else:
         status, note = OK, None
     return {"meta": _meta(status, d, "sector_mainline_service", note),
-            "state_date": state_date, "counts": st.get("counts"), "items": items}
+            "state_date": state_date, "counts": st.get("counts"), "items": items,
+            # 板块趋势没列进主线的其余关注板块：手动「加入主线板块」时从这里取事实
+            "others": others}
 
 
 # ── 模块：核心股票候选 ─────────────────────────────────────────────────────

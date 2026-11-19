@@ -15,7 +15,7 @@ const TYPE_ZH: Record<string, string> = { industry: '行业', concept: '概念',
  * 一只票在高标的几个板块里，就在每个板块下都出现，标「也在」。这是当天的事实，不进关联知识库；
  * 想长期记住某条，点「记为关联」；重点观察池里同板块的两只会自动互相记上，不用点。
  */
-export function SectorPeersPanel({ code, date, adopted, onWatch, onPlan, onAdopt, readOnly }: {
+export function SectorPeersPanel({ code, date, adopted, onWatch, onPlan, onAdopt, readOnly, mainline, onAddSector }: {
   code: string
   date: string
   adopted: Set<string>               // `${板块名}|${代码}`：已经记进关联知识库的
@@ -23,6 +23,8 @@ export function SectorPeersPanel({ code, date, adopted, onWatch, onPlan, onAdopt
   onPlan: (p: Partial<Plan>) => void
   onAdopt: (sector: { name: string; type: string }, c: string, name: string | null, active: string) => void
   readOnly: boolean
+  mainline: Set<string>
+  onAddSector: (s: { code: string; name: string }) => void
 }) {
   const { data, isLoading, isError, error } = useQuery({ queryKey: ['recap-sector-peers', code, date], queryFn: () => fetchSectorPeers(code, date) })
   if (isLoading) return <LoadingSpinner />
@@ -41,6 +43,13 @@ export function SectorPeersPanel({ code, date, adopted, onWatch, onPlan, onAdopt
               <span className="text-text-primary font-medium">{g.sector.name}</span>
               <span className="text-[10px] text-text-muted">{TYPE_ZH[g.sector.type] ?? g.sector.type}</span>
               {g.sector.primary && <span className="text-[10px] px-1 rounded bg-accent/15 text-accent">主板块</span>}
+              {mainline.has(g.sector.code)
+                ? <span className="text-[10px] text-text-muted" title="已经在上面「主线板块」列表里">已在主线板块</span>
+                : !readOnly && (
+                  <button onClick={() => onAddSector({ code: g.sector.code, name: g.sector.name })}
+                          className="text-[10px] px-1 rounded bg-purple-400/15 text-purple-200 hover:bg-purple-400/25"
+                          title="加进上面「主线板块」列表（草稿），再在那里归类">+ 主线板块</button>
+                )}
               <span className="text-[10px] text-text-muted ml-auto">
                 活跃 {g.stocks.length} 只 · 涨停 {g.stocks.filter((s) => s.active.includes('limit_up')).length}
               </span>
