@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { fetchSectorPeers, type Plan, type SystemResponse } from '@/api/marketRecap'
+import { fetchSectorPeers, type Plan, type StockFacts, type SystemResponse } from '@/api/marketRecap'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 import { NUM, StockLink, fmtPct, pctCls } from './shared'
@@ -9,6 +10,18 @@ const SYS_TONE: Record<SystemResponse, string> = {
   limit_up: 'text-up', up_response: 'text-up', independent_strong: 'text-accent', not_met: 'text-text-muted', insufficient: 'text-warn',
 }
 const TYPE_ZH: Record<string, string> = { industry: '行业', concept: '概念', region: '地区' }
+
+// 可以点表头排序的列。涨停·首封：板数多的在前，同板数首封早的在前；没涨停的不参与（排最后）
+type SortKey = 'pct' | 'pct_5d' | 'pct_20d' | 'seal' | 'amount'
+const SORT_COL: Record<string, SortKey> = { 今日: 'pct', '5日': 'pct_5d', '20日': 'pct_20d', '涨停·首封': 'seal', 成交额: 'amount' }
+function sortVal(f: StockFacts | null, k: SortKey): number | null {
+  if (!f) return null
+  if (k === 'amount') return f.amount_yi
+  if (k !== 'seal') return f[k]
+  if (!f.is_limit_up) return null
+  const [h, m, s] = (f.first_limit_time ?? '23:59:59').split(':').map(Number)
+  return (f.board_count || 1) * 1e5 - (h * 3600 + m * 60 + s)
+}
 
 /**
  * 板块关联（自动）：高标所在的每个板块里，当天的活跃股（强势池 / 涨停 / 跌停）。
@@ -27,6 +40,18 @@ export function SectorPeersPanel({ code, date, adopted, onWatch, onPlan, onAdopt
   onAddSector: (s: { code: string; name: string }) => void
 }) {
   const { data, isLoading, isError, error } = useQuery({ queryKey: ['recap-sector-peers', code, date], queryFn: () => fetchSectorPeers(code, date) })
+  // 所有板块卡片共用一个排序：点一次高→低，再点低→高，第三次恢复默认（涨停在前）。没数据的始终排最后
+  const [sort, setSort] = useState<{ key: SortKey; desc: boolean } | null>(null)
+  const clickSort = (key: SortKey) =>
+    setSort((p) => (p?.key !== key ? { key, desc: true } : p.desc ? { key, desc: false } : null))
+  const ordered = <T extends { facts: StockFacts | null }>(xs: T[]): T[] => {
+    if (!sort) return xs
+    return [...xs].sort((a, b) => {
+      const x = sortVal(a.facts, sort.key), y = sortVal(b.facts, sort.key)
+      if (x == null || y == null) return x == null && y == null ? 0 : x == null ? 1 : -1
+      return sort.desc ? y - x : x - y
+    })
+  }
   if (isLoading) return <LoadingSpinner />
   if (isError) return <div className="text-xs text-down">板块关联读取失败：{(error as Error)?.message}</div>
   if (!data || data.status !== 'ok') return <div className="text-xs text-text-muted">{data?.note ?? '没有板块关联'}</div>
@@ -59,13 +84,24 @@ export function SectorPeersPanel({ code, date, adopted, onWatch, onPlan, onAdopt
                 <table className="w-full text-xs [&_td]:whitespace-nowrap">
                   <thead>
                     <tr className="text-text-muted border-b border-bg-border">
-                      {['股票', '活跃', '今日', '5日', '20日', '涨停·首封', '成交额', '系统响应', ''].map((h, i) => (
-                        <th key={h + i} className={cn('px-1.5 py-0.5 font-medium', i >= 2 && i <= 6 ? 'text-right' : 'text-left')}>{h}</th>
-                      ))}
+                      {['股票', '活跃', '今日', '5日', '20日', '涨停·首封', '成交额', '系统响应', ''].map((h, i) => {
+                        const k = SORT_COL[h]
+                        const on = !!k && sort?.key === k
+                        return (
+                          <th key={h + i} className={cn('px-1.5 py-0.5 font-medium', i >= 2 && i <= 6 ? 'text-right' : 'text-left')}>
+                            {!k ? h : (
+                              <button onClick={() => clickSort(k)} title="点击排序：高→低 / 低→高 / 恢复默认（所有板块一起排）"
+                                      className={cn('hover:text-text-primary', on && 'text-accent')}>
+                                {h}{on ? (sort!.desc ? ' ↓' : ' ↑') : ''}
+                              </button>
+                            )}
+                          </th>
+                        )
+                      })}
                     </tr>
                   </thead>
                   <tbody>
-                    {g.stocks.map((s) => {
+                    {ordered(g.stocks).map((s) => {
                       const f = s.facts
                       const key = `${g.sector.name}|${s.code}`
                       return (
