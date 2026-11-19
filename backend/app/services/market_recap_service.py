@@ -437,6 +437,39 @@ def stock_facts(db: Session, codes: Iterable[str], d: date) -> Dict[str, dict]:
     return out
 
 
+def limit_up_day_counts(db: Session, codes: Iterable[str], days: Sequence[date]) -> Dict[str, Optional[int]]:
+    """
+    codes 在 days 这几个交易日里各涨停了几天。每天的判法跟 stock_facts 的 is_limit_up 同一条：
+    涨停明细里有 → 涨停；没有就看那天的股票日快照；那天有涨停明细（全市场的）又不在里面 → 没涨停。
+    **哪一天说不准，这只的天数就是 None**，不把说不准的那天当没涨停。
+    """
+    codes = list(dict.fromkeys(c for c in codes if c))
+    days = list(days)
+    if not codes or not days:
+        return {c: None for c in codes}
+    det = set(db.query(LimitUpDailyDetail.stock_code, LimitUpDailyDetail.trade_date)
+              .filter(LimitUpDailyDetail.trade_date.in_(days), LimitUpDailyDetail.stock_code.in_(codes)).all())
+    known = {d for (d,) in db.query(LimitUpDailyDetail.trade_date)
+             .filter(LimitUpDailyDetail.trade_date.in_(days)).distinct()}
+    snap = {(c, d): bool(lu) for c, d, lu in
+            db.query(Stock.code, StockDailySnapshot.date, StockDailySnapshot.is_limit_up)
+            .join(StockDailySnapshot, StockDailySnapshot.stock_id == Stock.id)
+            .filter(StockDailySnapshot.date.in_(days), Stock.code.in_(codes))}
+    out: Dict[str, Optional[int]] = {}
+    for c in codes:
+        n: Optional[int] = 0
+        for d in days:
+            if (c, d) in det:
+                n += 1
+            elif (c, d) in snap:
+                n += snap[(c, d)]
+            elif d not in known:
+                n = None
+                break
+        out[c] = n
+    return out
+
+
 def first_limit_time(db: Session, code: str, d: date) -> Optional[dtime]:
     r = (db.query(LimitUpDailyDetail.first_limit_time)
          .filter(LimitUpDailyDetail.trade_date == d, LimitUpDailyDetail.stock_code == code).first())
@@ -526,13 +559,15 @@ def concept_suggestions(db: Session, leader_code: str, d: date, limit: int = 30)
 ACTIVE_LABEL = {"strong": "强势池", "limit_up": "涨停", "limit_down": "跌停"}
 
 
-def sector_peers(db: Session, leader_code: str, d: date) -> dict:
+def sector_peers(db: Session, leader_code: str, d: date, cal: Optional[Sequence[date]] = None) -> dict:
     """
     高标所在的每个板块（跟活跃股池里显示的板块标签同一份：Sector Config 里关注的行业 / 概念），
     各列出 d 这天的活跃股。一只票同时在高标的几个板块里，就在每个板块下都出现。
 
     「活跃」按 d 当天：强势池成员（那天的生命周期快照）、那天涨停（涨停明细，全的）、那天跌停
     （股票日快照）。**板块归属是当前口径**——板块关联表不存历史，页面上写明。
+
+    每只另带近 5 / 20 个交易日的涨停天数（limit_up_day_counts；cal 不给或 d 不是交易日就是 None）。
     """
     from ..models.leader_cycle import LeaderCycleSnapshot
     lead = db.query(Stock).filter(Stock.code == leader_code).first()
@@ -572,6 +607,10 @@ def sector_peers(db: Session, leader_code: str, d: date) -> dict:
         for c in cs:
             in_secs.setdefault(c, []).append(name_of[sid])
 
+    past = [x for x in (cal or []) if x <= d] if cal and d in set(cal) else []
+    lu5 = limit_up_day_counts(db, codes, past[-5:]) if len(past) >= 5 else {}
+    lu20 = limit_up_day_counts(db, codes, past[-20:]) if len(past) >= 20 else {}
+
     def key(c: str):
         f = facts.get(c) or {}
         return (not f.get("is_limit_up"), -(f.get("board_count") or 0), -(f.get("pct") or -99))
@@ -586,7 +625,8 @@ def sector_peers(db: Session, leader_code: str, d: date) -> dict:
     groups = [{"sector": {"code": s.code, "name": s.name, "type": s.sector_type,
                           "primary": s.id == lead.primary_sector_id},
                "stocks": [{"code": c, "active": reasons[c], "also_in": [n for n in in_secs[c] if n != s.name],
-                           "facts": facts.get(c)} for c in sorted(members.get(s.id, []), key=key)]}
+                           "facts": facts.get(c), "limit_up_5d": lu5.get(c), "limit_up_20d": lu20.get(c)}
+                          for c in sorted(members.get(s.id, []), key=key)]}
               for s in order]
     with_rel = {c for (c,) in db.query(Stock.code).join(StockSectorRelation, StockSectorRelation.stock_id == Stock.id)
                 .filter(Stock.code.in_(list(reasons))).distinct()} if reasons else set()
