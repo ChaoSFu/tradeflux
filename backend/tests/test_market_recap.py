@@ -301,6 +301,16 @@ class TestContext:
     def test_个股事实_没有就是missing(self, db, cal):
         f = ctx.stock_facts(db, ["600999"], D3)["600999"]
         assert f["status"] == "missing" and f["pct"] is None and f["is_limit_up"] is None
+        assert f["limit_up_days_60d"] is None
+
+    def test_近60日涨停天数取当天快照_不拿股票表当前值顶(self, db, cal):
+        st = Stock(code="600229", name="城市传媒", market="SH", limit_up_days_60d=9)
+        db.add(st)
+        db.flush()
+        db.add(StockDailySnapshot(stock_id=st.id, date=D2, pct_change=1.0, limit_up_days_60d=4))
+        db.commit()
+        assert ctx.stock_facts(db, ["600229"], D2)["600229"]["limit_up_days_60d"] == 4
+        assert ctx.stock_facts(db, ["600229"], D3)["600229"]["limit_up_days_60d"] is None, "D3 没快照：不知道，不是 9"
 
     def test_名称联想是客观字符串匹配(self, db):
         db.add_all([Stock(code="600278", name="东方创业", market="SH"),
