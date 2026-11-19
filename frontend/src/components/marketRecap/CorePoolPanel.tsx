@@ -151,6 +151,7 @@ export function CorePoolPanel({ date, onResearch, onPoolChanged }: {
               <Th k="pct_change_20d" label="20D" />
               <Th k="pct_change_60d" label="60D" />
               <Th k="limit_up_days_10d" label="10日涨停" />
+              <Th k="limit_up_days_20d" label="20日涨停" />
               <Th k="limit_up_days_60d" label="60日涨停" />
               <Th k="current_board" label="连板" />
               <Th k="historical_max_board" label="60日高板" />
@@ -183,6 +184,7 @@ export function CorePoolPanel({ date, onResearch, onPoolChanged }: {
                   </td>
                 ))}
                 <td className={cn('px-2 py-1 text-right', NUM)}>{i.limit_up_days_10d ?? '—'}</td>
+                <td className={cn('px-2 py-1 text-right', NUM)}>{i.limit_up_days_20d ?? '—'}</td>
                 <td className={cn('px-2 py-1 text-right', NUM)}>{i.limit_up_days_60d ?? '—'}</td>
                 <td className={cn('px-2 py-1 text-right', NUM, i.current_board ? 'text-up' : 'text-text-muted')}>{i.current_board == null ? '—' : i.current_board || '—'}</td>
                 <td className={cn('px-2 py-1 text-right', NUM)}>{i.historical_max_board ?? '—'}</td>
@@ -202,7 +204,7 @@ export function CorePoolPanel({ date, onResearch, onPoolChanged }: {
                 </td>
               </tr>
             ))}
-            {!shown.length && <tr><td colSpan={16} className="px-2 py-6 text-center text-text-muted">这个视角下没有股票</td></tr>}
+            {!shown.length && <tr><td colSpan={17} className="px-2 py-6 text-center text-text-muted">这个视角下没有股票</td></tr>}
           </tbody>
         </table>
       </div>
