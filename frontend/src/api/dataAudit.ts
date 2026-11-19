@@ -3,8 +3,9 @@ import client from './client'
 // ── 数据体检（后端 /admin/data-audit，报告由 scripts/data_audit.py 生成）──────────
 // ok 正常 / gap 可补的缺口 / expired 过了当天补不回来（只记录）/ warn 提醒 / error 检测本身出错
 export type AuditStatus = 'ok' | 'gap' | 'expired' | 'warn' | 'error'
-// server 服务器上一键补 / local_export 本机导出再导入 / rerun_update 重跑今天的日更 / none 没有补法
-export type FixKind = 'server' | 'local_export' | 'rerun_update' | 'none'
+// server 服务器上一键补 / local_export 本机导出再导入 / rerun_update 重跑今天的日更 /
+// board_meta 跑一次板块行情同步 / none 没有补法
+export type FixKind = 'server' | 'local_export' | 'rerun_update' | 'board_meta' | 'none'
 
 export interface AuditFix {
   kind: FixKind
