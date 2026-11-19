@@ -85,6 +85,7 @@ def add_watch(db: Session, owner: str, code: str, d: date, name: Optional[str] =
         if name and not row.stock_name:
             row.stock_name = _clean(name, 50)
     db.commit()
+    link_pool_sectors(db, owner, d)
     return row
 
 
@@ -119,6 +120,7 @@ def restore_watch(db: Session, owner: str, code: str, d: date) -> bool:
         return False
     row.removed_date = None
     db.commit()
+    link_pool_sectors(db, owner, d)
     return True
 
 
@@ -340,6 +342,55 @@ def upsert_relation(db: Session, owner: str, payload: dict, d: date) -> LeaderRe
     r.note = _clean(payload.get("note"))
     db.commit()
     return r
+
+
+POOL_SECTOR_SOURCE = "pool_sector"
+
+
+def link_pool_sectors(db: Session, owner: str, d: date) -> int:
+    """
+    重点观察池里同属一个关注板块的两只，自动互相记为关联：两个方向各一条，每个共同板块一条，
+    记成「待核」。板块口径跟「板块关联」同一份（Sector Config 关注的行业 / 概念，当前归属）。
+
+    **只补没记过的**：同一高标、同一板块、同一关联股以前记过（人工采纳的、删掉的、标了不成立的都算），
+    就不动——删掉 / 否掉的不会被自动加回来。移出观察池也不删：关联是跨日的长期知识。
+    返回新记的条数。
+    """
+    from ..models.sector import Sector, StockSectorRelation
+    from ..models.stock import Stock
+    pool = watch_pool(db, owner, d)
+    codes = [w.stock_code for w in pool]
+    if len(codes) < 2:
+        return 0
+    secs: Dict[str, Dict[int, tuple]] = {}            # 代码 → {板块 id: (板块名, 属性类型)}
+    for code, sid, name, stype in (
+            db.query(Stock.code, Sector.id, Sector.name, Sector.sector_type)
+            .join(StockSectorRelation, StockSectorRelation.stock_id == Stock.id)
+            .join(Sector, Sector.id == StockSectorRelation.sector_id)
+            .filter(Stock.code.in_(codes), Sector.is_watched.is_(True))):
+        secs.setdefault(code, {})[sid] = (name, "industry" if stype == "industry" else "concept")
+    have = {(r.leader_code, r.attribute_type, r.attribute_value, r.related_code) for r in
+            db.query(LeaderRelation).filter(LeaderRelation.owner == owner, LeaderRelation.leader_code.in_(codes))}
+    names = {w.stock_code: w.stock_name or _stock_name(db, w.stock_code) for w in pool}
+    created = 0
+    for a in codes:
+        for b in codes:
+            if a == b:
+                continue
+            for sid in sorted(secs.get(a, {}).keys() & secs.get(b, {}).keys()):
+                sec, t = secs[a][sid]
+                if (a, t, sec, b) in have:
+                    continue
+                have.add((a, t, sec, b))
+                db.add(LeaderRelation(
+                    owner=owner, leader_code=a, leader_name=names[a], related_code=b, related_name=names[b],
+                    attribute_type=t, attribute_value=sec, relation_basis=BASIS_BY_TYPE[t],
+                    evidence=f"重点观察池里两只同属关注板块「{sec}」（自动记）",
+                    source=POOL_SECTOR_SOURCE, confidence_status="unverified", first_recorded=d))
+                created += 1
+    if created:
+        db.commit()
+    return created
 
 
 def _stock_name(db: Session, code: str) -> Optional[str]:

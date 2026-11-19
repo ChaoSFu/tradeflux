@@ -14,7 +14,7 @@ import { ATTR_LABEL, BASIS_LABEL, BASIS_OF, Facts, INPUT, Manual, NUM, RESPONSE_
 const ATTR_ORDER: AttributeType[] = ['industry', 'event', 'concept', 'history', 'structure', 'name']
 const TIMED: ResponseStatus[] = ['leading', 'sync', 'lagging']
 const SOURCE_LABEL: Record<string, string> = {
-  manual: '人工', name_rule: '名称规则', sector_relation: '板块关联', snapshot_concept: '行情概念',
+  manual: '人工', name_rule: '名称规则', sector_relation: '板块关联', pool_sector: '观察池同板块（自动）', snapshot_concept: '行情概念',
 }
 const SYS_TONE: Record<SystemResponse, string> = {
   limit_up: 'text-up', up_response: 'text-up', independent_strong: 'text-accent', not_met: 'text-text-muted', insufficient: 'text-warn',
@@ -231,8 +231,9 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
           <div className="flex items-center gap-2 pt-1">
             <span className="text-[10px] px-1 rounded bg-purple-400/15 text-purple-300">人工</span>
             <span className="text-xs font-medium text-text-primary">② 其他关联（人工录入的长期知识：产业链、事件、名称、历史联动……）</span>
+            <span className="text-[11px] text-text-muted">重点观察池里同属一个关注板块的，自动互相记上（待核）；删掉或标不成立的不会再自动加回来</span>
           </div>
-          {!grouped.length ? <div className="text-xs text-text-muted">还没有录入其他关联。板块关联里点「记为关联」也会进这里。</div> : grouped.map(([t, rs]) => (
+          {!grouped.length ? <div className="text-xs text-text-muted">还没有录入其他关联。板块关联里点「记为关联」、重点观察池里同板块的，都会进这里。</div> : grouped.map(([t, rs]) => (
             <div key={t}>
               <div className="text-[11px] text-text-secondary mb-1">{ATTR_LABEL[t]} <span className="text-text-muted">（{rs.length}）</span></div>
               <div className="overflow-x-auto">

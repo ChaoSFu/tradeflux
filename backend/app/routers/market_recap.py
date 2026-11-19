@@ -280,6 +280,8 @@ def leader_activations(date_: date = Query(..., alias="date"), event_type: Optio
 @router.get("/{trade_date}")
 def get_recap(trade_date: date, db: Session = Depends(get_db), user: str = Depends(require_auth)):
     cal = _cal(db)
+    # 观察池同板块自动互相关联：加入观察池时就记了；这里补上功能上线前已经在池里的（只补没记过的，幂等）
+    store.link_pool_sectors(db, user, trade_date)
     pool = store.watch_pool(db, user, trade_date)
     facts = ctx_svc.stock_facts(db, [w.stock_code for w in pool], trade_date)
     rels = store.relations_for(db, user, [w.stock_code for w in pool])

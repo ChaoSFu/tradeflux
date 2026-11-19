@@ -96,7 +96,7 @@ class LeaderRelation(Base):
     related_name = Column(String(50), nullable=True)
     relation_basis = Column(String(1), nullable=False)
     evidence = Column(Text, nullable=True)                # 关联依据（文字）
-    source = Column(String(20), nullable=False)          # manual | name_rule | sector_relation | snapshot_concept | limit_up_industry
+    source = Column(String(20), nullable=False)          # manual | name_rule | sector_relation | pool_sector（观察池同板块，自动）| snapshot_concept | limit_up_industry
     # 证据有没有核过。**不是可信度分**
     confidence_status = Column(String(12), nullable=False, default="unverified")  # unverified | verified | rejected
     first_recorded = Column(Date, nullable=False)

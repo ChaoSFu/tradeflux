@@ -13,7 +13,7 @@ const TYPE_ZH: Record<string, string> = { industry: '行业', concept: '概念',
 /**
  * 板块关联（自动）：高标所在的每个板块里，当天的活跃股（强势池 / 涨停 / 跌停）。
  * 一只票在高标的几个板块里，就在每个板块下都出现，标「也在」。这是当天的事实，不进关联知识库；
- * 想长期记住某条，点「记为关联」。
+ * 想长期记住某条，点「记为关联」；重点观察池里同板块的两只会自动互相记上，不用点。
  */
 export function SectorPeersPanel({ code, date, adopted, onWatch, onPlan, onAdopt, readOnly }: {
   code: string

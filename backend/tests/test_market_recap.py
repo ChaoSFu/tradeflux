@@ -468,6 +468,94 @@ class TestSectorPeers:
         assert r["status"] == "missing" and r["groups"] == [] and "手动录入" in r["note"]
 
 
+class TestPoolSectorLink:
+    """重点观察池里同属一个关注板块的两只，自动互相记为关联，不用一只只点「记为关联」。"""
+
+    A, B, C = "002148", "002685", "000678"
+
+    def _seed(self, db):
+        from app.models.sector import Sector, StockSectorRelation
+        chip = Sector(code="BK1", name="芯片概念", sector_type="concept", is_watched=True)
+        comm = Sector(code="BK2", name="通信设备", sector_type="industry", is_watched=True)
+        margin = Sector(code="BK3", name="融资融券", sector_type="concept", is_watched=False)
+        db.add_all([chip, comm, margin])
+        st = {c: Stock(code=c, name=n, market="SZ")
+              for c, n in ((self.A, "北纬科技"), (self.B, "华东重机"), (self.C, "襄阳轴承"), ("000001", "池外"))}
+        db.add_all(st.values())
+        db.flush()
+        for c, s in ((self.A, chip), (self.A, comm), (self.A, margin), (self.B, chip), (self.B, margin),
+                     (self.C, comm), ("000001", chip)):
+            db.add(StockSectorRelation(stock_id=st[c].id, sector_id=s.id))
+        db.commit()
+
+    @staticmethod
+    def _links(db, code):
+        return sorted((r.attribute_type, r.attribute_value, r.related_code, r.relation_basis, r.source)
+                      for r in store.relations_for(db, U, [code]))
+
+    def test_加入观察池就互相关联(self, db):
+        self._seed(db)
+        store.add_watch(db, U, self.A, D2)
+        assert self._links(db, self.A) == [], "池里只有一只，没得关联"
+        store.add_watch(db, U, self.B, D3)
+        store.add_watch(db, U, self.C, D3)
+        assert self._links(db, self.A) == [("concept", "芯片概念", self.B, "B", "pool_sector"),
+                                           ("industry", "通信设备", self.C, "A", "pool_sector")], \
+            "两个方向、每个共同关注板块一条；没关注的「融资融券」不算；池外的同板块股不算"
+        assert self._links(db, self.B) == [("concept", "芯片概念", self.A, "B", "pool_sector")]
+        assert self._links(db, self.C) == [("industry", "通信设备", self.A, "A", "pool_sector")]
+        r = store.relations_for(db, U, [self.B])[0]
+        assert r.confidence_status == "unverified" and r.first_recorded == D3
+        assert r.leader_name == "华东重机" and r.related_name == "北纬科技" and "芯片概念" in r.evidence
+
+    def test_重复跑不重复记_删掉否掉的不加回来(self, db):
+        self._seed(db)
+        store.add_watch(db, U, self.A, D3)
+        store.add_watch(db, U, self.B, D3)
+        ab = store.relations_for(db, U, [self.A])[0]
+        ba = store.relations_for(db, U, [self.B])[0]
+        store.remove_relation(db, U, ab.id)
+        store.upsert_relation(db, U, {**store.relation_dict(ba), "confidence_status": "rejected"}, D3)
+        assert store.link_pool_sectors(db, U, D3) == 0
+        store.add_watch(db, U, self.C, D3)
+        assert self._links(db, self.A) == [("industry", "通信设备", self.C, "A", "pool_sector")]
+        assert self._links(db, self.B) == []
+
+    def test_人工记过的不重复记(self, db):
+        self._seed(db)
+        store.upsert_relation(db, U, {"leader_code": self.A, "related_code": self.B, "attribute_type": "concept",
+                                      "attribute_value": "芯片概念", "source": "sector_relation"}, D2)
+        store.add_watch(db, U, self.A, D3)
+        store.add_watch(db, U, self.B, D3)
+        assert self._links(db, self.A) == [("concept", "芯片概念", self.B, "B", "sector_relation")]
+        assert self._links(db, self.B) == [("concept", "芯片概念", self.A, "B", "pool_sector")]
+
+    def test_移出观察池的不再新关联_已记的保留(self, db):
+        self._seed(db)
+        store.add_watch(db, U, self.A, D2)
+        store.add_watch(db, U, self.B, D2)
+        store.remove_watch(db, U, self.A, D3)
+        store.add_watch(db, U, self.C, D3)
+        assert self._links(db, self.C) == [], "A 那天已经不在池里"
+        assert len(self._links(db, self.B)) == 1, "移出观察池不删已经记下的关联"
+
+    def test_打开复盘页补上功能上线前已在池里的(self, db, cal):
+        from app.auth import require_auth
+        from app.database import get_db
+        from app.models.market_recap import RecapWatchStock
+        from app.routers import market_recap
+        self._seed(db)
+        db.add_all([RecapWatchStock(owner=U, stock_code=c, added_date=D1) for c in (self.A, self.B)])
+        db.commit()
+        app = FastAPI()
+        app.include_router(market_recap.router)
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[require_auth] = lambda: U
+        res = TestClient(app).get(f"/market-recap/{D3.isoformat()}")
+        assert res.status_code == 200, res.text
+        assert {w["code"]: w["relations"] for w in res.json()["watch_pool"]} == {self.A: 1, self.B: 1}
+
+
 class TestSealRate:
     @pytest.mark.parametrize("lu,broken,expected", [
         (54, 0, (None, None)),      # 11-09：炸板池超时，涨停照常——不是 100%
