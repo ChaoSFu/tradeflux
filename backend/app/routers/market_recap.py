@@ -150,7 +150,7 @@ def leader_sectors(code: str, date_: date = Query(..., alias="date"), db: Sessio
     """板块关联（自动）：高标所在的每个板块里，当天的活跃股；每只带系统响应分类。"""
     from ..models.market_recap import LeaderActivationEvent
     from ..services.popular_core_service import RESPONSE_LABEL, classify_response
-    res = ctx_svc.sector_peers(db, code, date_)
+    res = ctx_svc.sector_peers(db, code, date_, cal=_cal(db))
     events = [e for (e,) in db.query(LeaderActivationEvent.event_type)
               .filter(LeaderActivationEvent.trade_date == date_, LeaderActivationEvent.leader_code == code)]
     for g in res["groups"]:

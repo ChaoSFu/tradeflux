@@ -471,6 +471,24 @@ class TestSectorPeers:
         assert [g["sector"]["name"] for g in r["groups"]] == ["概念丙", "概念乙", "主板块甲", "概念戊", "概念丁"], \
             "涨停 2 > 涨停 1（活跃 3 > 活跃 1）；涨停、活跃都一样时主板块在前；没有活跃股的垫底"
 
+    def test_近N日涨停天数_跟当天涨停同一判法_说不准就是None(self, db):
+        days = [date(2026, 11, d) for d in (2, 3, 4, 5, 6)]
+        st = {c: Stock(code=c, name=c, market="SZ") for c in ("000001", "000002", "000003")}
+        db.add_all(st.values())
+        db.flush()
+        for d in days[:4]:      # 11-06 没有涨停明细
+            db.add(LimitUpDailyDetail(stock_id=st["000003"].id, stock_code="000003", stock_name="x",
+                                      trade_date=d, pct_change=10.0))
+        db.add(LimitUpDailyDetail(stock_id=st["000001"].id, stock_code="000001", stock_name="x",
+                                  trade_date=days[1], pct_change=10.0))
+        # 11-06 没明细：000001 有快照（涨停），000002 什么都没有
+        db.add(StockDailySnapshot(stock_id=st["000001"].id, date=days[4], pct_change=10.0, is_limit_up=True))
+        db.add(StockDailySnapshot(stock_id=st["000003"].id, date=days[4], pct_change=-2.0, is_limit_up=False))
+        db.commit()
+        got = ctx.limit_up_day_counts(db, ["000001", "000002", "000003"], days)
+        assert got == {"000001": 2, "000002": None, "000003": 4}
+        assert ctx.limit_up_day_counts(db, ["000002"], days[:4]) == {"000002": 0}, "明细全市场：不在里面就是没涨停"
+
     def test_没有板块归属要说清楚(self, db):
         db.add(Stock(code="600001", name="孤零零", market="SH"))
         db.commit()

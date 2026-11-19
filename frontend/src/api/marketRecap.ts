@@ -461,7 +461,9 @@ export interface SectorPeers {
   leader?: StockFacts | null
   groups: {
     sector: { code: string; name: string; type: 'industry' | 'concept' | 'region' | string; primary: boolean }
-    stocks: { code: string; active: ('strong' | 'limit_up' | 'limit_down')[]; also_in: string[]; facts: StockFacts | null; system_response: SystemResponse }[]
+    // limit_up_5d / 20d：近 5 / 20 个交易日涨停天数；哪天说不准就是 null
+    stocks: { code: string; active: ('strong' | 'limit_up' | 'limit_down')[]; also_in: string[]; facts: StockFacts | null;
+              limit_up_5d: number | null; limit_up_20d: number | null; system_response: SystemResponse }[]
   }[]
   active_total?: number
   peers_total?: number

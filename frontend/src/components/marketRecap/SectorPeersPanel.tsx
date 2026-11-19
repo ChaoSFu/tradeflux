@@ -12,9 +12,17 @@ const SYS_TONE: Record<SystemResponse, string> = {
 const TYPE_ZH: Record<string, string> = { industry: '行业', concept: '概念', region: '地区' }
 
 // 可以点表头排序的列。涨停·首封：板数多的在前，同板数首封早的在前；没涨停的不参与（排最后）
-type SortKey = 'pct' | 'pct_5d' | 'pct_20d' | 'seal' | 'amount'
-const SORT_COL: Record<string, SortKey> = { 今日: 'pct', '5日': 'pct_5d', '20日': 'pct_20d', '涨停·首封': 'seal', 成交额: 'amount' }
-function sortVal(f: StockFacts | null, k: SortKey): number | null {
+type SortKey = 'pct' | 'pct_5d' | 'pct_20d' | 'lu5' | 'lu20' | 'seal' | 'amount'
+const SORT_COL: Record<string, SortKey> = {
+  今日: 'pct', '5日': 'pct_5d', '20日': 'pct_20d', '5日涨停': 'lu5', '20日涨停': 'lu20', '涨停·首封': 'seal', 成交额: 'amount',
+}
+const HEADERS = ['股票', '活跃', '今日', '5日', '20日', '5日涨停', '20日涨停', '涨停·首封', '成交额', '系统响应', '']
+const LU_TITLE = '近 N 个交易日涨停几天：涨停明细为准，没有明细的那天看股票日快照；有一天说不准就是「—」'
+type PeerRow = { facts: StockFacts | null; limit_up_5d: number | null; limit_up_20d: number | null }
+function sortVal(r: PeerRow, k: SortKey): number | null {
+  if (k === 'lu5') return r.limit_up_5d
+  if (k === 'lu20') return r.limit_up_20d
+  const f = r.facts
   if (!f) return null
   if (k === 'amount') return f.amount_yi
   if (k !== 'seal') return f[k]
@@ -44,10 +52,10 @@ export function SectorPeersPanel({ code, date, adopted, onWatch, onPlan, onAdopt
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean } | null>(null)
   const clickSort = (key: SortKey) =>
     setSort((p) => (p?.key !== key ? { key, desc: true } : p.desc ? { key, desc: false } : null))
-  const ordered = <T extends { facts: StockFacts | null }>(xs: T[]): T[] => {
+  const ordered = <T extends PeerRow>(xs: T[]): T[] => {
     if (!sort) return xs
     return [...xs].sort((a, b) => {
-      const x = sortVal(a.facts, sort.key), y = sortVal(b.facts, sort.key)
+      const x = sortVal(a, sort.key), y = sortVal(b, sort.key)
       if (x == null || y == null) return x == null && y == null ? 0 : x == null ? 1 : -1
       return sort.desc ? y - x : x - y
     })
@@ -84,11 +92,12 @@ export function SectorPeersPanel({ code, date, adopted, onWatch, onPlan, onAdopt
                 <table className="w-full text-xs [&_td]:whitespace-nowrap">
                   <thead>
                     <tr className="text-text-muted border-b border-bg-border">
-                      {['股票', '活跃', '今日', '5日', '20日', '涨停·首封', '成交额', '系统响应', ''].map((h, i) => {
+                      {HEADERS.map((h, i) => {
                         const k = SORT_COL[h]
                         const on = !!k && sort?.key === k
                         return (
-                          <th key={h + i} className={cn('px-1.5 py-0.5 font-medium', i >= 2 && i <= 6 ? 'text-right' : 'text-left')}>
+                          <th key={h + i} className={cn('px-1.5 py-0.5 font-medium', i >= 2 && i <= 8 ? 'text-right' : 'text-left')}
+                              title={k === 'lu5' || k === 'lu20' ? LU_TITLE : undefined}>
                             {!k ? h : (
                               <button onClick={() => clickSort(k)} title="点击排序：高→低 / 低→高 / 恢复默认（所有板块一起排）"
                                       className={cn('hover:text-text-primary', on && 'text-accent')}>
@@ -118,6 +127,8 @@ export function SectorPeersPanel({ code, date, adopted, onWatch, onPlan, onAdopt
                           <td className={cn('px-1.5 py-0.5 text-right', NUM, pctCls(f?.pct))}>{fmtPct(f?.pct)}</td>
                           <td className={cn('px-1.5 py-0.5 text-right', NUM, pctCls(f?.pct_5d))}>{fmtPct(f?.pct_5d)}</td>
                           <td className={cn('px-1.5 py-0.5 text-right', NUM, pctCls(f?.pct_20d))}>{fmtPct(f?.pct_20d)}</td>
+                          <td className={cn('px-1.5 py-0.5 text-right', NUM, s.limit_up_5d ? 'text-up' : 'text-text-muted')}>{s.limit_up_5d ?? '—'}</td>
+                          <td className={cn('px-1.5 py-0.5 text-right', NUM, s.limit_up_20d ? 'text-up' : 'text-text-muted')}>{s.limit_up_20d ?? '—'}</td>
                           <td className={cn('px-1.5 py-0.5 text-right', NUM)}>
                             {f?.is_limit_up ? <span className="text-up">{f.board_count ? `${f.board_count}板` : '涨停'} {f.first_limit_time?.slice(0, 5) ?? ''}</span> : <span className="text-text-muted">—</span>}
                           </td>
