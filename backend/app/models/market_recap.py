@@ -34,7 +34,7 @@ class MarketRecap(Base):
     market_evidence = Column(JSON, nullable=True)      # 勾选的数据依据：[{key, label, value}]
     evidence_note = Column(Text, nullable=True)
     invalidation = Column(JSON, nullable=True)         # 反证条件：[str]
-    sector_picks = Column(JSON, nullable=True)         # [{code, name, tier: core|secondary|drop, state_label}]
+    sector_picks = Column(JSON, nullable=True)         # [{code, name, tier: core|secondary|drop|None, state_label, manual}]；None 只给手动加的
     scenarios = Column(JSON, nullable=True)            # {"A": {...}, "B": {...}, "C": {...}, "N": {...}} 各自分开存
     flat_plan = Column(Boolean, nullable=False, default=False)   # 空仓预案也是有效预案
 

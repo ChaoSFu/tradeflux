@@ -123,7 +123,8 @@ export interface RecapContextOk {
     max_board?: number | null
     board_distribution?: Record<string, number> | null
   }
-  sectors: { meta: ModuleMeta; state_date?: string | null; items?: SectorFact[] }
+  // others：板块趋势没列进主线的其余关注板块，手动「加入主线板块」时从这里取事实
+  sectors: { meta: ModuleMeta; state_date?: string | null; items?: SectorFact[]; others?: SectorFact[] }
   candidates: { meta: ModuleMeta; items?: Candidate[] }
   data_status: Record<string, ModuleMeta>
 }
@@ -138,7 +139,8 @@ export type SectorTier = 'core' | 'secondary' | 'drop'
 
 export type ScenarioSet = Record<Scenario, Record<string, string | null>>
 export interface Evidence { key: string; label: string; value: string }
-export interface SectorPick { code: string; name: string; tier: SectorTier; state_label: string | null }
+// manual = 手动加进主线板块列表的；只有它可以先不归类（tier 为空）留在列表里
+export interface SectorPick { code: string; name: string; tier: SectorTier | null; state_label: string | null; manual?: boolean }
 
 export interface Plan {
   id?: number

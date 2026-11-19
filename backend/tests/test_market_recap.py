@@ -468,6 +468,37 @@ class TestSectorPeers:
         assert r["status"] == "missing" and r["groups"] == [] and "手动录入" in r["note"]
 
 
+class TestSectorPicks:
+    """主线板块归类：手动加进列表的板块可以先不归类；板块趋势没列进主线的关注板块也给事实。"""
+
+    def test_手动加的可以先不归类_其余不归类就报错(self, db):
+        store.save_recap(db, U, D3, {"sector_picks": [
+            {"code": "BK1", "name": "芯片概念", "tier": None, "manual": True},
+            {"code": "BK2", "name": "影视概念", "tier": "drop", "state_label": "转弱"},
+            {"code": "BK1", "name": "芯片概念", "tier": "core", "manual": True},     # 重复的只留第一条
+        ]})
+        picks = store.get_recap(db, U, D3)["recap"]["sector_picks"]
+        assert picks == [{"code": "BK1", "name": "芯片概念", "tier": None, "state_label": None, "manual": True},
+                         {"code": "BK2", "name": "影视概念", "tier": "drop", "state_label": "转弱", "manual": False}]
+        s = store.summary(db, U, D3)["core"]
+        assert s["core_sectors"] == [] and s["secondary_sectors"] == [], "没归类的不算核心 / 次级"
+        with pytest.raises(RecapError, match="板块归类"):
+            store.save_recap(db, U, D3, {"sector_picks": [{"code": "BK3", "name": "x", "tier": None}]})
+
+    def test_没列进主线的关注板块放在_others(self, db, monkeypatch):
+        from app.services import sector_mainline_service as sms
+
+        def sec(code, state):
+            return {"code": code, "name": f"板块{code}", "state": state, "state_label": state, "state_reason": "r",
+                    "trail": [], "facts": {k: None for k in ("pct", "r5", "rs20", "lu", "height", "lu_trend")}}
+        monkeypatch.setattr(sms, "get_sector_mainline_state", lambda db, as_of=None: {
+            "state_date": D3.isoformat(), "counts": {}, "notes": [],
+            "sectors": [sec("BK1", "MAIN"), sec("BK2", "NONE"), sec("BK3", "UNKNOWN")]})
+        m = ctx.sector_module(db, D3)
+        assert [s["code"] for s in m["items"]] == ["BK1"]
+        assert [s["code"] for s in m["others"]] == ["BK2", "BK3"]
+
+
 class TestPoolSectorLink:
     """重点观察池里同属一个关注板块的两只，自动互相记为关联，不用一只只点「记为关联」。"""
 

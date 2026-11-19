@@ -221,12 +221,19 @@ def save_recap(db: Session, owner: str, d: date, payload: dict) -> MarketRecap:
     mt = payload.get("mistake_type")
     if mt is not None and mt not in MISTAKE_TYPES:
         raise RecapError(f"偏差类型只能是 {MISTAKE_TYPES}")
-    picks = []
+    # 板块归类。manual = 手动加进主线板块列表的（板块趋势没把它列出来）：可以先不归类（tier 为空），
+    # 留在列表里；不是手动加的，不归类就不存
+    picks, seen = [], set()
     for p in payload.get("sector_picks") or []:
-        if p.get("tier") not in SECTOR_TIERS:
+        manual, tier = bool(p.get("manual")), p.get("tier")
+        if tier not in SECTOR_TIERS and not (tier is None and manual):
             raise RecapError(f"板块归类只能是 {SECTOR_TIERS}")
-        picks.append({"code": _clean(p.get("code"), 20), "name": _clean(p.get("name"), 100),
-                      "tier": p["tier"], "state_label": _clean(p.get("state_label"), 20)})
+        code = _clean(p.get("code"), 20)
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        picks.append({"code": code, "name": _clean(p.get("name"), 100), "tier": tier,
+                      "state_label": _clean(p.get("state_label"), 20), "manual": manual})
     plans = _plan_rows(payload.get("plans"), owner, d)
     flat = bool(payload.get("flat_plan"))
     if flat and plans:
