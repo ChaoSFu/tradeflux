@@ -151,7 +151,7 @@ export default function MarketRecap() {
   if (mode === 'live') {
     return (
       <div className="space-y-3 animate-fade-in">
-        <div className="card p-3 sticky top-0 z-20 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="card p-3 flex flex-wrap items-center gap-x-4 gap-y-2">
           <div className="flex items-center gap-2">
             <BookOpenCheck className="w-4 h-4 text-accent" />
             <h1 className="text-base font-semibold text-text-primary">每日复盘</h1>
@@ -175,7 +175,7 @@ export default function MarketRecap() {
 
   return (
     <div className="space-y-3 animate-fade-in">
-      <div className="card p-3 space-y-2 sticky top-0 z-20">
+      <div className="card p-3 space-y-2">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <div className="flex items-center gap-2">
             <BookOpenCheck className="w-4 h-4 text-accent" />
