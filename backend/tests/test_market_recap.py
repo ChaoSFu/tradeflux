@@ -420,7 +420,7 @@ class TestSectorPeers:
         self._seed(db)
         r = ctx.sector_peers(db, "002242", D3)
         groups = {g["sector"]["name"]: g for g in r["groups"]}
-        assert list(groups) == ["家用电器", "智能家居"], "主板块在前；没关注的板块不出现"
+        assert list(groups) == ["智能家居", "家用电器"], "涨停家数多的板块在前（哪怕不是主板块）；没关注的板块不出现"
         assert groups["家用电器"]["sector"]["primary"] is True
         assert [s["code"] for s in groups["家用电器"]["stocks"]] == ["000001"], "000003 只在前一天活跃"
         assert [s["code"] for s in groups["智能家居"]["stocks"]] == ["000002", "000001"], "涨停的排前面"
@@ -428,6 +428,38 @@ class TestSectorPeers:
         assert one["also_in"] == ["家用电器"] and one["active"] == ["strong"]
         assert all(s["code"] != "002242" for g in r["groups"] for s in g["stocks"]), "不列高标自己"
         assert r["peers_total"] == 2
+
+    def test_板块按涨停家数再按活跃家数排(self, db):
+        from app.models.leader_cycle import LeaderCycleSnapshot
+        from app.models.sector import Sector, StockSectorRelation
+        # 板块名 → (类型, 当天涨停的成员, 只在强势池的成员)
+        spec = {"主板块甲": ("industry", ["L1"], []),
+                "概念乙": ("concept", ["L2"], ["S1", "S2"]),
+                "概念丙": ("concept", ["L3", "L4"], []),
+                "概念丁": ("concept", [], []),
+                "概念戊": ("concept", ["L5"], [])}
+        secs = {n: Sector(code=f"BK{i}", name=n, sector_type=t, is_watched=True)
+                for i, (n, (t, _, _)) in enumerate(spec.items())}
+        db.add_all(secs.values())
+        lead = Stock(code="600000", name="高标", market="SH")
+        codes = sorted({c for _, lu, sp in spec.values() for c in lu + sp})
+        st = {c: Stock(code=c, name=f"股{c}", market="SZ") for c in codes}
+        db.add_all([lead, *st.values()])
+        db.flush()
+        lead.primary_sector_id = secs["主板块甲"].id
+        for n, (_, lu, sp) in spec.items():
+            db.add(StockSectorRelation(stock_id=lead.id, sector_id=secs[n].id))
+            for c in lu + sp:
+                db.add(StockSectorRelation(stock_id=st[c].id, sector_id=secs[n].id))
+            for c in lu:
+                db.add(LimitUpDailyDetail(stock_id=st[c].id, stock_code=c, stock_name=c,
+                                          trade_date=D3, pct_change=10.0))
+            for c in sp:
+                db.add(LeaderCycleSnapshot(date=D3, stock_id=st[c].id, stock_code=c))
+        db.commit()
+        r = ctx.sector_peers(db, "600000", D3)
+        assert [g["sector"]["name"] for g in r["groups"]] == ["概念丙", "概念乙", "主板块甲", "概念戊", "概念丁"], \
+            "涨停 2 > 涨停 1（活跃 3 > 活跃 1）；涨停、活跃都一样时主板块在前；没有活跃股的垫底"
 
     def test_没有板块归属要说清楚(self, db):
         db.add(Stock(code="600001", name="孤零零", market="SH"))

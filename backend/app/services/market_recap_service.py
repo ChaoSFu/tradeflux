@@ -570,7 +570,13 @@ def sector_peers(db: Session, leader_code: str, d: date) -> dict:
         f = facts.get(c) or {}
         return (not f.get("is_limit_up"), -(f.get("board_count") or 0), -(f.get("pct") or -99))
 
-    order = sorted(secs, key=lambda s: (s.id != lead.primary_sector_id, s.sector_type != "industry", s.name))
+    def sec_key(s):
+        """板块排序：当天涨停家数多的在前，一样多看活跃家数；再一样才按主板块 / 行业 / 名字。"""
+        cs = members.get(s.id, [])
+        n_lu = sum(1 for c in cs if "limit_up" in reasons[c])
+        return (-n_lu, -len(cs), s.id != lead.primary_sector_id, s.sector_type != "industry", s.name)
+
+    order = sorted(secs, key=sec_key)
     groups = [{"sector": {"code": s.code, "name": s.name, "type": s.sector_type,
                           "primary": s.id == lead.primary_sector_id},
                "stocks": [{"code": c, "active": reasons[c], "also_in": [n for n in in_secs[c] if n != s.name],
