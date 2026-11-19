@@ -430,6 +430,8 @@ def stock_facts(db: Session, codes: Iterable[str], d: date) -> Dict[str, dict]:
             "is_limit_up": limit_up,
             "board_count": (t.board_count if t and t.board_count else (x.board_count if x else None)),
             "first_limit_time": t.first_limit_time.strftime("%H:%M:%S") if t and t.first_limit_time else None,
+            # 近 60 日涨停天数：只有股票日快照有（已跟踪的票），取 d 当天那份；没有就是 None，不拿股票表的当前值顶
+            "limit_up_days_60d": x.limit_up_days_60d if x else None,
             "has_detail": c in in_db,
         }
     return out

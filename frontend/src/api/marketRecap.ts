@@ -191,6 +191,7 @@ export interface StockFacts {
   is_limit_up: boolean | null
   board_count: number | null
   first_limit_time: string | null
+  limit_up_days_60d?: number | null   // 近 60 日涨停天数（只有已跟踪的票有）
   has_detail: boolean
 }
 

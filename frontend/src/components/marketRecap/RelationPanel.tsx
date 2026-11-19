@@ -115,8 +115,11 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
 }) {
   const qc = useQueryClient()
   const leaders = useMemo(() => {
-    const l = [...pool].sort((a, b) => Number(b.deep) - Number(a.deep)).map((w) => ({ code: w.code, name: w.name, deep: w.deep, relations: w.relations, temp: false }))
-    if (extraLeader && !l.find((x) => x.code === extraLeader.code)) l.unshift({ ...extraLeader, deep: false, relations: 0, temp: true })
+    // 关联条数多的在前；一样多看近 60 日涨停天数（没数据的排后面）；再一样保持观察池原来的顺序
+    const lu60 = (w: WatchItem) => w.facts?.limit_up_days_60d ?? -1
+    const l = [...pool].sort((a, b) => b.relations - a.relations || lu60(b) - lu60(a))
+      .map((w) => ({ code: w.code, name: w.name, deep: w.deep, relations: w.relations, lu60: w.facts?.limit_up_days_60d ?? null, temp: false }))
+    if (extraLeader && !l.find((x) => x.code === extraLeader.code)) l.unshift({ ...extraLeader, deep: false, relations: 0, lu60: null, temp: true })
     return l
   }, [pool, extraLeader])
   const code = selected && leaders.find((w) => w.code === selected) ? selected : leaders[0]?.code ?? null
@@ -190,6 +193,7 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
         <span className="text-[11px] text-text-muted">选择高标</span>
         {leaders.map((w) => (
           <button key={w.code} onClick={() => onSelect(w.code)}
+                  title={`关联 ${w.relations} 条 · 近60日涨停 ${w.lu60 ?? '—'} 次`}
                   className={cn('px-2 py-0.5 rounded border text-xs', w.code === code ? 'border-accent bg-accent/10 text-accent' : 'border-bg-border text-text-secondary')}>
             {w.deep && '★ '}{w.name ?? w.code}{w.temp && <span className="text-[10px] text-text-muted ml-0.5">（未观察）</span>}
             <span className="ml-1 text-[10px] text-text-muted">{w.relations}</span>
