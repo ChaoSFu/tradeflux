@@ -74,6 +74,12 @@ def _fix_server(label: str, note: str = "") -> dict:
 FIX_NONE = {"kind": "none", "label": "", "note": ""}
 FIX_RERUN = {"kind": "rerun_update", "label": "重跑今天的日更",
              "note": "只能当天补：在顶栏「数据更新」里重跑一次今天的日更"}
+# 今天那根板块点位由板块同步（东财 clist）写：「板块行情同步」「板块全量同步」都会跑这一步，
+# **手动跑的「每日数据更新」不带板块同步**（skip_boards），重跑它补不上
+FIX_BOARD_META = {"kind": "board_meta", "label": "运行板块行情同步",
+                  "note": "今天那根由板块同步写（东财 clist），点下面的按钮跑一次「板块行情同步」（约 1 分钟），"
+                          "跑完点「立即检测」复查。push2his 正在冷却，一键回填暂时用不了；clist 是另一个接口，"
+                          "不受这次冷却影响。clist 也被掐的话，等冷却结束这里会变回一键回填"}
 FIX_GONE = {"kind": "none", "label": "过了当天，补不回来",
             "note": "这类数据只能在当天拍。列在这里，是让你知道那几天相关页面的数据是空的"}
 FIX_EXPORT = {"kind": "local_export", "label": "本机导出 → 传到服务器 → 页面导入",
@@ -481,10 +487,11 @@ def _check_sector_index(ctx: AuditContext, chk: Check) -> dict:
                               f"{len(items) - short} 个窗口里有洞{note}",
                     fix=_sector_index_fix(db), **data)
     if today_codes:
-        # 收盘后可以直接回填今天那根。冷却中回填会被挡回来，这时才让人重跑日更
+        # 收盘后可以直接从 push2his 回填今天那根。冷却中回填会被挡回来，这时让人跑板块行情同步
+        # （clist，另一个接口）——不是重跑日更：手动日更不带板块同步，跑了也写不上
         fix = _sector_index_fix(db)
-        return _res(chk, GAP, f"今天有 {len(today_codes)} 个板块的点位还没写（日更后的板块同步写）{note}",
-                    fix=FIX_RERUN if fix is FIX_EXPORT else fix, **data)
+        return _res(chk, GAP, f"今天有 {len(today_codes)} 个板块的点位还没写（板块同步写）{note}",
+                    fix=FIX_BOARD_META if fix is FIX_EXPORT else fix, **data)
     return _res(chk, OK, f"{len(secs)} 个关注板块历史齐全{note}", **data)
 
 
@@ -531,7 +538,8 @@ CHECKS: List[Check] = [
     Check("leader_cycle", "龙头周期快照", "leader_cycle_snapshots",
           "日更里写，日更那天失败就缺（2026-09-04 起才有）", _check_leader_cycle),
     Check("sector_index", "板块指数日线", "sector_index_daily",
-          "每天那一根由板块同步写（东财 clist），接口被掐那天就有洞；收盘后日更会走 push2his 自动回填",
+          "每天那一根由板块同步写（东财 clist），接口被掐那天就有洞；收盘后的定时日更会走 push2his 自动回填"
+          "（手动跑的每日数据更新不带板块同步，也不回填）",
           _check_sector_index),
     Check("daily_review", "日复盘", "daily_reviews",
           "日更最后一步写，日更失败那天就没有；它依赖当天的池子状态，只能当天补",

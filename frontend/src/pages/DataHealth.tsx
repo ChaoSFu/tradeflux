@@ -8,7 +8,7 @@ import {
   fetchAuditJob, fetchAuditReport, fetchExportScript, fetchInbox, runAudit, runFix,
 } from '@/api/dataAudit'
 import type { AuditCheck, AuditItem, AuditJob, AuditReport, AuditStatus } from '@/api/dataAudit'
-import { triggerUpdate } from '@/api/admin'
+import { triggerSyncBoards, triggerUpdate } from '@/api/admin'
 import { Card } from '@/components/ui/card'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
@@ -339,7 +339,7 @@ function ExportSteps({
 }
 
 function FixArea({
-  c, report, job, running, start, onRerun, notice,
+  c, report, job, running, start, onRerun, onBoardMeta, notice,
 }: {
   c: AuditCheck
   report: AuditReport
@@ -347,6 +347,7 @@ function FixArea({
   running: boolean
   start: Start
   onRerun: (scope: string) => void
+  onBoardMeta: (scope: string) => void
   notice: Notice | null
 }) {
   const f = c.fix
@@ -391,6 +392,14 @@ function FixArea({
         </div>
       )}
 
+      {f.kind === 'board_meta' && (
+        <div className="mt-2">
+          <ActionButton onClick={() => onBoardMeta(c.id)}>
+            <RefreshCw className="w-3 h-3" />运行板块行情同步
+          </ActionButton>
+        </div>
+      )}
+
       {f.kind === 'local_export' && (
         <ExportSteps c={c} report={report} running={running} start={start} />
       )}
@@ -407,6 +416,7 @@ function CheckCard(props: {
   running: boolean
   start: Start
   onRerun: (scope: string) => void
+  onBoardMeta: (scope: string) => void
   notice: Notice | null
 }) {
   const { c } = props
@@ -507,7 +517,15 @@ export default function DataHealth() {
     .sort((a, b) => rank[a.status] - rank[b.status])
   const expired = checks.filter((c) => c.status === 'expired')
   const ok = checks.filter((c) => c.status === 'ok')
-  const cardProps = { report: report!, job, running, start, onRerun, notice }
+  const onBoardMeta = (scope: string) => {
+    triggerSyncBoards(true)
+      .then((r) => setNotice({
+        text: r.ok ? '板块行情同步已启动（约 1 分钟），进度看顶栏「数据更新」；跑完点「立即检测」复查' : r.message,
+        scope,
+      }))
+      .catch((e: Error) => setNotice({ text: e.message, scope }))
+  }
+  const cardProps = { report: report!, job, running, start, onRerun, onBoardMeta, notice }
   const s = report?.summary
 
   return (

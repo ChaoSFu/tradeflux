@@ -182,6 +182,17 @@ class Test板块指数:
         assert c["today_missing_codes"] == ["BK0006"]
         assert svc.run_check(db, "sector_index", now=INTRADAY)["status"] == svc.OK
 
+    def test_只缺今天那根_冷却时让跑板块行情同步_不是重跑日更(self, db):
+        """手动「每日数据更新」不带板块同步（skip_boards），重跑它写不上今天那根点位。"""
+        from app.services.rate_limiter import set_cooldown
+        from app.services.sector_index_service import THROTTLE_DOMAIN
+        _sector(db, "BK0006")
+        _bars(db, "BK0006", [d for d in DAYS[-80:] if d != TODAY])
+        set_cooldown(db, THROTTLE_DOMAIN, 1800)
+        db.commit()
+        c = svc.run_check(db, "sector_index", now=AFTER_CLOSE)
+        assert c["status"] == svc.GAP and c["fix"]["kind"] == "board_meta"
+
 
 class Test收盘后自动补板块指数:
     """
