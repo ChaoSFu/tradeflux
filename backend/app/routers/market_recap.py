@@ -192,6 +192,7 @@ def put_relation(body: RelationIn, db: Session = Depends(get_db), user: str = De
         r = store.upsert_relation(db, user, body.model_dump(), body.date)
     except RecapError as e:
         _bad(e)
+    store.mirror_relations(db, user, [r])       # 双向：B 那边也记上 A（以前记过 / 删掉的不动）
     return store.relation_dict(r)
 
 
@@ -294,6 +295,8 @@ def get_recap(trade_date: date, db: Session = Depends(get_db), user: str = Depen
     cal = _cal(db)
     # 观察池同板块自动互相关联：加入观察池时就记了；这里补上功能上线前已经在池里的（只补没记过的，幂等）
     store.link_pool_sectors(db, user, trade_date)
+    # 关联是双向的：补上功能上线前只记了一个方向的（幂等；删掉 / 否掉的反向不加回）
+    store.mirror_relations(db, user)
     pool = store.watch_pool(db, user, trade_date)
     facts = ctx_svc.stock_facts(db, [w.stock_code for w in pool], trade_date)
     rels = store.relations_for(db, user, [w.stock_code for w in pool])

@@ -654,6 +654,60 @@ class TestRelationReason:
         assert store.reason_history(db, "someone-else") == []
 
 
+class TestMirrorRelations:
+    """关联是双向的：A → B 记了，B → A 自动补上（以前记过 / 删掉 / 否掉的不动）。"""
+
+    J, X, Y = "002242", "000678", "002086"
+
+    def _rel(self, db, leader, related, v="名称联想", t="name", **kw):
+        return store.upsert_relation(db, U, {"leader_code": leader, "related_code": related, "attribute_type": t,
+                                             "attribute_value": v, "source": "manual", **kw}, D2)
+
+    @staticmethod
+    def _keys(db, code):
+        return sorted((r.attribute_type, r.attribute_value, r.related_code, r.relation_basis, r.source, r.confidence_status)
+                      for r in store.relations_for(db, U, [code], include_rejected=True))
+
+    def test_记一条就补反向_照抄类别和核验状态(self, db):
+        a = self._rel(db, self.J, self.X)
+        b = self._rel(db, self.J, self.Y, v="同一个军工订单", t="manual", confidence_status="verified", evidence="同一份公告")
+        assert store.mirror_relations(db, U, [a, b]) == 2
+        assert self._keys(db, self.X) == [("name", "名称联想", self.J, "C", "reverse", "unverified")]
+        assert self._keys(db, self.Y) == [("manual", "同一个军工订单", self.J, "M", "reverse", "verified")]
+        assert store.relations_for(db, U, [self.Y])[0].evidence == "同一份公告", "依据照抄"
+        assert store.relations_for(db, U, [self.X])[0].first_recorded == D2
+        assert store.mirror_relations(db, U) == 0, "重复跑不重复记"
+
+    def test_删掉的反向不加回_否掉的不往回补(self, db):
+        a = self._rel(db, self.J, self.X)
+        store.mirror_relations(db, U, [a])
+        back = store.relations_for(db, U, [self.X])[0]
+        store.remove_relation(db, U, back.id)
+        assert store.mirror_relations(db, U) == 0, "反向删掉了就不再自动加回来"
+        self._rel(db, self.J, self.Y, confidence_status="rejected")
+        assert store.mirror_relations(db, U) == 0, "标了不成立的不往回补"
+        assert self._keys(db, self.Y) == []
+
+    def test_接口_记关联就双向_打开复盘页补上以前只记一边的(self, db, cal):
+        from app.auth import require_auth
+        from app.database import get_db
+        from app.routers import market_recap
+        self._rel(db, self.J, self.Y)                    # 功能上线前记的：只有一边
+        app = FastAPI()
+        app.include_router(market_recap.router)
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[require_auth] = lambda: U
+        c = TestClient(app)
+        res = c.put("/market-recap/leader-relations", json={
+            "date": D3.isoformat(), "leader_code": self.J, "related_code": self.X,
+            "attribute_type": "manual", "attribute_value": "同一个军工订单"})
+        assert res.status_code == 200, res.text
+        assert self._keys(db, self.X) == [("manual", "同一个军工订单", self.J, "M", "reverse", "unverified")]
+        assert self._keys(db, self.Y) == []
+        assert c.get(f"/market-recap/{D3.isoformat()}").status_code == 200
+        assert self._keys(db, self.Y) == [("name", "名称联想", self.J, "C", "reverse", "unverified")]
+
+
 class TestSealRate:
     @pytest.mark.parametrize("lu,broken,expected", [
         (54, 0, (None, None)),      # 11-09：炸板池超时，涨停照常——不是 100%
