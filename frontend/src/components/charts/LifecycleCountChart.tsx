@@ -17,14 +17,23 @@ import { LIFECYCLE_DEFAULT_ON, LIFECYCLE_LINES } from '@/components/charts/Lifec
  *
  * 颜色、图例、默认亮的三条跟上面「逐日赚钱效应」同一套，两张图对着看。
  * 池子大小每天在变（近 60 日最高连板 ≥ 4），所以总只数一起画、也能切成占比看。
+ *
+ * 「在场只数」（2026-11-22 用户要的）：高标池里还在震荡 / 强势的有多少只。按四个在场状态
+ * 加起来（连板中 + 刚断板 + 修复中 + 穿越成功），不是拿池子总数减三种收尾——池子里还有判不出
+ * 状态的票，减法会把它们也当成在场。判不出的只数在悬停里单独写出来。
  */
 const C_POOL = '#737A96'
 const L_POOL = '高标池总数'
+const C_ALIVE = '#E2E8F0'
+const L_ALIVE = '在场只数'
+const ALIVE = ['STREAKING', 'BROKEN', 'REPAIRING', 'CROSS_SUCCESS']
+const ALIVE_HINT = '在场 = 连板中 + 刚断板 + 修复中 + 穿越成功（高标池去掉周期结束、修复失败、成功后走弱）'
 const FOCUS = 'CROSS_SUCCESS'
 const zh = (st: string) => LIFECYCLE_ZH[st] ?? st
 
 type Mode = 'count' | 'share'
 interface Row { date: string; full: string; pool: number; [k: string]: string | number }
+const aliveOf = (p: { counts: Record<string, number> }) => ALIVE.reduce((t, st) => t + (p.counts[st] ?? 0), 0)
 
 export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | null | undefined }) {
   const series = data?.series ?? []
@@ -41,7 +50,11 @@ export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | nul
     [series])
 
   const rows = useMemo<Row[]>(() => series.map((p) => {
-    const r: Row = { date: format(new Date(p.trade_date), 'MM/dd'), full: p.trade_date, pool: p.pool }
+    const alive = aliveOf(p)
+    const known = Object.values(p.counts).reduce((t, n) => t + n, 0)
+    const r: Row = { date: format(new Date(p.trade_date), 'MM/dd'), full: p.trade_date, pool: p.pool,
+                     [L_ALIVE]: mode === 'count' ? alive : (p.pool ? Math.round((alive / p.pool) * 1000) / 10 : 0),
+                     alive__n: alive, unknown__n: Math.max(0, p.pool - known) }
     for (const l of present) {
       // 当天没有该状态的票：后端没有这个 key，这里就是 0 只——计数的 0 是事实，不是缺数据
       const n = p.counts[l.state] ?? 0
@@ -62,7 +75,8 @@ export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | nul
       : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
     const max = Math.max(...vals)
     const maxDay = series[vals.lastIndexOf(max)].trade_date
-    return { last, n: last.counts[FOCUS] ?? 0, entered: last.entered[FOCUS] ?? 0, max, maxDay, mid, days: series.length }
+    return { last, n: last.counts[FOCUS] ?? 0, entered: last.entered[FOCUS] ?? 0, max, maxDay, mid, days: series.length,
+             alive: aliveOf(last) }
   }, [series])
 
   if (!series.length) {
@@ -84,6 +98,9 @@ export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | nul
               {summary.max === 0
                 ? ` · 近 ${summary.days} 个交易日都是 0`
                 : ` · 近 ${summary.days} 个交易日最高 ${summary.max}（${summary.maxDay.slice(5)}）、中位 ${summary.mid}`}
+            </span>
+            <span className="text-text-muted" title={ALIVE_HINT}>
+              {' · '}在场 <span className="font-mono tabular-nums text-text-primary">{summary.alive}</span> 只
             </span>
           </span>
         )}
@@ -112,6 +129,11 @@ export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | nul
             <Area yAxisId="p" type="stepAfter" dataKey="pool" name={L_POOL} stroke={C_POOL} strokeDasharray="2 3"
                   fill={C_POOL} fillOpacity={0.06} strokeWidth={1} dot={false} isAnimationActive={false}
                   hide={mode === 'share' || hidden.has(L_POOL)} />
+            {/* 在场只数走左轴，跟各状态同一把尺子：它是四条状态线之和，必须画在它们上面。
+                放右轴跟池子总数一起的话，在场 19 会画得比刚断板 19 还低 */}
+            <Line yAxisId="s" type="stepAfter" dataKey={L_ALIVE} stroke={C_ALIVE}
+                  strokeWidth={1.5} dot={false} activeDot={{ r: 3 }} isAnimationActive={false}
+                  hide={hidden.has(L_ALIVE)} />
             {present.map((l) => (
               <Line key={l.state} yAxisId="s" type="monotone" dataKey={zh(l.state)} stroke={l.color}
                     strokeWidth={l.state === FOCUS ? 2.5 : 1.5} strokeDasharray={l.dash} dot={false}
@@ -123,6 +145,7 @@ export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | nul
 
       <div className="flex flex-wrap justify-center gap-x-4 gap-y-1">
         {[...(mode === 'count' ? [{ key: L_POOL, color: C_POOL, dash: '2 3' as string | undefined }] : []),
+          { key: L_ALIVE, color: C_ALIVE, dash: undefined as string | undefined },
           ...present.map((l) => ({ key: zh(l.state), color: l.color, dash: l.dash }))]
           .map((it) => {
             const off = hidden.has(it.key)
@@ -130,7 +153,7 @@ export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | nul
               <button key={it.key} onClick={() => toggle(it.key)}
                       className={cn('flex items-center gap-1.5 text-xs select-none transition-opacity',
                         off ? 'opacity-25 hover:opacity-50' : 'hover:opacity-75')}
-                      title={off ? `显示 ${it.key}` : `隐藏 ${it.key}`}>
+                      title={`${off ? '显示' : '隐藏'} ${it.key}${it.key === L_ALIVE ? `\n${ALIVE_HINT}` : ''}`}>
                 <svg width="20" height="10" className="shrink-0">
                   <line x1="0" y1="5" x2="20" y2="5" stroke={it.color} strokeWidth={2} strokeDasharray={it.dash} />
                 </svg>
@@ -165,6 +188,16 @@ function Tip({ active, payload, present, mode }: {
     <div className="bg-bg-elevated border border-bg-border rounded px-2.5 py-1.5 text-[11px] space-y-0.5 shadow-xl shadow-black/50">
       <div className="text-text-primary font-medium">
         {row.full}<span className="ml-2 text-text-muted font-normal">高标池 {row.pool} 只</span>
+      </div>
+      <div className="flex items-center gap-1.5 whitespace-nowrap border-b border-bg-border/60 pb-0.5 mb-0.5">
+        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: C_ALIVE }} />
+        <span className="text-text-secondary">{L_ALIVE}</span>
+        <span className="font-mono tabular-nums ml-auto text-text-primary">
+          {Number(row.alive__n)} 只{row.pool ? <span className="text-text-muted">（{((Number(row.alive__n) / row.pool) * 100).toFixed(0)}%）</span> : null}
+        </span>
+        <span className="text-[10px] text-text-muted w-12 text-right">
+          {Number(row.unknown__n) ? `判不出 ${Number(row.unknown__n)}` : ''}
+        </span>
       </div>
       {lines.map((l) => (
         <div key={l.name} className="flex items-center gap-1.5 whitespace-nowrap">
