@@ -18,6 +18,12 @@ import { LIFECYCLE_DEFAULT_ON, LIFECYCLE_LINES } from '@/components/charts/Lifec
  * 颜色、图例、默认亮的三条跟上面「逐日赚钱效应」同一套，两张图对着看。
  * 池子大小每天在变（近 60 日最高连板 ≥ 4），所以总只数一起画、也能切成占比看。
  *
+ * **只有一根纵轴**（2026-11-22 用户选的）：原来池子总数单独走右轴，同样是「只」却两把尺子，
+ * 61 只的池子画得比 23 只的强势+震荡还低。现在所有线共用左轴；池子总数默认收起（60 多只，
+ * 一开就把个位数的状态线压扁），点图例才加上，加上时纵轴跟着放大，但不会画反。
+ * 纵轴上限按**当前亮着的线**自动定（recharts 默认不把 hide 的线算进刻度，别给 YAxis 加
+ * includeHidden），收起池子总数 / 周期结束这种大数，刻度就缩回去，曲线的起伏看得清。
+ *
  * 「强势+震荡」（2026-11-22 用户要的）：高标池里还在震荡 / 强势的有多少只。最早叫「在场只数」，
  * 用户嫌没指向性，改成直接说它数的是什么，悬停里再拆成四个状态各几只。按四个状态
  * 加起来（连板中 + 刚断板 + 修复中 + 穿越成功），不是拿池子总数减三种收尾——池子里还有判不出
@@ -40,7 +46,7 @@ export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | nul
   const series = data?.series ?? []
   const [mode, setMode] = useState<Mode>('count')
   const [hidden, setHidden] = useState<Set<string>>(
-    () => new Set(LIFECYCLE_LINES.filter((l) => !LIFECYCLE_DEFAULT_ON.has(l.state)).map((l) => zh(l.state))))
+    () => new Set([L_POOL, ...LIFECYCLE_LINES.filter((l) => !LIFECYCLE_DEFAULT_ON.has(l.state)).map((l) => zh(l.state))]))
   const toggle = useCallback((k: string) => setHidden((p) => {
     const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n
   }), [])
@@ -123,17 +129,12 @@ export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | nul
             <YAxis yAxisId="s" tick={{ fill: '#737A96', fontSize: 10 }} axisLine={false} tickLine={false} width={36}
                    allowDecimals={false}
                    tickFormatter={(v: number) => (mode === 'count' ? `${v}` : `${v}%`)} />
-            {/* 池子总数单独一根右轴：60 只上下，跟各状态的个位数放一根轴会把它们压扁 */}
-            <YAxis yAxisId="p" orientation="right" tick={{ fill: '#4B5368', fontSize: 10 }} axisLine={false}
-                   tickLine={false} width={30} allowDecimals={false} hide={mode === 'share' || hidden.has(L_POOL)} />
             <Tooltip content={<Tip present={present} mode={mode} />} offset={24}
                      allowEscapeViewBox={{ x: false, y: true }} wrapperStyle={{ zIndex: 30 }} />
-            <Area yAxisId="p" type="stepAfter" dataKey="pool" name={L_POOL} stroke={C_POOL} strokeDasharray="2 3"
+            <Area yAxisId="s" type="monotone" dataKey="pool" name={L_POOL} stroke={C_POOL} strokeDasharray="2 3"
                   fill={C_POOL} fillOpacity={0.06} strokeWidth={1} dot={false} isAnimationActive={false}
                   hide={mode === 'share' || hidden.has(L_POOL)} />
-            {/* 强势+震荡走左轴，跟各状态同一把尺子：它是四条状态线之和，必须画在它们上面。
-                放右轴跟池子总数一起的话，它的 19 会画得比刚断板 19 还低。
-                线型跟各状态线一样用 monotone（2026-11-22 用户指出阶梯线跟别的线不像一张图） */}
+            {/* 线型跟各状态线一样用 monotone（2026-11-22 用户指出阶梯线跟别的线不像一张图） */}
             <Line yAxisId="s" type="monotone" dataKey={L_ALIVE} stroke={C_ALIVE}
                   strokeWidth={1.5} dot={false} activeDot={{ r: 3 }} isAnimationActive={false}
                   hide={hidden.has(L_ALIVE)} />
