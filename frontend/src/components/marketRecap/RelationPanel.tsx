@@ -182,9 +182,17 @@ function RelationRow({ r, date, leaderTime, labels, onChanged, onWatch, onPlan, 
           <div className="flex items-center gap-1.5">
             <button onClick={() => onWatch(r)} className="text-[11px] text-accent" title="加入观察池（不是交易）">观察</button>
             <button onClick={() => onPlan(r)} className="text-[11px] text-purple-300" title="放进次日预案（还要写它自己的入场和失效条件）">拟交易</button>
-            <button onClick={() => act(() => deleteRelation(r.id))} title="删除这条关联" className="text-text-muted hover:text-down">
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
+            {/* 只有「新增关联」人工记的能删，连另一边的反向一起删；自动记的不对就在「核验」标不成立 */}
+            {r.source === 'manual' ? (
+              <button onClick={() => act(() => deleteRelation(r.id))} title="删除这条关联（另一边的反向关联一起删）"
+                      className="text-text-muted hover:text-down">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <span title="自动记的关联不能删；不对就在「核验」里标「不成立」" className="text-text-muted/30 cursor-not-allowed">
+                <Trash2 className="w-3.5 h-3.5" />
+              </span>
+            )}
           </div>
         )}
       </td>
@@ -223,7 +231,8 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
   })
   const reasons = useQuery({ queryKey: ['recap-relation-reasons'], queryFn: fetchRelationReasons, staleTime: 5 * 60 * 1000, enabled: !readOnly })
   const refresh = () => {
-    qc.invalidateQueries({ queryKey: ['recap-relations', code, date] })
+    // 关联是双向的：记一条 / 删一条，另一只高标那边也跟着变，所有高标的缓存都要刷
+    qc.invalidateQueries({ queryKey: ['recap-relations'] })
     qc.invalidateQueries({ queryKey: ['recap-relation-reasons'] })
     qc.invalidateQueries({ queryKey: ['recap-day', date] })
     qc.invalidateQueries({ queryKey: ['recap-cores', date] })

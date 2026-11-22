@@ -198,9 +198,13 @@ def put_relation(body: RelationIn, db: Session = Depends(get_db), user: str = De
 
 @router.delete("/leader-relations/{rid}")
 def delete_relation(rid: int, db: Session = Depends(get_db), user: str = Depends(require_auth)):
-    if not store.remove_relation(db, user, rid):
+    try:
+        n = store.remove_relation(db, user, rid)      # 连另一边的反向一起删
+    except RecapError as e:
+        _bad(e)
+    if not n:
         raise HTTPException(status_code=404, detail="没有这条关联")
-    return {"ok": True}
+    return {"ok": True, "removed": n}
 
 
 class ResponseIn(BaseModel):

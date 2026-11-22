@@ -470,13 +470,30 @@ def mirror_relations(db: Session, owner: str, rels: Optional[Iterable[LeaderRela
     return created
 
 
-def remove_relation(db: Session, owner: str, rid: int) -> bool:
+# 能删的只有「新增关联」表单人工记的（2026-11-22 用户定）。自动记的（观察池同板块、反向自动、板块关联、
+# 名称规则……）不给删：不对就在「核验」里标「不成立」，留着记录，也不会被自动再加回来
+DELETABLE_SOURCES = ("manual",)
+
+
+def remove_relation(db: Session, owner: str, rid: int) -> int:
+    """
+    软删一条人工新增的关联，**连另一边的反向一起删**（同一属性、两只对调的那条，不管它是哪来的）。
+    返回删掉的条数，0 = 没有这条。不是人工新增的抛 RecapError。
+    """
     r = db.query(LeaderRelation).filter(LeaderRelation.id == rid, LeaderRelation.owner == owner).first()
     if r is None:
-        return False
-    r.removed_at = datetime.now()
+        return 0
+    if r.source not in DELETABLE_SOURCES:
+        raise RecapError("只有人工新增的关联能删；自动记的不对，就在「核验」里标「不成立」")
+    now = datetime.now()
+    mates = (db.query(LeaderRelation)
+             .filter(LeaderRelation.owner == owner, LeaderRelation.leader_code == r.related_code,
+                     LeaderRelation.related_code == r.leader_code, LeaderRelation.attribute_type == r.attribute_type,
+                     LeaderRelation.attribute_value == r.attribute_value, LeaderRelation.removed_at.is_(None)).all())
+    for x in [r, *mates]:
+        x.removed_at = now
     db.commit()
-    return True
+    return 1 + len(mates)
 
 
 def responses_on(db: Session, owner: str, d: date, relation_ids: Iterable[int]) -> Dict[int, LeaderResponseDaily]:
