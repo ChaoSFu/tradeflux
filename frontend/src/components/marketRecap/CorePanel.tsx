@@ -141,7 +141,7 @@ export function CorePanel({ ctx, draft, set, pool, date, readOnly, onPoolChanged
                 <StockLink code={w.code} name={w.name} hasDetail={w.facts?.has_detail ?? true} />
                 <span className={cn(NUM, pctCls(w.facts?.pct))}>{fmtPct(w.facts?.pct)}</span>
                 {w.facts?.is_limit_up && <span className="text-up text-[10px]">涨停{w.facts.board_count ? `·${w.facts.board_count}板` : ''}</span>}
-                <span className="text-[10px] text-text-muted" title="关联关系条数">关联 {w.relations}</span>
+                <span className="text-[10px] text-text-muted" title="关联股只数（按股票去重）">关联 {w.relations}</span>
                 <span className="text-[10px] text-text-muted" title="加入观察的日期">{w.added_date.slice(5)}起</span>
                 {!readOnly && (
                   <button disabled={busy === w.code} title="移出观察池（之前那些天的记录保留）"

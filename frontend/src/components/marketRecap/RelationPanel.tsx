@@ -194,7 +194,7 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
         <span className="text-[11px] text-text-muted">选择高标</span>
         {leaders.map((w) => (
           <button key={w.code} onClick={() => onSelect(w.code)}
-                  title={`关联 ${w.relations} 条 · 近60日涨停 ${w.lu60 ?? '—'} 次`}
+                  title={`关联股 ${w.relations} 只（按股票去重） · 近60日涨停 ${w.lu60 ?? '—'} 次`}
                   className={cn('px-2 py-0.5 rounded border text-xs', w.code === code ? 'border-accent bg-accent/10 text-accent' : 'border-bg-border text-text-secondary')}>
             {w.deep && '★ '}{w.name ?? w.code}{w.temp && <span className="text-[10px] text-text-muted ml-0.5">（未观察）</span>}
             <span className="ml-1 text-[10px] text-text-muted">{w.relations}</span>
@@ -243,7 +243,8 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
           </div>
           {!grouped.length ? <div className="text-xs text-text-muted">还没有录入其他关联。板块关联里点「记为关联」、重点观察池里同板块的，都会进这里。</div> : grouped.map(([t, rs]) => (
             <div key={t}>
-              <div className="text-[11px] text-text-secondary mb-1">{ATTR_LABEL[t]} <span className="text-text-muted">（{rs.length}）</span></div>
+              {/* 按股票数：一只票挂了几个属性（同属几个关注板块）也只算一只 */}
+              <div className="text-[11px] text-text-secondary mb-1">{ATTR_LABEL[t]} <span className="text-text-muted">（{new Set(rs.map((r) => r.related_code)).size} 只）</span></div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
