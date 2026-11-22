@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Lightbulb, Plus, Trash2 } from 'lucide-react'
 import {
-  addWatch, deleteRelation, fetchLeaderRelations, fetchSharedSectors, putRelation, putResponse,
-  type AttributeType, type LeaderRelations, type Plan, type ResponseStatus, type SystemResponse, type WatchItem,
+  addWatch, deleteRelation, fetchLeaderRelations, fetchRelationReasons, fetchSharedSectors, putRelation, putResponse,
+  type AttributeType, type ReasonUsed, type LeaderRelations, type Plan, type ResponseStatus, type SystemResponse, type WatchItem,
 } from '@/api/marketRecap'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { StockPicker } from '@/components/common/StockPicker'
@@ -21,6 +21,60 @@ const SYS_TONE: Record<SystemResponse, string> = {
   limit_up: 'text-up', up_response: 'text-up', independent_strong: 'text-accent', not_met: 'text-text-muted', insufficient: 'text-warn',
 }
 type Row = LeaderRelations['relations'][number]
+
+/**
+ * 「其他原因」输入框：先列以前写过的原因（点选，或 ↑↓ + 回车），没有合适的就直接写新的（2026-11-22 用户要的）。
+ * 没用方向键选中某条时，回车照常提交表单——不会把正在写的新原因换成下拉里的旧原因。
+ */
+function ReasonPicker({ value, onChange, reasons, recorded }: {
+  value: string
+  onChange: (v: string) => void
+  reasons: ReasonUsed[]
+  recorded: Set<string>          // 这对已经按这个原因记过的
+}) {
+  const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(-1)
+  const term = value.trim()
+  const items = reasons.filter((r) => !term || r.value.includes(term)).slice(0, 12)
+  const pick = (v: string) => { onChange(v); setOpen(false); setActive(-1) }
+  return (
+    <div className="relative w-72">
+      <input value={value} maxLength={100} className={cn(INPUT, 'w-full')}
+             placeholder={reasons.length ? '选以前写过的原因，没有合适的就直接写新的' : '一句话写关联原因：同一事件 / 名称里相同的字 / 历史联动……'}
+             onFocus={() => setOpen(true)}
+             onBlur={() => setTimeout(() => setOpen(false), 150)}
+             onChange={(e) => { onChange(e.target.value); setOpen(true); setActive(-1) }}
+             onKeyDown={(e) => {
+               if (!open || !items.length) return
+               if (e.key === 'ArrowDown') { e.preventDefault(); setActive((i) => (i + 1) % items.length) }
+               else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((i) => (i <= 0 ? items.length - 1 : i - 1)) }
+               else if (e.key === 'Enter' && active >= 0) { e.preventDefault(); pick(items[active].value) }
+               else if (e.key === 'Escape') setOpen(false)
+             }} />
+      {open && items.length > 0 && (
+        <div className="absolute z-20 mt-1 w-full max-h-72 overflow-auto rounded-lg border border-bg-border bg-bg-elevated shadow-xl shadow-black/40">
+          <div className="px-2.5 py-1 text-[10px] text-text-muted border-b border-bg-border/60">
+            以前写过的原因（按用过的次数排）{term ? `· 含「${term}」` : ''}
+          </div>
+          {items.map((r, i) => {
+            const done = recorded.has(r.value)
+            return (
+              <button key={r.value} type="button" disabled={done}
+                      onMouseDown={() => !done && pick(r.value)} onMouseEnter={() => setActive(i)}
+                      className={cn('flex w-full items-baseline gap-2 px-2.5 py-1.5 text-left text-xs',
+                        done ? 'opacity-40 cursor-not-allowed' : i === active ? 'bg-bg-card' : 'hover:bg-bg-card')}>
+                <span className="text-text-primary truncate">{r.value}</span>
+                <span className="ml-auto shrink-0 text-[10px] text-text-muted">
+                  {done ? '这对已记' : `用过 ${r.count} 次 · ${r.last_used.slice(5)}`}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function RelationRow({ r, date, leaderTime, labels, onChanged, onWatch, onPlan, readOnly }: {
   r: Row
@@ -132,8 +186,10 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
     queryFn: () => fetchLeaderRelations(code!, date, leader?.name, showRejected),
     enabled: !!code,
   })
+  const reasons = useQuery({ queryKey: ['recap-relation-reasons'], queryFn: fetchRelationReasons, staleTime: 5 * 60 * 1000, enabled: !readOnly })
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['recap-relations', code, date] })
+    qc.invalidateQueries({ queryKey: ['recap-relation-reasons'] })
     qc.invalidateQueries({ queryKey: ['recap-day', date] })
     qc.invalidateQueries({ queryKey: ['recap-cores', date] })
   }
@@ -315,8 +371,8 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
                     })}
                   </select>
                 ) : (
-                  <input value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} maxLength={100}
-                         placeholder="一句话写关联原因：同一事件 / 名称里相同的字 / 历史联动……" className={cn(INPUT, 'w-72')} />
+                  <ReasonPicker value={form.reason} onChange={(v) => setForm((f) => ({ ...f, reason: v }))}
+                                reasons={reasons.data ?? []} recorded={recordedFor} />
                 )}
                 <input value={form.evidence} onChange={(e) => setForm({ ...form, evidence: e.target.value })}
                        placeholder="来源 / 依据（可选：公告、新闻、业务……）" className={cn(INPUT, 'flex-1 min-w-[12rem]')} />

@@ -289,6 +289,27 @@ def relation_dict(r: LeaderRelation) -> dict:
         "first_recorded", "last_verified", "note")}
 
 
+# 人手写的关联原因：新的都是 manual；事件催化 / 情绪结构 / 历史市场记忆是改版前手写的，也算
+REASON_TYPES = ("manual", "event", "structure", "history")
+
+
+def reason_history(db: Session, owner: str, limit: int = 50) -> List[dict]:
+    """
+    以前写过的关联原因（2026-11-22 用户要的：新增关联选「其他原因」时先给以前的，选不到再自己写）。
+    按用过的次数、再按最近一次用的日期排；删掉的关联不算，标了不成立的照算（原因本身可能还用得上）。
+    """
+    rows = (db.query(LeaderRelation.attribute_value, LeaderRelation.first_recorded)
+            .filter(LeaderRelation.owner == owner, LeaderRelation.attribute_type.in_(REASON_TYPES),
+                    LeaderRelation.removed_at.is_(None)).all())
+    agg: Dict[str, dict] = {}
+    for v, d in rows:
+        a = agg.setdefault(v, {"value": v, "count": 0, "last_used": d})
+        a["count"] += 1
+        a["last_used"] = max(a["last_used"], d)
+    out = sorted(agg.values(), key=lambda x: (-x["count"], -x["last_used"].toordinal(), x["value"]))[:limit]
+    return [{**x, "last_used": x["last_used"].isoformat()} for x in out]
+
+
 def relations_for(db: Session, owner: str, leader_codes: Iterable[str],
                   include_rejected: bool = False) -> List[LeaderRelation]:
     """
