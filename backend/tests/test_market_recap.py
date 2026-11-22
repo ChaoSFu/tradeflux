@@ -573,7 +573,8 @@ class TestPoolSectorLink:
         store.add_watch(db, U, self.B, D3)
         ab = store.relations_for(db, U, [self.A])[0]
         ba = store.relations_for(db, U, [self.B])[0]
-        store.remove_relation(db, U, ab.id)
+        ab.removed_at = datetime.now()       # 改版前删掉的（现在自动记的不给删了）
+        db.commit()
         store.upsert_relation(db, U, {**store.relation_dict(ba), "confidence_status": "rejected"}, D3)
         assert store.link_pool_sectors(db, U, D3) == 0
         store.add_watch(db, U, self.C, D3)
@@ -678,12 +679,27 @@ class TestMirrorRelations:
         assert store.relations_for(db, U, [self.X])[0].first_recorded == D2
         assert store.mirror_relations(db, U) == 0, "重复跑不重复记"
 
-    def test_删掉的反向不加回_否掉的不往回补(self, db):
+    def test_删人工新增的_反向一起删_不会再自动加回(self, db):
+        a = self._rel(db, self.J, self.X)
+        store.mirror_relations(db, U, [a])
+        assert store.remove_relation(db, U, a.id) == 2, "另一边的反向一起删"
+        assert self._keys(db, self.J) == [] and self._keys(db, self.X) == []
+        assert store.mirror_relations(db, U) == 0, "删掉的不再自动加回来"
+
+    def test_自动记的不能删(self, db):
         a = self._rel(db, self.J, self.X)
         store.mirror_relations(db, U, [a])
         back = store.relations_for(db, U, [self.X])[0]
-        store.remove_relation(db, U, back.id)
-        assert store.mirror_relations(db, U) == 0, "反向删掉了就不再自动加回来"
+        assert back.source == "reverse"
+        with pytest.raises(RecapError, match="只有人工新增的关联能删"):
+            store.remove_relation(db, U, back.id)
+        auto = store.upsert_relation(db, U, {"leader_code": self.J, "related_code": self.Y, "attribute_type": "concept",
+                                             "attribute_value": "芯片概念", "source": "pool_sector"}, D2)
+        with pytest.raises(RecapError):
+            store.remove_relation(db, U, auto.id)
+        assert len(self._keys(db, self.X)) == 1 and len(self._keys(db, self.J)) == 2, "都还在"
+
+    def test_否掉的不往回补(self, db):
         self._rel(db, self.J, self.Y, confidence_status="rejected")
         assert store.mirror_relations(db, U) == 0, "标了不成立的不往回补"
         assert self._keys(db, self.Y) == []
@@ -706,6 +722,13 @@ class TestMirrorRelations:
         assert self._keys(db, self.Y) == []
         assert c.get(f"/market-recap/{D3.isoformat()}").status_code == 200
         assert self._keys(db, self.Y) == [("name", "名称联想", self.J, "C", "reverse", "unverified")]
+        back = store.relations_for(db, U, [self.Y])[0]
+        res = c.delete(f"/market-recap/leader-relations/{back.id}")
+        assert res.status_code == 400 and "只有人工新增" in res.text, "反向自动的不能删"
+        fwd = next(r for r in store.relations_for(db, U, [self.J]) if r.related_code == self.Y)
+        res = c.delete(f"/market-recap/leader-relations/{fwd.id}")
+        assert res.status_code == 200 and res.json()["removed"] == 2
+        assert self._keys(db, self.Y) == []
 
 
 class TestSealRate:
