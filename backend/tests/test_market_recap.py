@@ -620,6 +620,26 @@ class TestPoolSectorLink:
         assert len(self._links(db, self.A)) == 2
 
 
+class TestRelationReason:
+    """新增关联的原因只有两种：同属某个板块（行业 A / 概念 B），或者自己写一句话（manual，不分 A/B/C）。"""
+
+    def test_共同板块_关注的在前_行业在概念前(self, db):
+        TestPoolSectorLink()._seed(db)
+        A, B, C = TestPoolSectorLink.A, TestPoolSectorLink.B, TestPoolSectorLink.C
+        assert [(x["name"], x["type"], x["watched"]) for x in ctx.shared_sectors(db, A, B)] == \
+            [("芯片概念", "concept", True), ("融资融券", "concept", False)]
+        assert [(x["name"], x["type"]) for x in ctx.shared_sectors(db, A, C)] == [("通信设备", "industry")]
+        assert ctx.shared_sectors(db, B, C) == [], "没有共同板块"
+
+    def test_自己写的原因单独一类_依据记M(self, db):
+        r = store.upsert_relation(db, U, {"leader_code": "002148", "related_code": "002685",
+                                          "attribute_type": "manual", "attribute_value": "同一个卫星互联网订单"}, D2)
+        assert (r.attribute_type, r.relation_basis, r.source) == ("manual", "M", "manual")
+        with pytest.raises(store.RecapError, match="关联原因不能为空"):
+            store.upsert_relation(db, U, {"leader_code": "002148", "related_code": "002685",
+                                          "attribute_type": "manual", "attribute_value": "  "}, D2)
+
+
 class TestSealRate:
     @pytest.mark.parametrize("lu,broken,expected", [
         (54, 0, (None, None)),      # 11-09：炸板池超时，涨停照常——不是 100%

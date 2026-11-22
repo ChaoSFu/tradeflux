@@ -80,6 +80,7 @@ class LeaderRelation(Base):
       A  industry / event        实际产业、业务、事件
       B  concept / history / structure   共享概念、历史联动、情绪结构
       C  name                    名称、谐音、叙事联想
+      M  manual                  人工自己写的关联原因，不分 A/B/C（2026-11-22）
     名称联想永远是 C，不可能被标成产业关联。
     """
     __tablename__ = "leader_relations"

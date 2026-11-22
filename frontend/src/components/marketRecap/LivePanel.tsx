@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Radio, RefreshCw, X } from 'lucide-react'
 import { fetchLive, removeWatch, restoreWatch, type LiveData, type LiveEvent, type LiveFact, type LiveMeta, type SystemResponse } from '@/api/marketRecap'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
-import { ATTR_LABEL, NUM, POSTURE_LABEL, Section, StockLink, fmtPct, pctCls } from '@/components/marketRecap/shared'
+import { ATTR_LABEL, NUM, POSTURE_LABEL, Section, StockLink, basisText, fmtPct, pctCls } from '@/components/marketRecap/shared'
 import { cn } from '@/utils/cn'
 
 const PHASE_TONE: Record<string, string> = {
@@ -318,7 +318,7 @@ function LeadersNow({ d }: { d: LiveData }) {
                       <tr key={r.code} className="border-t border-bg-border/50">
                         <td className={TD}><StockLink code={r.code} name={r.name} /></td>
                         <td className="px-2 py-1 text-[11px] text-text-secondary">
-                          {r.attributes.map((a, i) => <span key={i} className="mr-1.5" title={ATTR_LABEL[a.type]}><span className="text-text-muted">{a.basis}</span> {a.value}</span>)}
+                          {r.attributes.map((a, i) => <span key={i} className="mr-1.5" title={ATTR_LABEL[a.type]}><span className="text-text-muted">{basisText(a.basis)}</span> {a.value}</span>)}
                         </td>
                         <td className={cn(TD, 'text-right')}><Pct f={r.live} /></td>
                         <td className={TD}><LimitState f={r.live} /></td>

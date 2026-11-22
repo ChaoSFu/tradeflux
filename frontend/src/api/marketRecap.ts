@@ -271,7 +271,7 @@ export interface Relation {
   attribute_value: string
   related_code: string
   related_name: string | null
-  relation_basis: 'A' | 'B' | 'C'
+  relation_basis: 'A' | 'B' | 'C' | 'M'
   evidence: string | null
   source: string
   confidence_status: 'unverified' | 'verified' | 'rejected'
@@ -289,7 +289,8 @@ export interface Relation {
   } | null
 }
 
-export type AttributeType = 'industry' | 'concept' | 'event' | 'name' | 'structure' | 'history'
+/** manual = 人工自己写的关联原因（单独一组，不分 A/B/C，依据记 M） */
+export type AttributeType = 'industry' | 'concept' | 'event' | 'name' | 'structure' | 'history' | 'manual'
 export type ResponseStatus = 'leading' | 'sync' | 'lagging' | 'no_response' | 'unknown' | 'pending'
 
 export interface Suggestion {
@@ -438,6 +439,10 @@ export const fetchLeaderRelations = (code: string, date: string, name?: string |
   client.get<LeaderRelations>(`/market-recap/leader-relations/${code}`, {
     params: { date, name: name ?? undefined, include_rejected: includeRejected || undefined },
   }).then((r) => r.data)
+/** 两只票共同所在的板块：新增关联选「同属板块」的候选（关注的在前，行业在概念前） */
+export interface SharedSector { code: string; name: string; type: 'industry' | 'concept'; sector_type: string | null; watched: boolean }
+export const fetchSharedSectors = (a: string, b: string) =>
+  client.get<{ sectors: SharedSector[] }>('/market-recap/shared-sectors', { params: { a, b } }).then((r) => r.data.sectors)
 export const putRelation = (body: {
   id?: number; date: string; leader_code: string; leader_name?: string | null; attribute_type: AttributeType
   attribute_value: string; related_code: string; related_name?: string | null; evidence?: string | null
