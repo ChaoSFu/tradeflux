@@ -1107,7 +1107,7 @@ export default function Dashboard() {
                     每条线 = 当天处于该状态的<span className="text-text-secondary">只数</span>
                     <span className="text-text-muted/70">
                       ；统计范围是高标池（近 60 日最高连板 ≥ 4），池子大小每天在变。
-                      「在场只数」= 连板中 + 刚断板 + 修复中 + 穿越成功（去掉三种收尾状态）。
+                      白线「强势+震荡」= 连板中 + 刚断板 + 修复中 + 穿越成功，即高标池去掉已剔除的三种（周期结束、修复失败、成功后走弱），看还没出局的有多少只。
                       只是计数：「模仿规模大 → 接近短期顶部」还没拿历史验证过
                     </span>
                   </span>

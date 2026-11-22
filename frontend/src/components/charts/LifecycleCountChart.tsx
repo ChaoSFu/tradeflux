@@ -18,16 +18,17 @@ import { LIFECYCLE_DEFAULT_ON, LIFECYCLE_LINES } from '@/components/charts/Lifec
  * 颜色、图例、默认亮的三条跟上面「逐日赚钱效应」同一套，两张图对着看。
  * 池子大小每天在变（近 60 日最高连板 ≥ 4），所以总只数一起画、也能切成占比看。
  *
- * 「在场只数」（2026-11-22 用户要的）：高标池里还在震荡 / 强势的有多少只。按四个在场状态
+ * 「强势+震荡」（2026-11-22 用户要的）：高标池里还在震荡 / 强势的有多少只。最早叫「在场只数」，
+ * 用户嫌没指向性，改成直接说它数的是什么，悬停里再拆成四个状态各几只。按四个状态
  * 加起来（连板中 + 刚断板 + 修复中 + 穿越成功），不是拿池子总数减三种收尾——池子里还有判不出
- * 状态的票，减法会把它们也当成在场。判不出的只数在悬停里单独写出来。
+ * 状态的票，减法会把它们也算进来。判不出的只数在悬停里单独写出来。
  */
 const C_POOL = '#737A96'
 const L_POOL = '高标池总数'
 const C_ALIVE = '#E2E8F0'
-const L_ALIVE = '在场只数'
+const L_ALIVE = '强势+震荡'
 const ALIVE = ['STREAKING', 'BROKEN', 'REPAIRING', 'CROSS_SUCCESS']
-const ALIVE_HINT = '在场 = 连板中 + 刚断板 + 修复中 + 穿越成功（高标池去掉周期结束、修复失败、成功后走弱）'
+const ALIVE_HINT = '强势+震荡 = 连板中 + 刚断板 + 修复中 + 穿越成功，即高标池去掉已剔除的三种（周期结束、修复失败、成功后走弱）'
 const FOCUS = 'CROSS_SUCCESS'
 const zh = (st: string) => LIFECYCLE_ZH[st] ?? st
 
@@ -100,7 +101,8 @@ export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | nul
                 : ` · 近 ${summary.days} 个交易日最高 ${summary.max}（${summary.maxDay.slice(5)}）、中位 ${summary.mid}`}
             </span>
             <span className="text-text-muted" title={ALIVE_HINT}>
-              {' · '}在场 <span className="font-mono tabular-nums text-text-primary">{summary.alive}</span> 只
+              {' · '}仍在强势 / 震荡的 <span className="font-mono tabular-nums text-text-primary">{summary.alive}</span> 只
+              （占 {summary.last.pool ? ((summary.alive / summary.last.pool) * 100).toFixed(0) : '—'}%）
             </span>
           </span>
         )}
@@ -129,8 +131,8 @@ export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | nul
             <Area yAxisId="p" type="stepAfter" dataKey="pool" name={L_POOL} stroke={C_POOL} strokeDasharray="2 3"
                   fill={C_POOL} fillOpacity={0.06} strokeWidth={1} dot={false} isAnimationActive={false}
                   hide={mode === 'share' || hidden.has(L_POOL)} />
-            {/* 在场只数走左轴，跟各状态同一把尺子：它是四条状态线之和，必须画在它们上面。
-                放右轴跟池子总数一起的话，在场 19 会画得比刚断板 19 还低。
+            {/* 强势+震荡走左轴，跟各状态同一把尺子：它是四条状态线之和，必须画在它们上面。
+                放右轴跟池子总数一起的话，它的 19 会画得比刚断板 19 还低。
                 线型跟各状态线一样用 monotone（2026-11-22 用户指出阶梯线跟别的线不像一张图） */}
             <Line yAxisId="s" type="monotone" dataKey={L_ALIVE} stroke={C_ALIVE}
                   strokeWidth={1.5} dot={false} activeDot={{ r: 3 }} isAnimationActive={false}
@@ -190,7 +192,7 @@ function Tip({ active, payload, present, mode }: {
       <div className="text-text-primary font-medium">
         {row.full}<span className="ml-2 text-text-muted font-normal">高标池 {row.pool} 只</span>
       </div>
-      <div className="flex items-center gap-1.5 whitespace-nowrap border-b border-bg-border/60 pb-0.5 mb-0.5">
+      <div className="flex items-center gap-1.5 whitespace-nowrap">
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: C_ALIVE }} />
         <span className="text-text-secondary">{L_ALIVE}</span>
         <span className="font-mono tabular-nums ml-auto text-text-primary">
@@ -199,6 +201,10 @@ function Tip({ active, payload, present, mode }: {
         <span className="text-[10px] text-text-muted w-12 text-right">
           {Number(row.unknown__n) ? `判不出 ${Number(row.unknown__n)}` : ''}
         </span>
+      </div>
+      {/* 拆开写：这个数是哪几个状态加出来的，一眼能对上下面各行 */}
+      <div className="text-[10px] text-text-muted whitespace-nowrap border-b border-bg-border/60 pb-0.5 mb-0.5 pl-3">
+        = {ALIVE.map((st) => `${zh(st)} ${Number(row[`${zh(st)}__n`] ?? 0)}`).join(' + ')}
       </div>
       {lines.map((l) => (
         <div key={l.name} className="flex items-center gap-1.5 whitespace-nowrap">
