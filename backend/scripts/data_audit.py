@@ -109,8 +109,7 @@ def fix_archive(db, a) -> int:
         print("试跑（不写库）：将重新下载同花顺 10 年日K存档（约 6 分钟、可续传；只写 data/fuyao/，不改数据库）")
         return 0
     from scripts.full_dump import cmd_refresh
-    cmd_refresh()
-    return 0
+    return 0 if cmd_refresh() else 1
 
 
 def fix_stock_snapshots(db, a) -> int:

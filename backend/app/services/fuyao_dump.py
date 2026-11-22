@@ -262,28 +262,53 @@ def _download_once(url: str, dest: Path, timeout: int) -> int:
     return written
 
 
+#: 预签名链接只活 5 分钟；同一条链接用到第 4 分钟就换新的，留 1 分钟余量
+URL_TTL = 240.0
+#: 同一条链接上连接被掐断后，隔几秒用 Range 接着要（不用重新要链接，也就不会撞 429）
+RECONNECT_GAP = 3.0
+
+
+def _clock() -> float:
+    return time.monotonic()
+
+
+def _cut_summary(cuts: List[tuple]) -> str:
+    """每次断开收到多少、连了多久——用来看是按时长掐还是按字节数掐。"""
+    if not cuts:
+        return ""
+    mb = [b / 1048576 for b, _ in cuts]
+    sec = [s for _, s in cuts]
+    return (f"断开 {len(cuts)} 次，每次收到 {min(mb):.1f}~{max(mb):.1f}MB（平均 {sum(mb) / len(mb):.1f}），"
+            f"连了 {min(sec):.0f}~{max(sec):.0f} 秒（平均 {sum(sec) / len(sec):.0f}）")
+
+
 def download_dump_resumable(api_key: str, kind: str, dest: Path, *,
-                            url_gap: float = 65.0, max_rounds: int = 6,
+                            url_gap: float = 65.0, max_idle: int = 3, budget: float = 2400.0,
                             timeout: int = 120, progress=None) -> dict:
     """
     大文件（`daily-k` 全量，2026-09-11 实测 172MB）的**可续传**下载。返回
-    {"bytes", "rounds", "resumed", "seconds", "path_date", "errors"}。
+    {"bytes", "rounds", "connections", "resumed", "seconds", "path_date", "errors", "cuts"}。
 
     `_download_once` 是给 1MB 的 10 日 dump 写的：断了就整个重来。放到 172MB 上
     不行——S3 连 1MB 都中途掐断过（2026-08-26），172MB 要下好几分钟，断一次的
     概率高得多；而重来一次就得重新要下载链接，那个端点几秒内连着问会 429
     （2026-09-11 探针实测）。所以：
 
-    1. **断了从断点续**：`.part` 留着，下一轮用 `Range: bytes=<已有>-` 接着要。
-    2. **两轮之间等一会**（url_gap，默认 65 秒）再要新链接。预签名链接只活
-       5 分钟，每轮都得重新要。生产上 429 之后 1.5 秒重试就过了，65 秒是保守
-       取值——窗口到底多长没测过，而大文件一次也就几轮，多等不心疼。
-    3. **上游换了文件就扔掉半截**：生成日或总长一变，手上的半截属于旧文件，接到
+    1. **断了从断点续**：`.part` 留着，用 `Range: bytes=<已有>-` 接着要。
+    2. **同一条链接上续**（2026-11-22 改）：预签名链接活 5 分钟、可以反复 GET。连接被掐了
+       就隔 RECONNECT_GAP 秒用同一条链接接着要，用到 URL_TTL 才换新链接。原来每断一次都
+       重新要链接、再等 url_gap——2026-11-22 生产上每条连接只给 ~1MB 就被掐，172MB 要几个
+       小时，6 轮一过就放弃了。
+    3. **要新链接前离上次要链接至少隔 url_gap 秒**（默认 65）：紧跟着要会 429。
+    4. **只在没进展时放弃**：连续 max_idle 条链接一个字节都没下到，或者总时长超过 budget
+       秒。一直有进展就一直下——原来按轮数算，有进展的轮也在消耗次数。
+    5. **上游换了文件就扔掉半截**：生成日或总长一变，手上的半截属于旧文件，接到
        新文件后面拼出来的是一个坏 parquet。`.part.json` 记下这半截属于哪个版本。
-    4. **服务器不认 Range、回了 200**：从头写，不追加。
-    5. **完工校验**：字节数对上总长，且 parquet footer 读得出来。**只读 footer**——
+    6. **服务器不认 Range、回了 200**：从头写，不追加。
+    7. **完工校验**：字节数对上总长，且 parquet footer 读得出来。**只读 footer**——
        `dump_max_date` 那种整列 to_pylist 在这个文件上要吃掉约 470MB。
-    6. 轮次用完还没下完：**半截留着**，下次调用接着续，已经下的不白下。
+    8. 放弃时**半截留着**，下次调用接着续，已经下的不白下。报错里带每次断开收到多少、
+       连了多久，看得出是按时长掐还是按字节数掐。
 
     跟 daily_k_dump 的分工：那边是 10 日 dump 的日更路径（缓存复用、旧缓存兜底），
     这里只负责"把一个大文件可靠地搬下来"。全量 dump 真接入日更时再决定怎么合。
@@ -293,24 +318,44 @@ def download_dump_resumable(api_key: str, kind: str, dest: Path, *,
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     part_meta = dest.with_name(dest.name + ".part.json")
-    t0 = time.time()
+    t0 = _clock()
     errors: List[str] = []
-    resumed = 0
-    for rnd in range(max_rounds):
-        if rnd:
-            time.sleep(url_gap)
+    cuts: List[tuple] = []          # (这次连接收到的字节, 连了几秒)
+    rounds = conns = resumed = idle = 0
+    url_at: Optional[float] = None
+    mb = 1048576
+
+    def _give_up(why: str):
+        tail = " | ".join(errors[-3:])
+        stat = _cut_summary(cuts)
+        raise FuyaoError(f"{why}（半截已保留，下次接着续）：" + (f"{stat}；" if stat else "") + tail)
+
+    while True:
+        if idle >= max_idle:
+            _give_up(f"连续 {max_idle} 条下载链接一个字节都没下到")
+        if _clock() - t0 > budget:
+            _give_up(f"下了 {budget / 60:.0f} 分钟还没下完")
+        if url_at is not None:
+            wait = url_gap - (_clock() - url_at)
+            if wait > 0:
+                time.sleep(wait)
+        rounds += 1
+        url_at = _clock()
         try:
             url = _download_url(api_key, kind)
         except Exception as e:  # noqa: BLE001
-            errors.append(f"第{rnd + 1}轮要链接: {type(e).__name__}: {str(e)[:80]}")
+            errors.append(f"第{rounds}条链接要不到: {type(e).__name__}: {str(e)[:80]}")
+            idle += 1
             continue
         if not url:
-            errors.append(f"第{rnd + 1}轮要链接: 接口没有返回链接")
+            errors.append(f"第{rounds}条链接要不到: 接口没有返回链接")
+            idle += 1
             continue
         total = _remote_size(url)
         if not total:
             # 不知道总长就没法判断下完没有、也没法续——宁可这轮不下
-            errors.append(f"第{rnd + 1}轮问不出总长，无法校验完整性，这轮不下")
+            errors.append(f"第{rounds}条链接问不出总长，无法校验完整性，这轮不下")
+            idle += 1
             continue
         pd = _path_date(url)
         have = part.stat().st_size if part.exists() else 0
@@ -324,9 +369,13 @@ def download_dump_resumable(api_key: str, kind: str, dest: Path, *,
                 have = 0
         part_meta.write_text(json.dumps({"path_date": pd, "total": total}), encoding="utf-8")
 
-        if have < total:
+        got_on_url = 0
+        # 同一条链接：被掐了隔几秒接着续；这条连接一个字节都没给，就换新链接
+        while have < total and _clock() - url_at < URL_TTL and _clock() - t0 <= budget:
+            conns += 1
             if have:
                 resumed += 1
+            got, c0 = 0, _clock()
             try:
                 with httpx.Client(timeout=_timeouts(timeout), follow_redirects=True) as c:
                     hdrs = {"Range": f"bytes={have}-"} if have else {}
@@ -338,14 +387,28 @@ def download_dump_resumable(api_key: str, kind: str, dest: Path, *,
                             for chunk in resp.iter_bytes(1 << 20):
                                 f.write(chunk)
                                 have += len(chunk)
+                                got += len(chunk)
                                 if progress:
                                     progress(have, total)
             except Exception as e:  # noqa: BLE001
-                errors.append(f"第{rnd + 1}轮在 {have / 1048576:.1f}/{total / 1048576:.1f}MB 断开: "
+                cuts.append((got, _clock() - c0))
+                errors.append(f"第{conns}次连接在 {have / mb:.1f}/{total / mb:.1f}MB 断开: "
                               f"{type(e).__name__}: {str(e)[:60]}")
-                continue
+            else:
+                if have < total:
+                    cuts.append((got, _clock() - c0))
+                    errors.append(f"第{conns}次连接短读 {have}/{total}")
+            got_on_url += got
+            if have >= total or not got:
+                break
+            time.sleep(RECONNECT_GAP)
+        idle = 0 if got_on_url else idle + 1
+
+        if have < total:
+            continue
         if have != total:
-            errors.append(f"第{rnd + 1}轮短读 {have}/{total}")
+            errors.append(f"收到 {have} 字节，比总长 {total} 还多，扔掉重下")
+            part.unlink(missing_ok=True)
             continue
         try:
             pq.read_metadata(part)
@@ -355,9 +418,9 @@ def download_dump_resumable(api_key: str, kind: str, dest: Path, *,
             raise FuyaoError(f"下载完成但不是合法 parquet（{type(e).__name__}），已删除")
         os.replace(part, dest)
         part_meta.unlink(missing_ok=True)
-        return {"bytes": total, "rounds": rnd + 1, "resumed": resumed,
-                "seconds": round(time.time() - t0, 1), "path_date": pd, "errors": errors}
-    raise FuyaoError(f"{max_rounds} 轮仍没下完（半截已保留，下次接着续）：" + " | ".join(errors[-3:]))
+        return {"bytes": total, "rounds": rounds, "connections": conns, "resumed": resumed,
+                "seconds": round(_clock() - t0, 1), "path_date": pd, "errors": errors,
+                "cuts": _cut_summary(cuts)}
 
 
 def _path_date(url: str) -> Optional[str]:
