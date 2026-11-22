@@ -470,21 +470,22 @@ def mirror_relations(db: Session, owner: str, rels: Optional[Iterable[LeaderRela
     return created
 
 
-# 能删的只有「新增关联」表单人工记的（2026-11-22 用户定）。自动记的（观察池同板块、反向自动、板块关联、
-# 名称规则……）不给删：不对就在「核验」里标「不成立」，留着记录，也不会被自动再加回来
-DELETABLE_SOURCES = ("manual",)
+# 能删的是你自己点出来的（2026-11-22 用户定）：「新增关联」表单记的、板块关联里点「记为关联」的、
+# 采纳的名称联想 / 行情概念建议。系统自己记的（观察池同板块、反向自动）不给删：不对就在「核验」里
+# 标「不成立」，留着记录，也不会被自动再加回来
+DELETABLE_SOURCES = ("manual", "sector_relation", "name_rule", "snapshot_concept")
 
 
 def remove_relation(db: Session, owner: str, rid: int) -> int:
     """
-    软删一条人工新增的关联，**连另一边的反向一起删**（同一属性、两只对调的那条，不管它是哪来的）。
-    返回删掉的条数，0 = 没有这条。不是人工新增的抛 RecapError。
+    软删一条自己记的关联，**连另一边的反向一起删**（同一属性、两只对调的那条，不管它是哪来的）。
+    返回删掉的条数，0 = 没有这条。系统自动记的抛 RecapError。
     """
     r = db.query(LeaderRelation).filter(LeaderRelation.id == rid, LeaderRelation.owner == owner).first()
     if r is None:
         return 0
     if r.source not in DELETABLE_SOURCES:
-        raise RecapError("只有人工新增的关联能删；自动记的不对，就在「核验」里标「不成立」")
+        raise RecapError("系统自动记的关联（观察池同板块、反向自动）不能删；不对就在「核验」里标「不成立」")
     now = datetime.now()
     mates = (db.query(LeaderRelation)
              .filter(LeaderRelation.owner == owner, LeaderRelation.leader_code == r.related_code,

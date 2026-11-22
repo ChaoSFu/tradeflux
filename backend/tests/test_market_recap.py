@@ -691,13 +691,21 @@ class TestMirrorRelations:
         store.mirror_relations(db, U, [a])
         back = store.relations_for(db, U, [self.X])[0]
         assert back.source == "reverse"
-        with pytest.raises(RecapError, match="只有人工新增的关联能删"):
+        with pytest.raises(RecapError, match="不能删"):
             store.remove_relation(db, U, back.id)
         auto = store.upsert_relation(db, U, {"leader_code": self.J, "related_code": self.Y, "attribute_type": "concept",
                                              "attribute_value": "芯片概念", "source": "pool_sector"}, D2)
         with pytest.raises(RecapError):
             store.remove_relation(db, U, auto.id)
         assert len(self._keys(db, self.X)) == 1 and len(self._keys(db, self.J)) == 2, "都还在"
+
+    @pytest.mark.parametrize("src", ["sector_relation", "name_rule", "snapshot_concept"])
+    def test_自己点出来的也能删(self, db, src):
+        a = store.upsert_relation(db, U, {"leader_code": self.J, "related_code": self.X, "attribute_type": "concept",
+                                          "attribute_value": "芯片概念", "source": src}, D2)
+        store.mirror_relations(db, U, [a])
+        assert store.remove_relation(db, U, a.id) == 2
+        assert self._keys(db, self.J) == [] and self._keys(db, self.X) == []
 
     def test_否掉的不往回补(self, db):
         self._rel(db, self.J, self.Y, confidence_status="rejected")
@@ -724,7 +732,7 @@ class TestMirrorRelations:
         assert self._keys(db, self.Y) == [("name", "名称联想", self.J, "C", "reverse", "unverified")]
         back = store.relations_for(db, U, [self.Y])[0]
         res = c.delete(f"/market-recap/leader-relations/{back.id}")
-        assert res.status_code == 400 and "只有人工新增" in res.text, "反向自动的不能删"
+        assert res.status_code == 400 and "不能删" in res.text, "反向自动的不能删"
         fwd = next(r for r in store.relations_for(db, U, [self.J]) if r.related_code == self.Y)
         res = c.delete(f"/market-recap/leader-relations/{fwd.id}")
         assert res.status_code == 200 and res.json()["removed"] == 2

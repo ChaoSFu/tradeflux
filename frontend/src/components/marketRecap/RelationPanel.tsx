@@ -18,6 +18,8 @@ const SOURCE_LABEL: Record<string, string> = {
   manual: '人工', name_rule: '名称规则', sector_relation: '板块关联', pool_sector: '观察池同板块（自动）', snapshot_concept: '行情概念',
   reverse: '反向自动（对方那边记的）',
 }
+// 能删的是自己点出来的（跟后端 DELETABLE_SOURCES 一致）；观察池同板块、反向自动是系统记的，只能标不成立
+const DELETABLE = new Set(['manual', 'sector_relation', 'name_rule', 'snapshot_concept'])
 const SYS_TONE: Record<SystemResponse, string> = {
   limit_up: 'text-up', up_response: 'text-up', independent_strong: 'text-accent', not_met: 'text-text-muted', insufficient: 'text-warn',
 }
@@ -182,14 +184,14 @@ function RelationRow({ r, date, leaderTime, labels, onChanged, onWatch, onPlan, 
           <div className="flex items-center gap-1.5">
             <button onClick={() => onWatch(r)} className="text-[11px] text-accent" title="加入观察池（不是交易）">观察</button>
             <button onClick={() => onPlan(r)} className="text-[11px] text-purple-300" title="放进次日预案（还要写它自己的入场和失效条件）">拟交易</button>
-            {/* 只有「新增关联」人工记的能删，连另一边的反向一起删；自动记的不对就在「核验」标不成立 */}
-            {r.source === 'manual' ? (
+            {/* 自己记的能删，连另一边的反向一起删；系统自动记的不对就在「核验」标不成立 */}
+            {DELETABLE.has(r.source) ? (
               <button onClick={() => act(() => deleteRelation(r.id))} title="删除这条关联（另一边的反向关联一起删）"
                       className="text-text-muted hover:text-down">
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
             ) : (
-              <span title="自动记的关联不能删；不对就在「核验」里标「不成立」" className="text-text-muted/30 cursor-not-allowed">
+              <span title="系统自动记的关联（观察池同板块、反向自动）不能删；不对就在「核验」里标「不成立」" className="text-text-muted/30 cursor-not-allowed">
                 <Trash2 className="w-3.5 h-3.5" />
               </span>
             )}
