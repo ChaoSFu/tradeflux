@@ -10,7 +10,7 @@ import { StockPicker } from '@/components/common/StockPicker'
 import { cn } from '@/utils/cn'
 import { EventBadge } from './CorePoolPanel'
 import { SectorPeersPanel } from './SectorPeersPanel'
-import { ATTR_LABEL, BASIS_LABEL, Facts, INPUT, Manual, NUM, RESPONSE_LABEL, StockLink, basisText, fmtPct, pctCls } from './shared'
+import { ATTR_LABEL, BASIS_LABEL, BASIS_OF, Facts, INPUT, Manual, NUM, RESPONSE_LABEL, StockLink, basisText, fmtPct, pctCls } from './shared'
 
 const ATTR_ORDER: AttributeType[] = ['industry', 'event', 'concept', 'manual', 'history', 'structure', 'name']
 const TIMED: ResponseStatus[] = ['leading', 'sync', 'lagging']
@@ -23,7 +23,24 @@ const SYS_TONE: Record<SystemResponse, string> = {
 type Row = LeaderRelations['relations'][number]
 
 /**
- * 「其他原因」输入框：先列以前写过的原因（点选，或 ↑↓ + 回车），没有合适的就直接写新的（2026-11-22 用户要的）。
+ * 基础原因（2026-11-22 用户要的：「之前的原因」要给出来，选不到再自己写）——就是改版前那几类关联类型。
+ * 选了它们按原来的类别存（依据 A/B/C 由类别定，跟以前一样）；自己写的才是 manual，不分 A/B/C。
+ * 共享概念不在这里：同属概念板块走「同属板块」。
+ */
+const BASIC_REASONS: { value: string; type: AttributeType; hint: string }[] = [
+  { value: ATTR_LABEL.event, type: 'event', hint: '同一事件 / 政策 / 订单催化' },
+  { value: ATTR_LABEL.industry, type: 'industry', hint: '上下游、同一产业链（不同属一个板块时用）' },
+  { value: ATTR_LABEL.history, type: 'history', hint: '以前多次一起涨、一起炒过' },
+  { value: ATTR_LABEL.structure, type: 'structure', hint: '同一梯队、补涨、跟风' },
+  { value: ATTR_LABEL.name, type: 'name', hint: '名称里相同的字、谐音' },
+]
+const basicOf = (v: string) => BASIC_REASONS.find((b) => b.value === v.trim())
+
+type ReasonItem = { value: string; basic?: (typeof BASIC_REASONS)[number]; used?: ReasonUsed }
+
+/**
+ * 「其他原因」输入框：上面是基础原因（原来那几类），下面是以前写过的（按用过的次数排）；
+ * 点选或 ↑↓ + 回车选中，没有合适的就直接写新的。
  * 没用方向键选中某条时，回车照常提交表单——不会把正在写的新原因换成下拉里的旧原因。
  */
 function ReasonPicker({ value, onChange, reasons, recorded }: {
@@ -35,12 +52,33 @@ function ReasonPicker({ value, onChange, reasons, recorded }: {
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(-1)
   const term = value.trim()
-  const items = reasons.filter((r) => !term || r.value.includes(term)).slice(0, 12)
+  const hit = (s: string) => !term || s.includes(term)
+  const basics: ReasonItem[] = BASIC_REASONS.filter((b) => hit(b.value) || hit(b.hint)).map((b) => ({ value: b.value, basic: b }))
+  // 以前写过的里跟基础原因同名的（改版前存的类别名）不重复列
+  const used: ReasonItem[] = reasons.filter((r) => !basicOf(r.value) && hit(r.value)).slice(0, 12).map((r) => ({ value: r.value, used: r }))
+  const items = [...basics, ...used]
   const pick = (v: string) => { onChange(v); setOpen(false); setActive(-1) }
+  const row = (it: ReasonItem, i: number) => {
+    const done = recorded.has(it.value)
+    return (
+      <button key={`${it.basic ? 'b' : 'u'}-${it.value}`} type="button" disabled={done}
+              onMouseDown={() => !done && pick(it.value)} onMouseEnter={() => setActive(i)}
+              className={cn('flex w-full items-baseline gap-2 px-2.5 py-1.5 text-left text-xs',
+                done ? 'opacity-40 cursor-not-allowed' : i === active ? 'bg-bg-card' : 'hover:bg-bg-card')}>
+        <span className="text-text-primary shrink-0">{it.value}</span>
+        {/* 类别字母紧跟名字：下拉在窄屏会被右边裁掉，放最右就看不到了 */}
+        {it.basic && <span className="shrink-0 px-1 rounded text-[10px] bg-bg-card text-text-secondary">{BASIS_OF[it.basic.type]}</span>}
+        {it.basic && <span className="text-[10px] text-text-muted truncate">{it.basic.hint}</span>}
+        <span className="ml-auto shrink-0 text-[10px] text-text-muted">
+          {done ? '这对已记' : it.used ? `用过 ${it.used.count} 次 · ${it.used.last_used.slice(5)}` : ''}
+        </span>
+      </button>
+    )
+  }
   return (
     <div className="relative w-72">
       <input value={value} maxLength={100} className={cn(INPUT, 'w-full')}
-             placeholder={reasons.length ? '选以前写过的原因，没有合适的就直接写新的' : '一句话写关联原因：同一事件 / 名称里相同的字 / 历史联动……'}
+             placeholder="选一个原因，没有合适的就直接写"
              onFocus={() => setOpen(true)}
              onBlur={() => setTimeout(() => setOpen(false), 150)}
              onChange={(e) => { onChange(e.target.value); setOpen(true); setActive(-1) }}
@@ -52,24 +90,20 @@ function ReasonPicker({ value, onChange, reasons, recorded }: {
                else if (e.key === 'Escape') setOpen(false)
              }} />
       {open && items.length > 0 && (
-        <div className="absolute z-20 mt-1 w-full max-h-72 overflow-auto rounded-lg border border-bg-border bg-bg-elevated shadow-xl shadow-black/40">
-          <div className="px-2.5 py-1 text-[10px] text-text-muted border-b border-bg-border/60">
-            以前写过的原因（按用过的次数排）{term ? `· 含「${term}」` : ''}
-          </div>
-          {items.map((r, i) => {
-            const done = recorded.has(r.value)
-            return (
-              <button key={r.value} type="button" disabled={done}
-                      onMouseDown={() => !done && pick(r.value)} onMouseEnter={() => setActive(i)}
-                      className={cn('flex w-full items-baseline gap-2 px-2.5 py-1.5 text-left text-xs',
-                        done ? 'opacity-40 cursor-not-allowed' : i === active ? 'bg-bg-card' : 'hover:bg-bg-card')}>
-                <span className="text-text-primary truncate">{r.value}</span>
-                <span className="ml-auto shrink-0 text-[10px] text-text-muted">
-                  {done ? '这对已记' : `用过 ${r.count} 次 · ${r.last_used.slice(5)}`}
-                </span>
-              </button>
-            )
-          })}
+        <div className="absolute z-20 mt-1 w-[26rem] max-w-[90vw] max-h-80 overflow-auto rounded-lg border border-bg-border bg-bg-elevated shadow-xl shadow-black/40">
+          {!!basics.length && (
+            <div className="px-2.5 py-1 text-[10px] text-text-muted border-b border-bg-border/60">基础原因（依据 A/B/C 按类别定，跟以前一样）</div>
+          )}
+          {basics.map((it, i) => row(it, i))}
+          {!!used.length && (
+            <div className="px-2.5 py-1 text-[10px] text-text-muted border-y border-bg-border/60">
+              以前自己写过的（按用过的次数排，单独一组、不分 A/B/C）{term ? ` · 含「${term}」` : ''}
+            </div>
+          )}
+          {used.map((it, i) => row(it, basics.length + i))}
+          {!!term && !basicOf(term) && !reasons.some((r) => r.value === term) && (
+            <div className="px-2.5 py-1 text-[10px] text-text-muted border-t border-bg-border/60">没有合适的？直接按回车，记成新原因「{term}」</div>
+          )}
         </div>
       )}
     </div>
@@ -226,7 +260,8 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
       const sec = form.kind === 'sector' ? (shared.data ?? []).find((x) => x.code === form.sector) : null
       if (form.kind === 'sector' && !sec) { setFormErr('先选一个两只共同所在的板块，或者切到「其他原因」自己写'); return }
       await save({
-        attribute_type: sec ? sec.type : 'manual', attribute_value: sec ? sec.name : form.reason.trim(),
+        // 基础原因按原来的类别存；自己写的是 manual
+        attribute_type: sec ? sec.type : basicOf(form.reason)?.type ?? 'manual', attribute_value: sec ? sec.name : form.reason.trim(),
         related_code: form.related_code, related_name: form.related_name, evidence: form.evidence, source: 'manual',
       })
       setForm((f) => ({ ...f, sector: '', reason: '', related_code: '', related_name: null, evidence: '' }))
@@ -336,7 +371,7 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
           ))}
 
           {!readOnly && (
-            <Manual title="新增关联" hint="同属板块：行业记 A、概念记 B；其他原因是你自己写的，单独一组，不分 A/B/C">
+            <Manual title="新增关联" hint="同属板块：行业 A、概念 B；其他原因：基础原因按类别定 A/B/C，自己写的单独一组、不分 A/B/C">
               {/* 顺序就是做事的顺序：① 先搜到关联股 → ② 关联原因（同属板块 / 自己写一句话）→ 添加。
                   原来「关联类型」下拉和「属性名」是两格，其实是一件事（2026-11-22 用户指出） */}
               <form className="flex flex-wrap items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); submit() }}>
