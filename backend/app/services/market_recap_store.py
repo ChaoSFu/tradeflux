@@ -26,10 +26,13 @@ SCENARIOS = ("A", "B", "C", "N")
 SECTOR_TIERS = ("core", "secondary", "drop")
 PLAN_STATUSES = ("waiting", "triggered", "not_triggered", "invalid", "unverified")
 MAX_PLANS = 5
-ATTRIBUTE_TYPES = ("industry", "concept", "event", "name", "structure", "history")
-# 关联依据的性质由属性类型决定，不让人手填：名称联想永远是 C
+ATTRIBUTE_TYPES = ("industry", "concept", "event", "name", "structure", "history", "manual")
+# 关联依据的性质由属性类型决定，不让人手填：名称联想永远是 C。
+# manual = 人工自己写的关联原因（2026-11-22 用户定）：单独一组，不分 A/B/C，存 "M"。
+# 新增关联只剩两种原因——同属某个板块（行业 A / 概念 B），或者自己写一句话（manual）；
+# event / structure / history 不再从表单新建，老数据照旧显示
 BASIS_BY_TYPE = {"industry": "A", "event": "A", "concept": "B", "history": "B",
-                 "structure": "B", "name": "C"}
+                 "structure": "B", "name": "C", "manual": "M"}
 CONFIDENCE = ("unverified", "verified", "rejected")
 RESPONSES = ("leading", "sync", "lagging", "no_response", "unknown", "pending")
 TIMED_RESPONSES = ("leading", "sync", "lagging")
@@ -316,7 +319,7 @@ def upsert_relation(db: Session, owner: str, payload: dict, d: date) -> LeaderRe
         raise RecapError("关联股不能是高标自己")
     value = _clean(payload.get("attribute_value"), 100)
     if not value:
-        raise RecapError("属性名不能为空（比如概念名、事件、名称里相同的字）")
+        raise RecapError("关联原因不能为空：选一个两只共同所在的板块，或者自己写一句话")
     status = payload.get("confidence_status") or "unverified"
     if status not in CONFIDENCE:
         raise RecapError(f"核验状态只能是 {CONFIDENCE}")

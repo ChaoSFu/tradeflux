@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Lightbulb, Plus, Trash2 } from 'lucide-react'
 import {
-  addWatch, deleteRelation, fetchLeaderRelations, putRelation, putResponse,
+  addWatch, deleteRelation, fetchLeaderRelations, fetchSharedSectors, putRelation, putResponse,
   type AttributeType, type LeaderRelations, type Plan, type ResponseStatus, type SystemResponse, type WatchItem,
 } from '@/api/marketRecap'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
@@ -10,9 +10,9 @@ import { StockPicker } from '@/components/common/StockPicker'
 import { cn } from '@/utils/cn'
 import { EventBadge } from './CorePoolPanel'
 import { SectorPeersPanel } from './SectorPeersPanel'
-import { ATTR_LABEL, BASIS_LABEL, BASIS_OF, Facts, INPUT, Manual, NUM, RESPONSE_LABEL, StockLink, fmtPct, pctCls } from './shared'
+import { ATTR_LABEL, BASIS_LABEL, Facts, INPUT, Manual, NUM, RESPONSE_LABEL, StockLink, basisText, fmtPct, pctCls } from './shared'
 
-const ATTR_ORDER: AttributeType[] = ['industry', 'event', 'concept', 'history', 'structure', 'name']
+const ATTR_ORDER: AttributeType[] = ['industry', 'event', 'concept', 'manual', 'history', 'structure', 'name']
 const TIMED: ResponseStatus[] = ['leading', 'sync', 'lagging']
 const SOURCE_LABEL: Record<string, string> = {
   manual: '人工', name_rule: '名称规则', sector_relation: '板块关联', pool_sector: '观察池同板块（自动）', snapshot_concept: '行情概念',
@@ -42,10 +42,11 @@ function RelationRow({ r, date, leaderTime, labels, onChanged, onWatch, onPlan, 
   return (
     <tr className={cn('border-b border-bg-border/50 last:border-0 align-top', r.confidence_status === 'rejected' && 'opacity-50')}>
       <td className="px-2 py-1 whitespace-nowrap"><StockLink code={r.related_code} name={r.related_name ?? f?.name ?? null} hasDetail={f?.has_detail ?? true} /></td>
-      <td className="px-2 py-1 text-text-primary whitespace-nowrap">{r.attribute_value}</td>
+      <td className="px-2 py-1 text-text-primary whitespace-nowrap max-w-[14rem] truncate" title={r.attribute_value}>{r.attribute_value}</td>
       <td className="px-2 py-1 whitespace-nowrap" title={BASIS_LABEL[r.relation_basis]}>
         <span className={cn('px-1 rounded text-[10px]', r.relation_basis === 'A' ? 'bg-accent/15 text-accent'
-          : r.relation_basis === 'B' ? 'bg-bg-elevated text-text-secondary' : 'bg-warn/10 text-warn')}>{r.relation_basis}</span>
+          : r.relation_basis === 'B' ? 'bg-bg-elevated text-text-secondary'
+          : r.relation_basis === 'M' ? 'bg-purple-400/15 text-purple-300' : 'bg-warn/10 text-warn')}>{basisText(r.relation_basis)}</span>
       </td>
       <td className="px-2 py-1 text-[11px] text-text-muted max-w-[14rem]" title={r.evidence ?? undefined}>
         <div className="truncate">{r.evidence ?? '—'}</div>
@@ -138,7 +139,16 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
   }
 
   const [q, setQ] = useState('')
-  const [form, setForm] = useState({ attribute_type: 'concept' as AttributeType, attribute_value: '', related_code: '', related_name: null as string | null, evidence: '' })
+  // 关联原因只有两种（2026-11-22 用户定）：同属某个板块（从两只共同所在的板块里选），或者自己写一句话
+  const [form, setForm] = useState({ kind: 'sector' as 'sector' | 'other', sector: '', reason: '',
+                                     related_code: '', related_name: null as string | null, evidence: '' })
+  const pairOk = !!code && /^\d{6}$/.test(form.related_code) && form.related_code !== code
+  const shared = useQuery({
+    queryKey: ['recap-shared-sectors', code, form.related_code],
+    queryFn: () => fetchSharedSectors(code!, form.related_code),
+    enabled: pairOk,
+    staleTime: 10 * 60 * 1000,
+  })
   const [formErr, setFormErr] = useState('')
   const [showSugg, setShowSugg] = useState(false)
   const [picked, setPicked] = useState<Set<string>>(new Set())
@@ -148,6 +158,7 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
   }
   const rels = (data?.relations ?? []).filter((r) => !q || r.related_code.includes(q) || (r.related_name ?? '').includes(q) || r.attribute_value.includes(q))
   const grouped = ATTR_ORDER.map((t) => [t, rels.filter((r) => r.attribute_type === t)] as const).filter(([, rs]) => rs.length)
+  const recordedFor = new Set((data?.relations ?? []).filter((r) => r.related_code === form.related_code).map((r) => r.attribute_value))
   const leaderTime = data?.leader.facts?.first_limit_time
   const sum = data?.summary
   const save = async (s: { attribute_type: AttributeType; attribute_value: string; related_code: string; related_name?: string | null; evidence?: string | null; source?: string; confidence_status?: string }) => {
@@ -156,8 +167,13 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
   const submit = async () => {
     setFormErr('')
     try {
-      await save({ ...form, source: 'manual' })
-      setForm((f) => ({ ...f, attribute_value: '', related_code: '', related_name: null, evidence: '' }))
+      const sec = form.kind === 'sector' ? (shared.data ?? []).find((x) => x.code === form.sector) : null
+      if (form.kind === 'sector' && !sec) { setFormErr('先选一个两只共同所在的板块，或者切到「其他原因」自己写'); return }
+      await save({
+        attribute_type: sec ? sec.type : 'manual', attribute_value: sec ? sec.name : form.reason.trim(),
+        related_code: form.related_code, related_name: form.related_name, evidence: form.evidence, source: 'manual',
+      })
+      setForm((f) => ({ ...f, sector: '', reason: '', related_code: '', related_name: null, evidence: '' }))
       refresh()
     } catch (e: any) { setFormErr(e?.message ?? '保存失败') }  // eslint-disable-line @typescript-eslint/no-explicit-any
   }
@@ -185,7 +201,7 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
     .map((r) => `${r.attribute_value}|${r.related_code}`))
   const onPlan = (r: Row) => onAddPlan({
     stock_code: r.related_code, stock_name: r.related_name ?? r.facts?.name ?? null, leader_code: code,
-    relation_note: `${ATTR_LABEL[r.attribute_type]}：${r.attribute_value}（${r.relation_basis} 类依据）${r.evidence ? `；${r.evidence}` : ''}`,
+    relation_note: `${ATTR_LABEL[r.attribute_type]}：${r.attribute_value}（${r.relation_basis === 'M' ? '人工写的原因' : `${r.relation_basis} 类依据`}）${r.evidence ? `；${r.evidence}` : ''}`,
   })
 
   return (
@@ -264,26 +280,53 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
           ))}
 
           {!readOnly && (
-            <Manual title="新增关联" hint={`依据性质自动定：${BASIS_LABEL[BASIS_OF[form.attribute_type]]}`}>
-              {/* 顺序就是做事的顺序（2026-11-22 用户要的）：① 先搜到关联股 → ② 再写为什么关联 → 添加 */}
+            <Manual title="新增关联" hint="同属板块：行业记 A、概念记 B；其他原因是你自己写的，单独一组，不分 A/B/C">
+              {/* 顺序就是做事的顺序：① 先搜到关联股 → ② 关联原因（同属板块 / 自己写一句话）→ 添加。
+                  原来「关联类型」下拉和「属性名」是两格，其实是一件事（2026-11-22 用户指出） */}
               <form className="flex flex-wrap items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); submit() }}>
                 <span className="text-[11px] text-text-muted">① 关联股</span>
                 <div className="w-52">
                   <StockPicker code={form.related_code} name={form.related_name} inputCls={cn(INPUT, 'w-full')}
                                placeholder="搜代码或名称，点结果选中"
-                               onPick={(c, n) => setForm((f) => ({ ...f, related_code: c, related_name: n }))} />
+                               onPick={(c, n) => setForm((f) => ({ ...f, related_code: c, related_name: n, sector: '' }))} />
                 </div>
                 <span className="text-[11px] text-text-muted ml-1">② 关联原因</span>
-                <select value={form.attribute_type} onChange={(e) => setForm({ ...form, attribute_type: e.target.value as AttributeType })} className={cn(INPUT, 'w-32')}>
-                  {ATTR_ORDER.map((t) => <option key={t} value={t}>{ATTR_LABEL[t]}</option>)}
-                </select>
-                <input value={form.attribute_value} onChange={(e) => setForm({ ...form, attribute_value: e.target.value })}
-                       placeholder="属性名（概念 / 事件 / 相同的字）" className={cn(INPUT, 'w-48')} />
+                <div className="inline-flex rounded border border-bg-border overflow-hidden text-xs">
+                  {([['sector', '同属板块'], ['other', '其他原因']] as const).map(([k, l]) => (
+                    <button key={k} type="button" onClick={() => setForm((f) => ({ ...f, kind: k }))}
+                            className={cn('px-2 py-1', form.kind === k ? 'bg-purple-400/15 text-purple-200' : 'text-text-muted hover:text-text-secondary')}>{l}</button>
+                  ))}
+                </div>
+                {form.kind === 'sector' ? (
+                  <select value={form.sector} onChange={(e) => setForm({ ...form, sector: e.target.value })}
+                          disabled={!pairOk || !shared.data?.length} className={cn(INPUT, 'w-56')}>
+                    <option value="">
+                      {!pairOk ? '先在①选关联股' : shared.isLoading ? '读取共同板块…'
+                        : shared.isError ? '共同板块读取失败，可以先用「其他原因」'
+                        : !shared.data?.length ? '这两只没有共同板块，用「其他原因」' : `选共同板块（${shared.data.length} 个）`}
+                    </option>
+                    {(shared.data ?? []).map((x) => {
+                      const done = recordedFor.has(x.name)
+                      return (
+                        <option key={x.code} value={x.code} disabled={done}>
+                          {x.watched ? '★ ' : ''}{x.name}（{x.type === 'industry' ? '行业 A' : `${x.sector_type === 'region' ? '地区' : '概念'} B`}）{done ? ' · 已记' : ''}
+                        </option>
+                      )
+                    })}
+                  </select>
+                ) : (
+                  <input value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} maxLength={100}
+                         placeholder="一句话写关联原因：同一事件 / 名称里相同的字 / 历史联动……" className={cn(INPUT, 'w-72')} />
+                )}
                 <input value={form.evidence} onChange={(e) => setForm({ ...form, evidence: e.target.value })}
-                       placeholder="关联依据（来源、公告、业务……事件和产业要能核验）" className={cn(INPUT, 'flex-1 min-w-[12rem]')} />
-                <button disabled={!form.related_code} title={form.related_code ? undefined : '先在①搜到并选中关联股'}
+                       placeholder="来源 / 依据（可选：公告、新闻、业务……）" className={cn(INPUT, 'flex-1 min-w-[12rem]')} />
+                <button disabled={!form.related_code || (form.kind === 'sector' ? !form.sector : !form.reason.trim())}
+                        title={!form.related_code ? '先在①搜到并选中关联股' : '先在②选共同板块或写关联原因'}
                         className="inline-flex items-center gap-0.5 px-2 py-1 rounded bg-purple-400/15 text-purple-200 text-xs disabled:opacity-40 disabled:cursor-not-allowed"><Plus className="w-3 h-3" />添加</button>
               </form>
+              {!!shared.data?.length && form.kind === 'sector' && (
+                <div className="text-[10px] text-text-muted">★ 是关注板块，排在前面；「已记」是这对已经按这个板块记过的</div>
+              )}
               {formErr && <div className="text-xs text-down">{formErr}</div>}
             </Manual>
           )}

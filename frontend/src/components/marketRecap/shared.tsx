@@ -10,13 +10,15 @@ export const POSTURE_LABEL: Record<Posture, string> = {
 export const TIER_LABEL: Record<SectorTier, string> = { core: '核心主线', secondary: '次级观察', drop: '不再重点关注' }
 export const ATTR_LABEL: Record<AttributeType, string> = {
   industry: '行业及产业链', concept: '共享概念', event: '事件催化',
-  name: '名称联想', structure: '情绪结构', history: '历史市场记忆',
+  name: '名称联想', structure: '情绪结构', history: '历史市场记忆', manual: '人工关联原因',
 }
-// 依据性质由属性类型决定（后端同一张表）：名称联想永远是 C
-export const BASIS_OF: Record<AttributeType, 'A' | 'B' | 'C'> = {
-  industry: 'A', event: 'A', concept: 'B', history: 'B', structure: 'B', name: 'C',
+// 依据性质由属性类型决定（后端同一张表）：名称联想永远是 C；人工自己写的原因不分 A/B/C，记 M
+export const BASIS_OF: Record<AttributeType, 'A' | 'B' | 'C' | 'M'> = {
+  industry: 'A', event: 'A', concept: 'B', history: 'B', structure: 'B', name: 'C', manual: 'M',
 }
-export const BASIS_LABEL = { A: 'A 实际产业 / 事件', B: 'B 共享概念 / 历史联动', C: 'C 名称 / 叙事联想' }
+export const BASIS_LABEL = { A: 'A 实际产业 / 事件', B: 'B 共享概念 / 历史联动', C: 'C 名称 / 叙事联想', M: '人工写的关联原因，不分 A/B/C' }
+/** 依据列显示的字：M 显示「人工」 */
+export const basisText = (b: string) => (b === 'M' ? '人工' : b)
 export const RESPONSE_LABEL: Record<ResponseStatus, string> = {
   leading: '领先', sync: '同步', lagging: '滞后', no_response: '未见明显响应', unknown: '无法判断', pending: '待验证',
 }

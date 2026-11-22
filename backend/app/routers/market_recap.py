@@ -159,6 +159,12 @@ def leader_sectors(code: str, date_: date = Query(..., alias="date"), db: Sessio
     return {**res, "response_labels": RESPONSE_LABEL}
 
 
+@router.get("/shared-sectors")
+def shared_sectors(a: str, b: str, db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """两只票共同所在的板块：新增关联选「同属板块」时的候选。"""
+    return {"sectors": ctx_svc.shared_sectors(db, a.strip(), b.strip())}
+
+
 class RelationIn(BaseModel):
     id: Optional[int] = None
     date: date

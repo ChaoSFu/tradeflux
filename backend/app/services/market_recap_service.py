@@ -386,6 +386,25 @@ def build_context(db: Session, d: date, watched: Iterable[str] = (),
 
 # ── 个股当天事实（关联股、预案、验证共用）──────────────────────────────────
 
+def shared_sectors(db: Session, a: str, b: str) -> List[dict]:
+    """
+    两只票共同所在的板块（新增关联时「同属板块」的候选，2026-11-22）。
+    type：行业记 industry，其余（概念、地区）记 concept——跟观察池同板块自动关联同一口径。
+    排序：关注的板块在前（融资融券、深股通这类没意义的共同板块就沉下去），行业在概念前。
+    """
+    rows = (db.query(Sector, Stock.code)
+            .join(StockSectorRelation, StockSectorRelation.sector_id == Sector.id)
+            .join(Stock, Stock.id == StockSectorRelation.stock_id)
+            .filter(Stock.code.in_([a, b])).all())
+    by_sector: Dict[int, Tuple[Any, set]] = {}
+    for s, c in rows:
+        by_sector.setdefault(s.id, (s, set()))[1].add(c)
+    out = [{"code": s.code, "name": s.name, "type": "industry" if s.sector_type == "industry" else "concept",
+            "sector_type": s.sector_type, "watched": bool(s.is_watched)}
+           for s, cs in by_sector.values() if {a, b} <= cs]
+    return sorted(out, key=lambda x: (not x["watched"], x["type"] != "industry", x["name"]))
+
+
 def stock_facts(db: Session, codes: Iterable[str], d: date) -> Dict[str, dict]:
     """
     任意一批股票在 d 这天的事实。来源按覆盖面拼：全市场快照（11-06 起全市场）→ 股票日快照

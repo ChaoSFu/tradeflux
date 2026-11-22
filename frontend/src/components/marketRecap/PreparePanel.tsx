@@ -3,7 +3,7 @@ import { fetchActivations, fetchPrepare, type RecapDraft, type RecapSummary, typ
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { cn } from '@/utils/cn'
 import { EventBadge } from './CorePoolPanel'
-import { ATTR_LABEL, INPUT, POSTURE_LABEL, SCENARIO_META } from './shared'
+import { ATTR_LABEL, INPUT, POSTURE_LABEL, SCENARIO_META, basisText } from './shared'
 
 /** 复盘决策摘要：一屏看清今天的结论（姿态是你确认的，不是系统打分给的） */
 export function DecisionSummary({ date, draft, set, summary, pool }: {
@@ -112,7 +112,7 @@ export function PreparePanel({ date }: { date: string }) {
                 )
               })}
               <div className="text-[11px] text-text-muted">关联（锁定时）{rels.length} 条：
-                {rels.slice(0, 12).map((r) => `${r.related_name ?? r.related_code}（${ATTR_LABEL[r.attribute_type]}·${r.relation_basis}）`).join('、') || '—'}
+                {rels.slice(0, 12).map((r) => `${r.related_name ?? r.related_code}（${ATTR_LABEL[r.attribute_type]}·${basisText(r.relation_basis)}）`).join('、') || '—'}
               </div>
             </div>
           )
