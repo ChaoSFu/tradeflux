@@ -264,21 +264,24 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
 
           {!readOnly && (
             <Manual title="新增关联" hint={`依据性质自动定：${BASIS_LABEL[BASIS_OF[form.attribute_type]]}`}>
+              {/* 顺序就是做事的顺序（2026-11-22 用户要的）：① 先搜到关联股 → ② 再写为什么关联 → 添加 */}
               <form className="flex flex-wrap items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); submit() }}>
+                <span className="text-[11px] text-text-muted">① 关联股</span>
+                <div className="w-52">
+                  <StockPicker code={form.related_code} name={form.related_name} inputCls={cn(INPUT, 'w-full')}
+                               placeholder="搜代码或名称，点结果选中"
+                               onPick={(c, n) => setForm((f) => ({ ...f, related_code: c, related_name: n }))} />
+                </div>
+                <span className="text-[11px] text-text-muted ml-1">② 关联原因</span>
                 <select value={form.attribute_type} onChange={(e) => setForm({ ...form, attribute_type: e.target.value as AttributeType })} className={cn(INPUT, 'w-32')}>
                   {ATTR_ORDER.map((t) => <option key={t} value={t}>{ATTR_LABEL[t]}</option>)}
                 </select>
                 <input value={form.attribute_value} onChange={(e) => setForm({ ...form, attribute_value: e.target.value })}
                        placeholder="属性名（概念 / 事件 / 相同的字）" className={cn(INPUT, 'w-48')} />
-                {/* 关联股：按代码或名称搜，点结果选中（2026-11-22 用户要的，原来只能手敲代码） */}
-                <div className="w-44">
-                  <StockPicker code={form.related_code} name={form.related_name} inputCls={cn(INPUT, 'w-full')}
-                               placeholder="关联股：代码或名称"
-                               onPick={(c, n) => setForm((f) => ({ ...f, related_code: c, related_name: n }))} />
-                </div>
                 <input value={form.evidence} onChange={(e) => setForm({ ...form, evidence: e.target.value })}
                        placeholder="关联依据（来源、公告、业务……事件和产业要能核验）" className={cn(INPUT, 'flex-1 min-w-[12rem]')} />
-                <button className="inline-flex items-center gap-0.5 px-2 py-1 rounded bg-purple-400/15 text-purple-200 text-xs"><Plus className="w-3 h-3" />添加</button>
+                <button disabled={!form.related_code} title={form.related_code ? undefined : '先在①搜到并选中关联股'}
+                        className="inline-flex items-center gap-0.5 px-2 py-1 rounded bg-purple-400/15 text-purple-200 text-xs disabled:opacity-40 disabled:cursor-not-allowed"><Plus className="w-3 h-3" />添加</button>
               </form>
               {formErr && <div className="text-xs text-down">{formErr}</div>}
             </Manual>
