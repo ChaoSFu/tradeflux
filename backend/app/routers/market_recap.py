@@ -285,16 +285,17 @@ def get_recap(trade_date: date, db: Session = Depends(get_db), user: str = Depen
     pool = store.watch_pool(db, user, trade_date)
     facts = ctx_svc.stock_facts(db, [w.stock_code for w in pool], trade_date)
     rels = store.relations_for(db, user, [w.stock_code for w in pool])
-    rel_count = {}
+    # 按股票去重：同一只关联股挂了几个属性（比如同属五个关注板块）也只算一只，跟人气核心池的「关联股」同一口径
+    rel_codes: dict = {}
     for r in rels:
-        rel_count[r.leader_code] = rel_count.get(r.leader_code, 0) + 1
+        rel_codes.setdefault(r.leader_code, set()).add(r.related_code)
     i = cal.index(trade_date) if trade_date in set(cal) else None
     prev = cal[i - 1] if i else None
     return {
         **store.get_recap(db, user, trade_date),
         "watch_pool": [{"code": w.stock_code, "name": w.stock_name or (facts.get(w.stock_code) or {}).get("name"),
                         "deep": w.deep, "note": w.note, "added_date": w.added_date,
-                        "relations": rel_count.get(w.stock_code, 0), "facts": facts.get(w.stock_code)}
+                        "relations": len(rel_codes.get(w.stock_code, ())), "facts": facts.get(w.stock_code)}
                        for w in pool],
         "summary": store.summary(db, user, trade_date),
         "locked_versions": [{k: v[k] for k in ("version", "locked_at", "pre_open", "target_trade_date",

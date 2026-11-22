@@ -606,13 +606,18 @@ class TestPoolSectorLink:
         self._seed(db)
         db.add_all([RecapWatchStock(owner=U, stock_code=c, added_date=D1) for c in (self.A, self.B)])
         db.commit()
+        # A 对 B 再记一条别的属性：关联股还是 B 这一只，计数按股票去重
+        store.upsert_relation(db, U, {"leader_code": self.A, "related_code": self.B, "attribute_type": "event",
+                                      "attribute_value": "同一事件", "source": "manual"}, D2)
         app = FastAPI()
         app.include_router(market_recap.router)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[require_auth] = lambda: U
         res = TestClient(app).get(f"/market-recap/{D3.isoformat()}")
         assert res.status_code == 200, res.text
-        assert {w["code"]: w["relations"] for w in res.json()["watch_pool"]} == {self.A: 1, self.B: 1}
+        assert {w["code"]: w["relations"] for w in res.json()["watch_pool"]} == {self.A: 1, self.B: 1}, \
+            "A 对 B 有两条（芯片概念 + 事件），关联股只算 1 只"
+        assert len(self._links(db, self.A)) == 2
 
 
 class TestSealRate:
