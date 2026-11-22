@@ -16,6 +16,7 @@ const ATTR_ORDER: AttributeType[] = ['industry', 'event', 'concept', 'manual', '
 const TIMED: ResponseStatus[] = ['leading', 'sync', 'lagging']
 const SOURCE_LABEL: Record<string, string> = {
   manual: '人工', name_rule: '名称规则', sector_relation: '板块关联', pool_sector: '观察池同板块（自动）', snapshot_concept: '行情概念',
+  reverse: '反向自动（对方那边记的）',
 }
 const SYS_TONE: Record<SystemResponse, string> = {
   limit_up: 'text-up', up_response: 'text-up', independent_strong: 'text-accent', not_met: 'text-text-muted', insufficient: 'text-warn',

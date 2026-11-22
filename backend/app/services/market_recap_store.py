@@ -435,6 +435,41 @@ def _stock_name(db: Session, code: str) -> Optional[str]:
             .order_by(LargeCapMarketDaily.trade_date.desc()).limit(1).scalar())
 
 
+MIRROR_SOURCE = "reverse"
+
+
+def mirror_relations(db: Session, owner: str, rels: Optional[Iterable[LeaderRelation]] = None) -> int:
+    """
+    关联是双向的（2026-11-22 用户要的：给九阳记了襄阳轴承、东方海洋，这两只也该自动关联上九阳）：
+    A → B 记了，就补一条 B → A，属性类型、属性名、依据、核验状态照抄，source=reverse。
+
+    **只补没记过的**：B → A 同一属性以前记过（包括删掉的、标了不成立的），就不动——
+    删掉 / 否掉的反向不会被自动加回来。标了不成立的、删掉的关联不往回补。
+    `rels` 不给就查这个用户的全部关联（打开复盘页时补上线前就有的）。返回新记的条数。
+    """
+    rows = db.query(LeaderRelation).filter(LeaderRelation.owner == owner).all()
+    have = {(r.leader_code, r.attribute_type, r.attribute_value, r.related_code) for r in rows}
+    created = 0
+    for r in (rows if rels is None else list(rels)):
+        if r.removed_at is not None or r.confidence_status == "rejected":
+            continue
+        key = (r.related_code, r.attribute_type, r.attribute_value, r.leader_code)
+        if key in have:
+            continue
+        have.add(key)
+        db.add(LeaderRelation(
+            owner=owner, leader_code=r.related_code, leader_name=r.related_name or _stock_name(db, r.related_code),
+            related_code=r.leader_code, related_name=r.leader_name or _stock_name(db, r.leader_code),
+            attribute_type=r.attribute_type, attribute_value=r.attribute_value, relation_basis=r.relation_basis,
+            evidence=r.evidence,              # 依据照抄；「反向自动」由 source 说明，不重复写进依据
+            source=MIRROR_SOURCE, confidence_status=r.confidence_status, last_verified=r.last_verified,
+            first_recorded=r.first_recorded))
+        created += 1
+    if created:
+        db.commit()
+    return created
+
+
 def remove_relation(db: Session, owner: str, rid: int) -> bool:
     r = db.query(LeaderRelation).filter(LeaderRelation.id == rid, LeaderRelation.owner == owner).first()
     if r is None:
