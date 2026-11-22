@@ -6,6 +6,7 @@ import {
   type AttributeType, type LeaderRelations, type Plan, type ResponseStatus, type SystemResponse, type WatchItem,
 } from '@/api/marketRecap'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
+import { StockPicker } from '@/components/common/StockPicker'
 import { cn } from '@/utils/cn'
 import { EventBadge } from './CorePoolPanel'
 import { SectorPeersPanel } from './SectorPeersPanel'
@@ -137,7 +138,7 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
   }
 
   const [q, setQ] = useState('')
-  const [form, setForm] = useState({ attribute_type: 'concept' as AttributeType, attribute_value: '', related_code: '', evidence: '' })
+  const [form, setForm] = useState({ attribute_type: 'concept' as AttributeType, attribute_value: '', related_code: '', related_name: null as string | null, evidence: '' })
   const [formErr, setFormErr] = useState('')
   const [showSugg, setShowSugg] = useState(false)
   const [picked, setPicked] = useState<Set<string>>(new Set())
@@ -156,7 +157,7 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
     setFormErr('')
     try {
       await save({ ...form, source: 'manual' })
-      setForm((f) => ({ ...f, attribute_value: '', related_code: '', evidence: '' }))
+      setForm((f) => ({ ...f, attribute_value: '', related_code: '', related_name: null, evidence: '' }))
       refresh()
     } catch (e: any) { setFormErr(e?.message ?? '保存失败') }  // eslint-disable-line @typescript-eslint/no-explicit-any
   }
@@ -269,8 +270,12 @@ export function RelationPanel({ pool, date, readOnly, selected, onSelect, extraL
                 </select>
                 <input value={form.attribute_value} onChange={(e) => setForm({ ...form, attribute_value: e.target.value })}
                        placeholder="属性名（概念 / 事件 / 相同的字）" className={cn(INPUT, 'w-48')} />
-                <input value={form.related_code} onChange={(e) => setForm({ ...form, related_code: e.target.value.trim() })}
-                       placeholder="关联股代码" className={cn(INPUT, 'w-28')} />
+                {/* 关联股：按代码或名称搜，点结果选中（2026-11-22 用户要的，原来只能手敲代码） */}
+                <div className="w-44">
+                  <StockPicker code={form.related_code} name={form.related_name} inputCls={cn(INPUT, 'w-full')}
+                               placeholder="关联股：代码或名称"
+                               onPick={(c, n) => setForm((f) => ({ ...f, related_code: c, related_name: n }))} />
+                </div>
                 <input value={form.evidence} onChange={(e) => setForm({ ...form, evidence: e.target.value })}
                        placeholder="关联依据（来源、公告、业务……事件和产业要能核验）" className={cn(INPUT, 'flex-1 min-w-[12rem]')} />
                 <button className="inline-flex items-center gap-0.5 px-2 py-1 rounded bg-purple-400/15 text-purple-200 text-xs"><Plus className="w-3 h-3" />添加</button>
