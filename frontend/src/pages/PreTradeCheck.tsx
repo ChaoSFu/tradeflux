@@ -21,7 +21,7 @@ import {
   EMPTY_ANSWERS, evaluatePreTrade, fetchPreTradeCheck, fetchPreTradeContext, fetchPreTradeHistory,
   fetchPreTradeOutcome, type EvaluatePayload, type EvaluateResult, type ManualAnswers,
 } from '@/api/preTradeCheck'
-import { StockPicker } from '@/components/preTrade/StockPicker'
+import { StockPicker } from '@/components/common/StockPicker'
 import { VerdictPanel } from '@/components/preTrade/VerdictPanel'
 import { CheckModules } from '@/components/preTrade/CheckModules'
 import { ManualQuestions } from '@/components/preTrade/ManualQuestions'
