@@ -639,6 +639,20 @@ class TestRelationReason:
             store.upsert_relation(db, U, {"leader_code": "002148", "related_code": "002685",
                                           "attribute_type": "manual", "attribute_value": "  "}, D2)
 
+    def test_以前写过的原因_按次数再按最近排_删掉的不算(self, db):
+        def rel(leader, related, t, v, d):
+            return store.upsert_relation(db, U, {"leader_code": leader, "related_code": related,
+                                                 "attribute_type": t, "attribute_value": v}, d)
+        rel("002148", "002685", "manual", "卫星互联网订单", D1)
+        rel("000678", "002685", "manual", "卫星互联网订单", D2)
+        rel("002148", "000678", "event", "同一次并购", D3)
+        rel("002148", "600000", "concept", "芯片概念", D3)          # 板块不算「原因」
+        gone = rel("002148", "600001", "manual", "删掉的原因", D3)
+        store.remove_relation(db, U, gone.id)
+        assert [(x["value"], x["count"], x["last_used"]) for x in store.reason_history(db, U)] == [
+            ("卫星互联网订单", 2, D2.isoformat()), ("同一次并购", 1, D3.isoformat())]
+        assert store.reason_history(db, "someone-else") == []
+
 
 class TestSealRate:
     @pytest.mark.parametrize("lu,broken,expected", [

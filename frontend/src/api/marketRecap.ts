@@ -443,6 +443,10 @@ export const fetchLeaderRelations = (code: string, date: string, name?: string |
 export interface SharedSector { code: string; name: string; type: 'industry' | 'concept'; sector_type: string | null; watched: boolean }
 export const fetchSharedSectors = (a: string, b: string) =>
   client.get<{ sectors: SharedSector[] }>('/market-recap/shared-sectors', { params: { a, b } }).then((r) => r.data.sectors)
+/** 以前写过的关联原因（按用过的次数、再按最近一次排）：选「其他原因」时先给这些，选不到再自己写 */
+export interface ReasonUsed { value: string; count: number; last_used: string }
+export const fetchRelationReasons = () =>
+  client.get<{ reasons: ReasonUsed[] }>('/market-recap/relation-reasons').then((r) => r.data.reasons)
 export const putRelation = (body: {
   id?: number; date: string; leader_code: string; leader_name?: string | null; attribute_type: AttributeType
   attribute_value: string; related_code: string; related_name?: string | null; evidence?: string | null

@@ -165,6 +165,12 @@ def shared_sectors(a: str, b: str, db: Session = Depends(get_db), user: str = De
     return {"sectors": ctx_svc.shared_sectors(db, a.strip(), b.strip())}
 
 
+@router.get("/relation-reasons")
+def relation_reasons(db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """以前写过的关联原因：新增关联选「其他原因」时先从这里挑，挑不到再自己写。"""
+    return {"reasons": store.reason_history(db, user)}
+
+
 class RelationIn(BaseModel):
     id: Optional[int] = None
     date: date
