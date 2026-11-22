@@ -27,7 +27,7 @@ from app.models.stock import Stock, StockDailySnapshot
 from app.services.fuyao_archive import (
     ARCHIVE_PATH, KIND_FULL, META_PATH, archive_max_date, read_archive_rows,
 )
-from app.services.fuyao_dump import download_dump_resumable, get_api_key, rows_to_bars
+from app.services.fuyao_dump import FuyaoError, download_dump_resumable, get_api_key, rows_to_bars
 from app.services.market_effect_service import recent_trade_dates, refresh_effects
 from app.services.snapshot_history import insert_history_bars
 
@@ -160,7 +160,8 @@ def cmd_status():
     print(f"  库里比存档新的交易日：{newer} 个")
 
 
-def cmd_refresh():
+def cmd_refresh() -> bool:
+    """重下存档。成功返回 True；没下完返回 False（半截留着，再跑一次接着续）。"""
     key = get_api_key()
     if not key:
         print("没配 FUYAO_API_KEY"); sys.exit(1)
@@ -172,16 +173,23 @@ def cmd_refresh():
             shown["pct"] = pct - pct % 10
             print(f"    {have / 1048576:6.1f} / {total / 1048576:.1f}MB  ({pct}%)", flush=True)
 
-    print("下载 daily-k（可续传；断了再跑一次会接着下）")
-    r = download_dump_resumable(key, KIND_FULL, ARCHIVE_PATH, progress=_p)
+    print("下载 daily-k（可续传；断了会用同一条链接接着下，再跑一次也会接着下）")
+    try:
+        r = download_dump_resumable(key, KIND_FULL, ARCHIVE_PATH, progress=_p)
+    except FuyaoError as e:
+        print(f"没下完：{e}")
+        return False
     d = archive_max_date()
     META_PATH.write_text(json.dumps({
         "path_date": r["path_date"], "size": r["bytes"],
         "fetched_at": datetime.now(SH).isoformat(timespec="seconds"),
         "max_trade_date": d.isoformat() if d else None,
     }, ensure_ascii=False), encoding="utf-8")
-    print(f"完成：{r['bytes'] / 1048576:.1f}MB，{r['seconds']:.0f}s，{r['rounds']} 轮，"
+    print(f"完成：{r['bytes'] / 1048576:.1f}MB，{r['seconds']:.0f}s，{r['rounds']} 条链接 {r['connections']} 次连接，"
           f"断点续传 {r['resumed']} 次；覆盖到 {d}")
+    if r.get("cuts"):
+        print(f"  连接情况：{r['cuts']}")
+    return True
 
 
 def main():
@@ -196,7 +204,8 @@ def main():
     if a.cmd == "status":
         cmd_status()
     elif a.cmd == "refresh":
-        cmd_refresh()
+        if not cmd_refresh():
+            sys.exit(1)
     else:
         cmd_heal(a.days, a.apply)
 

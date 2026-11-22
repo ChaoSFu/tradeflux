@@ -684,9 +684,9 @@ class _FakeS3:
         return _Client
 
 
-def _wire(monkeypatch, fd, s3, total, url="https://x/releases/20260910/daily-k.parquet", slept=None):
+def _wire(monkeypatch, fd, s3, total, url="https://x/releases/20260910/daily-k.parquet", slept=None, urls=None):
     monkeypatch.setattr(fd.httpx, "Client", s3.client())
-    monkeypatch.setattr(fd, "_download_url", lambda *a, **k: url)
+    monkeypatch.setattr(fd, "_download_url", lambda *a, **k: (urls.append(1) if urls is not None else None) or url)
     monkeypatch.setattr(fd, "_remote_size", lambda *a, **k: total)
     monkeypatch.setattr(fd.time, "sleep", (lambda s: slept.append(s)) if slept is not None else (lambda *_: None))
 
@@ -699,21 +699,38 @@ def test_大文件断了从断点续传而不是重下(tmp_path, monkeypatch):
     dest = tmp_path / "daily-k.parquet"
     r = fd.download_dump_resumable("k", "daily-k", dest)
     assert dest.read_bytes() == data
-    assert s3.ranges == [None, f"bytes={half}-"], "第二轮必须从断点接着要"
-    assert r["resumed"] == 1 and r["rounds"] == 2
+    assert s3.ranges == [None, f"bytes={half}-"], "断了必须从断点接着要"
+    assert r["resumed"] == 1 and r["connections"] == 2
     assert not (tmp_path / "daily-k.parquet.part").exists()
     assert not (tmp_path / "daily-k.parquet.part.json").exists()
 
 
-def test_两轮之间等一个窗口再要链接(tmp_path, monkeypatch):
-    """紧跟着要下载链接必 429——续传的第二轮必须先等 url_gap。"""
+def test_断了用同一条链接隔几秒接着续_不重新要链接(tmp_path, monkeypatch):
+    """
+    2026-11-22 生产：每条连接只给 ~1MB 就被掐。原来每断一次都重新要链接、再等 65 秒，
+    172MB 要几个小时，6 轮一过就放弃。预签名链接 5 分钟内可以反复 GET。
+    """
+    from app.services import fuyao_dump as fd
+    data = _parquet_bytes(); q = len(data) // 4
+    slept, urls = [], []
+    s3 = _FakeS3([(200, data, q), (206, data[q:], q), (206, data[2 * q:], q), (206, data[3 * q:], None)])
+    _wire(monkeypatch, fd, s3, len(data), slept=slept, urls=urls)
+    r = fd.download_dump_resumable("k", "daily-k", tmp_path / "d.parquet", url_gap=65)
+    assert (tmp_path / "d.parquet").read_bytes() == data
+    assert len(urls) == 1 and r["rounds"] == 1 and r["connections"] == 4
+    assert slept == [fd.RECONNECT_GAP] * 3, "同一条链接上续只隔几秒，不等 url_gap"
+    assert "断开 3 次" in r["cuts"]
+
+
+def test_一个字节都没给才换新链接_换之前等够url_gap(tmp_path, monkeypatch):
     from app.services import fuyao_dump as fd
     data = _parquet_bytes(); half = len(data) // 2
-    slept = []
-    s3 = _FakeS3([(200, data, half), (206, data[half:], None)])
-    _wire(monkeypatch, fd, s3, len(data), slept=slept)
+    slept, urls = [], []
+    s3 = _FakeS3([(200, data, half), (206, data[half:], 0), (206, data[half:], None)])
+    _wire(monkeypatch, fd, s3, len(data), slept=slept, urls=urls)
     fd.download_dump_resumable("k", "daily-k", tmp_path / "d.parquet", url_gap=65)
-    assert slept == [65]
+    assert len(urls) == 2, "第二次连接一个字节都没有：这条链接可能不行了，换一条"
+    assert slept[0] == fd.RECONNECT_GAP and 64 < slept[1] <= 65, "要新链接前离上次要链接得隔够 url_gap"
 
 
 def test_要链接遇到429就等一个窗口再要(tmp_path, monkeypatch):
@@ -731,7 +748,7 @@ def test_要链接遇到429就等一个窗口再要(tmp_path, monkeypatch):
         return v
     monkeypatch.setattr(fd, "_download_url", _url)
     r = fd.download_dump_resumable("k", "daily-k", tmp_path / "d.parquet", url_gap=65)
-    assert slept == [65] and r["rounds"] == 2
+    assert len(slept) == 1 and 64 < slept[0] <= 65 and r["rounds"] == 2, "离上次要链接隔够 url_gap"
     assert any("429" in e for e in r["errors"])
 
 
@@ -761,15 +778,28 @@ def test_服务器不认Range回200就从头写不追加(tmp_path, monkeypatch):
     assert dest.read_bytes() == data, "追加的话会变成 半截+整个文件"
 
 
-def test_轮次用完仍没下完则保留半截留给下次(tmp_path, monkeypatch):
+def test_连续几条链接都没进展才放弃_保留半截留给下次(tmp_path, monkeypatch):
     from app.services import fuyao_dump as fd
     data = _parquet_bytes(); third = len(data) // 3
-    s3 = _FakeS3([(200, data, third), (206, data[third:], third)])
+    # 第 1 条链接：两次有进展、第三次没给 → 换链接；之后 3 条链接都一个字节没给 → 放弃
+    s3 = _FakeS3([(200, data, third), (206, data[third:], third)] + [(206, data[2 * third:], 0)] * 4)
     _wire(monkeypatch, fd, s3, len(data))
-    with pytest.raises(fd.FuyaoError, match="半截已保留"):
-        fd.download_dump_resumable("k", "daily-k", tmp_path / "d.parquet", max_rounds=2)
+    with pytest.raises(fd.FuyaoError, match="连续 3 条下载链接一个字节都没下到.*半截已保留.*断开 6 次"):
+        fd.download_dump_resumable("k", "daily-k", tmp_path / "d.parquet", max_idle=3)
     part = tmp_path / "d.parquet.part"
     assert part.exists() and part.stat().st_size == 2 * third, "已经下的不能白下"
+
+
+def test_一直有进展但超过总时长也停_保留半截(tmp_path, monkeypatch):
+    from app.services import fuyao_dump as fd
+    data = _parquet_bytes(); n = len(data) // 10
+    s3 = _FakeS3([(200, data, n)] + [(206, data[i * n:], n) for i in range(1, 10)])
+    _wire(monkeypatch, fd, s3, len(data))
+    clock = iter(range(0, 10_000, 100))       # 每问一次时间就过去 100 秒
+    monkeypatch.setattr(fd, "_clock", lambda: next(clock))
+    with pytest.raises(fd.FuyaoError, match="下了 10 分钟还没下完.*半截已保留"):
+        fd.download_dump_resumable("k", "daily-k", tmp_path / "d.parquet", budget=600)
+    assert (tmp_path / "d.parquet.part").stat().st_size > 0
 
 
 def test_下完了但不是合法parquet就报错且不留文件(tmp_path, monkeypatch):
