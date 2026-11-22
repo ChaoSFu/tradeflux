@@ -130,8 +130,9 @@ export function LifecycleCountChart({ data }: { data: LifecycleStateCounts | nul
                   fill={C_POOL} fillOpacity={0.06} strokeWidth={1} dot={false} isAnimationActive={false}
                   hide={mode === 'share' || hidden.has(L_POOL)} />
             {/* 在场只数走左轴，跟各状态同一把尺子：它是四条状态线之和，必须画在它们上面。
-                放右轴跟池子总数一起的话，在场 19 会画得比刚断板 19 还低 */}
-            <Line yAxisId="s" type="stepAfter" dataKey={L_ALIVE} stroke={C_ALIVE}
+                放右轴跟池子总数一起的话，在场 19 会画得比刚断板 19 还低。
+                线型跟各状态线一样用 monotone（2026-11-22 用户指出阶梯线跟别的线不像一张图） */}
+            <Line yAxisId="s" type="monotone" dataKey={L_ALIVE} stroke={C_ALIVE}
                   strokeWidth={1.5} dot={false} activeDot={{ r: 3 }} isAnimationActive={false}
                   hide={hidden.has(L_ALIVE)} />
             {present.map((l) => (
