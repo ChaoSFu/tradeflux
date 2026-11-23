@@ -69,7 +69,7 @@ def test_基线全部满足才是READY_而且说清楚不是买入信号():
     res = _run()
     assert res["decision"]["verdict"] == "READY", res["decision"]
     assert "不是买入信号" in res["decision"]["summary"]
-    assert res["decision"]["rule_version"] == "pretrade_v3"
+    assert res["decision"]["rule_version"] == "pretrade_v4"
 
 
 def test_结果里没有任何分数():

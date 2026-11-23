@@ -1,17 +1,18 @@
 import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { ChevronDown, ChevronRight, ArrowRight } from 'lucide-react'
-import type { BrItem, BrMainline, BuyRecognition } from '@/api/marketRecap'
+import type { BrBearTarget, BrItem, BrMainline, BuyRecognition } from '@/api/marketRecap'
 import { NUM, StockLink, fmtPct, pctCls } from './shared'
 import { cn } from '@/utils/cn'
 
 /**
- * 买入识别（buy_recog_v1，2026-11-23）——服务龙头弱转强交易。
+ * 买入识别（buy_recog_v2，2026-11-23）——服务龙头弱转强交易。
  *
  * 默认三行：市场过关 / 主线走强 / 带队个股；点开看每一条的证据（来源、行情时间、覆盖、判定原因）。
  * **规则全在后端**（buy_recognition_rules.py），这里只摆结论和证据，不在前端再判一遍。
- * 「进入买入检查」只在市场过关 + 主线确认 + 带队确认时出现，带上股票代码和该主线的板块 id；
- * 实际买点、空间、止损、仓位由买入检查继续核对。盘后研究只摆收盘事实，不给入口。
+ * 首屏的主线、带队股和按钮都取后端给的同一条（focus），不在前端另挑。
+ * 「进入买入检查」只在连续竞价时段、市场过关 + 主线确认 + 带队确认时出现，带上股票代码和该主线的板块 id；
+ * 实际买点、空间、止损、仓位由买入检查继续核对（它提交时还会再过一遍跌停 / 最大空头硬风控）。盘后研究只摆收盘事实，不给入口。
  */
 
 // 红绿灯语义走 safe / danger（本项目 up=红、down=绿 是涨跌色，不能拿来表示「过 / 拦」）
@@ -24,6 +25,8 @@ const TONE: Record<string, string> = {
   CLOSE: 'bg-bg-elevated text-text-secondary border-bg-border',
 }
 const ORIGIN_ZH: Record<string, string> = { continuation: '延续', repair: '分歧后修复', new: '新方向' }
+/** 并进来的概念可能几十个（大题材的小概念全被吸进来）：只列前几个，全部放在悬停里 */
+const mergedText = (xs: string[], n = 4) => (xs.length <= n ? xs.join('、') : `${xs.slice(0, n).join('、')} 等 ${xs.length} 个`)
 const yi = (v: number | null | undefined) => (v == null ? '—' : `${(v / 1e8).toFixed(v >= 1e10 ? 0 : 2)}亿`)
 
 function Pill({ status, children, title }: { status: string; children: ReactNode; title?: string }) {
@@ -45,12 +48,32 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 
 function Meta({ meta }: { meta?: BrItem['meta'] }) {
   if (!meta) return null
-  const bits = [meta.source, meta.observed_at && `行情时间 ${meta.observed_at}`, meta.trade_date && `交易日 ${meta.trade_date}`, meta.coverage]
+  const bits = [meta.source, meta.observed_at && `行情时间 ${meta.observed_at}`,
+    meta.fetched_age_s != null && `数据读取于 ${Math.round(meta.fetched_age_s)} 秒前`, meta.trade_date && `交易日 ${meta.trade_date}`, meta.coverage]
     .filter(Boolean)
   return <div className="text-[10px] text-text-muted/80">{bits.join(' · ')}</div>
 }
 
 // ── 展开后的证据 ─────────────────────────────────────────────────────────────
+
+const ANCHOR_ZH: Record<string, string> = {
+  locked: '已锁定（存在当日状态里，开板离池照样跟踪）', none: '可信快照确认此刻没有封跌停的票',
+  unverified: '待核：今天还没有可信的跌停池快照', unrecoverable: '待核：存下的锁定依据读不回来',
+}
+const BEAR_TONE = (s: string) => (s === 'STOPPED' ? 'PASS' : ['SEALED', 'RESEALED', 'NEW_LOW'].includes(s) ? 'BLOCK' : s === 'TESTING' ? 'NOT_MET' : 'INSUFFICIENT')
+
+function BearTarget({ t }: { t: BrBearTarget }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2">
+      <StockLink code={t.code} name={t.name} />
+      <span className={cn(NUM, pctCls(t.pct))}>{fmtPct(t.pct)}</span>
+      <Pill status={BEAR_TONE(t.judge.state)}>{t.judge.state_zh}</Pill>
+      <span className="text-text-muted">锁定：{t.basis}</span>
+      {t.judge.evidence && <span className="text-text-secondary">{t.judge.evidence}</span>}
+      {t.judge.bars_to && <span className="text-[10px] text-text-muted/80">分时到 {t.judge.bars_to}</span>}
+    </div>
+  )
+}
 
 function ItemEvidence({ it }: { it: BrItem }) {
   const [names, setNames] = useState(false)
@@ -72,6 +95,7 @@ function ItemEvidence({ it }: { it: BrItem }) {
                   <StockLink code={n.code} name={n.name} />
                   <span className={cn('ml-0.5', NUM)}>{yi(n.seal_amount)}</span>
                   {n.verified === 'missing' && <span className="text-warn">（没核上）</span>}
+                  {n.verified === 'stale' && <span className="text-warn">（行情过期）</span>}
                 </span>
               ))}
             </div>
@@ -79,19 +103,10 @@ function ItemEvidence({ it }: { it: BrItem }) {
           {it.meta?.compare_error && <div className="text-[10px] text-warn">对照口径没拿到：{it.meta.compare_error}</div>}
         </div>
       )}
-      {it.key === 'bear' && (
+      {(it.key === 'bear_3d' || it.key === 'bear_seal') && (
         <div className="space-y-0.5 text-[11px]">
-          {(it.targets ?? []).map((t) => (
-            <div key={t.code} className="flex flex-wrap items-baseline gap-x-2">
-              <StockLink code={t.code} name={t.name} />
-              <span className={cn(NUM, pctCls(t.pct))}>{fmtPct(t.pct)}</span>
-              <Pill status={t.judge.state === 'STOPPED' ? 'PASS' : ['SEALED', 'RESEALED', 'NEW_LOW'].includes(t.judge.state) ? 'BLOCK' : t.judge.state === 'TESTING' ? 'NOT_MET' : 'INSUFFICIENT'}>
-                {t.judge.state_zh}
-              </Pill>
-              <span className="text-text-muted">锁定：{t.basis}</span>
-              {t.judge.evidence && <span className="text-text-secondary">{t.judge.evidence}</span>}
-            </div>
-          ))}
+          {(it.targets ?? []).map((t) => <BearTarget key={t.code} t={t} />)}
+          {it.key === 'bear_seal' && it.anchor && <div className="text-[10px] text-text-muted/80">封单锚：{ANCHOR_ZH[it.anchor]}</div>}
           {(it.notes ?? []).map((n) => <div key={n} className="text-[10px] text-text-muted/80">{n}</div>)}
         </div>
       )}
@@ -102,11 +117,12 @@ function ItemEvidence({ it }: { it: BrItem }) {
               <span className="text-text-primary w-16 shrink-0">{x.name}</span>
               <span className={cn(NUM, pctCls(x.judge.pct))}>{fmtPct(x.judge.pct)}</span>
               <span className={x.judge.ok ? 'text-safe' : x.judge.ok === false ? 'text-warn' : 'text-text-muted'}>{x.judge.evidence}</span>
+              {x.judge.bars_to && <span className="text-[10px] text-text-muted/80">分时到 {x.judge.bars_to}</span>}
             </div>
           ))}
           {it.volume ? (
             <div className="text-text-secondary">
-              同期比 <span className={NUM}>{it.volume.ratio.toFixed(2)}</span>：此刻累计 {yi(it.volume.amount)} vs {it.volume.prev_date ?? '上一交易日'} 同期 {yi(it.volume.prev_same)}（比较时刻 {it.volume.same_as_of ?? '—'}，{it.volume.source}）
+              同期比 <span className={NUM}>{it.volume.ratio.toFixed(2)}</span>：沪深两市截至 {it.volume.same_as_of ?? '—'} 累计 {yi(it.volume.amount)} vs {it.volume.prev_date ?? '上一交易日'} 同一时刻 {yi(it.volume.prev_same)}（{it.volume.source}）
             </div>
           ) : it.volume_error ? <div className="text-warn">同期成交额：{it.volume_error}</div> : null}
           {it.breadth?.up_ratio != null && (
@@ -135,6 +151,11 @@ function ItemEvidence({ it }: { it: BrItem }) {
               ))}
             </div>
           )}
+          {it.prev?.common != null && (
+            <div className="text-[10px] text-text-muted/80">
+              上一次 {it.prev.at}：同一批 {it.prev.common} 只中位 {fmtPct(it.prev.median_pct)} → 此刻 {fmtPct(it.prev.median_now)}
+            </div>
+          )}
           {it.memory_note && <div className="text-[10px] text-text-muted/80">{it.memory_note}</div>}
         </div>
       )}
@@ -150,19 +171,24 @@ function MainlineEvidence({ m }: { m: BrMainline }) {
         <span className="text-text-primary font-medium">{m.sector.name}</span>
         {m.origin && <span className="text-[10px] text-text-muted">{ORIGIN_ZH[m.origin]}{m.prev_state ? `（昨日 ${m.prev_state}）` : ''}</span>}
         <Pill status={m.status}>{m.label}</Pill>
-        {!!m.merged.length && <span className="text-[10px] text-text-muted" title="今天活跃成分重合 ≥60%，按成员归并">并：{m.merged.join('、')}</span>}
+        {!!m.merged.length && (
+          <span className="text-[10px] text-text-muted" title={`今天活跃成分重合 ≥60%，只在展示上并成一组；判定、带队、跟进都只用这个板块自己的成分。全部：${m.merged.join("、")}`}>
+            并：{mergedText(m.merged, 8)}（只是展示）
+          </span>
+        )}
       </div>
       <div className="text-text-secondary">{m.reason}</div>
       {s && (
         <div className="text-text-muted">
-          板块分时：低点 {s.sec_low_at}（上证 {s.idx_low_at}），此刻 {fmtPct(s.sec_pct)} vs 上证 {fmtPct(s.idx_pct)}，跑赢 {s.rs_now.toFixed(2)}；
-          {s.had_pullback ? `回踩 ${s.pullback_pp.toFixed(2)} 个百分点，${s.rs_held ? '期间一直跑赢' : '期间跑输过'}，${s.restrength ? '已再度走强' : '还没再走强'}` : '还没回踩'}
+          板块分时（到 {s.bars_to ?? '—'}）：这一轮 {s.round_start} 起板块 {fmtPct(s.win_sec)}、上证 {fmtPct(s.win_idx)}，多 {s.win_rs.toFixed(2)} 个百分点
+          （对昨收 {fmtPct(s.sec_pct)} vs {fmtPct(s.idx_pct)}）；低点 {s.sec_low_at}（上证 {s.idx_low_at}）；
+          {s.had_pullback ? `回踩 ${s.pullback_pp.toFixed(2)} 个百分点，${s.rs_held ? '期间这一轮一直跑赢' : '期间跑输过'}，${s.restrength ? '已再上攻' : '还没再上攻'}` : '还没回踩'}
         </div>
       )}
       {!s && m.series_error && <div className="text-warn">板块分时：{m.series_error}</div>}
       {m.breadth && (
         <div className="text-text-muted">
-          成分 {m.breadth.members} 只（行情 {m.breadth.quoted}）：上涨 {m.breadth.up}、下跌 {m.breadth.down}，中位 {fmtPct(m.breadth.median_pct)}，
+          成分 {m.breadth.members} 只（行情 {m.breadth.quoted}，今天触板 {m.active_today}）：上涨 {m.breadth.up}、下跌 {m.breadth.down}，中位 {fmtPct(m.breadth.median_pct)}，
           跟进 {m.breadth.strong} 只{m.breadth.strong_names.length ? `（${m.breadth.strong_names.join('、')}）` : ''}
         </div>
       )}
@@ -175,10 +201,13 @@ function MainlineEvidence({ m }: { m: BrMainline }) {
           {!!m.leader_candidates?.length && (
             <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-text-muted">
               候选：{m.leader_candidates.map((c) => (
-                <span key={c.code} title={[c.lead_basis, c.support_txt, c.in_core ? '昨日人气核心' : '', c.lu20 ? `近20日涨停 ${c.lu20}` : '',
+                <span key={c.code} title={[c.touch_at && `首次触板 ${c.touch_at}`, c.pct5_at && `分时 +5% ${c.pct5_at}`, c.seal_txt,
+                  c.support_txt && `承接：${c.support_txt}`, c.in_core ? '昨日人气核心' : '', c.lu20 ? `近20日涨停 ${c.lu20}` : '',
                   c.board ? `${c.board} 板` : '', c.float_mv ? `流通 ${yi(c.float_mv)}` : ''].filter(Boolean).join(' · ')}>
                   <StockLink code={c.code} name={c.name} /> <span className={NUM}>{c.lead_at ?? '—'}</span>
                   <span className={cn('ml-0.5', NUM, pctCls(c.pct))}>{fmtPct(c.pct)}</span>
+                  {c.seal_txt && <span className="ml-0.5 text-[10px] text-text-muted/80">{c.seal_txt}</span>}
+                  {c.weak && <span className="ml-0.5 text-[10px] text-warn">走弱</span>}
                 </span>
               ))}
             </div>
@@ -192,17 +221,19 @@ function MainlineEvidence({ m }: { m: BrMainline }) {
 
 // ── 卡片 ─────────────────────────────────────────────────────────────────────
 
-export function BuyRecognitionCard({ data, loading, error }: { data?: BuyRecognition | null; loading?: boolean; error?: string | null }) {
+export function BuyRecognitionCard({ data, loading, error, fetching }: {
+  data?: BuyRecognition | null; loading?: boolean; error?: string | null; fetching?: boolean
+}) {
   const [open, setOpen] = useState(false)
   if (loading && !data) return <div className="card p-3 text-xs text-text-muted">买入识别读取中…</div>
-  if (error || !data || data.error) {
+  if (!data || data.error) {
     return <div className="card p-3 text-xs text-warn">买入识别：{error ?? data?.error ?? '没有数据'}</div>
   }
   const m = data.market
-  const top = data.mainlines[0]
+  // 首屏三行（主线、带队、按钮）都用后端挑的同一条 focus，不在前端另挑
+  const top = data.focus != null ? data.mainlines[data.focus] : data.mainlines[0]
   const close = data.mode === 'close'
-  const withLeader = data.mainlines.find((x) => x.leader?.leader) ?? top
-  const ld = withLeader?.leader
+  const ld = top?.leader
   return (
     <div className="card p-3 space-y-2 border border-purple-400/25">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -212,6 +243,8 @@ export function BuyRecognitionCard({ data, loading, error }: { data?: BuyRecogni
           {close ? `${data.trade_date} 收盘事实` : '盘中临时'}
         </span>
         {data.as_of && <span className="text-[10px] text-text-muted">行情时间 <span className={NUM}>{data.as_of.slice(11, 19)}</span></span>}
+        {fetching && <span className="text-[10px] text-text-muted">刷新中…</span>}
+        {error && <span className="text-[10px] text-warn" title={error}>这次刷新失败，显示的是上一次</span>}
         <button onClick={() => setOpen(!open)} className="ml-auto inline-flex items-center gap-0.5 text-[11px] text-accent">
           {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}{open ? '收起证据' : '展开证据'}
         </button>
@@ -238,7 +271,9 @@ export function BuyRecognitionCard({ data, loading, error }: { data?: BuyRecogni
               <Pill status={top.status}>{top.label}</Pill>
               <span className="text-xs text-text-primary">{top.sector.name}</span>
               {top.origin && <span className="text-[10px] text-text-muted">{ORIGIN_ZH[top.origin]}</span>}
-              {!!top.merged.length && <span className="text-[10px] text-text-muted">并：{top.merged.join('、')}</span>}
+              {!!top.merged.length && (
+                <span className="text-[10px] text-text-muted" title={`只在展示上并成一组：${top.merged.join('、')}`}>并：{mergedText(top.merged)}</span>
+              )}
               <span className="text-[11px] text-text-secondary basis-full sm:basis-auto">{top.reason}</span>
             </div>
             {data.mainlines.length > 1 && (
@@ -259,14 +294,17 @@ export function BuyRecognitionCard({ data, loading, error }: { data?: BuyRecogni
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <Pill status={ld.status}>{ld.label}</Pill>
             <StockLink code={ld.leader.code} name={ld.leader.name} />
-            <span className="text-[10px] text-text-muted">{withLeader.sector.name}</span>
-            {ld.leader.lead_at && <span className="text-[11px] text-text-secondary">{ld.leader.lead_at} 先动</span>}
+            <span className="text-[10px] text-text-muted">{top.sector.name}</span>
+            {ld.leader.lead_at && <span className="text-[11px] text-text-secondary">{ld.leader.lead_at} 先动{ld.leader.lead_basis ? `（${ld.leader.lead_basis}）` : ''}</span>}
+            {ld.leader.seal_txt && <span className="text-[11px] text-text-muted">{ld.leader.seal_txt}</span>}
             {!!ld.followers.length && (
               <span className="text-[11px] text-text-muted">
                 跟进 {ld.followers.map((f) => `${f.name} ${f.at.slice(0, 5)}`).join('、')}
                 {ld.followers_total && ld.followers_total > ld.followers.length ? ` 等 ${ld.followers_total} 只` : ''}
               </span>
             )}
+            {!!ld.relay_from?.length && <span className="text-[10px] text-warn">接力（{ld.relay_from.map((x) => x.name).join('、')} 走弱）</span>}
+            {ld.status !== 'CONFIRMED' && <span className="text-[11px] text-text-muted basis-full">{ld.reason}</span>}
           </div>
         )}
       </Row>
@@ -286,12 +324,14 @@ export function BuyRecognitionCard({ data, loading, error }: { data?: BuyRecogni
       {open && (
         <div className="space-y-3 pt-2 border-t border-bg-border/60">
           <div className="space-y-2">
-            <div className="text-[11px] text-text-muted">市场过关：四项都满足才过关；有拦截先报拦截，其余分「条件未满足」和「数据不足」</div>
+            <div className="text-[11px] text-text-muted">
+              市场过关：五项都满足才过关；有拦截先报拦截，其余分「条件未满足」和「数据不足」。跌停按「可信下界 / 上界」判：下界 &gt;10 直接拦，上界 ≤10 才过
+            </div>
             {m.items.map((it) => <ItemEvidence key={it.key} it={it} />)}
           </div>
           <div className="space-y-2">
             <div className="text-[11px] text-text-muted">
-              主线走强：要同一轮行情里三项证据——先于或伴随指数走强且跑赢上证、回踩后相对强度仍在、成分股有广度和多只独立跟进
+              主线走强：要同一轮行情里三项证据——先于或伴随指数启动、这一轮里比上证多涨、回踩时相对强度仍在且再上攻、成分股有广度和多只独立跟进
               {data.prev_mainline_date && `；旧主线按 ${data.prev_mainline_date} 收盘的主升雷达`}
             </div>
             {data.mainlines.length ? data.mainlines.map((x) => <MainlineEvidence key={x.sector.code} m={x} />)

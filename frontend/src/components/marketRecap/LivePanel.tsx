@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Radio, RefreshCw, X } from 'lucide-react'
-import { fetchLive, removeWatch, restoreWatch, type LiveData, type LiveEvent, type LiveFact, type LiveMeta, type SystemResponse } from '@/api/marketRecap'
+import { fetchBuyRecognitionLive, fetchLive, removeWatch, restoreWatch, type LiveData, type LiveEvent, type LiveFact, type LiveMeta, type SystemResponse } from '@/api/marketRecap'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { BuyRecognitionCard } from '@/components/marketRecap/BuyRecognitionCard'
 import { ATTR_LABEL, NUM, POSTURE_LABEL, Section, StockLink, basisText, fmtPct, pctCls } from '@/components/marketRecap/shared'
@@ -499,8 +499,24 @@ function PoolNow({ d }: { d: LiveData }) {
 
 // ── 整页 ────────────────────────────────────────────────────────────────────
 
+function LiveBuyRecognition({ auto }: { auto: boolean }) {
+  const q = useQuery({
+    queryKey: ['recap-live-br'], queryFn: fetchBuyRecognitionLive,
+    refetchInterval: (query) => {
+      const s = query.state.data?.poll_seconds
+      return auto && s ? s * 1000 : false
+    },
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    staleTime: 10_000,
+  })
+  return <BuyRecognitionCard data={q.data} loading={q.isLoading} fetching={q.isFetching}
+                             error={q.isError ? (q.error as Error).message : null} />
+}
+
 export function LivePanel({ onOpenPrepare }: { onOpenPrepare: (date: string) => void }) {
   const [auto, setAuto] = useState(true)
+  const qc = useQueryClient()
   const q = useQuery({
     queryKey: ['recap-live'], queryFn: fetchLive,
     // 交易时段 30 秒、午休到下午开盘、开盘前等到 09:15；收盘 / 休市不自动刷。页面在后台时不刷
@@ -519,9 +535,10 @@ export function LivePanel({ onOpenPrepare }: { onOpenPrepare: (date: string) => 
   const d = q.data
   return (
     <div className="space-y-3">
-      <StatusBar d={d} auto={auto} setAuto={setAuto} fetching={q.isFetching} refetch={() => q.refetch()} updatedAt={q.dataUpdatedAt} />
-      {/* 买入识别：跟着盘中跟踪同一次刷新（同一个接口），放在行情时间和刷新条下面 */}
-      <BuyRecognitionCard data={d.buy_recognition} />
+      <StatusBar d={d} auto={auto} setAuto={setAuto} fetching={q.isFetching} updatedAt={q.dataUpdatedAt}
+                 refetch={() => { q.refetch(); qc.refetchQueries({ queryKey: ['recap-live-br'] }) }} />
+      {/* 买入识别：自己的接口（慢了不拖盘中跟踪），同一个刷新节奏，放在行情时间和刷新条下面 */}
+      <LiveBuyRecognition auto={auto} />
       <Section id="live-market" step="①" title="市场此刻" right={<Provisional />}>
         <MarketNow d={d} />
       </Section>

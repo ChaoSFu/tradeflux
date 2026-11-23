@@ -65,6 +65,17 @@ def recap_live(db: Session = Depends(get_db), user: str = Depends(require_auth))
     return live_svc.build_live(db, user)
 
 
+@router.get("/live/buy-recognition")
+def recap_live_buy_recognition(db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """
+    盘中买入识别（buy_recog_v2）：跟 /live 分开，各按各的预算返回——买入识别慢了、超时了不拖盘中跟踪。
+    全市场几路跟 /live 共用缓存、同键并发合并；整份结果按行情时间缓存，跟用户无关。
+    **声明在 /{trade_date}/… 之前**：否则 "live" 会被当成日期解析成 422。
+    """
+    from ..services.buy_recognition_service import live_recognition
+    return _jsonable(live_recognition(db))
+
+
 # ── 观察池 ──────────────────────────────────────────────────────────────────
 
 class WatchIn(BaseModel):

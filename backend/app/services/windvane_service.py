@@ -95,6 +95,7 @@ class UpDownData(BaseModel):
     natural_limit_down: int
     up_buckets: List[int]     # 不含涨停，[0-1%, 1-2%, ..., 9-10%+] 10档
     down_buckets: List[int]   # 不含跌停，对称
+    markets_ok: Optional[List[str]] = None   # 这次真返回了的市场代码（000002 沪 / 399002 深 / 899050 北）；单市场失败时总数残缺
 
 
 class ThrustRead(BaseModel):
@@ -398,6 +399,7 @@ def _fetch_updown(client: httpx.Client) -> UpDownData:
     down_b = [0] * 10
     flat = lu = ld = non_nat_lu = non_nat_ld = 0
     ok = 0
+    ok_codes: List[str] = []
     for market, code in UPDOWN_MARKETS:
         try:
             d = _get_json(client, UPDOWN_URL, {
@@ -418,6 +420,7 @@ def _fetch_updown(client: httpx.Client) -> UpDownData:
         non_nat_lu += int(d.get("7") or 0)
         non_nat_ld += int(d.get("8") or 0)
         ok += 1
+        ok_codes.append(code)
     if ok == 0:
         raise ValueError("三市涨跌分布均拉取失败")
     return UpDownData(
@@ -433,7 +436,7 @@ def _fetch_updown(client: httpx.Client) -> UpDownData:
         limit_up=lu, limit_down=ld,
         natural_limit_up=max(lu - non_nat_lu, 0),
         natural_limit_down=max(ld - non_nat_ld, 0),
-        up_buckets=up_b, down_buckets=down_b,
+        up_buckets=up_b, down_buckets=down_b, markets_ok=ok_codes,
     )
 
 
@@ -757,6 +760,41 @@ def _sum_by_date(rows: list, key: str) -> dict[str, list[float]]:
     return by_date
 
 
+_MKT_ZH = {"sh000001": "沪市", "sz399106": "深市", "1.000001": "沪市", "0.399106": "深市"}
+
+
+def _aligned_same(per: dict, expected: tuple) -> dict:
+    """
+    同期成交额（买入识别「同期比」，2026-11-23 第二版）。per[市场] = {"by": {日期: {bar 结束 HH:MM: 成交额}},
+    "done": {日期: {已走完的 HH:MM}}}。
+      · 沪深两市**都要有**，缺一个就不算（之前缺深市会悄悄只拿沪市算）；
+      · 两市各自最后一根已走完的 bar 取**更早**的那个当共同截止时刻（一个市场慢一根时不会多算）；
+      · 今天、上一交易日都按 bar **结束时刻**对齐，不按根数（哪天缺一根就会错位）。
+    返回 {same_amount, prev_same, same_as_of, prev_date, same_error}。
+    """
+    out = {"same_amount": None, "prev_same": None, "same_as_of": None, "prev_date": None, "same_error": None}
+    miss = [_MKT_ZH.get(m, m) for m in expected if m not in per or len(per[m]["by"]) < 2]
+    if miss:
+        return {**out, "same_error": f"缺{'、'.join(miss)}的分钟成交额，同期比不算"}
+    dates = {m: sorted(per[m]["by"]) for m in expected}
+    today, yday = {dates[m][-1] for m in expected}, {dates[m][-2] for m in expected}
+    if len(today) != 1 or len(yday) != 1:
+        return {**out, "same_error": "沪深两市分钟数据的日期对不上，同期比不算"}
+    t, y = today.pop(), yday.pop()
+    lasts = [max(per[m]["done"].get(t) or {""}) for m in expected]
+    if not all(lasts):
+        return {**out, "prev_date": y, "same_error": "今天还没有两市都走完的 bar"}
+    cut = min(lasts)
+    same = prev = 0.0
+    for m in expected:
+        tb, yb = per[m]["by"][t], per[m]["by"][y]
+        if cut not in yb:
+            return {**out, "prev_date": y, "same_error": f"{_MKT_ZH.get(m, m)}上一交易日缺 {cut} 这根，对不齐"}
+        same += sum(v for k, v in tb.items() if k <= cut)
+        prev += sum(v for k, v in yb.items() if k <= cut)
+    return {**out, "same_amount": same or None, "prev_same": prev or None, "same_as_of": cut, "prev_date": y}
+
+
 def _fetch_trends_projection_sina() -> tuple[Optional[dict], Optional[str]]:
     """
     「昨日同期」外推的新浪版本——跟东财 trends2 完全独立的服务器/接口。
@@ -768,10 +806,8 @@ def _fetch_trends_projection_sina() -> tuple[Optional[dict], Optional[str]]:
     tot_today = tot_yday_same = tot_yday_full = 0.0
     today_str: Optional[str] = None
     yday_str: Optional[str] = None
-    # 同期比（买入识别，2026-11-23）**只比已走完的 bar**：正在走的那根今天只有一部分，跟昨天整根比会系统性偏低
-    # （09:33 拿 09:35 那根比，实测 0.84）。bar 按结束时刻标，结束时刻 > 此刻的就是还没走完
-    done_today = done_yday = 0.0
-    last_bar: Optional[str] = None      # 最后一根走完的 bar = 同期比的比较时刻
+    # 同期比（买入识别）**只比已走完的 bar**、两市按 bar 结束时刻对齐，见 _aligned_same
+    per: dict = {}
     now_s = datetime.now(SH_TZ).strftime("%Y-%m-%d %H:%M:%S")
     today_bars = 0
     try:
@@ -796,12 +832,15 @@ def _fetch_trends_projection_sina() -> tuple[Optional[dict], Optional[str]]:
                 tot_yday_same += sum(yday_rows[: len(today_rows)])
                 today_str, yday_str = dates[-1], dates[-2]
                 today_bars = max(today_bars, len(today_rows))
-                done = sorted(str(r.get("day", "")) for r in rows
-                              if str(r.get("day", ""))[:10] == dates[-1] and str(r.get("day", "")) <= now_s)
-                done_today += sum(today_rows[: len(done)])
-                done_yday += sum(yday_rows[: len(done)])
-                if done:
-                    last_bar = max(last_bar or "", done[-1][11:16])
+                m = per.setdefault(symbol, {"by": {}, "done": {}})
+                for row in rows:
+                    day = str(row.get("day", ""))
+                    try:
+                        m["by"].setdefault(day[:10], {})[day[11:16]] = float(row["amount"])
+                    except (KeyError, ValueError, TypeError):
+                        continue
+                    if day <= now_s:            # bar 按结束时刻标：结束时刻 > 此刻的还没走完
+                        m["done"].setdefault(day[:10], set()).add(day[11:16])
     except Exception as e:  # noqa: BLE001
         return None, f"{type(e).__name__}: {e}"
 
@@ -815,9 +854,9 @@ def _fetch_trends_projection_sina() -> tuple[Optional[dict], Optional[str]]:
     elif today_bars >= 1 and tot_yday_same > 0:
         estimate = tot_today + (tot_yday_full - tot_yday_same)
     return {"date": today_str, "amount": tot_today, "estimate": estimate, "is_trading": trading,
-            # 昨日同期累计 + 比较时刻（买入识别「同期比」，2026-11-23）：按 bar 根数对齐，5 分钟一根
-            "prev_date": yday_str, "same_amount": done_today or None, "prev_same": done_yday or None,
-            "same_as_of": last_bar, "source": "新浪 5 分钟K（沪 000001 + 深 399106，只比已走完的 5 分钟）"}, None
+            # 昨日同期累计 + 比较时刻（买入识别「同期比」）：两市都在、截到同一根走完的 bar、按结束时刻对齐
+            "prev_date": yday_str, **{k: v for k, v in _aligned_same(per, ("sh000001", "sz399106")).items() if k != "prev_date"},
+            "source": "新浪 5 分钟K（沪 000001 + 深 399106，截到两市都走完的同一根 5 分钟）"}, None
 
 
 def _fetch_trends_projection_eastmoney() -> tuple[Optional[dict], Optional[str]]:
@@ -830,15 +869,14 @@ def _fetch_trends_projection_eastmoney() -> tuple[Optional[dict], Optional[str]]
     tot_today = tot_yday_same = tot_yday_full = 0.0
     today_str: Optional[str] = None
     yday_str: Optional[str] = None
-    last_bar: Optional[str] = None
-    done_today = done_yday = 0.0
+    per: dict = {}
     now_s = datetime.now(SH_TZ).strftime("%Y-%m-%d %H:%M")
     today_minutes = 0
     last_err: Optional[str] = None
     for attempt in range(2):  # 预热连接后通常一次就成功；保留1次重试兜底真正的瞬时抖动
         tot_today = tot_yday_same = tot_yday_full = 0.0
-        today_str = yday_str = last_bar = None
-        done_today = done_yday = 0.0
+        today_str = yday_str = None
+        per = {}
         today_minutes = 0
         try:
             with _warmed_client(timeout=10, tag="trends2") as client:
@@ -851,20 +889,20 @@ def _fetch_trends_projection_eastmoney() -> tuple[Optional[dict], Optional[str]]
                     print(f"[windvane:trends2] {secid} 请求完成 status={r.status_code}", flush=True)
                     trends = ((r.json().get("data") or {}).get("trends")) or []
                     by_date: dict[str, list[float]] = {}
-                    done_n: dict[str, int] = {}
-                    last_of: dict[str, str] = {}
+                    m = per.setdefault(secid, {"by": {}, "done": {}})
                     for line in trends:
                         parts = line.split(",")
                         if len(parts) < 2:
                             continue
                         d = parts[0][:10]
                         try:
-                            by_date.setdefault(d, []).append(float(parts[1]))
+                            v = float(parts[1])
                         except ValueError:
                             continue
+                        by_date.setdefault(d, []).append(v)
+                        m["by"].setdefault(d, {})[parts[0][11:16]] = v
                         if parts[0][:16] <= now_s:          # 分钟按结束时刻标：> 此刻的还没走完
-                            done_n[d] = done_n.get(d, 0) + 1
-                            last_of[d] = max(last_of.get(d, ""), parts[0][11:16])
+                            m["done"].setdefault(d, set()).add(parts[0][11:16])
                     dates = sorted(by_date)
                     if len(dates) < 2:
                         continue
@@ -872,11 +910,7 @@ def _fetch_trends_projection_eastmoney() -> tuple[Optional[dict], Optional[str]]
                     tot_today += sum(today_rows)
                     tot_yday_full += sum(yday_rows)
                     tot_yday_same += sum(yday_rows[: len(today_rows)])
-                    k = done_n.get(dates[-1], 0)
-                    done_today += sum(today_rows[:k])
-                    done_yday += sum(yday_rows[:k])
                     today_str, yday_str = dates[-1], dates[-2]
-                    last_bar = max(last_bar or "", last_of.get(dates[-1], ""))
                     today_minutes = max(today_minutes, len(today_rows))
             last_err = None
             break
@@ -900,8 +934,8 @@ def _fetch_trends_projection_eastmoney() -> tuple[Optional[dict], Optional[str]]
     elif today_minutes >= 5 and tot_yday_same > 0:
         estimate = tot_today + (tot_yday_full - tot_yday_same)
     return {"date": today_str, "amount": tot_today, "estimate": estimate, "is_trading": trading,
-            "prev_date": yday_str, "same_amount": done_today or None, "prev_same": done_yday or None,
-            "same_as_of": last_bar or None, "source": "东财分钟成交额（沪 000001 + 深 399106，只比已走完的分钟）"}, None
+            "prev_date": yday_str, **{k: v for k, v in _aligned_same(per, ("1.000001", "0.399106")).items() if k != "prev_date"},
+            "source": "东财分钟成交额（沪 000001 + 深 399106，截到两市都走完的同一分钟）"}, None
 
 
 def _fetch_trends_projection() -> tuple[Optional[dict], Optional[str]]:

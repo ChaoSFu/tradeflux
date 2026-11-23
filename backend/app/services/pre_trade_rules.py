@@ -1,5 +1,5 @@
 """
-买入检查的规则（纯函数，2026-09-11 新增）。当前 rule_version = pretrade_v3。
+买入检查的规则（纯函数，2026-09-11 新增）。当前 rule_version = pretrade_v4。
 
 输入：上下文事实（pre_trade_check_service 取的，已经按 as_of 截好）+ 用户输入。
 输出：八个模块的逐项证据 + READY / WAIT / BLOCKED。
@@ -21,6 +21,10 @@
   · 选了「跌破 L1 / VWAP / Anchor」又没填失效价，就用那个价算风险；这个失效位此刻已跌破则直接否决
   · 第 2 笔多出的证据、快速重入的新市场事实也能点选
   · 老客户端只传三句文字（why_*）照样按 v2 的办法判，旧存档不重算
+- pretrade_v4（2026-11-23，买入识别 v2 一起）：
+  · LIVE 评估复用买入识别的硬风控（跌停家数：非 ST 沪深此刻仍封跌停的可信区间；最大空头：近 3 日领跌 + 封单最重）：
+    拦截 → FAIL（BLOCKED）；数据不足 / 还没止跌 → 尚未满足（WAIT）——从卡片点进来后市场转差照样拦
+  · 历史模式不复核这两项（要盘中跌停池和分时，没存），只列一行说明；旧存档照旧按存下来的事实和版本看
 
 ## 这里没有分数
 
@@ -47,7 +51,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .intraday_context_service import STRUCTURE_PHASE
 
-RULE_VERSION = "pretrade_v3"
+RULE_VERSION = "pretrade_v4"
 
 # ── 纪律阈值（v1 设定，不是统计出来的）──────────────────────────────────────
 EARLIEST_NORMAL_ENTRY = time(9, 45)      # 09:45 前不开普通新仓
@@ -603,6 +607,25 @@ def _plan_items(ctx: dict, inp: dict) -> List[dict]:
 
 # ── 1. 市场许可 ──────────────────────────────────────────────────────────────
 
+def _hard_risk_items(hr: Optional[dict]) -> List[dict]:
+    """买入识别的硬风控（pretrade_v4）：拦截 → FAIL；通过 → PASS；还没止跌 / 数据不足 / 过期 → 尚未满足（等）。"""
+    if not hr or not hr.get("items"):
+        why = (hr or {}).get("error") or (hr or {}).get("reason") or "这次没算出来"
+        return [_item("hard_risk", "WARN", f"硬风控（跌停家数 / 最大空头）拿不到：{why}——先等", group="unmet",
+                      evidence={"hard_risk": hr})]
+    out = []
+    for it in hr["items"]:
+        txt = f"{it['title']}：{it['label']}——{it['reason']}"
+        ev = {"rule_version": hr.get("rule_version"), "as_of": hr.get("as_of"), "status": it["status"]}
+        if it["status"] == "BLOCK":
+            out.append(_item(f"hard_{it['key']}", "FAIL", f"硬风控拦截 · {txt}", evidence=ev))
+        elif it["status"] == "PASS":
+            out.append(_item(f"hard_{it['key']}", "PASS", txt, evidence=ev))
+        else:
+            out.append(_item(f"hard_{it['key']}", "WARN", f"等 · {txt}（{it['status_zh']}）", group="unmet", evidence=ev))
+    return out
+
+
 def check_market(ctx: dict) -> dict:
     mk = ctx.get("market") or {}
     items: List[dict] = []
@@ -652,6 +675,11 @@ def check_market(ctx: dict) -> dict:
         items.append(_item("limit_down", "WARN", f"跌停家数偏多：{ld} 家（涨停 {_n(lu)}）"))
     else:
         items.append(_item("limit_down", "PASS", f"跌停 {ld} 家（涨停 {_n(lu)}）"))
+
+    if "hard_risk" in mk:
+        items.extend(_hard_risk_items(mk.get("hard_risk")))
+    elif ctx.get("mode") == "HISTORICAL":
+        items.append(_item("hard_risk", "INFO", "历史时刻：跌停家数 / 最大空头的硬风控要盘中跌停池和分时，没存，不复核"))
 
     hb = mk.get("high_boards") or []
     known = [h for h in hb if h.get("pct") is not None]
