@@ -607,6 +607,23 @@ def _discipline_block(db, owner, code, as_of, cal) -> dict:
 
 # ── 汇总 ──────────────────────────────────────────────────────────────────────
 
+def _hard_risk_live(db: Session, as_of: datetime) -> dict:
+    """
+    买入识别的硬风控（跌停家数 + 最大空头），LIVE 评估提交时复用同一套规则和同一份封单锚：
+    从卡片点进来之后市场转差，这里照样拦。挂了不拖垮检查，按「等」处理。
+    """
+    t = perf_counter()
+    try:
+        from .buy_recognition_service import hard_risk
+        out = hard_risk(db, local_now=as_of, budget_s=LIVE_SOURCE_BUDGET_S)
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        logger.warning("买入检查：硬风控没算出来: %r", e)
+        out = {"status": "INSUFFICIENT", "items": [], "error": f"硬风控没算出来（{type(e).__name__}）"}
+    out["elapsed_s"] = round(perf_counter() - t, 2)
+    return out
+
+
 def _result_or(fut, fallback, name: str = "", timeout: Optional[float] = None):
     try:
         return fut.result(timeout=timeout)
@@ -682,6 +699,12 @@ def build_context(db: Session, owner: Optional[str], code: str, as_of: Optional[
                                            lambda: _breadth_live(), hits),
                       "cohort": ex.submit(_timed, timings, "昨日涨停", _cached_live, ("cohort", prev_d, d),
                                           lambda: _cohort_quotes(cohort_codes, prev_d, d), hits)}
+        # 买入识别同一套硬风控（跌停家数 + 最大空头，2026-11-23 pretrade_v4）：主线程里跑（要查库），
+        # 网络部分它自己并发、自己限时，跟上面几路同时在等
+        hard = None
+        if live:
+            hard = (_hard_risk_live(db, as_of) if trading_day else
+                    {"status": "INSUFFICIENT", "items": [], "reason": f"{d} 不是交易日，没有盘中跌停池"})
         sctx = _result_or(f_stock, lambda e: _failed_ctx(code, as_of, e), "个股")
         intr = _result_or(f_others, lambda e: {}, "指数高标")
         live_facts = None
@@ -706,6 +729,8 @@ def build_context(db: Session, owner: Optional[str], code: str, as_of: Optional[
                 "vs_market": round(sctx.pct - sh.pct, 2) if (sctx.pct is not None and sh and sh.pct is not None) else None}
     stock_block = _stock_block(code, stock, sctx)
     market = _market_block(db, live, as_of, d, prev_d, intr, high_boards, live_facts)
+    if live:
+        market["hard_risk"] = hard
     t = perf_counter()
     sector = _sector_block(db, live, as_of, d, prev_d, stock, thesis_sector_id, sctx,
                            (market.get("limit_touch") or {}).get("codes"), cal)
@@ -728,6 +753,10 @@ def build_context(db: Session, owner: Optional[str], code: str, as_of: Optional[
         {"module": "市场·涨跌家数", **(market["breadth"].get("meta") or {})},
         {"module": "市场·触板家数", **(market["limit_touch"].get("meta") or {})},
         {"module": "市场·昨日涨停今日", **(market["prev_cohort"].get("meta") or {})},
+        *([{"module": "市场·硬风控（跌停 / 最大空头）",
+            **_meta("买入识别同一套规则（跌停池逐只核 + 封单锚 + 分时）", (hard or {}).get("as_of"),
+                    EXACT if (hard or {}).get("status") in ("PASS", "BLOCK") else UNKNOWN,
+                    [x for x in [(hard or {}).get("error"), (hard or {}).get("reason")] if x][:1])}] if live else []),
         {"module": "板块", **((sector.get("live") or {}).get("meta") or sector.get("meta") or {})},
         {"module": "Leader / 生命周期", **(leader.get("meta") or {})},
         {"module": "交易纪律", **(discipline.get("meta") or _meta("—", notes=[discipline.get("reason", "")]))},

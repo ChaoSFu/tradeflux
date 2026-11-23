@@ -22,7 +22,7 @@ import copy
 import logging
 import statistics
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutTimeout
 from datetime import date, datetime, time as dtime
 from time import monotonic
@@ -70,25 +70,52 @@ _T_AM_CLOSE, _T_PM_OPEN, _T_CLOSE_AUCTION = dtime(11, 30), dtime(13, 0), dtime(1
 _pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="recap-live")
 _cache: Dict[tuple, tuple] = {}
 _cache_lock = threading.Lock()
+_inflight: Dict[tuple, Future] = {}
 
 
 def clear_cache() -> None:
     with _cache_lock:
         _cache.clear()
+        _inflight.clear()
 
 
 def _cached(key: tuple, ttl: float, fn: Callable[[], Any]) -> Any:
-    """取到的才缓存（None / 异常不缓存，下次再试）；给副本，调用方改了不串到下一次。"""
+    """
+    取到的才缓存（None / 异常不缓存，下次再试）；给副本，调用方改了不串到下一次。
+    **同键并发合并**（2026-11-23）：同一个键正在取的时候，后来的请求等它的结果，不再各打一遍外部源
+    （盘中跟踪和买入识别两个接口、多开的标签页常常同一秒打进来）。先到的那个抛错，等着的也拿到同一个错。
+    """
     now = monotonic()
     with _cache_lock:
         hit = _cache.get(key)
-    if hit and now - hit[0] < ttl:
-        return copy.deepcopy(hit[1])
-    val = fn()
-    if val is not None:
+        if hit and now - hit[0] < ttl:
+            return copy.deepcopy(hit[1])
+        fut = _inflight.get(key)
+        owner = fut is None
+        if owner:
+            fut = _inflight[key] = Future()
+    if not owner:
+        return copy.deepcopy(fut.result())
+    try:
+        val = fn()
+    except BaseException as e:
         with _cache_lock:
+            _inflight.pop(key, None)
+        fut.set_exception(e)
+        raise
+    with _cache_lock:
+        if val is not None:
             _cache[key] = (monotonic(), copy.deepcopy(val))
+        _inflight.pop(key, None)
+    fut.set_result(val)
     return val
+
+
+def cache_age(key: tuple) -> Optional[float]:
+    """这个键的缓存是多少秒前取的（展示「读取时间」用，跟行情时间分开）；没缓存 = None。"""
+    with _cache_lock:
+        hit = _cache.get(key)
+    return round(monotonic() - hit[0], 1) if hit else None
 
 
 def _naive(dt: Optional[datetime]) -> Optional[datetime]:
@@ -238,8 +265,11 @@ def _index_quotes() -> Optional[Dict[str, StockQuote]]:
 def _breadth() -> Optional[dict]:
     with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=8) as c:
         ud = _fetch_updown(c)
+    # markets_ok：三个市场（沪 000002 / 深 399002 / 北 899050）哪几个这次真返回了——单市场失败时总数是残缺的，
+    # 买入识别只在沪深都在时才拿它当跌停上界（2026-11-23）
     return {"up": ud.up, "down": ud.down, "flat": ud.flat, "limit_up": ud.limit_up,
-            "limit_down": ud.limit_down, "observed_at": _iso(datetime.now(SH_TZ).replace(tzinfo=None))}
+            "limit_down": ud.limit_down, "markets_ok": ud.markets_ok,
+            "observed_at": _iso(datetime.now(SH_TZ).replace(tzinfo=None))}
 
 
 def _limit_pools(d: date) -> Optional[dict]:
@@ -554,26 +584,10 @@ def build_live(db: Session, owner: str, local_now: Optional[datetime] = None) ->
         for x in pools["sealed"]:
             pool_rows.append({**x, "in_core": x["code"] in core_set, "watched": x["code"] in watched})
 
-    # ── 买入识别（2026-11-23）：复用上面的会话、指数、涨停池、涨跌分布、成交额和行情缓存；
-    #    挂了不拖垮整页，只在卡片上说取数失败 ──
-    from . import buy_recognition_service as brs
-    try:
-        buy_recognition = brs.build_live(
-            db, sess=sess, cal=cal, market_dt=market_dt, local_now=local_now, facts=dict(facts),
-            core_items=core_items, pools=pools, pools_err=pools_err,
-            breadth=got.get("breadth", (None, None))[0], breadth_err=got.get("breadth", (None, None))[1],
-            amount=got.get("amount", (None, None))[0], amount_err=got.get("amount", (None, None))[1],
-            idx_quotes=idx_quotes)
-    except Exception as e:  # noqa: BLE001
-        db.rollback()
-        logger.exception("买入识别失败")
-        buy_recognition = {"error": f"买入识别没算出来（{type(e).__name__}: {str(e)[:120]}）"}
-
     missing = [c for c, f in facts.items() if f["status"] == "missing"]
     stale = [c for c, f in facts.items() if f["status"] == "stale"]
     phase = sess["phase"]
     return {
-        "buy_recognition": buy_recognition,
         "session": {**{k: sess[k] for k in ("phase", "data_date", "ref_date", "target_date", "target_is_provisional")},
                     "phase_zh": PHASE_ZH[phase], "live": live, "market_time": _iso(market_dt),
                     "server_time": _iso(local_now), "poll_seconds": poll_seconds(phase, local_now),

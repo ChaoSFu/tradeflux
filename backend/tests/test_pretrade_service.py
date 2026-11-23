@@ -158,7 +158,7 @@ def test_检查结果连同规则版本一起存下来(client, db):
     body = r.json()
     assert body["mode"] == "HISTORICAL" and body["decision"]["verdict"] in ("READY", "WAIT", "BLOCKED")
     row = db.query(PreTradeCheck).one()
-    assert row.rule_version == "pretrade_v3" and row.verdict == body["decision"]["verdict"]
+    assert row.rule_version == "pretrade_v4" and row.verdict == body["decision"]["verdict"]
     assert row.facts_json["as_of"] == "2026-09-11T09:46:37"
     hist = client.get("/pre-trade-check/history").json()
     assert [h["id"] for h in hist] == [row.id]
@@ -255,6 +255,44 @@ def test_全市场实时数据半分钟内不重拉_取不到的不缓存():
     svc._cached_live(("b", 1), bad)
     svc._cached_live(("b", 1), bad)
     assert n["bad"] == 2, "取不到的下次还要再试"
+    svc._live_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_live_hard_risk(monkeypatch):
+    """买入识别的硬风控（pretrade_v4）会打跌停池 / 行情 / 分时：这里默认给一个「都通过」的桩，不碰网络。"""
+    monkeypatch.setattr(svc, "_hard_risk_live", lambda db, as_of: {
+        "status": "PASS", "rule_version": "buy_recog_v2", "as_of": as_of.isoformat(), "items": [
+            {"key": "limit_down", "title": "跌停家数", "status": "PASS", "status_zh": "通过", "label": "≤10 家", "reason": "3 家"},
+            {"key": "bear_3d", "title": "最大空头·近 3 日领跌", "status": "PASS", "status_zh": "通过", "label": "已止跌", "reason": "x"},
+            {"key": "bear_seal", "title": "最大空头·封单最重", "status": "PASS", "status_zh": "通过", "label": "已止跌", "reason": "x"}]})
+
+
+def test_LIVE评估_硬风控事实进存档_拦截就是BLOCKED(db, monkeypatch):
+    """从买入识别点进来以后市场转差：LIVE 评估提交时照样按同一套硬风控拦，存档里留着当时的事实和规则版本。"""
+    svc._live_cache.clear()
+    _seed(db)
+    now = datetime(2026, 9, 11, 10, 0, 0)
+    monkeypatch.setattr(svc, "now_sh", lambda: now)
+    monkeypatch.setattr(svc, "get_trading_days", lambda *a, **k: CAL)
+    monkeypatch.setattr(svc, "get_intraday_context", lambda code, market, as_of, live, **k: _fake_ctx(code, as_of))
+    monkeypatch.setattr(svc, "get_quote_contexts", lambda items, as_of: {c: _fake_ctx(c, as_of) for c, _, _ in items})
+    monkeypatch.setattr(svc, "_limit_touch_live", lambda d: {"touched": 30, "codes": [], "meta": {"quality": ic.EXACT}})
+    monkeypatch.setattr(svc, "_breadth_live", lambda: {"up": 3000, "down": 2000, "meta": {"quality": ic.EXACT}})
+    monkeypatch.setattr(svc, "_cohort_quotes", lambda codes, prev_d, d: {"median_pct": 1.0, "n": 30, "red_ratio": 0.6,
+                                                                    "meta": {"quality": ic.EXACT}})
+    monkeypatch.setattr(svc, "_hard_risk_live", lambda db, as_of: {
+        "status": "BLOCK", "rule_version": "buy_recog_v2", "as_of": as_of.isoformat(), "items": [
+            {"key": "limit_down", "title": "跌停家数", "status": "BLOCK", "status_zh": "拦截", "label": "不开新仓",
+             "reason": "此刻确认仍封跌停至少 12 家"}]})
+    ctx = svc.build_context(db, "me", "600354", None)
+    assert ctx["market"]["hard_risk"]["status"] == "BLOCK"
+    assert any(m["module"].startswith("市场·硬风控") for m in ctx["data_quality"])
+    from app.services import pre_trade_rules as rules
+    res = rules.evaluate(ctx, {"intended_price": 11.5, "position_pct": 10.0, "planned_stop": 11.0, "reason": "",
+                               "answers": {}, "account_risk_budget_pct": 1.5, "stress_loss_pct": 8.0})
+    assert res["decision"]["verdict"] == "BLOCKED"
+    assert any(v["key"] == "hard_limit_down" for v in res["decision"]["vetoes"])
     svc._live_cache.clear()
 
 
@@ -440,7 +478,7 @@ def test_老客户端只传三句文字_照样判(client, db):
     legacy = {**BODY["manual_answers"], "why_sector": "农业", "why_stock": "老核心", "why_now": "回踩转强",
               "invalidation_type": "structure", "invalidation_text": "跌回均价下方"}
     r = client.post("/pre-trade-check/evaluate", json={**BODY, "manual_answers": legacy}).json()
-    assert r["decision"]["rule_version"] == "pretrade_v3"
+    assert r["decision"]["rule_version"] == "pretrade_v4"
     assert not {"plan_sector", "plan_stock", "plan_trigger", "invalidation"} & {i["key"] for i in r["decision"]["unmet"]}
 
 
