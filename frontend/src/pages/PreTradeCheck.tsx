@@ -9,7 +9,7 @@
  * 结论是 READY / WAIT / BLOCKED，没有分数。READY 只代表没发现冲突，买不买由你决定。
  * 规则全在后端（pre_trade_rules.py），这里只负责输入、展示证据、收人工回答。
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { ClipboardCheck, RefreshCw } from 'lucide-react'
@@ -71,7 +71,9 @@ export default function PreTradeCheck() {
   const isLoggedIn = useAuthStore((s) => s.isLoggedIn)
   const [showLogin, setShowLogin] = useState(false)
 
-  // ── 输入（URL 可带入：?code=&as_of=&price=&position_pct=&planned_stop=）──────
+  // ── 输入（URL 可带入：?code=&sector_id=&as_of=&price=&position_pct=&planned_stop=）──────
+  // sector_id：每日复盘「买入识别」带过来的主线板块（2026-11-23）。只认正整数，还要是这只票的板块（见下）
+  const urlSector = /^\d+$/.test(params.get('sector_id') ?? '') ? Number(params.get('sector_id')) : null
   const [code, setCode] = useState(params.get('code') ?? '')
   const [name, setName] = useState<string | null>(null)
   const [mode, setMode] = useState<'LIVE' | 'HISTORICAL'>(params.get('as_of') ? 'HISTORICAL' : 'LIVE')
@@ -80,7 +82,9 @@ export default function PreTradeCheck() {
   const [position, setPosition] = useState(params.get('position_pct') ?? '')
   const [stop, setStop] = useState(params.get('planned_stop') ?? '')
   const [dqOpen, setDqOpen] = useState<boolean | null>(null)
-  const [sectorId, setSectorId] = useState<number | null>(null)
+  const [sectorId, setSectorId] = useState<number | null>(urlSector)
+  const [sectorNote, setSectorNote] = useState<string | null>(
+    params.get('sector_id') && urlSector == null ? `链接带的板块 id「${params.get('sector_id')}」不是数字，已忽略` : null)
   const [budget, setBudget] = useState('')
   const [stress, setStress] = useState('')
   const [answers, setAnswers] = useState<ManualAnswers>(EMPTY_ANSWERS)
@@ -91,8 +95,16 @@ export default function PreTradeCheck() {
   const asOfOk = mode === 'LIVE' || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(asOf)
   const asOfParam = mode === 'LIVE' ? null : withSeconds(asOf)
 
-  // 换票 / 换时刻：答案和结论都作废——上一只票的「否」不能挪给这一只
-  useEffect(() => { setAnswers(EMPTY_ANSWERS); setResult(null); setSectorId(null) }, [code, mode, asOf])
+  // 换票 / 换时刻：答案和结论都作废——上一只票的「否」不能挪给这一只。
+  // 只在票 / 模式 / 时刻**真的变了**才清：URL 带进来的板块（买入识别）不能在挂载时被清掉。
+  // 不用「跳过第一次」——开发模式 StrictMode 会把挂载时的 effect 跑两遍，第二遍照样清
+  const inputKey = useRef(`${code}|${mode}|${asOf}`)
+  useEffect(() => {
+    const k = `${code}|${mode}|${asOf}`
+    if (inputKey.current === k) return
+    inputKey.current = k
+    setAnswers(EMPTY_ANSWERS); setResult(null); setSectorId(null); setSectorNote(null)
+  }, [code, mode, asOf])
 
   const ctxQ = useQuery({
     queryKey: ['pretrade-context', code, asOfParam ?? 'live', sectorId, journalId],
@@ -103,6 +115,14 @@ export default function PreTradeCheck() {
   })
   const ctx = ctxQ.data
   useEffect(() => { if (ctx?.stock.name && !name) setName(ctx.stock.name) }, [ctx, name])
+  // 带进来的板块要是这只票自己的板块；不是就退回默认，并说明一声（不悄悄换）
+  useEffect(() => {
+    if (!ctx || sectorId == null) return
+    if (!ctx.sector.options.some((o) => o.id === sectorId)) {
+      setSectorNote(`链接带的板块（id ${sectorId}）不是 ${ctx.stock.name ?? code} 的板块，已改用默认的 ${ctx.sector.thesis?.name ?? '—'}`)
+      setSectorId(null)
+    }
+  }, [ctx, sectorId, code])
 
   const payload: EvaluatePayload = useMemo(() => ({
     stock_code: code, as_of: asOfParam,
@@ -199,6 +219,10 @@ export default function PreTradeCheck() {
                 </option>
               ))}
             </select>
+            {sectorNote && <div className="mt-1 text-[11px] text-warn">{sectorNote}</div>}
+            {!sectorNote && urlSector != null && sectorId === urlSector && ctx && (
+              <div className="mt-1 text-[11px] text-text-muted">板块由每日复盘「买入识别」带入（该主线的代表板块），可改</div>
+            )}
           </div>
         </div>
         <div className="grid gap-3 md:grid-cols-5">

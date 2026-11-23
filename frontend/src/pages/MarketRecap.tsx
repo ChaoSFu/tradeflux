@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { BookOpenCheck, Lock, Radio, Save } from 'lucide-react'
 import {
-  fetchRecapContext, fetchRecapDates, fetchRecapDay, fetchVerification, lockRecap, saveRecap,
+  fetchBuyRecognitionClose, fetchRecapContext, fetchRecapDates, fetchRecapDay, fetchVerification, lockRecap, saveRecap,
   type Plan, type RecapDay, type RecapDraft,
 } from '@/api/marketRecap'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
@@ -12,6 +12,7 @@ import { MarketPanel } from '@/components/marketRecap/MarketPanel'
 import { PlanPanel, ScenarioPanel, emptyPlan } from '@/components/marketRecap/PlanPanel'
 import { CorePoolPanel } from '@/components/marketRecap/CorePoolPanel'
 import { LivePanel } from '@/components/marketRecap/LivePanel'
+import { BuyRecognitionCard } from '@/components/marketRecap/BuyRecognitionCard'
 import { DecisionSummary, PreparePanel } from '@/components/marketRecap/PreparePanel'
 import { RelationPanel } from '@/components/marketRecap/RelationPanel'
 import { ReflectPanel, SummaryCard, VerificationCard, VersionList } from '@/components/marketRecap/ReviewPanel'
@@ -281,6 +282,7 @@ export default function MarketRecap() {
         <div className="card p-6 text-sm text-text-muted">{c.message}</div>
       ) : (
         <>
+          <CloseBuyRecognition date={date} />
           <DecisionSummary date={date} draft={draft} set={set} summary={d.summary} pool={d.watch_pool} />
           {d.prev_verification && d.prev_verification.status !== 'no_lock' && d.prev_date && (
             <div className="card p-3 border border-purple-400/30">
@@ -316,4 +318,12 @@ export default function MarketRecap() {
       ))}
     </div>
   )
+}
+
+
+/** 盘后研究的买入识别：所选交易日可证的收盘事实；要盘中观测的标「盘中无法复核」，不给入口、不串实时结论 */
+function CloseBuyRecognition({ date }: { date: string }) {
+  const q = useQuery({ queryKey: ['recap-buy-recognition', date], queryFn: () => fetchBuyRecognitionClose(date),
+                       staleTime: 5 * 60 * 1000 })
+  return <BuyRecognitionCard data={q.data} loading={q.isLoading} error={q.isError ? (q.error as Error).message : null} />
 }

@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Radio, RefreshCw, X } from 'lucide-react'
 import { fetchLive, removeWatch, restoreWatch, type LiveData, type LiveEvent, type LiveFact, type LiveMeta, type SystemResponse } from '@/api/marketRecap'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
+import { BuyRecognitionCard } from '@/components/marketRecap/BuyRecognitionCard'
 import { ATTR_LABEL, NUM, POSTURE_LABEL, Section, StockLink, basisText, fmtPct, pctCls } from '@/components/marketRecap/shared'
 import { cn } from '@/utils/cn'
 
@@ -519,6 +520,8 @@ export function LivePanel({ onOpenPrepare }: { onOpenPrepare: (date: string) => 
   return (
     <div className="space-y-3">
       <StatusBar d={d} auto={auto} setAuto={setAuto} fetching={q.isFetching} refetch={() => q.refetch()} updatedAt={q.dataUpdatedAt} />
+      {/* 买入识别：跟着盘中跟踪同一次刷新（同一个接口），放在行情时间和刷新条下面 */}
+      <BuyRecognitionCard data={d.buy_recognition} />
       <Section id="live-market" step="①" title="市场此刻" right={<Provisional />}>
         <MarketNow d={d} />
       </Section>
