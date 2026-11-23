@@ -390,6 +390,13 @@ def prepare(trade_date: date, db: Session = Depends(get_db), user: str = Depends
     return _jsonable(store.prepare(db, user, trade_date, _cal(db)))
 
 
+@router.get("/{trade_date}/buy-recognition")
+def buy_recognition_close(trade_date: date, db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """盘后研究的买入识别：所选交易日可证的收盘事实；要盘中观测的几条标「盘中无法复核」，不给入口。"""
+    from ..services.buy_recognition_service import build_close
+    return _jsonable(build_close(db, trade_date, _cal(db)))
+
+
 @router.get("/{trade_date}/verification")
 def verify(trade_date: date, db: Session = Depends(get_db), user: str = Depends(require_auth)):
     return store.verification(db, user, trade_date, _cal(db), _now())

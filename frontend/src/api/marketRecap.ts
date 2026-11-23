@@ -520,7 +520,73 @@ export interface LivePlanRow {
   position_limit: number | null; leader_code: string | null; relation_note: string | null; watch_trigger: string | null
   live: LiveFact; below_stop: boolean | null; to_stop_pct: number | null
 }
+// ── 买入识别（buy_recog_v1，2026-11-23）：规则全在后端，前端只摆结论和证据 ─────────────
+export type BrStatus = 'PASS' | 'BLOCK' | 'NOT_MET' | 'INSUFFICIENT'
+export type BrMainlineStatus = 'CONFIRMED' | 'PENDING' | 'CANDIDATE' | 'NOT_MET' | 'INSUFFICIENT'
+export interface BrMeta { trade_date?: string; observed_at?: string | null; source?: string; coverage?: string
+  compare_source?: string; compare_error?: string | null }
+export interface BrItem {
+  key: 'limit_down' | 'bear' | 'index' | 'highmark'; title: string; status: BrStatus; status_zh: string
+  label: string; reason: string; meta?: BrMeta
+  // 跌停家数
+  count?: number | null; count_range?: [number, number]
+  names?: { code: string; name: string; seal_amount?: number | null; down_days?: number | null; open_times?: number | null
+    last_seal_time?: string | null; verified?: string }[]
+  facts?: Record<string, number | null>
+  // 最大空头
+  targets?: { code: string; name: string | null; basis: string; price?: number | null; pct?: number | null
+    judge: { state: string; state_zh: string; evidence: string | null; left_at?: string | null; high?: number
+      pullback_low?: number; hold_pct?: number } }[]
+  notes?: string[]
+  // 大盘
+  indices?: { code: string; name: string; judge: { ok: boolean | null; evidence: string; pct?: number; low_at?: string } }[]
+  volume?: { ratio: number; amount: number; prev_same: number; prev_date?: string | null; same_as_of?: string | null; source?: string } | null
+  volume_error?: string
+  breadth?: { up?: number; down?: number; up_ratio?: number; limit_down?: number } | null
+  closes?: { code: string; pct: number | null }[]; amount?: number | null; prev_amount?: number | null
+  // 高标
+  stats?: { sample: number; quoted: number; limit_down: number; median_pct: number | null; red_ratio: number | null }
+  scope?: string; prev?: { at: string; median_pct: number } | null; worst_median?: number | null
+  sample?: { code: string; name: string | null; state_zh: string; pct: number | null; limit: string | null }[]
+  memory_note?: string
+}
+export interface BrLeader {
+  status: 'CONFIRMED' | 'SAME' | 'PENDING' | 'NOT_MET' | 'NONE' | 'CLOSE'; label: string; reason: string
+  leader: { code: string; name: string; lead_at?: string | null; lead_basis?: string; support_txt?: string } | null
+  followers: { code: string; name: string; at: string }[]
+  same_minute?: { code: string; name: string; at: string }[]; followers_total?: number
+}
+export interface BrMainline {
+  sector: { id: number | null; code: string; name: string; type?: string | null }
+  merged: string[]; origin: 'continuation' | 'repair' | 'new' | null; prev_state?: string | null
+  status: BrMainlineStatus; status_zh?: string; label: string; reason: string
+  active_today: number; members: number
+  breadth?: { members: number; quoted: number; up: number; down: number; up_ratio: number | null; median_pct: number | null
+    strong: number; strong_names: string[] }
+  series?: { sec_pct: number; idx_pct: number; rs_now: number; sec_low_at: string; idx_low_at: string; high_at: string
+    pullback_pp: number; had_pullback: boolean; rs_held: boolean | null; restrength: boolean | null } | null
+  series_error?: string | null
+  leader?: BrLeader
+  leader_candidates?: { code: string; name: string; lead_at: string | null; lead_basis?: string; in_core: boolean
+    lu20: number; board: number; pct: number | null; limit: string | null; float_mv: number | null; price: number | null
+    support_txt?: string }[]
+  leader_note?: string
+  meta?: BrMeta
+}
+export interface BuyRecognition {
+  rule_version: string; mode: 'live' | 'close'; trade_date: string | null; ref_date: string | null; as_of: string | null
+  phase?: string; thresholds?: Record<string, number>
+  market: { status: BrStatus; status_zh: string; label: string | null; reason: string; items: BrItem[] }
+  mainlines: BrMainline[]; mainline_note?: string | null; prev_mainline_date?: string | null
+  entry: { code: string; name: string | null; sector_id: number; sector_name: string } | null
+  entry_reason?: string; notes?: string[]; memory_note?: string
+  error?: string
+}
+export const fetchBuyRecognitionClose = (date: string) =>
+  client.get<BuyRecognition>(`/market-recap/${date}/buy-recognition`).then((r) => r.data)
+
 export interface LiveData {
+  buy_recognition?: BuyRecognition
   session: {
     phase: LivePhase; phase_zh: string; live: boolean; data_date: string | null; ref_date: string | null
     target_date: string | null; target_is_provisional: boolean; market_time: string | null; server_time: string

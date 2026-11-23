@@ -48,6 +48,7 @@ from .eastmoney_fetcher import json_or_explain, _is_bj_code
 _PUSH2EX_UT = "7eea3edcaed734bea9cbfc24409ed989"
 _ZT_POOL_URL = "https://push2ex.eastmoney.com/getTopicZTPool"
 _ZB_POOL_URL = "https://push2ex.eastmoney.com/getTopicZBPool"
+_DT_POOL_URL = "https://push2ex.eastmoney.com/getTopicDTPool"
 _REASON_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 
 _HEADERS = {
@@ -183,6 +184,47 @@ def parse_zt_pool_row(row: dict) -> Optional[LimitUpDetail]:
     )
 
 
+@dataclass
+class LimitDownDetail:
+    """
+    跌停池一行（买入识别用，2026-11-23）。字段口径用 2026-11-20 实盘逐个核过：
+    58 行、没有 ST 也没有北交所——跟系统「非 ST」跌停名单同一个证券范围（那天也是 58）。
+      fund 封单资金（元）  fba 板上成交额（元）  lbt 最后封板时间 HHMMSS
+      days 连续跌停天数    oc  开板次数          p 现价 ×1000
+    **开盘前它给的是上一交易日的名单，qdate 却写今天**（11-23 09:08 实测：lbt 全是 150000）——
+    日期不能信 qdate，要拿每只票的实时行情核。
+    """
+    code: str
+    name: str
+    market: Optional[int] = None
+    price: Optional[float] = None
+    pct_change: Optional[float] = None
+    amount: Optional[float] = None
+    float_market_cap: Optional[float] = None
+    seal_amount: Optional[float] = None       # fund
+    board_amount: Optional[float] = None      # fba
+    last_seal_time: Optional[time] = None     # lbt
+    down_days: Optional[int] = None           # days
+    open_times: Optional[int] = None          # oc
+    em_industry: Optional[str] = None
+
+
+def parse_dt_pool_row(row: dict) -> Optional[LimitDownDetail]:
+    code = (row or {}).get("c")
+    if not code:
+        return None
+    price, zdp = _num(row.get("p")), _num(row.get("zdp"))
+    return LimitDownDetail(
+        code=str(code), name=str(row.get("n") or "").replace(" ", ""), market=_int(row.get("m")),
+        price=round(price / 1000, 3) if price is not None else None,
+        pct_change=round(zdp, 2) if zdp is not None else None,
+        amount=_num(row.get("amount")), float_market_cap=_num(row.get("ltsz")),
+        seal_amount=_num(row.get("fund")), board_amount=_num(row.get("fba")),
+        last_seal_time=parse_em_time(row.get("lbt")), down_days=_int(row.get("days")),
+        open_times=_int(row.get("oc")), em_industry=(str(row["hybk"]) if row.get("hybk") else None),
+    )
+
+
 def parse_zb_pool_row(row: dict) -> Optional[BrokenBoardDetail]:
     """
     解析炸板池单行。字段口径 2026-08-26 用实盘数据逐个对照腾讯行情核实：
@@ -259,6 +301,22 @@ def fetch_broken_board_pool(trade_date: date, timeout: int = 20) -> List[BrokenB
     }, timeout)
     pool = ((payload.get("data") or {}) or {}).get("pool") or []
     return [d for d in (parse_zb_pool_row(r) for r in pool) if d]
+
+
+def fetch_limit_down_pool(trade_date: date, timeout: int = 20) -> Tuple[List[LimitDownDetail], Optional[int]]:
+    """
+    跌停池：此刻封在跌停上的股票 + 封单额。返回 (行, 接口自报的总数 tc)。
+    **空响应（没有 data）抛错**，不当成「0 只跌停」；真没有跌停时接口给的是 tc=0 的空池。
+    """
+    payload = _get_json(_DT_POOL_URL, {
+        "ut": _PUSH2EX_UT, "dpt": "wz.ztzt", "Pageindex": "0", "pagesize": "600",
+        "sort": "fund:desc", "date": trade_date.strftime("%Y%m%d"),
+    }, timeout)
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ValueError(f"东财跌停池空响应（rc={payload.get('rc')}）")
+    rows = [d for d in (parse_dt_pool_row(r) for r in data.get("pool") or []) if d]
+    return rows, _int(data.get("tc"))
 
 
 def fetch_limit_reasons(trade_date: date, timeout: int = 25) -> Dict[str, Tuple[Optional[str], Optional[str]]]:

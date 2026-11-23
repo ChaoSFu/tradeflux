@@ -554,10 +554,26 @@ def build_live(db: Session, owner: str, local_now: Optional[datetime] = None) ->
         for x in pools["sealed"]:
             pool_rows.append({**x, "in_core": x["code"] in core_set, "watched": x["code"] in watched})
 
+    # ── 买入识别（2026-11-23）：复用上面的会话、指数、涨停池、涨跌分布、成交额和行情缓存；
+    #    挂了不拖垮整页，只在卡片上说取数失败 ──
+    from . import buy_recognition_service as brs
+    try:
+        buy_recognition = brs.build_live(
+            db, sess=sess, cal=cal, market_dt=market_dt, local_now=local_now, facts=dict(facts),
+            core_items=core_items, pools=pools, pools_err=pools_err,
+            breadth=got.get("breadth", (None, None))[0], breadth_err=got.get("breadth", (None, None))[1],
+            amount=got.get("amount", (None, None))[0], amount_err=got.get("amount", (None, None))[1],
+            idx_quotes=idx_quotes)
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        logger.exception("买入识别失败")
+        buy_recognition = {"error": f"买入识别没算出来（{type(e).__name__}: {str(e)[:120]}）"}
+
     missing = [c for c, f in facts.items() if f["status"] == "missing"]
     stale = [c for c, f in facts.items() if f["status"] == "stale"]
     phase = sess["phase"]
     return {
+        "buy_recognition": buy_recognition,
         "session": {**{k: sess[k] for k in ("phase", "data_date", "ref_date", "target_date", "target_is_provisional")},
                     "phase_zh": PHASE_ZH[phase], "live": live, "market_time": _iso(market_dt),
                     "server_time": _iso(local_now), "poll_seconds": poll_seconds(phase, local_now),

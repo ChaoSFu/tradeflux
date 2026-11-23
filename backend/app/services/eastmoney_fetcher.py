@@ -2948,6 +2948,35 @@ def fetch_minute_days_tencent(code: str, market: int,
     return out
 
 
+BOARD_TRENDS_URL = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
+
+
+def fetch_board_minutes(board_code: str, timeout: int = 8) -> Tuple[Optional[float], List[MinuteBar]]:
+    """
+    东财板块指数当天的 1 分钟价（买入识别看板块分时用，2026-11-23）：(昨收, bars)，bar.dt = 分钟结束时刻。
+    push2his trends2，secid=90.BKxxxx；2026-11-23 实测 BK0447 互联网服务 241 根、preClose 有值。
+    开盘前 ndays=1 给的是空数组。失败抛异常，由调用方降级成「缺少板块分时」。
+    """
+    with httpx.Client(headers=HEADERS, timeout=timeout, follow_redirects=True) as c:
+        resp = c.get(BOARD_TRENDS_URL, params={
+            "fields1": "f1,f2,f3,f4,f5,f6,f7,f8", "fields2": "f51,f53", "ut": "fa5fd1943c7b386f172d6893dbfba10b",
+            "iscr": "0", "iscca": "0", "secid": f"90.{board_code}", "ndays": "1"})
+    data = (json_or_explain(resp, "东财板块分时 ").get("data") or {})
+    bars: List[MinuteBar] = []
+    for line in data.get("trends") or []:
+        parts = str(line).split(",")
+        if len(parts) < 2:
+            continue
+        try:
+            dt = datetime.strptime(parts[0], "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        px = _num_or_none(parts[1])
+        if px and px > 0:
+            bars.append(MinuteBar(dt=dt, close=px))
+    return _num_or_none(data.get("preClose")), bars
+
+
 def fetch_minute_bars_sina(code: str, market: int, scale: int = 1, datalen: int = 1023,
                            timeout: int = 10) -> List[MinuteBar]:
     """

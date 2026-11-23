@@ -92,6 +92,7 @@ Postgres 事务会回滚，不连累后面的模块）。
 | `POST /market-recap/{date}/lock`、`GET /market-recap/{date}/locked` | 锁定 / 历史版本 |
 | `GET /market-recap/{date}/verification` | 次日验证 |
 | `GET /market-recap/live` | 盘中跟踪（只读，见第九节） |
+| `GET /market-recap/{date}/buy-recognition` | 盘后研究的买入识别（收盘事实；盘中跟踪的在 `/live` 的 `buy_recognition`，见 docs/BUY_RECOGNITION.md） |
 
 ## 七、V2（2026-11-08）：人气核心池与活跃事件
 
@@ -169,6 +170,9 @@ V2 没做：完整概念成员池（要按板块拉成分股，生产上 F10 被
 相对指数 / 板块的响应排序、结果验证里的「是否实际交易 / 是否按计划」记录、分时触发与时滞。
 
 ## 九、盘中跟踪（2026-11-09）
+
+> 2026-11-23：行情时间和刷新条下面加了「买入识别」卡片（市场过关 / 主线走强 / 带队个股，服务龙头弱转强），
+> 规则和口径见 docs/BUY_RECOGNITION.md。盘后研究最上面同一张卡片，只摆收盘事实。
 
 页面第四种模式「盘中跟踪」（盘后研究 → 次日准备 → **盘中跟踪** → 结果验证）。工作日 09:15–15:00
 打开页面默认进这里，网址 `?mode=live`。接口 `GET /market-recap/live`（要登录）。
