@@ -415,3 +415,92 @@ class TestBackfill:
         assert set(got) == {"600002"} and asked == [("codes", ("600002",), D2)]
         row = db.query(StockDayFact).filter_by(trade_date=D2, stock_code="600002").one()
         assert row.settled and row.total_market_cap == 250
+
+
+# ═══ 修「只给当前值」的存档：成交额前列、召回名单 ════════════════════════════════
+
+class TestRepairCurrentOnly:
+    def test_问法加日期(self):
+        assert P.dated_keyword("成交额排序前80；成交额大于20亿；非ST", D2) == \
+            "2026年11月24日成交额排序前80；2026年11月24日成交额大于20亿；非ST"
+        assert P.dated_keyword("非ST；近10个交易日涨停天数大于等于2", D2) == "非ST；截至2026年11月24日近10个交易日涨停天数大于等于2"
+
+    def test_召回问法拆成分支(self):
+        from app.services.limit_up_detail_service import _recall_branches
+        from app.services.eastmoney_fetcher import CORE_RECALL_KEYWORD
+        fixed, br = _recall_branches(CORE_RECALL_KEYWORD)
+        assert fixed == ["非ST", "非退市股票"] and len(br) == 4 and br[3] == "近60个交易日最高连板数大于等于3"
+
+    def test_成交额前列按那天的成交额排名次_覆盖写回(self, db, monkeypatch):
+        from app.models.turnover_pool import TurnoverPoolDaily
+        from app.services import turnover_service as ts
+        db.add(TurnoverPoolDaily(date=D2, stock_code="600999", stock_name="错的", rank=1, amount=1e9, pct_change=0,
+                                 turnover_rate=0, market="SH"))
+        db.commit()
+        ds = D2.isoformat()
+
+        def search_all(kw, **k):
+            assert kw.startswith("2026年11月24日成交额排序前") and "2026年11月24日涨跌幅" in kw
+            return [{"SECURITY_CODE": c, "SECURITY_SHORT_NAME": c, "MARKET_SHORT_NAME": "SH",
+                     f"TRADING_VOLUMES{{{ds}}}": a, f"CHG{{{ds}}}": "1.5", f"TURNOVER_RATE{{{ds}}}": "2.0"}
+                    for c, a in (("600001", "30亿"), ("600002", "50亿"))], 2
+        monkeypatch.setattr(P, "search_all", search_all)
+        r = ts.restore_turnover_pool(db, D2, apply=False)
+        assert r["fetched"] == 2 and r["same"] == 0 and not r["applied"]
+        assert db.query(TurnoverPoolDaily).filter_by(date=D2).count() == 1, "试跑不写"
+        ts.restore_turnover_pool(db, D2, apply=True)
+        rows = db.query(TurnoverPoolDaily).filter_by(date=D2).order_by(TurnoverPoolDaily.rank).all()
+        assert [(x.stock_code, x.rank, x.amount) for x in rows] == [("600002", 1, 5e9), ("600001", 2, 3e9)]
+
+    def test_成交额没给那天的列_不认(self, monkeypatch, db):
+        from app.services import turnover_service as ts
+        monkeypatch.setattr(P, "search_all", lambda kw, **k: ([{"SECURITY_CODE": "600001", "TRADING_VOLUMES": "30亿"}], 1))
+        with pytest.raises(P.PromptError):
+            ts.fetch_turnover_on(db, D2)
+
+    def _recall_fakes(self, monkeypatch, end=D2):
+        e = end.isoformat()
+        lu = {"600001": {10: 3, 20: 4, 60: 6}, "600002": {20: 3, 60: 3}}      # 600002 近 10 日没涨停
+
+        def search_all(kw, **k):
+            if kw.startswith("非ST"):                    # 四个分支
+                return ([{"SECURITY_CODE": "600001"}] if "近10个" in kw else
+                        [{"SECURITY_CODE": "600002"}] if "近20个" in kw else []), 1
+            codes = kw.split("；")[0].removeprefix("股票代码是").split("或")
+            if "涨停天数大于等于1" in kw:
+                n = int(kw.split("近")[1].split("个")[0])
+                return [{"SECURITY_CODE": c, f"DURATION_LIMIT_UP{{2026-10-01|{e}|{n}|天}}": str(lu[c][n])}
+                        for c in codes if n in lu[c]], 0
+            return [{"SECURITY_CODE": c, "SECURITY_SHORT_NAME": f"股{c}", "区间最高连板[2026-08-26至2026-11-25]": "3.00",
+                     f"INTERVAL_CHG{{2026-11-11|{e}|10|天}}": "5.0", f"INTERVAL_CHG{{2026-10-28|{e}|20|天}}": "9.0",
+                     f"INTERVAL_CHG{{2026-08-25|{e}|60|天}}": "30.0", f"CHG{{{e}}}": "1.20",
+                     f"TURNOVER_RATE{{{e}}}": "3.0", f"NEWEST_PRICE<140>{{{e}}}": "10.00"} for c in codes], len(codes)
+        monkeypatch.setattr(P, "search_all", search_all)
+
+    def test_召回名单重建_涨停天数不在结果里就是0(self, monkeypatch):
+        from app.services.limit_up_detail_service import fetch_core_recall_on
+        self._recall_fakes(monkeypatch)
+        det, missing = fetch_core_recall_on(D2)
+        assert set(det) == {"600001", "600002"} and missing == []
+        a, b = det["600001"], det["600002"]
+        assert (a.limit_up_days_10d, a.limit_up_days_20d, a.limit_up_days_60d) == (3, 4, 6)
+        assert (b.limit_up_days_10d, b.limit_up_days_20d) == (0, 3), "近 10 日「大于等于1」里没有它 = 0"
+        assert a.pct_change == 1.2 and a.interval_chg_20d == 9.0 and a.max_board_60d == 3 and a.data_date == D2
+
+    def test_召回名单数据不是那天的_整批不认(self, monkeypatch):
+        from app.services.limit_up_detail_service import fetch_core_recall_on
+        self._recall_fakes(monkeypatch, end=D3)
+        with pytest.raises(P.PromptError):
+            fetch_core_recall_on(D2)
+
+    def test_脚本试跑不写_写回覆盖(self, db, monkeypatch):
+        from app.services import limit_up_detail_service as lus
+        from scripts import repair_current_only as rc
+        db.add(AppConfig(key=lus.core_recall_key(D2), value=json.dumps({"600999": {"n": "错的", "chg": 0}})))
+        db.commit()
+        self._recall_fakes(monkeypatch)
+        assert rc.run(db, D2, apply=False, what=("recall",), log=lambda m: None)
+        assert "600999" in db.query(AppConfig).filter_by(key=lus.core_recall_key(D2)).one().value
+        assert rc.run(db, D2, apply=True, what=("recall",), log=lambda m: None)
+        stored = json.loads(db.query(AppConfig).filter_by(key=lus.core_recall_key(D2)).one().value)
+        assert set(stored) == {"600001", "600002"} and stored["600002"]["lu10"] == 0

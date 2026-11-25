@@ -56,12 +56,7 @@ def sync_core_recall(db: Session, trade_date: date) -> int:
     if dates and dates != {trade_date}:
         print(f"[recall] 召回名单数据日期 {sorted(map(str, dates))} ≠ {trade_date}，本次不写", flush=True)
         return 0
-    payload = {
-        c: {"n": d.name, "lu10": d.limit_up_days_10d, "lu20": d.limit_up_days_20d,
-            "lu60": d.limit_up_days_60d, "mb": d.max_board_60d, "chg": d.pct_change,
-            "ic10": d.interval_chg_10d, "ic20": d.interval_chg_20d, "ic60": d.interval_chg_60d}
-        for c, d in details.items()
-    }
+    payload = _recall_payload(details)
     key = core_recall_key(trade_date)
     row = db.query(AppConfig).filter(AppConfig.key == key).first()
     val = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -71,6 +66,107 @@ def sync_core_recall(db: Session, trade_date: date) -> int:
         db.add(AppConfig(key=key, value=val))
     db.commit()
     return len(details)
+
+
+def _recall_branches(keyword: str) -> Tuple[List[str], List[str]]:
+    """召回问法 →（不带行情的固定条件如「非ST」，「或者」连着的几个分支）。"""
+    import re
+    fixed, branches = [], []
+    for c in re.split(r"[；;]", keyword):
+        c = c.strip()
+        if not c:
+            continue
+        if "或者" in c:
+            branches.extend(x.strip() for x in c.split("或者") if x.strip())
+        elif "涨幅大于-100%" in c:
+            continue              # 只是为了让接口带回区间涨幅那几列，按代码问的时候单独要
+        elif "交易日" not in c:
+            fixed.append(c)
+        else:
+            branches.append(c)
+    return fixed, branches
+
+
+def fetch_core_recall_on(d: date, keyword: str = None) -> Tuple[Dict[str, CoreRecallDetail], List[str]]:
+    """
+    按「截至 d」重建召回名单（历史修复用，2026-11-25）。返回 (名单, 分支里有但按代码没问到的代码)。
+
+    召回问法是一句里「或者」连着四个带「近 N 个交易日」的条件。**整句加日期接口不认**（实测只回 32 只，
+    20 / 60 日窗口还停在今天），所以拆开：每个分支单独问「非ST；非退市股票；截至d近20个交易日涨停天数大于等于3」，
+    取并集——用今天验证过，拆开问的并集跟整句问的一只不差（273 = 273）。
+    再按代码问这些票「截至 d」的区间涨幅、最高连板和 d 当天的涨跌幅、换手、收盘价。
+    **涨停天数不能当成「要一列」来问**：「近10个交易日涨停天数」（哪怕写「大于等于0」）会把没涨停的票筛掉
+    （实测 100 只里少 10 只）——所以每个窗口单问「大于等于1」，不在结果里的就是 0（不到 1 = 0，这是确定的）。
+    **最高连板这一项接口不认日期**（列名还是截至今天的区间）：只会多召回、不会漏，跟「宁多勿漏」一致。
+    任何一问失败、或者涨停天数不是截至 d 的，抛 PromptError，不给部分结果。
+    """
+    from .eastmoney_fetcher import CORE_RECALL_KEYWORD, _parse_core_recall_item
+    from . import prompt_api as P
+    fixed, branches = _recall_branches(keyword or CORE_RECALL_KEYWORD)
+    ds = P.date_phrase(d)
+    codes: List[str] = []
+    for br in branches:
+        items, _t = P.search_all("；".join(fixed + [P.dated_keyword(br, d)]))
+        codes.extend(str(it.get("SECURITY_CODE") or "").strip() for it in items)
+    codes = list(dict.fromkeys(c for c in codes if c))
+    base_fields = "；".join([f"截至{ds}近60个交易日最高连板数大于等于0"]
+                           + [f"截至{ds}近{n}个交易日涨幅大于-100%" for n in (10, 20, 60)]
+                           + [f"{ds}涨跌幅", f"{ds}换手率", f"{ds}收盘价"])
+    out: Dict[str, CoreRecallDetail] = {}
+    for i in range(0, len(codes), P.CODES_PER_QUERY):
+        chunk = codes[i:i + P.CODES_PER_QUERY]
+        items, _t = P.search_all(P.codes_keyword(chunk, base_fields), max_pages=2)
+        for it in items:
+            det = _parse_core_recall_item(it)
+            if det is None or det.code not in chunk:
+                continue
+            ends = {k.split("|")[1] for k in it if k.startswith("INTERVAL_CHG{")}
+            if ends != {d.isoformat()}:
+                raise P.PromptError(f"{det.code} 的区间涨幅不是截至 {d} 的（{sorted(ends)}），不认")
+            det.pct_change = P.cn_number(P._dated(it, "CHG", d))
+            det.turnover_rate = P.cn_number(P._dated(it, "TURNOVER_RATE", d))
+            det.price = P.cn_number(P._dated(it, "NEWEST_PRICE", d))
+            det.limit_up_days_10d = det.limit_up_days_20d = det.limit_up_days_60d = 0
+            det.data_date = d
+            out[det.code] = det
+        for n in (10, 20, 60):
+            items, _t = P.search_all(P.codes_keyword(chunk, f"截至{ds}近{n}个交易日涨停天数大于等于1"), max_pages=2)
+            for it in items:
+                c = str(it.get("SECURITY_CODE") or "").strip()
+                for k, v in it.items():
+                    if k.startswith("DURATION_LIMIT_UP{") and k.split("|")[2] == str(n):
+                        if k.split("|")[1] != d.isoformat():
+                            raise P.PromptError(f"{c} 的 {n} 日涨停天数不是截至 {d} 的（{k}），不认")
+                        if c in out:
+                            setattr(out[c], f"limit_up_days_{n}d", int(float(v)))
+    return out, [c for c in codes if c not in out]
+
+
+def _recall_payload(details: Dict[str, CoreRecallDetail]) -> dict:
+    return {c: {"n": x.name, "lu10": x.limit_up_days_10d, "lu20": x.limit_up_days_20d, "lu60": x.limit_up_days_60d,
+                "mb": x.max_board_60d, "chg": x.pct_change, "ic10": x.interval_chg_10d, "ic20": x.interval_chg_20d,
+                "ic60": x.interval_chg_60d} for c, x in details.items()}
+
+
+def restore_core_recall(db: Session, d: date, apply: bool = False) -> dict:
+    """按日期重建 d 的召回名单，跟库里存的比；apply=True 覆盖写回。"""
+    details, missing = fetch_core_recall_on(d)
+    row = db.query(AppConfig).filter(AppConfig.key == core_recall_key(d)).first()
+    stored = json.loads(row.value) if row and row.value else {}
+    new = _recall_payload(details)
+    rep = {"date": d.isoformat(), "fetched": len(new), "stored": len(stored), "same": len(set(new) & set(stored)),
+           "only_new": sorted(set(new) - set(stored))[:10], "only_stored": sorted(set(stored) - set(new))[:10],
+           "chg_differs": sum(1 for c in set(new) & set(stored) if new[c]["chg"] != stored[c].get("chg")),
+           "missing": missing, "applied": False}
+    if apply and new:
+        val = json.dumps(new, ensure_ascii=False, separators=(",", ":"))
+        if row:
+            row.value = val
+        else:
+            db.add(AppConfig(key=core_recall_key(d), value=val))
+        db.commit()
+        rep["applied"] = True
+    return rep
 
 
 def get_core_recall_details(db: Session, trade_date: date) -> Dict[str, CoreRecallDetail]:

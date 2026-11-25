@@ -289,6 +289,33 @@ def date_phrase(d: date) -> str:
     return f"{d.year}年{d.month}月{d.day}日"
 
 
+_DATED_WORDS = ("成交额", "涨跌幅", "换手率", "量比", "总市值", "流通市值", "收盘价", "涨停", "跌停")
+
+
+def dated_keyword(keyword: str, d: date) -> str:
+    """
+    把一句「此刻」的选股问法改成问 d 那一天：「近N个交易日…」→「截至d近N个交易日…」；
+    「成交额排序前80」这类行情条件前面加「d」；「非ST」这类不带行情的条件不动。
+    **一句里有「或者」连着几个带日期的条件时，接口只认第一个的日期**（2026-11-25 实测：召回问法只回 32 只、
+    20 / 60 日的窗口还停在今天）——那种要拆成几句分别问再并起来，见 limit_up_detail_service.fetch_core_recall_on。
+    """
+    ds = date_phrase(d)
+    out = []
+    for c in re.split(r"[；;]", keyword):
+        c = c.strip()
+        if not c:
+            continue
+        if "年" in c and "月" in c:
+            out.append(c)
+        elif re.search(r"近\d+个交易日", c):
+            out.append(re.sub(r"近(\d+)个交易日", f"截至{ds}近\\1个交易日", c))
+        elif any(w in c for w in _DATED_WORDS):
+            out.append(ds + c)
+        else:
+            out.append(c)
+    return "；".join(out)
+
+
 def day_fields_on(d: date) -> str:
     ds = date_phrase(d)
     return (f"{ds}总市值；{ds}流通市值；{ds}收盘价；{ds}涨跌幅；{ds}成交额；{ds}换手率；{ds}量比；{ds}成交量；"
