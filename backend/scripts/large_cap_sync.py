@@ -6,6 +6,10 @@
     .venv/bin/python -m scripts.large_cap_sync --apply                 # 写快照 + 冻结当天人气核心池（F10 分类默认不补，要补加 --classify）
     .venv/bin/python -m scripts.large_cap_sync --apply --if-missing    # 最近一个收盘日已有东财完整快照就不动（定时重试用）
     .venv/bin/python -m scripts.large_cap_sync --apply --source tencent   # 只走腾讯备用
+    .venv/bin/python -m scripts.large_cap_sync --apply --source eastmoney # 东财全市场列表（58 页，容易被限流，默认不用）
+
+2026-11-25 起默认（auto）= 选股 prompt「总市值大于 300 亿」→ 腾讯备用，不再翻全市场；写好快照后顺带
+问人气核心池的区间涨幅前列（4 次），再冻结当天的核心池。
     .venv/bin/python -m scripts.large_cap_sync --classify-only         # 只补 F10 分类（按库里最新快照）
 
 只写已收盘的数据；拿不全就一行不写（见 large_cap_sync_service 的模块注释）。
@@ -43,6 +47,22 @@ def _classify(db, codes_by_cap, limit: int) -> None:
          + ("（连续失败，提前停手）" if st.get("aborted") else ""))
 
 
+def _gain_tops(db, d) -> None:
+    """人气核心池的区间涨幅前列（5/10/20/60 日，选股 prompt 4 次）。拿不到只记日志，核心池照样冻结（这几项标缺失）。"""
+    from app.services import stock_day_facts as sdf
+    if d is None:
+        return
+    try:
+        r = sdf.sync_gain_tops(db, d)
+        if r["ok"]:
+            _log(f"[人气核心] 区间涨幅前列：{r['reason'] or r['counts']}")
+        else:
+            _log(f"[人气核心] ⚠️ 区间涨幅前列没取：{r['reason']}")
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        _log(f"[人气核心] ⚠️ 区间涨幅前列失败：{type(e).__name__}: {e}")
+
+
 def _freeze_cores(db, d) -> None:
     """
     人气核心池的区间涨幅排名要这份全市场快照，所以接在它后面冻结当天的池子和活跃事件。
@@ -77,11 +97,11 @@ def _already_have(db) -> bool:
         return False
     b = (db.query(LargeCapSyncBatch)
          .filter(LargeCapSyncBatch.trade_date == target, LargeCapSyncBatch.applied.is_(True),
-                 LargeCapSyncBatch.source == sync.SOURCE_EM).first())
+                 LargeCapSyncBatch.source.in_(sync.AUTHORITATIVE)).first())
     if b is not None:
-        _log(f"[大市值] {target} 已有东财完整快照（批次 {b.id}），不重复同步")
+        _log(f"[大市值] {target} 已有完整快照（批次 {b.id}，{b.source}），不重复同步")
         return True
-    _log(f"[大市值] {target} 还没有东财完整快照，开始同步")
+    _log(f"[大市值] 期望的最近收盘日 {target} 还没有完整快照，开始同步（同步的是行情此刻那一天）")
     return False
 
 
@@ -101,7 +121,7 @@ def _print_dry(out: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="大市值日快照同步")
     ap.add_argument("--apply", action="store_true", help="写库（不加就是试跑）")
-    ap.add_argument("--source", choices=["auto", "eastmoney", "tencent"], default="auto")
+    ap.add_argument("--source", choices=["auto", "prompt", "eastmoney", "tencent"], default="auto")
     ap.add_argument("--if-missing", action="store_true", help="最近收盘日已有东财完整快照就什么都不做")
     ap.add_argument("--classify-limit", type=int, default=150, help="本次最多补多少只 F10 分类")
     # F10 分类默认不跑：概念取快照里的 f103、一级行业走随代码发版的东财层级表，F10 只剩「发现行业
@@ -119,6 +139,8 @@ def main() -> int:
         return EXIT_BUSY
 
     init_db()
+    from app.services import api_call_counter
+    api_call_counter.install()
     db = SessionLocal()
     try:
         if a.classify_only:
@@ -148,6 +170,7 @@ def main() -> int:
             return EXIT_FAIL
         if out.get("applied") or out["status"] == "kept_existing":
             _log(f"[大市值] ✅ {out.get('trade_date')} 收盘快照就绪")
+            _gain_tops(db, out.get("trade_date"))
             # 先冻结人气核心池：它只要这份快照。分类放最后、默认不跑——11-09 生产上 F10 每个
             # 请求都读超时，排在前面时人等不及 Ctrl+C，核心池就跟着没冻结
             _freeze_cores(db, out.get("trade_date"))
@@ -159,8 +182,15 @@ def main() -> int:
                     _log(f"[大市值] ⚠️ F10 分类失败（快照、核心池已写好，不受影响）：{type(e).__name__}: {e}")
             return 0
         _log(f"[大市值] ❌ 没写入：{out['status']}")
+        # 快照没写成，核心池的区间涨幅前列和成员事实不依赖它（按代码问），照样收盘后取、冻结
+        d = next((a.get("trade_date") for a in out.get("attempts") or [] if a.get("trade_date")), None)
+        if d is not None and any(a.get("status") != "intraday" for a in out.get("attempts") or []):
+            _gain_tops(db, d)
+            _freeze_cores(db, d)
         return EXIT_FAIL
     finally:
+        for ln in api_call_counter.lines(prefix="[大市值] "):
+            _log(ln)
         db.close()
         fcntl.flock(fd, fcntl.LOCK_UN)
         fd.close()

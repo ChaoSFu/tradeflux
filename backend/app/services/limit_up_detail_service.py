@@ -50,6 +50,12 @@ def sync_core_recall(db: Session, trade_date: date) -> int:
     details = fetch_core_recall_details()
     if not details:
         return 0                      # 拉空视为失败，不覆盖上一份（避免整体漏召回）
+    # 只给当前值的接口：数据属于哪天以列名里的日期为准，跟 trade_date 对不上就不写（2026-11-25：
+    # 日更把目标日错改回前一天时，当天的召回名单被记成了前一天，那一天原来的数据就没了）
+    dates = {d.data_date for d in details.values() if d.data_date}
+    if dates and dates != {trade_date}:
+        print(f"[recall] 召回名单数据日期 {sorted(map(str, dates))} ≠ {trade_date}，本次不写", flush=True)
+        return 0
     payload = {
         c: {"n": d.name, "lu10": d.limit_up_days_10d, "lu20": d.limit_up_days_20d,
             "lu60": d.limit_up_days_60d, "mb": d.max_board_60d, "chg": d.pct_change,

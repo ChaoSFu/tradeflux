@@ -85,9 +85,11 @@ export interface LargeCapCrossEvent {
   code: string
   name: string | null
   industry: string | null
-  prev_cap: number
+  /** 昨天不在名单里（2026-11-25 起名单只存 ≥300 亿）时为 null，看 prev_cap_below */
+  prev_cap: number | null
+  prev_cap_below?: number | null
   cap: number
-  cap_change_pct: number
+  cap_change_pct: number | null
   pct: number | null
   pct_5d: number | null
   pct_20d: number | null

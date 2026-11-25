@@ -66,7 +66,7 @@ class TestSources:
         _snap(db, st, D2, limit_up_days_10d=7, board_count=2, is_limit_up=True, board_count_60d=4)
         db.commit()
         r = pc.compute(db, D2, CAL)
-        assert r["sources"]["gain_20"]["status"] == "missing" and "全市场收盘快照" in r["sources"]["gain_20"]["note"]
+        assert r["sources"]["gain_20"]["status"] == "missing" and "没有区间涨幅前列" in r["sources"]["gain_20"]["note"]
         assert r["sources"]["lu_10"]["scope"] == pc.SCOPE_TRACKED
         it = r["items"]["002086"]
         assert it["pct_change_20d"] is None and it["rank_20d"] is None, "缺就是缺，不拿已跟踪口径的相加涨幅顶上"

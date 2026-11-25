@@ -408,9 +408,10 @@ def create_scheduler() -> BackgroundScheduler:
         replace_existing=True,
         misfire_grace_time=3600 * 6,
     )
-    # 大市值快照重试：盘后日更里那一次没拿全时补（已有就秒退）。不拿日更的锁，
-    # 有自己的锁；08:45 那次补的是上一个交易日（开盘前行情还停在昨天收盘）
-    for hh, mm in ((16, 40), (18, 40), (21, 40), (8, 45)):
+    # 大市值快照重试：盘后日更里那一次没拿全时补（已有就秒退）。不拿日更的锁，有自己的锁
+    # 2026-11-25：从 4 次减到 2 次。当天已经写成就什么都不做（--if-missing）；没写成才问选股 prompt
+    # （约 6 次请求），不再翻东财全市场（58 页那条把生产 IP 翻进了限流）
+    for hh, mm in ((16, 40), (21, 40)):
         scheduler.add_job(
             _run_large_cap_retry,
             trigger=CronTrigger(day_of_week="mon-fri", hour=hh, minute=mm, timezone="Asia/Shanghai"),

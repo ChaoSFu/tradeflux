@@ -205,6 +205,19 @@ def _cap_change_pct(prev_cap: float, cap: float) -> float:
     return (cap / prev_cap - 1) * 100
 
 
+def _listed_before(o: Obs, prev_date: Optional[date]) -> bool:
+    """昨天之前就上市了（上市日不知道时按「是」算：新股都带上市日，没带的是老股）。"""
+    return o.listing_date is None or prev_date is None or o.listing_date <= prev_date
+
+
+def _entered_from_below(o: Obs, prev_floor: float) -> dict:
+    """昨天不在名单里（低于下限）、今天过了门槛：昨日市值只知道「< 下限」。"""
+    return {"code": o.code, "name": o.name, "industry": o.industry,
+            "prev_cap": None, "prev_cap_below": prev_floor, "cap": o.total_cap, "cap_change_pct": None,
+            "pct": o.pct, "pct_5d": o.pct_5d, "pct_20d": o.pct_20d, "amount": o.amount,
+            "cap_price_mismatch": False}
+
+
 def _event_row(p: Obs, o: Obs) -> dict:
     chg = _cap_change_pct(p.total_cap, o.total_cap)
     mismatch = o.pct is not None and abs(chg - o.pct) > CAP_PRICE_TOLERANCE
@@ -215,9 +228,12 @@ def _event_row(p: Obs, o: Obs) -> dict:
 
 
 def compute_events(today: Dict[str, Obs], prev: Optional[Dict[str, Obs]],
-                   threshold: float, include_st: bool) -> Optional[dict]:
+                   threshold: float, include_st: bool, prev_floor: Optional[float] = None,
+                   prev_date: Optional[date] = None) -> Optional[dict]:
     """
     prev 是**日历上前一个交易日**的完整快照；拿不到就传 None，返回 None（一个事件都不生成）。
+    prev_floor：昨天那份名单的下限（亿元，2026-11-25 起只存 ≥300 亿的；None = 全市场）。
+    昨天名单里没有、昨天之前就已上市的票 = 昨天低于下限，门槛又高于下限 → 跨入（不是「首次观测」）。
 
       跨入      昨天有效市值 < 门槛，今天 ≥ 门槛
       跨出      昨天 ≥ 门槛，今天有效市值 < 门槛——跨出的票今天已经不在池里，照样列出
@@ -232,6 +248,9 @@ def compute_events(today: Dict[str, Obs], prev: Optional[Dict[str, Obs]],
         if membership(o, threshold, include_st) is not True:
             continue
         p = prev.get(code)
+        if p is None and prev_floor is not None and threshold > prev_floor and _listed_before(o, prev_date):
+            entered.append(_entered_from_below(o, prev_floor))
+            continue
         if p is None or p.total_cap is None:
             first_seen.append({"code": code, "name": o.name, "industry": o.industry,
                                "cap": o.total_cap, "pct": o.pct, "amount": o.amount,
@@ -410,6 +429,7 @@ def _batch_dict(b: Optional[LargeCapSyncBatch]) -> Optional[dict]:
         "pages_expected": b.pages_expected, "pages_ok": b.pages_ok,
         "is_complete": b.is_complete, "is_settled": b.is_settled, "applied": b.applied,
         "status": b.status, "warnings": warnings, "error": b.error,
+        "universe_floor_yi": b.universe_floor_yi,
     }
 
 
@@ -485,7 +505,11 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
     member_codes = {o.code for o in members}
     unknown_cap = sum(1 for o in today.values() if o.total_cap is None)
 
-    events = compute_events(today, prev, T, inc_st)
+    today_floor = batch.universe_floor_yi if batch is not None else None
+    prev_floor = prev_batch.universe_floor_yi if prev_batch is not None else None
+    floor_gap = [f for f in (today_floor, prev_floor) if f is not None and T <= f]
+    events = (compute_events(today, prev, T, inc_st, prev_floor=prev_floor, prev_date=prev_d)
+              if not floor_gap else None)
     if prev is not None:
         weights = {c: p.total_cap for c, p in prev.items() if p.total_cap}
         weight_basis = "prev_cap"
@@ -615,8 +639,15 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
     if stale:
         warnings.append(f"最新收盘快照是 {applied[0]}，{exp_latest} 的还没同步成功")
     if pending_today and is_latest_view and applied[0] < now.date():
-        notes.append(f"今天的收盘快照还没同步，下面是上一交易日 {applied[0]} 的收盘数：收盘后日更跑完会接着同步"
+        # 只有最新一份就是上一交易日时才说「上一交易日」（2026-11-25：连缺几天时还写着「上一交易日 11-18」）
+        last_session = prev_trading_day(cal, now.date()) if cal else None
+        which = (f"上一交易日 {applied[0]}" if applied[0] == last_session
+                 else f"最近一份成功同步的 {applied[0]}（不是上一交易日）")
+        notes.append(f"今天的收盘快照还没同步，下面是{which}的收盘数：收盘后日更跑完会接着同步"
                      "（定时 15:30 那次约 15:35 写入；收盘后手动「更新数据」也会顺带同步）")
+    if floor_gap:
+        events_reason = f"门槛 {T:g} 亿不高于名单下限 {max(floor_gap):g} 亿：名单只存了下限以上的公司"
+        warnings.append(f"{events_reason}，门槛内名单和跨入跨出都不完整，请把门槛调到 {max(floor_gap):g} 亿以上")
     if prev_d is None:
         why = (f"交易日历没覆盖到 {D}（缓存止于 {cal[-1]}）" if cal and not cal_covers
                else "交易日历不可用")
@@ -632,7 +663,7 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
     if len(have_days) < AMOUNT_HISTORY_DAYS:
         notes.append(f"20 日成交额倍数还在攒历史（{len(have_days)}/{AMOUNT_HISTORY_DAYS} 个交易日），"
                      "放量先按量比看")
-    if batch is not None and batch.source != "eastmoney_clist":
+    if batch is not None and batch.source == "tencent_quote":
         warnings.append("这一天的快照来自腾讯行情备用源：没有 5/10/20/60 日涨跌幅，行业沿用之前的东财分类")
     if classification["concept_unknown"]:
         warnings.append(f"{classification['concept_unknown']} 只没有概念数据"
@@ -643,6 +674,7 @@ def build_overview(db: Session, trade_date: Optional[date] = None,
 
     return {
         **base, "status": "ok", "date": D,
+        "universe_scope": UNIVERSE_SCOPE + (f"，总市值 ≥{today_floor:g} 亿（选股 prompt 名单）" if today_floor else ""),
         "batch": _batch_dict(batch), "is_stale": stale, "pending_today": pending_today,
         "expected_latest": exp_latest,
         "prev_date": prev_d, "prev_available": prev_batch is not None,

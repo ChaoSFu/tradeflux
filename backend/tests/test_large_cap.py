@@ -258,6 +258,10 @@ def _pages(items, total=None, fail_on=None):
     return get
 
 
+def _broken_prompt(db, floor):
+    return sync.FetchResult(source=sync.SOURCE_PROMPT, floor_yi=floor, error="选股接口第 1 页失败（502）")
+
+
 def _items(n, start_cap=3000.0):
     return [_em(f"{600000 + i}", start_cap - i) for i in range(n)]
 
@@ -344,12 +348,11 @@ class TestSyncWrites:
         assert not out["applied"]
         assert db.query(LargeCapMarketDaily).filter_by(trade_date=d).count() == 120, "上一份有效数据留着"
 
-    def test_东财失败且没有可沿用名单_备用也不硬上(self, db):
-        def broken():
-            return sync.collect_eastmoney(_pages(_items(50), fail_on=1), ONE_MARKET, pause=lambda: None)
-        out = sync.sync_snapshot(db, fetch_em=broken, market_now=_after_close(_today()), log=lambda m: None)
+    def test_选股失败且没有可沿用名单_备用也不硬上(self, db):
+        """2026-11-25 起 auto = 选股 prompt → 腾讯备用；东财全市场列表不在 auto 里。"""
+        out = sync.sync_snapshot(db, fetch_pr=_broken_prompt, market_now=_after_close(_today()), log=lambda m: None)
         assert not out["applied"] and db.query(LargeCapMarketDaily).count() == 0
-        assert [a["source"] for a in out["attempts"]] == [sync.SOURCE_EM, sync.SOURCE_TENCENT]
+        assert [a["source"] for a in out["attempts"]] == [sync.SOURCE_PROMPT, sync.SOURCE_TENCENT]
 
     def test_腾讯备用沿用名单和行业_区间涨幅留空(self, db):
         d0, d1 = _today() - timedelta(days=1), _today()
@@ -364,9 +367,7 @@ class TestSyncWrites:
                                   "industry": None, "trade_date": d1}
             return res
 
-        def broken():
-            return sync.collect_eastmoney(_pages(_items(3), fail_on=1), ONE_MARKET, pause=lambda: None)
-        out = sync.sync_snapshot(db, fetch_em=broken, fetch_tx=tx, market_now=_after_close(d1),
+        out = sync.sync_snapshot(db, fetch_pr=_broken_prompt, fetch_tx=tx, market_now=_after_close(d1),
                                  log=lambda m: None)
         assert out["applied"] and out["trade_date"] == d1
         rows = db.query(LargeCapMarketDaily).filter_by(trade_date=d1).all()

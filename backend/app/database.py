@@ -27,7 +27,7 @@ def get_db():
 
 
 def init_db():
-    from .models import stock, sector, review, screening, regulatory, market_index, app_config, trade_journal, market_effect, weak_to_strong_radar, limit_up_detail, leader_cycle, pre_trade_check, large_cap, market_recap  # noqa: F401 - imports trigger table registration
+    from .models import stock, sector, review, screening, regulatory, market_index, app_config, trade_journal, market_effect, weak_to_strong_radar, limit_up_detail, leader_cycle, pre_trade_check, large_cap, market_recap, stock_day_fact  # noqa: F401 - imports trigger table registration
     Base.metadata.create_all(bind=engine)
     _apply_schema_patches()
 
@@ -50,6 +50,7 @@ def _apply_schema_patches():
         # 大市值日快照：上市日（2026-11-08，新股的区间涨幅要靠它判是否有效）
         "ALTER TABLE large_cap_market_daily ADD COLUMN IF NOT EXISTS listing_date DATE",
         "ALTER TABLE large_cap_market_daily ADD COLUMN IF NOT EXISTS concepts TEXT",
+        "ALTER TABLE large_cap_sync_batch ADD COLUMN IF NOT EXISTS universe_floor_yi DOUBLE PRECISION",
         # 炸板明细补全字段（2026-08-26，东财一直返回只是没解析）
         "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS price FLOAT",
         "ALTER TABLE broken_board_daily_details ADD COLUMN IF NOT EXISTS limit_price FLOAT",

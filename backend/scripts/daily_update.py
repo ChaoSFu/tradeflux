@@ -147,6 +147,12 @@ class StepLogger:
             if unlapped > 0.5:
                 self._log(f"    └ {'其余(提交/杂项)':<18} {'':^4} {f'{unlapped:.1f}s':>7}")
         self._log(f"{'─'*60}")
+        try:
+            from app.services import api_call_counter
+            for ln in api_call_counter.lines():
+                self._log(ln)
+        except Exception:  # noqa: BLE001 —— 计数只是看板，不能拦住日志收尾
+            pass
         self._log(f"  总耗时: {total:.1f}s  完成于 {datetime.now().strftime('%H:%M:%S')}")
         self._log(f"{'='*60}\n")
         self._file.close()
@@ -157,7 +163,7 @@ from app.models.stock import Stock, StockDailySnapshot
 from app.models.sector import Sector, StockSectorRelation, SectorDailySnapshot
 from app.models.review import DailyReview
 from app.services.eastmoney_fetcher import (
-    StockBasicInfo, KLineBar,
+    StockBasicInfo, KLineBar, StockQuote,
     fetch_main_board_stocks, fetch_klines_batch, get_limit_pct, get_actual_limit_pct,
     fetch_strong_pool_codes, fetch_stock_bk_codes, fetch_limit_move_codes,
     fetch_turnover_top_stocks, fetch_stock_quotes_batch, kline_bar_from_quote,
@@ -729,6 +735,12 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
     still_miss = [i for i in infos
                   if not any(b.date == target_date for b in (bars_map.get(i.code) or []))]
     if still_miss:
+        p_rep, _ = _repair_today_bar_from_prompt(still_miss, bars_map, target_date, log, prefix="    ")
+        if p_rep:
+            log.info(f"    [掉出池补结算] 选股 prompt 补回 {p_rep}/{len(still_miss)} 只当日bar")
+        still_miss = [i for i in still_miss
+                      if not any(b.date == target_date for b in (bars_map.get(i.code) or []))]
+    if still_miss:
         rep, rej = _repair_today_bar_from_quotes(still_miss, bars_map, target_date, log, prefix="    ")
         log.info(f"    [掉出池补结算] K线接口没给当日bar的 {len(still_miss)} 只，"
                  f"行情兜底补回 {rep} 只"
@@ -759,6 +771,63 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
     log.info(f"  [掉出池补结算] 结算 {fixed} 只，拿不到数据清空 {cleared} 只")
     return fixed
 
+
+
+def _is_open_session(target_date: date, market_now, probed: bool, cal) -> bool:
+    """
+    target_date 是不是一个**已经开盘**的交易日（这时 K 线源缺当天那根不能当成休市）。
+    市场时钟（腾讯字段 30）在非交易日停在上一交易日收盘后，所以「市场时钟就在 target_date、
+    而且过了 09:15」本身就说明今天开盘了；探测失败退回本机时钟时，还要日历明确说是交易日。
+    日历明确说休市的，一律不算。
+    """
+    from app.services.trading_calendar import MARKET_DAY_STARTS, calendar_status
+    if market_now is None:
+        return False
+    now = market_now.astimezone(SH_TZ).replace(tzinfo=None) if market_now.tzinfo else market_now
+    st = calendar_status(list(cal), target_date)["is_trading_day"] if cal else None
+    if st is False:
+        return False
+    if now.date() != target_date or now.time() < MARKET_DAY_STARTS:
+        return False
+    return probed or st is True
+
+
+def _repair_today_bar_from_prompt(infos, klines_map, target_date, log, prefix="  "):
+    """
+    用选股 prompt 按代码把缺的**当日 bar** 补回 klines_map（2026-11-25：少打实时接口）。
+    返回 (补回数, 数据日期对不上被拒数)。一次 100 只，开高低收、成交量（股）都有；
+    数据日期取列名里的日期（OPEN_PRICE<140>{2026-11-25}），**不等于 target_date 一律拒**。
+    构 bar 走 kline_bar_from_quote，跟行情兜底同一个函数（同一个市场事实只一套判定）。
+    停牌（零成交）、没拿到的留给后面的行情兜底。
+    """
+    if not infos:
+        return 0, 0
+    from app.services import prompt_api
+    try:
+        rows = prompt_api.fetch_codes([i.code for i in infos])
+    except prompt_api.PromptError as e:
+        log.info(f"{prefix}⚠️  选股 prompt 补当日bar失败（{e}），改走行情兜底")
+        return 0, 0
+    repaired = rejected = 0
+    for info in infos:
+        r = rows.get(info.code)
+        if not r:
+            continue
+        if r.get("data_date") != target_date:
+            rejected += 1
+            continue
+        q = StockQuote(code=info.code, name=r.get("name") or "", price=r.get("price"),
+                       pct_change=r.get("pct_change"), open=r.get("open"), high=r.get("high"),
+                       low=r.get("low"), prev_close=r.get("prev_close"), volume=r.get("volume"),
+                       amount=r.get("amount"), trade_date=r.get("data_date"))
+        bar = kline_bar_from_quote(q, info.code, info.is_st, target_date)
+        if not bar:
+            continue
+        bars = [b for b in klines_map.get(info.code, []) if b.date != target_date]
+        bars.append(bar)
+        klines_map[info.code] = bars
+        repaired += 1
+    return repaired, rejected
 
 
 def _repair_today_bar_from_quotes(infos, klines_map, target_date, log, prefix="  ", suspended=None):
@@ -1257,6 +1326,10 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
     抛异常的硬失败由调用方捕获，不在此返回。
     """
     log = StepLogger(target_date)
+    # 外部接口调用按主机计数，结尾汇总打印（2026-11-25：一个接口不要过分调用，先得看得见）
+    from app.services import api_call_counter
+    api_call_counter.install()
+    api_call_counter.reset()
     # 清掉上一轮的 dump 熔断标记：本轮 dump 有三个调用点，第一个撞上网络不可达
     # 之后另外两个直接跳过，不再对着同一个地址反复重连（2026-08-28 那次白等几分钟）
     reset_dump_availability()
@@ -1540,6 +1613,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 提前到 dump 判定之前：要先知道"今天收盘了没有"，才能算出 dump 该覆盖到
         # 哪一天。时间取自腾讯行情字段30（市场自己的时间戳），不用本机时钟。
         market_now = probe_market_now()
+        _market_probed = market_now is not None
         if market_now is None:
             market_now = datetime.now(SH_TZ)
             log.warning(f"市场时间探测失败，退回本机时钟 {market_now:%H:%M:%S}（"
@@ -1773,14 +1847,33 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         fetched = sum(1 for v in klines_map.values() if v)
         failed = len(candidates) - fetched
 
+        try:
+            from app.services.trading_calendar import get_trading_days as _gtd
+            _cal = _gtd(db, need_through=target_date, log=log)
+        except Exception:  # noqa: BLE001
+            _cal = None      # 拿不到日历就退回旧行为，但那只在序列无空洞时才对
+
         # target_date 跟随「最新一根 K 线」自动修正：用所有股票的最大日期，
         # 避免个别停牌股的陈旧末日 bar 把 target_date 误导到过去。
+        #
+        # **只在 target_date 确实还不是一个开了盘的交易日时才修正**（2026-11-25 生产事故）：
+        # 那天 10:54 起服务器拿不到腾讯日 K，全落到新浪——新浪日 K 当天晚上才加当天那根——
+        # 234 只的 K 线都只到 11-24，于是 15:03 收盘后那趟也被「修正」成 11-24：11-25 一直
+        # 没有收盘终值（跌停显示 2 家，实际 45 家），成交额前列 / 召回名单这些只给当前值的
+        # 数据被记成了 11-24。「K 线源没给今天那根」不等于「今天不是交易日」：市场时钟
+        # （腾讯字段 30，非交易日停在上一交易日收盘）已经走到 target_date 的 09:15 之后、
+        # 日历也没说休市，就不改目标日，当日那根由下面的「当日 bar 兜底」补（先 prompt 再行情）。
+        session_today = _is_open_session(target_date, market_now, _market_probed, _cal)
         all_latest = [bars[-1].date for bars in klines_map.values() if bars]
         if all_latest:
             kline_latest_date = max(all_latest)
             if kline_latest_date != target_date:
-                log.info(f"⚠️  {target_date} 非交易日/无当日数据，自动修正为 {kline_latest_date}")
-                target_date = kline_latest_date
+                if session_today and kline_latest_date < target_date:
+                    log.info(f"⚠️  K线源最新只到 {kline_latest_date}，但市场时钟 {market_now:%Y-%m-%d %H:%M} "
+                             f"显示 {target_date} 是开了盘的交易日——**不改目标日**，当日bar用选股 prompt / 行情补")
+                else:
+                    log.info(f"⚠️  {target_date} 非交易日/无当日数据，自动修正为 {kline_latest_date}")
+                    target_date = kline_latest_date
 
         # ── 定向行情兜底：只给"今日那一根还是没拉到"的少数股票补 ─────────────
         # 2026-08-25新增，针对上一轮修复后仍然存在的根因。此前的做法是"今日无数据
@@ -1788,11 +1881,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 权威来源交叉验证的字段（收盘价/涨幅/涨跌停），窗口统计算出来的连板数、
         # 涨停天数、10/20/60日涨幅、龙头分/风险分/情绪分/阶段全都还是基于旧bar的，
         # 而且它们在 compute_window_stats() 里一次性算完，比任何字段级补丁都更早。
-        try:
-            from app.services.trading_calendar import get_trading_days as _gtd
-            _cal = _gtd(db, need_through=target_date, log=log)
-        except Exception:  # noqa: BLE001
-            _cal = None      # 拿不到日历就退回旧行为，但那只在序列无空洞时才对
+        # （交易日历已在上面修正目标日之前取过：修正只会把 target_date 往前挪，覆盖得到）
         #
         # 与其在下游修字段，不如在上游把那一根真的补回来：拿实时行情快照构造一根
         # 当日 bar 塞进窗口，后面所有指标自动全部算对。请求量极小（只补缺的那几只，
@@ -1813,7 +1902,14 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             if klines_map.get(info.code) and not _has_today_bar(klines_map.get(info.code))
         ]
         if stale_infos:
-            log.info(f"  {len(stale_infos)} 只今日K线仍缺失，用实时行情定向补当日bar...")
+            # 先问选股 prompt（按代码一次 100 只，开高低收量额都有），剩下的才打实时行情（2026-11-25）
+            log.info(f"  {len(stale_infos)} 只今日K线仍缺失，先用选股 prompt 按代码补当日bar...")
+            p_rep, p_rej = _repair_today_bar_from_prompt(stale_infos, klines_map, target_date, log)
+            log.info(f"  选股 prompt 补回 {p_rep}/{len(stale_infos)} 只当日bar"
+                     + (f"（另有 {p_rej} 只数据日期不是{target_date}，已拒绝）" if p_rej else ""))
+            stale_infos = [i for i in stale_infos if not _has_today_bar(klines_map.get(i.code))]
+        if stale_infos:
+            log.info(f"  {len(stale_infos)} 只仍缺，用实时行情定向补当日bar...")
             repaired, rejected_stale_quote = _repair_today_bar_from_quotes(
                 stale_infos, klines_map, target_date, log, suspended=_quote_suspended)
             log.info(
@@ -1844,6 +1940,11 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # target_date 会被 max(所有股票末根日期) 往回修正到真实的最后交易日，
         # 那一天其实早已收盘——用修正前的日期算会得出"未收盘"，把快照错标成盘中值。
         run_settled = bar_is_settled(target_date, market_now)
+        # 「只给当前值」的接口（成交额前列、召回名单、监管状态）此刻给的是哪个交易日的数据。
+        # 跟 target_date 对不上的就不写——宁可这天缺，也不把别的日子的数据记到这天（2026-11-25）
+        from app.services.trading_calendar import market_data_day as _mdd
+        _mn = market_now.astimezone(SH_TZ).replace(tzinfo=None) if market_now.tzinfo else market_now
+        current_data_day = _mdd(_cal, _mn)
         log.info(f"市场时间 {market_now:%Y-%m-%d %H:%M:%S} → {target_date} "
                  f"{'已收盘，本次写入当日终值' if run_settled else '尚未收盘，本次写入盘中快照(is_settled=False)'}")
 
@@ -2331,12 +2432,15 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             # 每日状态快照：名单同步是「上游镜像」（每次 DELETE 重建，昨天的被物理
             # 删除），这里补一条时间序列，破局雷达才能算出进入/解除/延长这些事件。
             # 必须在 sync 之后跑——它读的就是刚同步进来的名单。
-            snap = snapshot_regulatory_status(db, target_date)
-            log.info(
-                f"监管状态快照：{snap['total']} 只（新增{snap['added']}，"
-                f"更新{snap['updated']}，移出{snap['removed']}）"
-                + (f"，{snap['dupes']} 只同时命中多个状态桶已去重" if snap['dupes'] else "")
-            )
+            if current_data_day != target_date:
+                log.info(f"监管状态快照：名单是 {current_data_day} 此刻的状态，不是 {target_date} 的，不记")
+            else:
+                snap = snapshot_regulatory_status(db, target_date)
+                log.info(
+                    f"监管状态快照：{snap['total']} 只（新增{snap['added']}，"
+                    f"更新{snap['updated']}，移出{snap['removed']}）"
+                    + (f"，{snap['dupes']} 只同时命中多个状态桶已去重" if snap['dupes'] else "")
+                )
         except Exception as e:
             log.info(f"[regulatory] 重点监管名单同步失败（不影响主流程）: {e}")
             db.rollback()

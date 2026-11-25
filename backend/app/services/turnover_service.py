@@ -110,6 +110,13 @@ def resolve_trade_date(db: Session, trade_date: Optional[_date] = None,
         return None, None, f"{day} 晚于市场时间 {now:%Y-%m-%d %H:%M}，行情还没走到那天，本次不写"
     if cal and calendar_status(cal, day)["is_trading_day"] is False:
         return None, None, f"{day} 不是交易日（交易日历），本次不写——行情停在上一交易日收盘，数据不属于这天"
+    if trade_date is not None:
+        # 调用方给的日期也要过这道闸：选股接口只给「此刻」的名单。2026-11-25 日更把目标日错改回
+        # 11-24，当天（11-25）的成交额前列就被记成了 11-24，那天原来的存档没了
+        cur = market_data_day(cal, now)
+        if cur is not None and cur != day:
+            return None, None, (f"选股接口此刻给的是 {cur} 的名单，不是 {day} 的，本次不写"
+                                f"（市场时间 {now:%Y-%m-%d %H:%M}）")
     return day, bar_is_settled(day, now), None
 
 

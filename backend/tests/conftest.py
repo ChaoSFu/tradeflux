@@ -29,6 +29,7 @@ from app.models.weak_to_strong_radar import (
     WeakToStrongCandidate, WeakToStrongEvent, WeakToStrongDiscoveryRun,
 )
 from app.models.large_cap import LargeCapMarketDaily, LargeCapStockBoards, LargeCapSyncBatch
+from app.models.stock_day_fact import StockDayFact
 from app.models.market_recap import (
     LeaderActivationEvent, LeaderRelation, LeaderResponseDaily, MarketPopularCoreDaily, MarketPopularCoreRun,
     MarketRecap, NextDayPlan, RecapLockedVersion, RecapWatchStock,
@@ -50,6 +51,7 @@ _TABLES = [
     CohortOutcomeQuote.__table__,
     TradeJournal.__table__, PreTradeCheck.__table__,
     LargeCapMarketDaily.__table__, LargeCapSyncBatch.__table__, LargeCapStockBoards.__table__,
+    StockDayFact.__table__,
     MarketRecap.__table__, RecapWatchStock.__table__, LeaderRelation.__table__,
     LeaderResponseDaily.__table__, NextDayPlan.__table__, RecapLockedVersion.__table__,
     MarketPopularCoreRun.__table__, MarketPopularCoreDaily.__table__, LeaderActivationEvent.__table__,
@@ -72,3 +74,14 @@ def db():
         yield session
     finally:
         session.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_on_demand_prompt(monkeypatch):
+    """
+    2026-11-25 起每日复盘 / 人气核心池会按需问选股 prompt（当天的日期才问）。测试默认一律不问、不探市场时间，
+    要测按需取数的用例自己把 might_be_current 打开、并把 prompt_api 换成假的。
+    选股请求的跨进程节流在测试里关掉（不然每次请求都要等 1 秒）。
+    """
+    monkeypatch.setattr("app.services.stock_day_facts.might_be_current", lambda d: False)
+    monkeypatch.setattr("app.services.prompt_api.MIN_INTERVAL_S", 0)

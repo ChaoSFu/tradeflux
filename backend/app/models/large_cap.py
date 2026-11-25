@@ -6,6 +6,13 @@
 那张表只覆盖进过候选池的股票，不是全市场。跨入 / 跨出要证明「昨天 970 亿、今天
 1030 亿」，门槛外那一侧的历史值必须也在——所以每天存全市场，不只存门槛上的。
 
+## 2026-11-25 起不再存全市场
+
+东财全市场列表（58 页）把生产 IP 翻进了限流。现在每天收盘后用选股 prompt 问「总市值大于 300 亿」
+（约 520 只、6 次请求），批次上记下这份名单的下限 `universe_floor_yi`：不在名单里 = 那天市值低于下限。
+跨入跨出照样严格：门槛（≥500 亿）离下限足够远，一天的涨跌停幅度跨不过去。历史日期（11-06~11-18）
+是东财全市场列表，下限为空。
+
 ## 单位
 
 市值、成交额一律**亿元**（跟 Sector.total_market_cap 同一单位），涨跌幅、换手率是 %。
@@ -48,7 +55,7 @@ class LargeCapMarketDaily(Base):
     concepts = Column(Text, nullable=True)
     is_st = Column(Boolean, nullable=True)
     listing_date = Column(Date, nullable=True)           # 上市日（clist f26）
-    source = Column(String(20), nullable=False)          # eastmoney_clist | tencent_quote
+    source = Column(String(20), nullable=False)          # eastmoney_prompt | eastmoney_clist | tencent_quote
     batch_id = Column(Integer, nullable=True)
     observed_at = Column(DateTime, nullable=True)
 
@@ -76,6 +83,8 @@ class LargeCapSyncBatch(Base):
     status = Column(String(20), nullable=False)           # ok | incomplete | failed | intraday | kept_existing
     warnings = Column(Text, nullable=True)                # JSON 数组
     error = Column(Text, nullable=True)
+    # 这份名单覆盖到多少亿（亿元）：空 = 全市场；300 = 只有总市值 ≥300 亿的（不在名单里 = 那天低于它）
+    universe_floor_yi = Column(Float, nullable=True)
 
 
 class LargeCapStockBoards(Base):

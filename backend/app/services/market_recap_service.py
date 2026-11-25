@@ -288,9 +288,10 @@ def candidate_module(db: Session, d: date, watched: Iterable[str] = ()) -> dict:
         picks.setdefault(r.stock_code, set()).add("turnover")
 
     codes = set(picks) | set(watched)
-    lc_rows = {r.stock_code: r for r in db.query(LargeCapMarketDaily.stock_code, LargeCapMarketDaily.industry,
-                                                 LargeCapMarketDaily.pct_change_20d)
-               .filter(LargeCapMarketDaily.trade_date == d, LargeCapMarketDaily.stock_code.in_(codes))} if codes else {}
+    # 当日事实不再翻全市场：大市值快照 → 已存的 → 当天就按代码问选股 prompt（2026-11-25）
+    from . import stock_day_facts as sdf
+    lc_rows = sdf.facts(db, d, codes) if codes else {}
+    ind_of = sdf.industry_of(db, codes, d) if codes else {}
     reg = {r.security_code: r for r in db.query(RegulatoryStatusDaily)
            .filter(RegulatoryStatusDaily.date == d, RegulatoryStatusDaily.security_code.in_(codes))} if codes else {}
 
@@ -302,8 +303,8 @@ def candidate_module(db: Session, d: date, watched: Iterable[str] = ()) -> dict:
         # 股票表上的「当前主板块」，并标出来是当前口径
         if det is not None and det.em_industry:
             sector, sector_basis = det.em_industry, "当日涨停明细"
-        elif lcd is not None and lcd.industry:
-            sector, sector_basis = lcd.industry, "当日行情快照"
+        elif ind_of.get(c):
+            sector, sector_basis = ind_of[c], "东财二级行业（大市值快照 / 涨停明细）"
         elif s is not None and s.primary_sector_name:
             sector, sector_basis = s.primary_sector_name, "当前主板块（非当日口径）"
         else:
@@ -413,11 +414,9 @@ def stock_facts(db: Session, codes: Iterable[str], d: date) -> Dict[str, dict]:
     codes = list(dict.fromkeys(c for c in codes if c))
     if not codes:
         return {}
-    lc = {r.stock_code: r for r in db.query(
-        LargeCapMarketDaily.stock_code, LargeCapMarketDaily.stock_name, LargeCapMarketDaily.pct_change,
-        LargeCapMarketDaily.pct_change_5d, LargeCapMarketDaily.pct_change_20d, LargeCapMarketDaily.amount,
-        LargeCapMarketDaily.price).filter(LargeCapMarketDaily.trade_date == d,
-                                          LargeCapMarketDaily.stock_code.in_(codes))}
+    # 当日事实（2026-11-25 起）：大市值快照 → 已存的 → d 就是此刻的交易日时按代码问选股 prompt
+    from . import stock_day_facts as sdf
+    lc = sdf.facts(db, d, codes)
     sn = {s.code: (s, x) for s, x in db.query(Stock, StockDailySnapshot)
           .join(StockDailySnapshot, StockDailySnapshot.stock_id == Stock.id)
           .filter(StockDailySnapshot.date == d, Stock.code.in_(codes))}
@@ -428,7 +427,8 @@ def stock_facts(db: Session, codes: Iterable[str], d: date) -> Dict[str, dict]:
     out = {}
     for c in codes:
         a, (s, x), t = lc.get(c), sn.get(c, (None, None)), det.get(c)
-        sources = [n for n, v in (("全市场快照", a), ("股票日快照", x), ("涨停明细", t)) if v is not None]
+        sources = [n for n, v in (((a.source if a is not None else "当日事实"), a), ("股票日快照", x),
+                                  ("涨停明细", t)) if v is not None]
         if t is not None:
             limit_up = True
         elif x is not None:
@@ -514,14 +514,14 @@ def name_suggestions(db: Session, leader_code: str, leader_name: str, d: date, l
     grams = list(dict.fromkeys(base[i:i + 2] for i in range(len(base) - 1)))
     if not grams:
         return []
-    names = dict(db.query(LargeCapMarketDaily.stock_code, LargeCapMarketDaily.stock_name)
-                 .filter(LargeCapMarketDaily.trade_date == (
-                     db.query(sqlfunc.max(LargeCapMarketDaily.trade_date))
-                     .filter(LargeCapMarketDaily.trade_date <= d).scalar_subquery())).all())
-    scope = "全市场"
-    if not names:
-        names = dict(db.query(Stock.code, Stock.name).all())
-        scope = "股票库"      # 那天还没有全市场快照，只能在本系统股票表里数
+    # 名字表：股票表（日更每天刷名字）+ 最近一份大市值快照。2026-11-25 起不再翻全市场，
+    # 所以范围写「股票库」——没进过本系统的小票不在里面，照实说
+    names = dict(db.query(Stock.code, Stock.name).all())
+    names.update({c: n for c, n in db.query(LargeCapMarketDaily.stock_code, LargeCapMarketDaily.stock_name)
+                  .filter(LargeCapMarketDaily.trade_date == (
+                      db.query(sqlfunc.max(LargeCapMarketDaily.trade_date))
+                      .filter(LargeCapMarketDaily.trade_date <= d).scalar_subquery())).all() if n})
+    scope = "股票库"
     # 每两个字在全市场名字里出现几次：「东方」「科技」这种常见词一配就是几十只，噪声大，
     # 数字摆出来让人自己判断，并且越稀有的排越前
     gram_n = {g: sum(1 for c, nm in names.items() if c != leader_code and nm and g in nm) for g in grams}

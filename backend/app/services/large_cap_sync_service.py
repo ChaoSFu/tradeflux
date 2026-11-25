@@ -1,5 +1,19 @@
 """
-大市值日快照同步：东财 clist 翻完全市场 → 核对完整性 → 整批写入。拿不全时退到腾讯行情。
+大市值日快照同步。拿不全时退到腾讯行情。
+
+## 2026-11-25 起：选股 prompt 问「总市值大于 300 亿」，不再翻全市场
+
+东财 clist 全市场 58 页把生产 IP 翻进了限流（11-19 起每次第 1 页就 502，连缺 7 个交易日）。
+现在收盘后问一次选股 prompt（约 520 只、6 次请求，SOURCE_PROMPT），批次记下名单下限 universe_floor_yi：
+  · 不在名单里 = 那天总市值低于下限。门槛最低一档 500 亿，离 300 亿足够远——一天涨跌停（≤20%）
+    跨不过去，所以跨入跨出照样严格（large_cap_service.compute_events 按下限判）；
+  · 昨天在名单里、今天不在的，再按代码问一次今天的市值（停牌 / 接口漏行就照实标「今日缺失」，不算跨出）；
+  · 二级行业、概念沿用之前存过的（几乎不天天变）；新进名单的才按代码问一次行业和概念，
+    概念只留东财 f103 词表里出现过的名字（prompt 的概念串里混着 HS300_、权重股这类风格标签）。
+  · 字段口径跟 f-字段一致：区间涨幅 = 今天收盘 ÷ N 个交易日前收盘（前复权），2026-11-25 跟腾讯日 K 逐只对上。
+东财 clist（下面的 fetch_eastmoney）留着，只在 `--source eastmoney` 时用。
+
+## 东财 clist 的字段（历史快照 11-06~11-18 用的就是它）
 
 ## 字段口径（2026-11-08 对 10 只股票逐个核过：茅台、宁德、工行、五粮液、中芯、比亚迪、
 ## 招行、东财、平安、美的，全部与东财前复权日 K / 个股详情一致）
@@ -58,6 +72,10 @@ from .eastmoney_fetcher import (
 
 SOURCE_EM = "eastmoney_clist"
 SOURCE_TENCENT = "tencent_quote"
+SOURCE_PROMPT = "eastmoney_prompt"
+AUTHORITATIVE = (SOURCE_PROMPT, SOURCE_EM)     # 带区间涨幅、名单完整，能当腾讯备用的名单底子
+FLOOR_YI = 300.0                                # 选股名单下限（亿元）；门槛调低时按门槛的 0.6 倍
+TENCENT_DAILY_LIMIT = 1.2                       # 一天最多涨 20%：昨天低于 F 的，今天低于 1.2F
 
 EM_HOSTS = ("push2delay.eastmoney.com", "push2.eastmoney.com")
 EM_FIELDS = "f12,f13,f14,f2,f3,f6,f8,f10,f20,f21,f24,f26,f100,f103,f109,f110,f160,f297"
@@ -244,6 +262,8 @@ class FetchResult:
     fetch_ok: bool = False          # 每一页都拿到了
     warnings: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    floor_yi: Optional[float] = None                 # 名单下限（亿元）；None = 全市场
+    extra_rows: Dict[str, dict] = field(default_factory=dict)   # 名单外补问的（昨天在、今天掉出名单的），不计入完整性
 
 
 def em_page_getter(client: httpx.Client, sleep: Callable[[float], None] = time.sleep):
@@ -355,6 +375,180 @@ def fetch_tencent(universe: Sequence[Tuple[str, str]], *,
     return res
 
 
+def universe_floor(threshold_yi: float) -> float:
+    """名单下限：默认 300 亿；门槛调得比 500 亿还低时按门槛的 0.6 倍，保证一天的涨跌停跨不过门槛。"""
+    return min(FLOOR_YI, round(float(threshold_yi) * 0.6, 1))
+
+
+def prompt_keyword(floor_yi: float) -> str:
+    return f"总市值大于{floor_yi:g}亿；5日涨跌幅；10日涨跌幅；20日涨跌幅；60日涨跌幅；量比；换手率；成交额；上市日期"
+
+
+CLASSIFY_FIELDS = "东财行业分类；所属概念"
+
+
+def parse_prompt_item(it: dict) -> Optional[dict]:
+    """一条选股结果 → 跟 parse_em_item 同样形状的一行（市值、成交额换成亿元）。"""
+    from .prompt_api import parse_row
+    r = parse_row(it)
+    if r is None:
+        return None
+    yi = lambda v: v / 1e8 if v is not None else None  # noqa: E731
+    iv = r["intervals"] or {}
+    m = r.get("market")
+    return {
+        "stock_code": r["code"], "stock_name": r["name"],
+        "market": m if m in ("SH", "SZ") else ("BJ" if m == "BJ" else None),
+        "total_market_cap": yi(r["total_market_cap"]) if r["total_market_cap"] and r["total_market_cap"] > 0 else None,
+        "float_market_cap": yi(r["float_market_cap"]) if r["float_market_cap"] and r["float_market_cap"] > 0 else None,
+        "price": r["price"], "pct_change": r["pct_change"],
+        "pct_change_5d": iv.get(5), "pct_change_10d": iv.get(10), "pct_change_20d": iv.get(20),
+        "pct_change_60d": iv.get(60),
+        "amount": yi(r["amount"]), "turnover_rate": r["turnover_rate"], "volume_ratio": r["volume_ratio"],
+        "industry": r.get("industry"), "concepts": None,
+        "is_st": _is_st(r["name"]), "listing_date": r.get("listing_date"),
+        "trade_date": r.get("data_date"),
+        "_style_concepts": r.get("style_concepts"),
+    }
+
+
+def _latest_classification(db: Session, codes: Sequence[str]) -> Dict[str, Tuple[Optional[str], Optional[list]]]:
+    """每只最近一次存过的（二级行业, 概念）。概念沿用最近一次有概念的那天。"""
+    from sqlalchemy import func
+    out: Dict[str, Tuple[Optional[str], Optional[list]]] = {}
+    if not codes:
+        return out
+    sub = (db.query(LargeCapMarketDaily.stock_code, func.max(LargeCapMarketDaily.trade_date).label("d"))
+           .filter(LargeCapMarketDaily.stock_code.in_(list(codes)), LargeCapMarketDaily.industry.isnot(None))
+           .group_by(LargeCapMarketDaily.stock_code).subquery())
+    for c, ind, cps in (db.query(LargeCapMarketDaily.stock_code, LargeCapMarketDaily.industry,
+                                 LargeCapMarketDaily.concepts)
+                        .join(sub, (sub.c.stock_code == LargeCapMarketDaily.stock_code)
+                              & (sub.c.d == LargeCapMarketDaily.trade_date))):
+        out[c] = (ind, json.loads(cps) if cps else None)
+    return out
+
+
+def _concept_vocab(db: Session) -> set:
+    """东财 f103 出现过的概念名（只有题材概念，没有风格 / 指数标签）：拿来过滤 prompt 的概念串。"""
+    b = (db.query(LargeCapSyncBatch.trade_date)
+         .filter(LargeCapSyncBatch.source == SOURCE_EM, LargeCapSyncBatch.applied.is_(True))
+         .order_by(LargeCapSyncBatch.trade_date.desc()).first())
+    if b is None:
+        return set()
+    vocab: set = set()
+    for (cps,) in db.query(LargeCapMarketDaily.concepts).filter(LargeCapMarketDaily.trade_date == b[0],
+                                                                LargeCapMarketDaily.concepts.isnot(None)):
+        try:
+            vocab.update(x for x in json.loads(cps) if isinstance(x, str))
+        except ValueError:
+            continue
+    return vocab
+
+
+def _prev_universe(db: Session, before: date) -> Tuple[Optional[date], Dict[str, float]]:
+    """today 之前最近一份已写入的快照：{代码: 总市值}。拿来找「昨天在、今天掉出名单」的。"""
+    b = (db.query(LargeCapSyncBatch.trade_date)
+         .filter(LargeCapSyncBatch.applied.is_(True), LargeCapSyncBatch.trade_date < before)
+         .order_by(LargeCapSyncBatch.trade_date.desc()).first())
+    if b is None:
+        return None, {}
+    return b[0], {c: cap for c, cap in db.query(LargeCapMarketDaily.stock_code, LargeCapMarketDaily.total_market_cap)
+                  .filter(LargeCapMarketDaily.trade_date == b[0], LargeCapMarketDaily.total_market_cap.isnot(None))}
+
+
+def fetch_prompt(db: Session, floor_yi: float) -> FetchResult:
+    """
+    选股 prompt 问「总市值大于 floor 亿」→ 一行一只。行业 / 概念沿用之前的，新进的按代码补问；
+    昨天在名单、今天不在的按代码补问今天的市值（放 extra_rows，不计入完整性）。见模块说明。
+    """
+    from . import prompt_api
+    from .eastmoney_fetcher import _is_bj_code
+    res = FetchResult(source=SOURCE_PROMPT, floor_yi=floor_yi)
+    try:
+        items, total = prompt_api.search_all(prompt_keyword(floor_yi), page_size=prompt_api.PAGE_SIZE)
+    except prompt_api.PromptError as e:
+        res.error = str(e)
+        return res
+    res.pages_expected = res.pages_ok = max(1, math.ceil(total / prompt_api.PAGE_SIZE))
+    bj = 0
+    for it in items:
+        rec = parse_prompt_item(it)
+        if rec is None:
+            continue
+        if rec["market"] == "BJ" or _is_bj_code(rec["stock_code"]):
+            bj += 1
+            continue
+        res.rows[rec["stock_code"]] = rec
+    res.expected = total - bj
+    if bj:
+        res.warnings.append(f"名单里 {bj} 只北交所不算（口径不含北交所）")
+    res.fetch_ok = True
+
+    # 行业 / 概念：沿用之前存过的；没有的按代码问一次（带概念的问法每行约 10 KB，只给新进的问）
+    carry = _latest_classification(db, list(res.rows))
+    new = [c for c in res.rows if c not in carry]
+    fetched_cls: Dict[str, dict] = {}
+    if new:
+        try:
+            fetched_cls = prompt_api.fetch_codes(new, fields=CLASSIFY_FIELDS)
+        except prompt_api.PromptError as e:
+            res.warnings.append(f"新进名单的 {len(new)} 只行业 / 概念没问到（{e}）")
+    vocab = _concept_vocab(db) if fetched_cls else set()
+    for c, rec in res.rows.items():
+        rec.pop("_style_concepts", None)
+        if c in carry:
+            rec["industry"], rec["concepts"] = carry[c]
+        elif c in fetched_cls:
+            f = fetched_cls[c]
+            rec["industry"] = f.get("industry")
+            sc = f.get("style_concepts")
+            rec["concepts"] = [x for x in sc if x in vocab] if (sc is not None and vocab) else None
+    if new:
+        res.warnings.append(f"新进名单 {len(new)} 只：行业 / 概念按代码补问到 {len(fetched_cls)} 只")
+
+    # 昨天在名单、今天不在：按代码问今天的市值，跨出才算得出来
+    data_day = Counter(r["trade_date"] for r in res.rows.values() if r["trade_date"]).most_common(1)
+    today = data_day[0][0] if data_day else None
+    if today is not None:
+        _pd, prev = _prev_universe(db, today)
+        # 只查昨天也 ≥ 下限的：昨天就在下限以下的跟跨入跨出无关。上一份是东财全市场（11-18 及以前）时，
+        # 不加这条会把五千只小票全当成「掉出名单」去问（约 50 次请求）
+        gone = [c for c, cap in prev.items()
+                if cap is not None and cap >= floor_yi and c not in res.rows and not _is_bj_code(c)]
+        if gone:
+            try:
+                got = prompt_api.fetch_codes(gone)
+            except prompt_api.PromptError as e:
+                got = {}
+                res.warnings.append(f"昨天在名单、今天不在的 {len(gone)} 只没问到今天的市值（{e}），会列为「今日缺失」")
+            carry_gone = _latest_classification(db, list(got))
+            for c, r in got.items():
+                if r.get("data_date") != today:
+                    continue
+                rec = parse_prompt_item_from_row(r)
+                rec["industry"], rec["concepts"] = carry_gone.get(c, (None, None))
+                res.extra_rows[c] = rec
+            res.warnings.append(f"昨天在名单、今天不在的 {len(gone)} 只，按代码补问到 {len(res.extra_rows)} 只今天的市值")
+    return res
+
+
+def parse_prompt_item_from_row(r: dict) -> dict:
+    """prompt_api.parse_row 的结果 → 快照行（补问那几只用）。"""
+    yi = lambda v: v / 1e8 if v is not None else None  # noqa: E731
+    iv = r.get("intervals") or {}
+    return {
+        "stock_code": r["code"], "stock_name": r.get("name"), "market": r.get("market"),
+        "total_market_cap": yi(r.get("total_market_cap")) if r.get("total_market_cap") else None,
+        "float_market_cap": yi(r.get("float_market_cap")) if r.get("float_market_cap") else None,
+        "price": r.get("price"), "pct_change": r.get("pct_change"),
+        "pct_change_5d": iv.get(5), "pct_change_10d": iv.get(10), "pct_change_20d": iv.get(20),
+        "pct_change_60d": iv.get(60), "amount": yi(r.get("amount")), "turnover_rate": r.get("turnover_rate"),
+        "volume_ratio": r.get("volume_ratio"), "industry": None, "concepts": None,
+        "is_st": _is_st(r.get("name")), "listing_date": r.get("listing_date"), "trade_date": r.get("data_date"),
+    }
+
+
 # ── 判完整 ──────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -435,6 +629,7 @@ def _record(db: Session, res: FetchResult, verdict: Verdict, started: datetime,
         is_complete=verdict.complete, is_settled=settled, applied=False, status=status,
         warnings=json.dumps([*res.warnings, *extra_warnings], ensure_ascii=False) or None,
         error="；".join(verdict.reasons) or None,
+        universe_floor_yi=res.floor_yi,
     )
     db.add(b)
     db.flush()
@@ -448,24 +643,35 @@ def _prev_complete_expected(db: Session, source: str) -> Optional[int]:
     return b.expected_count if b else None
 
 
-def _tencent_universe(db: Session, max_age_days: int = 20) -> Tuple[List[Tuple[str, str]], Dict[str, tuple], Optional[date]]:
-    """沿用最近一次东财完整快照的名单（和那天的行业、概念）。太旧就不沿用。"""
+def _tencent_universe(db: Session, max_age_days: int = 20,
+                      floor_yi: float = FLOOR_YI) -> Tuple[List[Tuple[str, str]], Dict[str, tuple], Optional[date], Optional[float]]:
+    """
+    沿用最近一次完整名单（选股 prompt 或东财全市场，带那天的行业、概念）。太旧就不沿用。
+    只取那天总市值 ≥ floor 的（2026-11-25：以前沿用全市场 5565 只，里面有 600849 上药转换这种
+    没有市值的换股占位代码，腾讯查无此代码，「差 1 只」让整批作废；也省下 90 多批请求）。
+    返回 (名单, 行业概念, 名单日期, 这批的下限)：今天低于 floor×1.2 的才可能不在里面（一天最多涨 20%）。
+    """
     b = (db.query(LargeCapSyncBatch)
-         .filter(LargeCapSyncBatch.source == SOURCE_EM, LargeCapSyncBatch.applied.is_(True))
+         .filter(LargeCapSyncBatch.source.in_(AUTHORITATIVE), LargeCapSyncBatch.applied.is_(True))
          .order_by(LargeCapSyncBatch.trade_date.desc()).first())
     if b is None or b.trade_date is None or b.trade_date < date.today() - timedelta(days=max_age_days):
-        return [], {}, None
+        return [], {}, None, None
+    base_floor = max(floor_yi, b.universe_floor_yi or 0)
     rows = (db.query(LargeCapMarketDaily.stock_code, LargeCapMarketDaily.market,
                      LargeCapMarketDaily.industry, LargeCapMarketDaily.concepts)
-            .filter(LargeCapMarketDaily.trade_date == b.trade_date).all())
+            .filter(LargeCapMarketDaily.trade_date == b.trade_date,
+                    LargeCapMarketDaily.total_market_cap >= base_floor).all())
     return ([(c, m) for c, m, _, _ in rows if m in ("SH", "SZ")],
-            {c: (ind, json.loads(cps) if cps else None) for c, _, ind, cps in rows}, b.trade_date)
+            {c: (ind, json.loads(cps) if cps else None) for c, _, ind, cps in rows}, b.trade_date,
+            round(base_floor * TENCENT_DAILY_LIMIT, 1))
 
 
 def sync_snapshot(db: Session, *, apply: bool = True, source: str = "auto",
                   log: Callable[[str], None] = print,
                   fetch_em: Callable[[], FetchResult] = fetch_eastmoney,
                   fetch_tx: Callable[..., FetchResult] = fetch_tencent,
+                  fetch_pr: Optional[Callable[[Session, float], FetchResult]] = None,
+                  floor_yi: Optional[float] = None,
                   market_now: Optional[datetime] = None,
                   calendar: Optional[Sequence[date]] = None) -> dict:
     """
@@ -477,21 +683,32 @@ def sync_snapshot(db: Session, *, apply: bool = True, source: str = "auto",
     now, now_warn = (market_now, None) if market_now is not None else _market_now(log)
     extra = [now_warn] if now_warn else []
 
+    # auto = 选股 prompt（≥300 亿名单）→ 腾讯备用。东财全市场列表不在 auto 里（2026-11-25 起：
+    # 58 页翻全市场把生产 IP 翻进了限流），只在 --source eastmoney 时用
     tries: List[str] = []
-    if source in ("auto", "eastmoney"):
+    if source in ("auto", "prompt"):
+        tries.append(SOURCE_PROMPT)
+    if source == "eastmoney":
         tries.append(SOURCE_EM)
     if source in ("auto", "tencent"):
         tries.append(SOURCE_TENCENT)
+    if floor_yi is None:
+        from .large_cap_service import get_config
+        floor_yi = universe_floor(get_config(db)["threshold_yi"])
+    fetch_pr = fetch_prompt if fetch_pr is None else fetch_pr
 
     for src in tries:
         started = datetime.now(SH_TZ).replace(tzinfo=None)
         warnings = list(extra)
-        if src == SOURCE_EM:
+        if src == SOURCE_PROMPT:
+            log(f"[大市值] 选股 prompt 问「总市值大于 {floor_yi:g} 亿」...")
+            res = fetch_pr(db, floor_yi)
+        elif src == SOURCE_EM:
             log("[大市值] 东财 clist 翻全市场...")
             res = fetch_em()
             carry_industry: Dict[str, tuple] = {}
         else:
-            universe, carry_industry, uni_date = _tencent_universe(db)
+            universe, carry_industry, uni_date, tx_floor = _tencent_universe(db, floor_yi=floor_yi)
             if not universe:
                 msg = "腾讯备用：没有 20 天内的东财完整名单可沿用"
                 log(f"  ❌ {msg}")
@@ -501,10 +718,11 @@ def sync_snapshot(db: Session, *, apply: bool = True, source: str = "auto",
                     _record(db, FetchResult(source=src), v, started, None, "failed", warnings)
                     db.commit()
                 continue
-            log(f"[大市值] 腾讯行情备用，名单沿用 {uni_date} 东财快照（{len(universe)} 只）...")
-            warnings.append(f"全市场名单与行业、概念沿用 {uni_date} 东财快照；之后新上市的不在内；"
+            log(f"[大市值] 腾讯行情备用，名单沿用 {uni_date} 的快照（总市值 ≥{floor_yi:g} 亿的 {len(universe)} 只）...")
+            warnings.append(f"名单与行业、概念沿用 {uni_date} 的快照（那天 ≥{floor_yi:g} 亿的）；之后新上市的不在内；"
                             "腾讯不提供 5/10/20/60 日涨跌幅")
             res = fetch_tx(universe)
+            res.floor_yi = tx_floor
             for code, rec in res.rows.items():
                 rec["industry"], rec["concepts"] = carry_industry.get(code, (None, None))
 
@@ -543,11 +761,12 @@ def sync_snapshot(db: Session, *, apply: bool = True, source: str = "auto",
         batch = _record(db, res, verdict, started, settled, status, warnings)
         if status == "ok":
             existing = _latest_applied_batch(db, verdict.trade_date)
-            if src == SOURCE_TENCENT and existing is not None and existing.source == SOURCE_EM:
+            if src == SOURCE_TENCENT and existing is not None and existing.source in AUTHORITATIVE:
                 batch.status = "kept_existing"
-                log(f"  {verdict.trade_date} 已有东财完整快照，备用源这批不覆盖")
+                log(f"  {verdict.trade_date} 已有完整快照（{existing.source}），备用源这批不覆盖")
             else:
-                n = _write_rows(db, batch, res.rows.values(), started)
+                n = _write_rows(db, batch, [*res.rows.values(), *(r for c, r in res.extra_rows.items()
+                                                                  if c not in res.rows)], started)
                 batch.applied = True
                 log(f"  ✅ 写入 {verdict.trade_date} 快照 {n} 行")
             batch.finished_at = datetime.now(SH_TZ).replace(tzinfo=None)
