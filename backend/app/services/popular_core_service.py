@@ -8,7 +8,7 @@
 
 | 来源 | 规则（RULES） | 统计范围 |
 |---|---|---|
-| gain_5/10/20/60 | 区间涨幅前 20 | 全市场（大市值同步的全市场收盘快照，东财前复权区间涨幅）；当天没有完整快照就是 missing |
+| gain_5/10/20/60 | 区间涨幅前 20 | 全市场：2026-11-25 起收盘后问选股 prompt「近 N 个交易日涨幅排名前 40」（去掉北交所留 30）；当天没问到就是 missing |
 | lu_10/20/60 | 涨停次数前 10 | 已跟踪股票（股票日快照只覆盖进过候选池的票） |
 | board | 当前连板前 10（≥2 板） | 已跟踪股票 |
 | high_board | 近 60 日最高连板前 10（≥3 板） | 已跟踪股票 |
@@ -51,6 +51,8 @@ RULES = {
 GAIN_WINDOWS = (5, 10, 20, 60)
 LU_WINDOWS = (10, 20, 60)
 SCOPE_FULL = "全市场（沪深主板+创业板+科创板，不含北交所）"
+# 成员的当日事实（名称、涨跌幅、区间涨幅、成交额、量比）：2026-11-25 起不翻全市场，按代码取
+# （大市值快照 → 已存的当日事实 → 当天就按代码问选股 prompt），见 stock_day_facts
 SCOPE_TRACKED = "已跟踪股票（进过候选池的），不是全 A 股"
 SOURCE_LABEL = {
     **{f"gain_{w}": f"{w}日涨幅" for w in GAIN_WINDOWS},
@@ -99,20 +101,32 @@ def competition_rank(values: Dict[str, Optional[float]], top: int) -> Dict[str, 
 
 # ── 读数（全是指定交易日的数据）────────────────────────────────────────────
 
-def _full_market(db: Session, d: date) -> Optional[Dict[str, Any]]:
-    """当天有东财完整收盘快照才算数（腾讯备用没有区间涨幅）。"""
+def _gain_tops(db: Session, d: date, fetch: bool) -> Optional[Dict[int, Dict[str, float]]]:
+    """
+    区间涨幅前列（全市场）。2026-11-25 前用大市值同步的全市场快照现排；之后不再翻全市场，
+    收盘后问选股 prompt 存下前 30（stock_day_facts.sync_gain_tops）。老日子有全市场快照的照旧现排。
+    """
+    from . import stock_day_facts as sdf
+    tops = sdf.gain_tops(db, d)
+    if tops is None and fetch:
+        try:
+            if sdf.sync_gain_tops(db, d)["ok"]:
+                tops = sdf.gain_tops(db, d)
+        except Exception:  # noqa: BLE001 —— 拿不到就是 missing，不拖垮整个核心池
+            db.rollback()
+    if tops is not None:
+        return tops
     from ..models.large_cap import LargeCapMarketDaily, LargeCapSyncBatch
     b = (db.query(LargeCapSyncBatch.id).filter(LargeCapSyncBatch.trade_date == d,
                                                LargeCapSyncBatch.applied.is_(True),
-                                               LargeCapSyncBatch.source == "eastmoney_clist").first())
+                                               LargeCapSyncBatch.source == "eastmoney_clist",
+                                               LargeCapSyncBatch.universe_floor_yi.is_(None)).first())
     if b is None:
         return None
-    return {r.stock_code: r for r in db.query(
-        LargeCapMarketDaily.stock_code, LargeCapMarketDaily.stock_name, LargeCapMarketDaily.is_st,
-        LargeCapMarketDaily.pct_change, LargeCapMarketDaily.pct_change_5d, LargeCapMarketDaily.pct_change_10d,
-        LargeCapMarketDaily.pct_change_20d, LargeCapMarketDaily.pct_change_60d, LargeCapMarketDaily.amount,
-        LargeCapMarketDaily.volume_ratio, LargeCapMarketDaily.industry,
-    ).filter(LargeCapMarketDaily.trade_date == d)}
+    rows = db.query(LargeCapMarketDaily.stock_code, LargeCapMarketDaily.pct_change_5d,
+                    LargeCapMarketDaily.pct_change_10d, LargeCapMarketDaily.pct_change_20d,
+                    LargeCapMarketDaily.pct_change_60d).filter(LargeCapMarketDaily.trade_date == d).all()
+    return {w: {r[0]: r[1 + k] for r in rows} for k, w in enumerate(GAIN_WINDOWS)}
 
 
 def _tracked(db: Session, d: Optional[date]) -> Dict[str, tuple]:
@@ -134,13 +148,18 @@ def _lifecycle(db: Session, d: date) -> Dict[str, Any]:
 
 # ── 核心池 ──────────────────────────────────────────────────────────────────
 
-def compute(db: Session, d: date, cal: Sequence[date], latest_snapshot_date: Optional[date] = None) -> dict:
-    """现算 d 这天的人气核心池和活跃事件。只读 d（和 d 往前的序列），不读之后的。"""
+def compute(db: Session, d: date, cal: Sequence[date], latest_snapshot_date: Optional[date] = None,
+            fetch: bool = True) -> dict:
+    """
+    现算 d 这天的人气核心池和活跃事件。只读 d（和 d 往前的序列），不读之后的。
+    fetch=True：d 就是选股接口此刻给的交易日时，缺的区间涨幅前列、成员事实按需去问（问过就存下来）。
+    """
     from ..models.limit_up_detail import LimitUpDailyDetail
     from ..models.turnover_pool import TurnoverPoolDaily
+    from . import stock_day_facts as sdf
     i = list(cal).index(d) if d in set(cal) else None
     prev_d = cal[i - 1] if i else None
-    fm = _full_market(db, d)
+    gains = _gain_tops(db, d, fetch)
     tr, tr_prev = _tracked(db, d), _tracked(db, prev_d)
     life = _lifecycle(db, d)
     detail = {r.stock_code: r for r in db.query(LimitUpDailyDetail).filter(LimitUpDailyDetail.trade_date == d)}
@@ -158,12 +177,12 @@ def compute(db: Session, d: date, cal: Sequence[date], latest_snapshot_date: Opt
     gain_ranks: Dict[int, Dict[str, int]] = {}
     for w in GAIN_WINDOWS:
         src = f"gain_{w}"
-        if fm is None:
+        if gains is None:
             sources[src] = {"status": "missing", "scope": SCOPE_FULL, "n": 0,
-                            "note": f"{d} 没有完整的全市场收盘快照（2026-11-06 起才有），不排全市场涨幅"}
+                            "note": f"{d} 没有区间涨幅前列（收盘后随大市值同步问选股 prompt；盘中不问）"}
             gain_ranks[w] = {}
             continue
-        vals = {c: getattr(r, f"pct_change_{w}d") for c, r in fm.items()}
+        vals = gains.get(w) or {}
         sources[src] = {"status": "ok", "scope": SCOPE_FULL, "n": 0, "note": None}
         gain_ranks[w] = competition_rank(vals, RULES["gain_top"])
         add(src, gain_ranks[w], vals, SCOPE_FULL)
@@ -218,6 +237,7 @@ def compute(db: Session, d: date, cal: Sequence[date], latest_snapshot_date: Opt
 
     # 「涨停次日均」只有股票表上的当前值：只有 d 就是最新一天时才用，历史日期不回填
     use_premium = latest_snapshot_date is not None and d == latest_snapshot_date
+    fm = sdf.facts(db, d, list(picks), fetch=fetch)
     items = {c: _row(c, srcs, fm, tr.get(c), detail.get(c), turnover.get(c), life.get(c), gain_ranks, use_premium)
              for c, srcs in picks.items()}
     events = compute_events(d, list(items), fm, tr, tr_prev, detail, life)
@@ -230,13 +250,13 @@ def _row(code, srcs, fm, t, det, tv, lc, gain_ranks, use_premium) -> dict:
     s, x = t if t else (None, None)
     missing = []
     if f is None:
-        missing.append("区间涨幅（这天没有全市场快照或这只不在里面）")
+        missing.append("当日事实（区间涨幅、成交额等：这天没取到这只）")
     if x is None:
         missing.append("涨停次数 / 连板（不在已跟踪股票里）")
     if det is not None and det.em_industry:
         sector, basis = det.em_industry, "当日涨停明细"
     elif f is not None and f.industry:
-        sector, basis = f.industry, "当日全市场快照"
+        sector, basis = f.industry, "当日大市值快照"
     elif s is not None and s.primary_sector_name:
         sector, basis = s.primary_sector_name, "当前主板块（非当日口径）"
     else:
@@ -303,7 +323,7 @@ def compute_events(d: date, codes: Iterable[str], fm, tr, tr_prev, detail, life)
                 ev("repair_fail", f"{pair[0]} → CROSS_FAILED", "生命周期")
         f = fm.get(c) if fm else None
         if f is not None and f.volume_ratio is not None and f.volume_ratio >= RULES["volume_surge_ratio"]:
-            ev("volume_surge", f"量比 {f.volume_ratio}（≥{RULES['volume_surge_ratio']}），当日 {f.pct_change}%", "全市场快照")
+            ev("volume_surge", f"量比 {f.volume_ratio}（≥{RULES['volume_surge_ratio']}），当日 {f.pct_change}%", "当日事实")
     return out
 
 

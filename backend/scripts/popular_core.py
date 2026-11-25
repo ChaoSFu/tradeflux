@@ -29,8 +29,13 @@ def audit(db, days: int) -> None:
     from app.models.turnover_pool import TurnoverPoolDaily
     cal = get_trading_days(db) or []
     recent = cal[-days:]
+    from app.models.app_config import AppConfig
+    # 区间涨幅前列：11-18 及以前来自东财全市场快照，11-25 起来自选股 prompt 存的前列（prompt_gain_tops:日期）
     fm = {d for (d,) in db.query(LargeCapSyncBatch.trade_date).filter(
-        LargeCapSyncBatch.applied.is_(True), LargeCapSyncBatch.source == "eastmoney_clist")}
+        LargeCapSyncBatch.applied.is_(True), LargeCapSyncBatch.source == "eastmoney_clist",
+        LargeCapSyncBatch.universe_floor_yi.is_(None))}
+    fm |= {date.fromisoformat(k.split(":", 1)[1]) for (k,) in db.query(AppConfig.key)
+           .filter(AppConfig.key.like("prompt_gain_tops:%"))}
     snap = dict(db.query(StockDailySnapshot.date, func.count()).filter(StockDailySnapshot.date.in_(recent))
                 .group_by(StockDailySnapshot.date))
     unsettled = dict(db.query(StockDailySnapshot.date, func.count()).filter(
@@ -42,7 +47,7 @@ def audit(db, days: int) -> None:
     tv = dict(db.query(TurnoverPoolDaily.date, func.count()).filter(TurnoverPoolDaily.date.in_(recent))
               .group_by(TurnoverPoolDaily.date))
     odd = [d for (d,) in db.query(TurnoverPoolDaily.date).distinct() if cal and d not in set(cal) and d >= cal[0]]
-    print(f"近 {len(recent)} 个交易日         全市场快照  股票日快照(未结算)  生命周期  涨停明细  成交额前列")
+    print(f"近 {len(recent)} 个交易日         区间涨幅前列  股票日快照(未结算)  生命周期  涨停明细  成交额前列")
     for d in recent:
         print(f"  {d}   {'有' if d in fm else '— '}        {snap.get(d, 0):>5} ({unsettled.get(d, 0)})"
               f"          {lc.get(d, 0):>4}      {lu.get(d, 0):>4}      {tv.get(d, 0):>4}")

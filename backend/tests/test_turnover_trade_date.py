@@ -167,9 +167,17 @@ class TestSync:
         rows = db.query(TurnoverPoolDaily).filter(TurnoverPoolDaily.date == FRI).all()
         assert sorted(r.stock_code for r in rows) == ["600001", "600002"]
 
-    def test_daily_update_传入的日期优先(self, db, env):
+    def test_daily_update_传入的日期要跟接口此刻的数据对得上(self, db, env):
+        """
+        2026-11-25 生产事故：日更把目标日错改回前一天，选股接口给的却是当天的名单，结果被记成了前一天。
+        周日市场时钟停在周五收盘，接口给的是周五的名单：传周五照写，传周四拒绝、不调接口、不动库。
+        """
+        r = ts.sync_turnover_pool(db, trade_date=FRI, market_now=SUNDAY_MARKET_CLOCK)
+        assert r["date"] == FRI.isoformat() and _dates(db) == [FRI]
+        fetched = env["fetch"]
         r = ts.sync_turnover_pool(db, trade_date=THU, market_now=SUNDAY_MARKET_CLOCK)
-        assert r["date"] == THU.isoformat() and _dates(db) == [THU]
+        assert r["date"] is None and "不是 2026-11-05" in r["errors"][0]
+        assert env["fetch"] == fetched and _dates(db) == [FRI]
 
     def test_拒绝时不调选股API也不动库(self, db, env):
         _add_rows(db, FRI, ["600009"])

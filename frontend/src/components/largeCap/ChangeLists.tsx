@@ -28,7 +28,9 @@ function CrossTable({ rows }: { rows: LargeCapCrossEvent[] }) {
                 {e.industry && <span className="ml-1 text-[10px] text-text-muted">{e.industry}</span>}
               </td>
               <td className={cn('px-1.5 py-1 text-right whitespace-nowrap text-text-secondary', NUM)}>
-                {fmtCap(e.prev_cap)}→<span className="text-text-primary">{fmtCap(e.cap)}</span>
+                {e.prev_cap == null && e.prev_cap_below != null
+                  ? <span title={`昨天不在 ≥${e.prev_cap_below} 亿的名单里`}>{`<${fmtCap(e.prev_cap_below)}`}</span>
+                  : fmtCap(e.prev_cap)}→<span className="text-text-primary">{fmtCap(e.cap)}</span>
                 {e.cap_price_mismatch && (
                   <span title={`市值变化 ${fmtPct(e.cap_change_pct)} 与当日涨跌幅 ${fmtPct(e.pct)} 不一致，可能涉及股本变动或口径变化`}
                         className="ml-1 inline-flex align-middle text-warn"><AlertTriangle className="w-3 h-3" /></span>

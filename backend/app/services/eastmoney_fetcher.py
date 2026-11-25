@@ -1586,19 +1586,7 @@ def fetch_stock_bk_codes(code: str, client: "httpx.Client | None" = None) -> lis
         return []
 
 
-_SEARCH_HEADERS = {
-    "Content-Type": "application/json",
-    "Accept": "application/json, text/plain, */*",
-    "Referer": "https://xuangu.eastmoney.com/",
-    "Origin": "https://xuangu.eastmoney.com",
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "actionmode": "edit_way",
-    "curpage": "stockResult",
-    "jumpsource": "edit_way",
-}
+from .prompt_api import HEADERS as _SEARCH_HEADERS  # noqa: E402 —— 选股请求统一走 prompt_api（2026-11-25）
 
 
 def _parse_limit_dir(item: dict) -> "str | None":
@@ -1640,7 +1628,7 @@ def fetch_strong_pool_codes(
     xc_id: str = "xc11bd34d6790101033c",
     fingerprint: str = "a3b5b577646954c0a1ff47146894e3d1",
     keyword: str = STRONG_POOL_KEYWORD,
-    page_size: int = 50,
+    page_size: int = 100,
     with_names: bool = False,
     with_detail: bool = False,
     with_raw: bool = False,
@@ -1660,7 +1648,7 @@ def fetch_strong_pool_codes(
     注：选股关键词均含「非ST」→ 出现在结果中的股票当日均为非 ST，
         调用方可据此把 is_st 刷新为 False（摘帽场景自动修正）。
     """
-    custom_data = f'[{{"type":"text","value":"{keyword}","extra":""}}]'
+    from . import prompt_api
     details: dict[str, dict] = {}
     raw_items: list[dict] = []
     page_no = 1
@@ -1668,46 +1656,15 @@ def fetch_strong_pool_codes(
     complete = True
 
     while True:
-        ts = str(int(time.time() * 1_000_000))
-        rid = "".join(random.choices(string.ascii_letters, k=32)) + str(int(time.time() * 1000))
-        body = {
-            "needAmbiguousSuggest": True,
-            "pageSize": page_size,
-            "pageNo": page_no,
-            "fingerprint": fingerprint,
-            "matchWord": "",
-            "shareToGuba": False,
-            "timestamp": ts,
-            "requestId": rid,
-            "removedConditionIdList": [],
-            "ownSelectAll": False,
-            "needCorrect": True,
-            "client": "WEB",
-            "product": "",
-            "needShowStockNum": False,
-            "biz": "web_ai_select_stocks",
-            "xcId": xc_id,
-            "gids": [],
-            "dxInfoNew": [],
-            "keyWordNew": keyword,
-            "customDataNew": custom_data,
-        }
-
+        # 选股请求统一走 prompt_api：跨进程节流（任意两次至少隔 1 秒）+ 调用计数（2026-11-25）
         try:
-            resp = httpx.post(
-                STRONG_POOL_SEARCH_URL,
-                headers=_SEARCH_HEADERS,
-                json=body,
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = json_or_explain(resp)
-        except Exception as e:
+            result = prompt_api.search(keyword, page_no=page_no, page_size=page_size,
+                                       xc_id=xc_id, fingerprint=fingerprint)
+        except prompt_api.PromptError as e:
             print(f"[fetcher] 选股 API 第 {page_no} 页失败: {e}（本次视为不可用，回退DB）")
             complete = False
             break
 
-        result = data.get("data", {}).get("result", {})
         data_list = result.get("dataList", [])
 
         if total is None:
@@ -1726,7 +1683,6 @@ def fetch_strong_pool_codes(
         if not data_list or len(details) >= (total or 0):
             break
         page_no += 1
-        time.sleep(0.3)
 
     # 分页未完整拉完 → 视为不可用，返回空，避免「部分结果」被当作权威全集
     if not complete:
@@ -1762,6 +1718,8 @@ class CoreRecallDetail:
     pct_change: Optional[float] = None      # 今日涨跌幅（CHG）
     turnover_rate: Optional[float] = None
     price: Optional[float] = None
+    # 这条数据属于哪天：列名里带的日期（INTERVAL_CHG{起|止|N|天} 的止）。落库前跟目标日核对（2026-11-25）
+    data_date: Optional[date] = None
 
 
 def _parse_core_recall_item(item: dict) -> Optional[CoreRecallDetail]:
@@ -1816,6 +1774,9 @@ def _parse_core_recall_item(item: dict) -> Optional[CoreRecallDetail]:
     d.pct_change = _f(item.get("CHG"))
     d.turnover_rate = _f(item.get("TURNOVER_RATE"))
     d.price = _f(item.get("NEWEST_PRICE"))
+    from .prompt_api import key_dates
+    ds = key_dates(item)
+    d.data_date = max(ds) if ds else None
     return d
 
 
@@ -1823,7 +1784,7 @@ def fetch_core_recall_details(
     xc_id: str = "xc11bd34d6790101033c",
     fingerprint: str = "a3b5b577646954c0a1ff47146894e3d1",
     keyword: str = CORE_RECALL_KEYWORD,
-    page_size: int = 50,
+    page_size: int = 100,
 ) -> Dict[str, CoreRecallDetail]:
     """
     拉取核心召回名单 + 每只股票的近期活跃度事实。分页任一页失败即整体判不可用返回
@@ -1856,7 +1817,7 @@ def _parse_cn_amount(s: str) -> float:
         return 0.0
 
 
-def fetch_turnover_top_stocks(keyword: str, page_size: int = 60) -> list[dict]:
+def fetch_turnover_top_stocks(keyword: str, page_size: int = 100) -> list[dict]:
     """
     调用东方财富智能选股 search-code 接口（同 fetch_strong_pool_codes 的接口/
     分页逻辑），用于「成交额排序前N」这类 prompt。选股 API 返回的每条数据本身
@@ -1867,46 +1828,18 @@ def fetch_turnover_top_stocks(keyword: str, page_size: int = 60) -> list[dict]:
     分页过程中任一页失败 → 视为本次不可用，返回空列表（同 fetch_strong_pool_codes
     的完整性约束，不把「部分结果」当作权威全集）。
     """
-    custom_data = f'[{{"type":"text","value":"{keyword}","extra":""}}]'
+    from . import prompt_api
     out: list[dict] = []
     seen: set[str] = set()
     page_no = 1
     total: Optional[int] = None
-
     while True:
-        ts = str(int(time.time() * 1_000_000))
-        rid = "".join(random.choices(string.ascii_letters, k=32)) + str(int(time.time() * 1000))
-        body = {
-            "needAmbiguousSuggest": True,
-            "pageSize": page_size,
-            "pageNo": page_no,
-            "fingerprint": "a3b5b577646954c0a1ff47146894e3d1",
-            "matchWord": "",
-            "shareToGuba": False,
-            "timestamp": ts,
-            "requestId": rid,
-            "removedConditionIdList": [],
-            "ownSelectAll": False,
-            "needCorrect": True,
-            "client": "WEB",
-            "product": "",
-            "needShowStockNum": False,
-            "biz": "web_ai_select_stocks",
-            "xcId": "xc11bd34d6790101033c",
-            "gids": [],
-            "dxInfoNew": [],
-            "keyWordNew": keyword,
-            "customDataNew": custom_data,
-        }
         try:
-            resp = httpx.post(STRONG_POOL_SEARCH_URL, headers=_SEARCH_HEADERS, json=body, timeout=15)
-            resp.raise_for_status()
-            data = json_or_explain(resp)
-        except Exception as e:  # noqa: BLE001
+            result = prompt_api.search(keyword, page_no=page_no, page_size=page_size)
+        except prompt_api.PromptError as e:
             print(f"[fetcher] 成交额选股 API 第 {page_no} 页失败: {e}（本次视为不可用）", flush=True)
             return []
 
-        result = data.get("data", {}).get("result", {})
         data_list = result.get("dataList", [])
         if total is None:
             total = result.get("total", len(data_list))
@@ -1928,7 +1861,6 @@ def fetch_turnover_top_stocks(keyword: str, page_size: int = 60) -> list[dict]:
         if not data_list or len(out) >= (total or 0):
             break
         page_no += 1
-        time.sleep(0.3)
 
     return out
 
@@ -1941,7 +1873,7 @@ def fetch_limit_move_codes(
     xc_id: str = "xc11bd34d6790101033c",
     fingerprint: str = "a3b5b577646954c0a1ff47146894e3d1",
     keyword: str = LIMIT_MOVE_KEYWORD,
-    page_size: int = 50,
+    page_size: int = 100,
     with_names: bool = False,
     with_detail: bool = False,
     with_raw: bool = False,
