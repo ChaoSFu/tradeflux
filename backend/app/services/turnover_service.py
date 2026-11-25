@@ -138,6 +138,12 @@ def sync_turnover_pool(db: Session, trade_date: Optional[_date] = None,
         return {"ok": False, "count": 0, "date": None, "settled": None,
                 "errors": ["成交额选股 API 不可用（本次未拿到完整分页）"]}
 
+    _write_pool(db, day, stocks)
+    return {"ok": True, "count": len(stocks), "date": day.isoformat(), "settled": settled, "errors": []}
+
+
+def _write_pool(db: Session, day: _date, stocks: List[dict]) -> None:
+    """整天替换：先删后插（名次按 stocks 的顺序）。板块归属复用之前解析过的，只给新面孔走解析。"""
     codes = [s["code"] for s in stocks]
     # 板块归属短期内基本不变：复用之前任意一天已解析过的结果，只对真正没
     # 见过的新代码走 F10（这是本函数最慢的一步，60只里通常大半是老面孔）
@@ -166,7 +172,48 @@ def sync_turnover_pool(db: Session, trade_date: Optional[_date] = None,
             market=s["market"],
         ))
     db.commit()
-    return {"ok": True, "count": len(stocks), "date": day.isoformat(), "settled": settled, "errors": []}
+
+
+def fetch_turnover_on(db: Session, d: _date) -> List[dict]:
+    """
+    按「d 那一天」问成交额前列（问法跟日更同一句，只是加上日期），按那天的成交额从大到小排好。
+    2026-11-25 实测：列名带那天（TRADING_VOLUMES{d}、CHG{d}、TURNOVER_RATE{d}），涨跌幅跟腾讯日 K 逐只对上。
+    任何一行没有那天的成交额就整批不认（抛 PromptError）。
+    """
+    from . import prompt_api as P
+    ds = P.date_phrase(d)
+    kw = P.dated_keyword(get_pool_keywords(db)["turnover_pool_keyword"], d) + f"；{ds}涨跌幅；{ds}换手率"
+    items, _total = P.search_all(kw)
+    out = []
+    for it in items:
+        amt = P.cn_number(P._dated(it, "TRADING_VOLUMES", d))
+        if amt is None:
+            raise P.PromptError(f"{it.get('SECURITY_CODE')} 没有 {d} 的成交额——接口没按日期答，不认")
+        out.append({"code": str(it["SECURITY_CODE"]).strip(),
+                    "name": (str(it.get("SECURITY_SHORT_NAME") or "").strip()),
+                    "pct_change": P.cn_number(P._dated(it, "CHG", d)) or 0.0, "amount": amt,
+                    "turnover_rate": P.cn_number(P._dated(it, "TURNOVER_RATE", d)) or 0.0,
+                    "market": (str(it.get("MARKET_SHORT_NAME") or "").strip())})
+    out.sort(key=lambda s: -s["amount"])
+    return out
+
+
+def restore_turnover_pool(db: Session, d: _date, apply: bool = False) -> dict:
+    """按日期重问 d 的成交额前列，跟库里存的比；apply=True 整天替换。返回比对结果。"""
+    stocks = fetch_turnover_on(db, d)
+    stored = {r.stock_code: r for r in db.query(TurnoverPoolDaily).filter(TurnoverPoolDaily.date == d)}
+    new_codes = [s["code"] for s in stocks]
+    rep = {"date": d.isoformat(), "fetched": len(stocks), "stored": len(stored),
+           "same": len(set(new_codes) & set(stored)), "only_new": [c for c in new_codes if c not in stored][:10],
+           "only_stored": [c for c in stored if c not in set(new_codes)][:10],
+           "top5": [(s["code"], s["name"], round(s["amount"] / 1e8, 2), s["pct_change"]) for s in stocks[:5]],
+           "stored_top5": [(r.stock_code, r.stock_name, round(r.amount / 1e8, 2), r.pct_change)
+                           for r in sorted(stored.values(), key=lambda r: r.rank)[:5]],
+           "applied": False}
+    if apply and stocks:
+        _write_pool(db, d, stocks)
+        rep["applied"] = True
+    return rep
 
 
 def _classify_bias(avg_pct: float, up_ratio: float, down_ratio: float) -> str:
