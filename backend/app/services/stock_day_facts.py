@@ -127,9 +127,21 @@ def facts(db: Session, d: date, codes: Iterable[str], *, fetch: bool = True,
     return out
 
 
-def _fetch_and_store(db: Session, d: date, codes: List[str], settled: bool) -> Dict[str, StockDayFact]:
+def backfill_facts(db: Session, d: date, codes: Iterable[str]) -> Dict[str, StockDayFact]:
+    """历史补数：按「那一天」问这些票（只认带那天的列），存成已收盘。已存过的不再问。"""
+    codes = list(dict.fromkeys(c for c in codes if c))
+    have = {c for (c,) in db.query(StockDayFact.stock_code).filter(StockDayFact.trade_date == d,
+                                                                   StockDayFact.stock_code.in_(codes))} if codes else set()
+    have |= {c for (c,) in db.query(LargeCapMarketDaily.stock_code).filter(
+        LargeCapMarketDaily.trade_date == d, LargeCapMarketDaily.stock_code.in_(codes))} if codes else set()
+    need = [c for c in codes if c not in have]
+    return _fetch_and_store(db, d, need, True, on=d) if need else {}
+
+
+def _fetch_and_store(db: Session, d: date, codes: List[str], settled: bool,
+                     on: Optional[date] = None) -> Dict[str, StockDayFact]:
     try:
-        rows = prompt_api.fetch_codes(codes)
+        rows = prompt_api.fetch_codes(codes, on=on) if on is not None else prompt_api.fetch_codes(codes)
     except prompt_api.PromptError as e:
         logger.warning("按代码问选股 prompt 失败（%d 只）: %s", len(codes), e)
         return {}
@@ -185,29 +197,36 @@ def industry_of(db: Session, codes: Iterable[str], d: date) -> Dict[str, str]:
 
 # ── 区间涨幅前列 ─────────────────────────────────────────────────────────────
 
-def gain_keyword(w: int) -> str:
+def gain_keyword(w: int, on: Optional[date] = None) -> str:
+    if on is not None:          # 历史补数：「截至2026年11月20日近20个交易日涨幅排名前40」（2026-11-25 实测可用）
+        return f"截至{prompt_api.date_phrase(on)}近{w}个交易日涨幅排名前{GAIN_ASK}"
     return f"近{w}个交易日涨幅排名前{GAIN_ASK}"
 
 
-def sync_gain_tops(db: Session, d: date, market_now: Optional[datetime] = None) -> dict:
-    """收盘后问 4 个窗口的前列，存 AppConfig。返回 {ok, reason, counts}。已有就不再问。"""
+def sync_gain_tops(db: Session, d: date, market_now: Optional[datetime] = None, history: bool = False) -> dict:
+    """
+    收盘后问 4 个窗口的前列，存 AppConfig。返回 {ok, reason, counts}。已有就不再问。
+    history=True：历史补数，按「截至 d」问，不看此刻是哪天。
+    """
     from .eastmoney_fetcher import _is_bj_code
     key = GAIN_KEY.format(d.isoformat())
     if db.query(AppConfig.id).filter(AppConfig.key == key).first():
         return {"ok": True, "reason": "已有", "counts": None}
-    if market_now is None and not might_be_current(d):
-        return {"ok": False, "reason": f"{d} 是历史日期，选股接口只给此刻的数据", "counts": None}
-    cur, settled, now = current_day(db, market_now)
-    if cur != d or not settled:
-        return {"ok": False, "reason": f"选股接口此刻给的是 {cur}{'（已收盘）' if settled else '（未收盘）'}，不是 {d} 的收盘数据",
-                "counts": None}
+    if not history:
+        if market_now is None and not might_be_current(d):
+            return {"ok": False, "reason": f"{d} 是历史日期，选股接口只给此刻的数据（要补用历史补数脚本）", "counts": None}
+        cur, settled, now = current_day(db, market_now)
+        if cur != d or not settled:
+            return {"ok": False, "reason": f"选股接口此刻给的是 {cur}{'（已收盘）' if settled else '（未收盘）'}，不是 {d} 的收盘数据",
+                    "counts": None}
     windows: Dict[str, list] = {}
     for w in GAIN_WINDOWS:
         try:
-            items, _total = prompt_api.search_all(gain_keyword(w), page_size=GAIN_ASK, max_pages=2)
+            items, _total = prompt_api.search_all(gain_keyword(w, d if history else None),
+                                                  page_size=GAIN_ASK, max_pages=2)
         except prompt_api.PromptError as e:
             return {"ok": False, "reason": f"{w} 日前列没拿到（{e}）", "counts": None}
-        rows = [prompt_api.parse_row(it) for it in items]
+        rows = [prompt_api.parse_row_on(it, d) if history else prompt_api.parse_row(it) for it in items]
         rows = [r for r in rows if r and not _is_bj_code(r["code"])]
         dates = {r["data_date"] for r in rows if r.get("data_date")}
         if dates != {d}:
@@ -217,7 +236,7 @@ def sync_gain_tops(db: Session, d: date, market_now: Optional[datetime] = None) 
         windows[str(w)] = [[r["code"], r["name"], r["intervals"][w], bool(r["name"]) and "ST" in r["name"].upper()]
                            for r in keep]
     val = json.dumps({"windows": windows, "fetched_at": datetime.now().isoformat(timespec="seconds"),
-                      "asked": GAIN_ASK}, ensure_ascii=False)
+                      "asked": GAIN_ASK, "history": history}, ensure_ascii=False)
     db.add(AppConfig(key=key, value=val))
     db.commit()
     return {"ok": True, "reason": None, "counts": {w: len(v) for w, v in windows.items()}}

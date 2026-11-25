@@ -276,6 +276,64 @@ def _style_concepts(v) -> Optional[List[str]]:
     return list(dict.fromkeys(n.strip() for n in names if n.strip())) or None
 
 
+# ── 指定日期（历史补数，2026-11-25）────────────────────────────────────────────
+#
+# 选股接口认「2026年11月20日总市值大于300亿」「截至2026年11月20日近20个交易日涨跌幅」这样的问法，返回的列名带
+# 那一天（`TOAL_MARKET_VALUE<140>{2026-11-20}`、`CHG{2026-11-20}`），**同时还带着此刻的不带日期的列**——
+# 解析时只认带那一天的列。2026-11-25 拿 11-06 的东财全市场存档逐只对过（≥300 亿的 586 只）：
+#   收盘价、成交额、换手率、量比全对；涨跌幅 6 只差 0.03~0.05 个百分点；区间涨幅个别差到 0.3 个百分点
+#   （前复权基准随之后的分红变了）；总市值是「1.18万亿」这种三四位有效数字（万亿级 ±50 亿，千亿以下精确到 0.01 亿）；
+#   名单差 4 只，都卡在 300 亿边上。名称、是否 ST 只有此刻的（历史上改过名 / 戴摘帽的会跟当天不一样）。
+
+def date_phrase(d: date) -> str:
+    return f"{d.year}年{d.month}月{d.day}日"
+
+
+def day_fields_on(d: date) -> str:
+    ds = date_phrase(d)
+    return (f"{ds}总市值；{ds}流通市值；{ds}收盘价；{ds}涨跌幅；{ds}成交额；{ds}换手率；{ds}量比；{ds}成交量；"
+            + "；".join(f"截至{ds}近{n}个交易日涨跌幅" for n in (5, 10, 20, 60)))
+
+
+def _dated(item: dict, prefix: str, d: date):
+    tail = "{" + d.isoformat() + "}"
+    for k, v in item.items():
+        if k.startswith(prefix) and k.endswith(tail):
+            return v
+    return None
+
+
+def parse_row_on(item: dict, d: date) -> Optional[dict]:
+    """按指定日期问回来的一条 → 跟 parse_row 同样的字典，数值全取带 d 的列。d 这天的列一个都没有 → data_date=None。"""
+    code = str(item.get("SECURITY_CODE") or "").strip()
+    if not code:
+        return None
+    price = cn_number(_dated(item, "NEWEST_PRICE", d))
+    pct = cn_number(_dated(item, "CHG", d))
+    iv = {}
+    for k, v in item.items():
+        m = _INTERVAL.match(k)
+        if m and m.group(2) == d.isoformat():
+            iv[int(m.group(3))] = cn_number(v)
+    cap = cn_number(_dated(item, "TOAL_MARKET_VALUE", d))
+    name = str(item.get("SECURITY_SHORT_NAME") or "").replace(" ", "") or None
+    return {
+        "code": code, "name": name, "market": (str(item.get("MARKET_SHORT_NAME") or "").strip().upper() or None),
+        "price": price if price and price > 0 else None, "pct_change": pct,
+        "prev_close": round(price / (1 + pct / 100), 4) if price and pct is not None and pct > -100 else None,
+        "open": None, "high": None, "low": None,
+        "volume": cn_number(_dated(item, "VOLUME", d)), "amount": cn_number(_dated(item, "TRADING_VOLUMES", d)),
+        "turnover_rate": cn_number(_dated(item, "TURNOVER_RATE", d)), "volume_ratio": cn_number(_dated(item, "QRR", d)),
+        "total_market_cap": cap, "float_market_cap": cn_number(_dated(item, "CIRCULATION_MARKET_VALUE", d)),
+        "listing_date": _iso_date(item.get("LISTING_DATE")),
+        "industry": (str(item.get("INDUSTRY")).strip() or None) if item.get("INDUSTRY") else None,
+        "style_concepts": _style_concepts(item.get("STYLE_CONCEPT")),
+        "intervals": iv,
+        # 这条是不是那一天的：任何一列带那一天（区间涨幅的止日也算）
+        "data_date": d if d in key_dates(item) else None,
+    }
+
+
 # ── 按代码问 ─────────────────────────────────────────────────────────────────
 
 DAY_FIELDS = "开盘价；最高价；最低价；收盘价；成交量；成交额；涨跌幅；量比；换手率；5日涨跌幅；10日涨跌幅；20日涨跌幅；60日涨跌幅"
@@ -285,11 +343,14 @@ def codes_keyword(codes: Sequence[str], fields: str = DAY_FIELDS) -> str:
     return "股票代码是" + "或".join(codes) + "；" + fields
 
 
-def fetch_codes(codes: Iterable[str], fields: str = DAY_FIELDS) -> Dict[str, dict]:
+def fetch_codes(codes: Iterable[str], fields: Optional[str] = None, on: Optional[date] = None) -> Dict[str, dict]:
     """
-    按代码问今天（此刻）的事实，CODES_PER_QUERY 只一问。返回 {代码: parse_row 字典}。
+    按代码问事实，CODES_PER_QUERY 只一问。返回 {代码: parse_row 字典}。
+    on=None 问此刻（fields 默认 DAY_FIELDS）；on=某天 问那一天（fields 默认 day_fields_on(on)，按 parse_row_on 解析）。
     停牌、退市、代码不存在的不在结果里——调用方按「没拿到」处理。任何一问失败抛 PromptError。
     """
+    if fields is None:
+        fields = day_fields_on(on) if on else DAY_FIELDS
     codes = list(dict.fromkeys(c for c in codes if c))
     out: Dict[str, dict] = {}
     for i in range(0, len(codes), CODES_PER_QUERY):
@@ -297,7 +358,7 @@ def fetch_codes(codes: Iterable[str], fields: str = DAY_FIELDS) -> Dict[str, dic
         items, _total = search_all(codes_keyword(chunk, fields), page_size=PAGE_SIZE, max_pages=2)
         want = set(chunk)
         for it in items:
-            r = parse_row(it)
+            r = parse_row_on(it, on) if on else parse_row(it)
             if r and r["code"] in want:
                 out[r["code"]] = r
     return out
