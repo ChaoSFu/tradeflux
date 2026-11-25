@@ -380,17 +380,20 @@ def universe_floor(threshold_yi: float) -> float:
     return min(FLOOR_YI, round(float(threshold_yi) * 0.6, 1))
 
 
-def prompt_keyword(floor_yi: float) -> str:
+def prompt_keyword(floor_yi: float, on: Optional[date] = None) -> str:
+    if on is not None:          # 历史补数：「2026年11月20日总市值大于300亿；2026年11月20日收盘价；……」
+        from .prompt_api import date_phrase, day_fields_on
+        return f"{date_phrase(on)}总市值大于{floor_yi:g}亿；{day_fields_on(on)}；上市日期"
     return f"总市值大于{floor_yi:g}亿；5日涨跌幅；10日涨跌幅；20日涨跌幅；60日涨跌幅；量比；换手率；成交额；上市日期"
 
 
 CLASSIFY_FIELDS = "东财行业分类；所属概念"
 
 
-def parse_prompt_item(it: dict) -> Optional[dict]:
-    """一条选股结果 → 跟 parse_em_item 同样形状的一行（市值、成交额换成亿元）。"""
-    from .prompt_api import parse_row
-    r = parse_row(it)
+def parse_prompt_item(it: dict, on: Optional[date] = None) -> Optional[dict]:
+    """一条选股结果 → 跟 parse_em_item 同样形状的一行（市值、成交额换成亿元）。on = 按那一天问的（只认带那天的列）。"""
+    from .prompt_api import parse_row, parse_row_on
+    r = parse_row_on(it, on) if on is not None else parse_row(it)
     if r is None:
         return None
     yi = lambda v: v / 1e8 if v is not None else None  # noqa: E731
@@ -457,23 +460,28 @@ def _prev_universe(db: Session, before: date) -> Tuple[Optional[date], Dict[str,
                   .filter(LargeCapMarketDaily.trade_date == b[0], LargeCapMarketDaily.total_market_cap.isnot(None))}
 
 
-def fetch_prompt(db: Session, floor_yi: float) -> FetchResult:
+def fetch_prompt(db: Session, floor_yi: float, on: Optional[date] = None, recheck_gone: bool = True) -> FetchResult:
     """
     选股 prompt 问「总市值大于 floor 亿」→ 一行一只。行业 / 概念沿用之前的，新进的按代码补问；
     昨天在名单、今天不在的按代码补问今天的市值（放 extra_rows，不计入完整性）。见模块说明。
+    on = 历史补数：按那一天问（「2026年11月20日总市值大于300亿」），只认带那天的列；
+    掉出名单的也按那一天问。行业 / 概念用存过的（历史上那几天的分类本来就没存下来）。
     """
     from . import prompt_api
     from .eastmoney_fetcher import _is_bj_code
     res = FetchResult(source=SOURCE_PROMPT, floor_yi=floor_yi)
+    if on is not None:
+        res.warnings.append(f"历史补数：{datetime.now(SH_TZ):%Y-%m-%d} 按日期问选股 prompt 补的；名称、是否 ST 是补数那天的，"
+                            "区间涨幅的前复权基准是补数那天的（之后有分红的会差零点几个百分点）")
     try:
-        items, total = prompt_api.search_all(prompt_keyword(floor_yi), page_size=prompt_api.PAGE_SIZE)
+        items, total = prompt_api.search_all(prompt_keyword(floor_yi, on), page_size=prompt_api.PAGE_SIZE)
     except prompt_api.PromptError as e:
         res.error = str(e)
         return res
     res.pages_expected = res.pages_ok = max(1, math.ceil(total / prompt_api.PAGE_SIZE))
     bj = 0
     for it in items:
-        rec = parse_prompt_item(it)
+        rec = parse_prompt_item(it, on)
         if rec is None:
             continue
         if rec["market"] == "BJ" or _is_bj_code(rec["stock_code"]):
@@ -510,7 +518,7 @@ def fetch_prompt(db: Session, floor_yi: float) -> FetchResult:
     # 昨天在名单、今天不在：按代码问今天的市值，跨出才算得出来
     data_day = Counter(r["trade_date"] for r in res.rows.values() if r["trade_date"]).most_common(1)
     today = data_day[0][0] if data_day else None
-    if today is not None:
+    if today is not None and recheck_gone:
         _pd, prev = _prev_universe(db, today)
         # 只查昨天也 ≥ 下限的：昨天就在下限以下的跟跨入跨出无关。上一份是东财全市场（11-18 及以前）时，
         # 不加这条会把五千只小票全当成「掉出名单」去问（约 50 次请求）
@@ -518,7 +526,7 @@ def fetch_prompt(db: Session, floor_yi: float) -> FetchResult:
                 if cap is not None and cap >= floor_yi and c not in res.rows and not _is_bj_code(c)]
         if gone:
             try:
-                got = prompt_api.fetch_codes(gone)
+                got = prompt_api.fetch_codes(gone, on=on) if on is not None else prompt_api.fetch_codes(gone)
             except prompt_api.PromptError as e:
                 got = {}
                 res.warnings.append(f"昨天在名单、今天不在的 {len(gone)} 只没问到今天的市值（{e}），会列为「今日缺失」")

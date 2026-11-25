@@ -335,3 +335,83 @@ class TestLargeCapOverviewFloor:
         ov = svc.build_overview(db, now=datetime(2026, 11, 25, 15, 10))
         note = next(n for n in ov["notes"] if "今天的收盘快照还没同步" in n)
         assert "最近一份成功同步的 2026-11-23" in note and "上一交易日 2026-11-23" not in note
+
+
+# ═══ 历史补数：按日期问 ═══════════════════════════════════════════════════════
+
+def dated_item(code, d, *, cap_yi=500.0, price=10.0, chg=1.0, w20=5.0, name=None):
+    """按「某天」问回来的一条：带那天的列 + 此刻的不带日期的列（故意给不一样的值，解析时不能用）。"""
+    ds = d.isoformat()
+    return {"SECURITY_CODE": code, "SECURITY_SHORT_NAME": name or f"股{code}", "MARKET_SHORT_NAME": "SH",
+            "NEWEST_PRICE": "99.99", "CHG": "9.99", "TOAL_MARKET_VALUE<140>": "9999亿", "TRADING_VOLUMES": "1亿",
+            f"TOAL_MARKET_VALUE<140>{{{ds}}}": f"{cap_yi}亿", f"CIRCULATION_MARKET_VALUE<140>{{{ds}}}": f"{cap_yi * 0.8}亿",
+            f"NEWEST_PRICE<140>{{{ds}}}": f"{price:.2f}", f"CHG{{{ds}}}": f"{chg:.2f}",
+            f"TRADING_VOLUMES{{{ds}}}": "12.5亿", f"TURNOVER_RATE{{{ds}}}": "1.20", f"QRR{{{ds}}}": "0.90",
+            f"VOLUME{{{ds}}}": "100万", f"INTERVAL_CHG{{2026-10-26|{ds}|20|天}}": f"{w20:.2f}",
+            f"INTERVAL_CHG{{2026-11-14|{ds}|5|天}}": "1.10", "LISTING_DATE": "2010-01-01"}
+
+
+class TestBackfill:
+    def test_只认带那一天的列(self):
+        r = P.parse_row_on(dated_item("600001", D1, cap_yi=820, price=12.3, chg=2.5), D1)
+        assert r["price"] == 12.3 and r["pct_change"] == 2.5 and r["total_market_cap"] == 820e8
+        assert r["amount"] == 12.5e8 and r["intervals"] == {20: 5.0, 5: 1.1} and r["data_date"] == D1
+        assert P.parse_row_on(dated_item("600001", D1), D2)["data_date"] is None, "问的是 11-23，不能当 11-24 用"
+
+    def _fakes(self, monkeypatch, lists, asked):
+        def search_all(kw, **k):
+            asked.append(kw)
+            for d, rows in lists.items():
+                if P.date_phrase(d) in kw:
+                    if "涨幅排名前" in kw:
+                        w = int(kw.split("近")[1].split("个")[0])
+                        return [dated_item(f"60{i:04d}", d, w20=100 - i) for i in range(40)], 40
+                    return rows, len(rows)
+            return [], 0
+
+        def fetch_codes(codes, fields=None, on=None):
+            asked.append(("codes", tuple(codes), on))
+            if fields == sync.CLASSIFY_FIELDS:
+                return {c: {"industry": "电池", "style_concepts": None} for c in codes}
+            return {c: P.parse_row_on(dated_item(c, on, cap_yi=250), on) for c in codes} if on else {}
+        monkeypatch.setattr(P, "search_all", search_all)
+        monkeypatch.setattr(P, "fetch_codes", fetch_codes)
+
+    def test_逐日补_有全市场快照的跳过_掉出名单的按那天问(self, db, monkeypatch, cal3):
+        from scripts import large_cap_backfill as bf
+        _batch(db, D1, sync.SOURCE_EM, rows=[("600001", 800, "银行Ⅱ"), ("600009", 320, "白酒Ⅱ")])
+        lists = {D2: [dated_item("600001", D2, cap_yi=1020, w20=8.0)],
+                 D3: [dated_item("600001", D3, cap_yi=990), dated_item("600002", D3, cap_yi=700)]}
+        asked = []
+        self._fakes(monkeypatch, lists, asked)
+        res = bf.run(db, [D1, D2, D3], CAL + [D3], apply=True, pause=0, log=lambda m: None)
+        assert [r["status"] for r in res] == ["skipped", "ok", "ok"]
+        b2 = db.query(LargeCapSyncBatch).filter_by(trade_date=D2, applied=True).one()
+        assert b2.source == sync.SOURCE_PROMPT and b2.universe_floor_yi == 300 and "历史补数" in b2.warnings
+        r2 = db.query(LargeCapMarketDaily).filter_by(trade_date=D2, stock_code="600001").one()
+        assert r2.total_market_cap == 1020 and r2.pct_change_20d == 8.0 and r2.price == 10.0, "用的是那天的列"
+        gone = db.query(LargeCapMarketDaily).filter_by(trade_date=D2, stock_code="600009").one()
+        assert gone.total_market_cap == 250, "11-23 在名单、11-24 不在：按 11-24 问到的市值"
+        assert ("codes", ("600009",), D2) in asked
+        assert sdf.gain_tops(db, D2)[20]["600000"] == 100.0 and sdf.gain_tops(db, D3) is not None
+        ov = svc.build_overview(db, trade_date=D3, now=datetime(2026, 11, 26, 20))
+        assert [e["code"] for e in ov["events"]["exited"]] == ["600001"]
+
+    def test_试跑不写库_也不补问掉出名单的(self, db, monkeypatch):
+        from scripts import large_cap_backfill as bf
+        _batch(db, D1, sync.SOURCE_EM, rows=[("600009", 320, "白酒Ⅱ")])
+        asked = []
+        self._fakes(monkeypatch, {D2: [dated_item("600001", D2)]}, asked)
+        res = bf.run(db, [D2], CAL, apply=False, pause=0, log=lambda m: None)
+        assert res[0]["status"] == "dry_ok" and db.query(LargeCapSyncBatch).filter_by(trade_date=D2).count() == 0
+        assert not any(isinstance(a, tuple) and a[1] == ("600009",) for a in asked)
+
+    def test_成员事实按那天补_大市值快照里有的不问(self, db, monkeypatch):
+        db.add(LargeCapMarketDaily(trade_date=D2, stock_code="600001", total_market_cap=900, source=sync.SOURCE_PROMPT))
+        db.commit()
+        asked = []
+        self._fakes(monkeypatch, {}, asked)
+        got = sdf.backfill_facts(db, D2, ["600001", "600002"])
+        assert set(got) == {"600002"} and asked == [("codes", ("600002",), D2)]
+        row = db.query(StockDayFact).filter_by(trade_date=D2, stock_code="600002").one()
+        assert row.settled and row.total_market_cap == 250
