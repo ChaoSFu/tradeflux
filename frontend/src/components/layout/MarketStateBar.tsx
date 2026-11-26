@@ -30,6 +30,7 @@ import { SectorSection, buildSectorGroups } from '@/components/common/SectorSect
 import type { Stock } from '@/types'
 import { useAppStore } from '@/store'
 import { cn } from '@/utils/cn'
+import { MiniBars, ratioLevel, ratioLevelRule, type RatioLevel } from '@/components/common/LimitMiniBars'
 
 const pctColor = (v: number) => (v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-secondary')
 const pctSign = (v: number) => (v >= 0 ? `+${v.toFixed(2)}%` : `${v.toFixed(2)}%`)
@@ -46,38 +47,17 @@ function ClickSector({ name, pct, active, onClick }: { name: string; pct?: numbe
 }
 
 /**
- * 跌停水平的四档 —— **全部由「今日只数 / 跌停30日均值」这一个比值定**，没有别的
- * 输入，阈值写在那一格的悬停说明里。这不是评分，是把一个比值切成四段。
+ * 跌停水平的四档 —— 由「今日只数 / 跌停30日均值」这一个比值切出来，切法在
+ * LimitMiniBars.ratioLevel（跟强势股概览那格共用一套阈值），这里只管每档叫什么、什么颜色。
  *
  * 颜色沿用本仓库的约定：跌停一律走 down 色（绿），轻重靠边框浓淡表达，不靠换色。
  * 「退潮」那档例外走 accent（蓝）——它要的是「看一眼」，不是「警告」。
  */
-const DOWN_LEVEL = {
-  ebb:     { text: '退潮',     box: 'border-accent/60 bg-accent/10' },
+const DOWN_LEVEL: Record<RatioLevel, { text: string; box: string }> = {
+  low:     { text: '退潮',     box: 'border-accent/60 bg-accent/10' },
   normal:  { text: '均值附近', box: 'border-bg-border bg-bg-elevated/40' },
   high:    { text: '高于均值', box: 'border-down/50 bg-down/10' },
   extreme: { text: '极端',     box: 'border-down bg-down/20' },
-} as const
-type DownLevel = keyof typeof DOWN_LEVEL
-
-/**
- * 近 N 个交易日的跌停只数缩略图。
- *
- * **柱状不是折线**：只数是离散计数，柱子高度一眼能比大小；折线会在 0 附近画出
- * 根本不存在的斜坡。最后一根是今天，单独着色。
- * 那天真是 0 只就画 1px 的底座——**0 是事实，不是没数据**，逐根悬停给具体只数。
- */
-function MiniBars({ data }: { data: { date: string; n: number }[] }) {
-  const max = Math.max(...data.map((d) => d.n), 1)
-  return (
-    <div className="flex items-end gap-[2px] h-4">
-      {data.map((d, i) => (
-        <div key={d.date} title={`${d.date.slice(5)} ${d.n} 只`}
-             className={cn('w-[3px] rounded-sm', i === data.length - 1 ? 'bg-down' : 'bg-down/35')}
-             style={{ height: d.n === 0 ? 1 : Math.max(3, (d.n / max) * 16) }} />
-      ))}
-    </div>
-  )
 }
 
 function Cell({ label, title, children }: { label: string; title?: string; children: React.ReactNode }) {
@@ -193,12 +173,7 @@ export function MarketStateBar() {
     && downSeries[downSeries.length - 1].date === (downCount as any)?.trade_date
   const downDelta = downPrev && downSameDay && limitDownCount != null
     ? limitDownCount - downPrev.n : null
-  const downLevel: DownLevel | null =
-    downRatio == null ? null
-      : downRatio >= 2 ? 'extreme'
-      : downRatio >= 1 ? 'high'
-      : downRatio <= 0.5 ? 'ebb'
-      : 'normal'
+  const downLevel = ratioLevel(downRatio)
   const downTip = limitDownCount == null ? '' : [
     `今日跌停 ${limitDownCount} 只`
       + (avgDown30 && downRatio != null
@@ -209,7 +184,7 @@ export function MarketStateBar() {
       : '上一交易日的只数和今天不是同一天的观测，不显示增减',
     '柱状 = 近 12 个交易日的跌停只数，最后一根是今天（未收盘时是盘中数）',
     '读法：贴近 0 或急剧变少 = 做空力量退潮；开始变多 = 风险抬头',
-    '四档阈值（今日/30日均值）：≤0.5× 退潮 · 1× 以下均值附近 · ≥1× 高于均值 · ≥2× 极端',
+    `四档阈值（今日/30日均值）：${ratioLevelRule({ low: '退潮', normal: '均值附近', high: '高于均值', extreme: '极端' })}`,
   ].join('\n')
 
   // 行情强弱标注：涨停数>30日均值=强势(>2倍=极端强势)；跌停数>30日均值=弱势(>2倍=极端弱势)
@@ -330,7 +305,7 @@ export function MarketStateBar() {
                   )}
                   {downLevel && (
                     <span className={cn('text-[10px]',
-                      downLevel === 'ebb' ? 'text-accent'
+                      downLevel === 'low' ? 'text-accent'
                         : downLevel === 'normal' ? 'text-text-muted' : 'text-down')}>
                       {DOWN_LEVEL[downLevel].text}
                     </span>
