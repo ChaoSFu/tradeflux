@@ -35,6 +35,11 @@ def core_recall_key(trade_date: date) -> str:
 
 
 def sync_core_recall(db: Session, trade_date: date) -> int:
+    """见 sync_core_recall_ex；只要条数的调用方用这个。"""
+    return sync_core_recall_ex(db, trade_date)[0]
+
+
+def sync_core_recall_ex(db: Session, trade_date: date) -> Tuple[int, Optional[str]]:
     """
     用东财条件选股拉一份"近期活跃股 + 各自的滚动涨停统计"存下来。
 
@@ -49,13 +54,14 @@ def sync_core_recall(db: Session, trade_date: date) -> int:
     """
     details = fetch_core_recall_details()
     if not details:
-        return 0                      # 拉空视为失败，不覆盖上一份（避免整体漏召回）
+        return 0, "召回接口拉空或分页失败，保留之前那份"      # 拉空视为失败，不覆盖上一份（避免整体漏召回）
     # 只给当前值的接口：数据属于哪天以列名里的日期为准，跟 trade_date 对不上就不写（2026-11-25：
     # 日更把目标日错改回前一天时，当天的召回名单被记成了前一天，那一天原来的数据就没了）
     dates = {d.data_date for d in details.values() if d.data_date}
     if dates and dates != {trade_date}:
-        print(f"[recall] 召回名单数据日期 {sorted(map(str, dates))} ≠ {trade_date}，本次不写", flush=True)
-        return 0
+        # 盘前（09:15 前）问，涨停天数的窗口截到上一交易日、区间涨幅的却截到今天（2026-11-26 实测），对不上
+        return 0, (f"接口此刻给的数据日期是 {'、'.join(sorted(map(str, dates)))}，不是 {trade_date}，"
+                   f"没写，保留之前那份")
     payload = _recall_payload(details)
     key = core_recall_key(trade_date)
     row = db.query(AppConfig).filter(AppConfig.key == key).first()
@@ -65,7 +71,7 @@ def sync_core_recall(db: Session, trade_date: date) -> int:
     else:
         db.add(AppConfig(key=key, value=val))
     db.commit()
-    return len(details)
+    return len(details), None
 
 
 def _recall_branches(keyword: str) -> Tuple[List[str], List[str]]:

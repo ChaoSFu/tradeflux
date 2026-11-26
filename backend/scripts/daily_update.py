@@ -175,6 +175,7 @@ from app.services.fuyao_dump import (
     reset_dump_availability, dump_unavailable_reason,
 )
 from app.services.snapshot_history import insert_history_bars
+from app.services.prompt_api import PromptError
 from app.services.market_effect_service import (
     refresh_recent, cohort_member_ids, save_outcome_quotes,
     _prev_trading_date as _effect_prev_trading_date,
@@ -771,6 +772,21 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
     log.info(f"  [掉出池补结算] 结算 {fixed} 只，拿不到数据清空 {cleared} 只")
     return fixed
 
+
+
+def _limit_api_verdict(n_codes: int, failed: bool, pre_open: bool) -> str:
+    """
+    涨跌停选股接口这一趟算什么（2026-11-26）：
+      ok                有结果
+      pre_open_zero     盘前如实答 0 只（问的是今天、集合竞价前本来就没有）——不算降级
+      failed            请求失败——回退数据库、算降级
+      empty_after_open  开盘后还答 0 只——不正常，回退数据库、算降级
+    """
+    if n_codes:
+        return "ok"
+    if failed:
+        return "failed"
+    return "pre_open_zero" if pre_open else "empty_after_open"
 
 
 def _is_open_session(target_date: date, market_now, probed: bool, cal) -> bool:
@@ -1380,14 +1396,34 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         log.info(f"强势池 prompt（{'自定义' if _kw['is_strong_custom'] else '默认'}）: {strong_kw}")
         log.info(f"涨跌停 prompt（{'自定义' if _kw['is_limit_custom'] else '默认'}）: {limit_kw}")
 
+        # ── 市场时间探测（整轮只问一次）─────────────────────────────────────────
+        # 2026-11-26 挪到第 1 步之前：要先知道是不是盘前（09:15 前），才分得清「涨跌停接口如实答 0 只」
+        # 和「接口挂了」。时间取自腾讯行情字段30（市场自己的时间戳），不用本机时钟。
+        market_now = probe_market_now()
+        _market_probed = market_now is not None
+        if market_now is None:
+            market_now = datetime.now(SH_TZ)
+            log.warning(f"市场时间探测失败，退回本机时钟 {market_now:%H:%M:%S}（"
+                        f"若本机时区/时间不准，可能把盘中价误判为收盘价）")
+        # 盘前 = 市场时钟（探测失败时本机时钟）还没走到 target_date 的 09:15
+        from app.services.trading_calendar import MARKET_DAY_STARTS as _MDS
+        _mn0 = market_now.astimezone(SH_TZ).replace(tzinfo=None) if market_now.tzinfo else market_now
+        _pre_open = not (_mn0.date() == target_date and _mn0.time() >= _MDS)
+
         # 并发调三个东财选股 API（with_names=True 顺带带回股票名，省去全市场拉取）
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=3) as ex:
             fut_strong   = ex.submit(fetch_strong_pool_codes, keyword=strong_kw, with_names=True)
-            fut_limit    = ex.submit(fetch_limit_move_codes, keyword=limit_kw, with_detail=True)
+            fut_limit    = ex.submit(fetch_limit_move_codes, keyword=limit_kw, with_detail=True,
+                                     raise_on_error=True)
             fut_turnover = ex.submit(fetch_turnover_top_stocks, turnover_kw)
             api_pool_names    = fut_strong.result()    # {code: name}
-            api_limit_detail  = fut_limit.result()     # {code: {"name", "limit_dir"}}
+            limit_api_failed = False
+            try:
+                api_limit_detail = fut_limit.result()  # {code: {"name", "limit_dir"}}
+            except PromptError as e:
+                api_limit_detail, limit_api_failed = {}, True
+                log.info(f"涨跌停选股 API 请求失败：{e}")
             api_turnover_rows = fut_turnover.result()  # [{"code","name",...}, ...]
 
         api_pool_codes    = set(api_pool_names)
@@ -1433,8 +1469,14 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             log.info(f"强势股 API 不可用，回退 DB {len(db_pool_codes)} 只")
             api_warnings.append("强势股选股 API 调用失败，已回退数据库历史，强势池可能未更新")
 
-        if api_limit_codes:
+        _lv = _limit_api_verdict(len(api_limit_codes), limit_api_failed, _pre_open)
+        if _lv == "ok":
             log.info(f"涨跌停 API: {len(api_limit_codes)} 只")
+        elif _lv == "pre_open_zero":
+            # 盘前问「涨停股票或者跌停股票」问的是今天，集合竞价前本来就是 0 只（2026-11-26 09:03 / 09:10 实测）。
+            # 接口是好的，不算降级；这一趟会把目标日修正回上一交易日、按本地 K 线判涨跌停
+            log.info(f"涨跌停 API：盘前（市场时间 {market_now:%m-%d %H:%M}），今天还没有涨跌停，接口如实返回 0 只——"
+                     f"不算降级，本次按本地 K 线判")
         else:
             # 涨跌停 API 失败时回退：从昨日快照补充
             api_limit_codes = {
@@ -1449,8 +1491,12 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                     ),
                 ).all()
             }
-            log.info(f"涨跌停 API 不可用，回退 DB {len(api_limit_codes)} 只")
-            api_warnings.append("涨跌停选股 API 调用失败，已回退数据库历史，今日涨跌停数据可能不完整或过时")
+            if _lv == "failed":
+                log.info(f"涨跌停 API 不可用，回退 DB {len(api_limit_codes)} 只")
+                api_warnings.append("涨跌停选股 API 调用失败，已回退数据库历史，今日涨跌停数据可能不完整或过时")
+            else:
+                log.info(f"涨跌停 API 开盘后返回 0 只（不正常），回退 DB {len(api_limit_codes)} 只")
+                api_warnings.append("涨跌停选股 API 开盘后返回 0 只，已回退数据库历史，今日涨跌停数据可能不完整")
 
         # 候选股 = 强势池 ∪ 涨跌停 ∪ 成交额概览今日上榜（并入后，这些高成交额但不常涨跌停
         # /不常入强势池的大盘股，也能在 Stock 表里留下真实的龙头分/风险分/多周期涨幅，
@@ -1609,15 +1655,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 只拉 2-3 天。生产日志里 "拉取近52天补齐/49天/65天" 几乎每次都触发，
         # payload 是应有的 20 倍，既是慢的主因，也是把限流打出来的主因。
         # 边界2 那个"连续停机多日不能只补1根"的初衷仍然保留，只是改成按股票各算。
-        # ── 市场时间探测（整轮只问一次，下面两处都用它）─────────────────────
-        # 提前到 dump 判定之前：要先知道"今天收盘了没有"，才能算出 dump 该覆盖到
-        # 哪一天。时间取自腾讯行情字段30（市场自己的时间戳），不用本机时钟。
-        market_now = probe_market_now()
-        _market_probed = market_now is not None
-        if market_now is None:
-            market_now = datetime.now(SH_TZ)
-            log.warning(f"市场时间探测失败，退回本机时钟 {market_now:%H:%M:%S}（"
-                        f"若本机时区/时间不准，可能把盘中价误判为收盘价）")
+        # 市场时间在第 1 步之前已经探过（整轮只问一次），dump 判定和下面修正目标日都用它
 
         # dump 需要覆盖到哪一天。**不是 target_date**——dump 只管历史缺口，当日
         # 那一根走实时行情（用户 2026-08-27）：
@@ -2493,13 +2531,14 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 时间即可，比整个 daily_update 失败的代价小得多。
         try:
             from app.services.limit_up_detail_service import (
-                sync_limit_up_details, sync_core_recall,
+                sync_limit_up_details, sync_core_recall_ex,
             )
             lu_n, bb_n, lu_warnings = sync_limit_up_details(db, target_date)
             # 板块核心召回名单：本地从快照数涨停日会因历史缺口偏低（实测覆盖率94.3%），
             # 偏低就是漏召回，用东财服务端算好的结果兜底，见 CORE_RECALL_KEYWORD 注释
-            recall_n = sync_core_recall(db, target_date)
-            log.info(f"涨停板块雷达：涨停明细 {lu_n} 只 / 炸板明细 {bb_n} 只 / 核心召回名单 {recall_n} 只")
+            recall_n, recall_why = sync_core_recall_ex(db, target_date)
+            log.info(f"涨停板块雷达：涨停明细 {lu_n} 只 / 炸板明细 {bb_n} 只 / 核心召回名单 {recall_n} 只"
+                     + (f"（{recall_why}）" if recall_why else ""))
             for w in lu_warnings:
                 log.info(f"  {w}")
             # 必须在「区间涨幅补全」之前打点：那一块嵌在本 try 内部，
@@ -2511,22 +2550,20 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             # 当年避开的是同一个坑（见 turnover_rate_service docstring）。
             try:
                 from app.services.turnover_rate_service import refresh_float_shares
-                # 流通市值：**只查强势池那几十只**，批量行情一次带 60 个 secid，
-                # 通常 2 个请求就够。明细表只含当天涨停/炸板的股票，上限卡在
+                # 流通市值：**只查强势池那几十只**。明细表只含当天涨停/炸板的股票，上限卡在
                 # "这只票最近进没进过涨停池"，跟它的流通股本毫无关系——实测
-                # 61 只只覆盖到 38 只。拉失败就退回只用明细表，行为跟以前一样
+                # 61 只只覆盖到 38 只。拉失败就退回只用明细表，行为跟以前一样。
+                # 2026-11-26 起走选股 prompt 按代码问（一次 100 只），不再打 push2（对生产 IP 一直 502）
                 _caps = {}
                 try:
-                    from app.services.eastmoney_fetcher import fetch_float_market_caps
+                    from app.services.eastmoney_fetcher import fetch_float_market_caps_prompt
                     _pool = db.query(Stock).filter(Stock.in_strong_pool.is_(True)).all()
-                    # 用 market_int，**不手搓 "SH"→1**：这个映射早就抽成唯一
-                    # 判定函数了（当时替掉了 8 处手搓），北交所的判断也在里面
-                    _cm = [(st.code, market_int(st.market, st.code)) for st in _pool]
-                    _caps, _bad = fetch_float_market_caps(_cm)
+                    _cm = [st.code for st in _pool]
+                    _caps, _bad = fetch_float_market_caps_prompt(_cm)
                     if _bad:
                         # 拿到多少必须报出来。静默用一份残缺数据，跟"这只票本来
                         # 就没有流通市值"看起来一模一样
-                        log.info(f"  流通市值：{len(_caps)}/{len(_cm)} 只，"
+                        log.info(f"  流通市值（选股 prompt）：{len(_caps)}/{len(_cm)} 只，"
                                  f"{_bad} 批失败（这趟不完整）")
                 except Exception as e:  # noqa: BLE001
                     log.info(f"  流通市值拉取失败（退回明细表口径）: {e}")

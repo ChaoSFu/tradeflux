@@ -504,3 +504,53 @@ class TestRepairCurrentOnly:
         assert rc.run(db, D2, apply=True, what=("recall",), log=lambda m: None)
         stored = json.loads(db.query(AppConfig).filter_by(key=lus.core_recall_key(D2)).one().value)
         assert set(stored) == {"600001", "600002"} and stored["600002"]["lu10"] == 0
+
+
+# ═══ 2026-11-26：盘前误报、召回原因、流通市值走 prompt ════════════════════════════
+
+class TestPreOpenNoise:
+    def test_涨跌停接口三种情况分开(self):
+        from scripts.daily_update import _limit_api_verdict as v
+        assert v(96, False, False) == "ok"
+        assert v(0, False, True) == "pre_open_zero", "盘前如实 0 只，不算降级"
+        assert v(0, True, True) == "failed" and v(0, True, False) == "failed"
+        assert v(0, False, False) == "empty_after_open"
+
+    def test_请求失败能抛出来_如实0只不抛(self, monkeypatch):
+        from app.services.eastmoney_fetcher import fetch_limit_move_codes
+        monkeypatch.setattr(P, "search", lambda *a, **k: {"total": 0, "dataList": []})
+        assert fetch_limit_move_codes(with_detail=True, raise_on_error=True) == {}
+
+        def boom(*a, **k):
+            raise P.PromptError("502")
+        monkeypatch.setattr(P, "search", boom)
+        with pytest.raises(P.PromptError):
+            fetch_limit_move_codes(with_detail=True, raise_on_error=True)
+        assert fetch_limit_move_codes(with_detail=True) == {}, "老调用方式照旧：失败返回空"
+
+    def test_召回0只写清原因(self, db, monkeypatch):
+        from app.services import limit_up_detail_service as lus
+        monkeypatch.setattr(lus, "fetch_core_recall_details", lambda: {})
+        n, why = lus.sync_core_recall_ex(db, D2)
+        assert n == 0 and "保留之前那份" in why
+        monkeypatch.setattr(lus, "fetch_core_recall_details",
+                            lambda: {"600001": CoreRecallDetail(code="600001", name="甲", data_date=D3)})
+        n, why = lus.sync_core_recall_ex(db, D2)
+        assert n == 0 and "2026-11-25" in why and "不是 2026-11-24" in why
+        assert lus.sync_core_recall(db, D3) == 1
+
+    def test_流通市值走选股接口_问最新价不问收盘价(self, monkeypatch):
+        from app.services.eastmoney_fetcher import fetch_float_market_caps_prompt
+        asked = []
+
+        def fetch_codes(codes, fields=None, on=None):
+            asked.append(fields)
+            return {"600001": P.parse_row(item("600001", price=12.0, cap_yi=100.0))}
+        monkeypatch.setattr(P, "fetch_codes", fetch_codes)
+        caps, bad = fetch_float_market_caps_prompt(["600001"])
+        assert bad == 0 and caps["600001"] == (80e8, 12.0) and asked == ["流通市值；最新价"]
+
+        def boom(*a, **k):
+            raise P.PromptError("x")
+        monkeypatch.setattr(P, "fetch_codes", boom)
+        assert fetch_float_market_caps_prompt(["600001"]) == ({}, 1)

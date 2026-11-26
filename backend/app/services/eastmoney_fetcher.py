@@ -980,6 +980,26 @@ def _fetch_from_akshare() -> List[StockBasicInfo]:
 ULIST_HOSTS = ("push2.eastmoney.com", "push2delay.eastmoney.com")
 
 
+def fetch_float_market_caps_prompt(codes: list) -> tuple:
+    """
+    同 fetch_float_market_caps 的形状：({code: (流通市值元, 最新价)}, 失败批数)，但走选股 prompt 按代码问
+    （2026-11-26：push2 / push2delay 对生产 IP 一直 502，每天白打 4 次；用户定的原则是少用实时接口）。
+    选股接口给的是「1207.84亿」这种字符串：万亿以下精确到 0.01 亿（推流通股本误差万分之一量级）；万亿级是
+    「1.84万亿」，误差到 0.3%——强势池基本都是中小盘，够用。市值和价格是同一刻的，比值（= 流通股本）跟哪天无关。
+    **不能问「收盘价」**：盘前 / 盘中问的是今天的收盘价，还没有，没收盘的票会被筛掉（2026-11-26 09:15 实测
+    4 只只回 1 只）；问「最新价」4 只全回。
+    """
+    from . import prompt_api
+    try:
+        rows = prompt_api.fetch_codes(codes, fields="流通市值；最新价")
+    except prompt_api.PromptError as e:
+        print(f"[fetcher] 流通市值（选股 prompt）失败: {e}", flush=True)
+        return {}, 1
+    out = {c: (r["float_market_cap"], r["price"]) for c, r in rows.items()
+           if r.get("float_market_cap") and r.get("price")}
+    return out, 0
+
+
 def fetch_float_market_caps(codes_markets: list, timeout: int = 20) -> tuple:
     """
     指定这些股票的 {code: (流通市值, 最新价)}，用来推流通股本 → 换手率。
@@ -1632,9 +1652,12 @@ def fetch_strong_pool_codes(
     with_names: bool = False,
     with_detail: bool = False,
     with_raw: bool = False,
+    raise_on_error: bool = False,
 ) -> "Set[str] | dict | list":
     """
     调用东方财富智能选股 search-code 接口。自动分页直到拉取全部结果。
+    raise_on_error=True：请求失败抛 PromptError，跟「接口如实答了 0 只」分得开（2026-11-26：盘前问
+    「涨停股票或者跌停股票」本来就是 0 只，以前跟接口挂了混在一起，界面亮「数据降级」）。
 
     返回：
       默认             → 股票代码集合 Set[str]（向后兼容）
@@ -1661,6 +1684,8 @@ def fetch_strong_pool_codes(
             result = prompt_api.search(keyword, page_no=page_no, page_size=page_size,
                                        xc_id=xc_id, fingerprint=fingerprint)
         except prompt_api.PromptError as e:
+            if raise_on_error:
+                raise
             print(f"[fetcher] 选股 API 第 {page_no} 页失败: {e}（本次视为不可用，回退DB）")
             complete = False
             break
@@ -1877,6 +1902,7 @@ def fetch_limit_move_codes(
     with_names: bool = False,
     with_detail: bool = False,
     with_raw: bool = False,
+    raise_on_error: bool = False,
 ) -> "Set[str] | dict | list":
     """
     调用东方财富智能选股 API，获取今日涨停 + 跌停的非ST非退市股票。
@@ -1891,6 +1917,7 @@ def fetch_limit_move_codes(
         page_size=page_size,
         with_names=with_names,
         with_detail=with_detail,
+        raise_on_error=raise_on_error,
     )
 
 
