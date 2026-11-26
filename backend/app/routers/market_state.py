@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from ..database import get_db
-from ..schemas.market_state import MarketStateResponse, MarketHistoryPoint, ProfitEffectResponse
-from ..services.market_state_service import get_current_market_state, get_market_history, get_profit_effect
+from ..schemas.market_state import MarketStateResponse, MarketHistoryPoint, ProfitEffectResponse, StrongPoolLimitPoint
+from ..services.market_state_service import (
+    get_current_market_state, get_market_history, get_profit_effect, get_strong_pool_limit_history,
+)
 
 router = APIRouter(prefix="/market-state", tags=["market-state"])
 
@@ -18,6 +20,15 @@ def market_state_history(
     db: Session = Depends(get_db),
 ):
     return get_market_history(db, days)
+
+
+@router.get("/strong-pool-limits", response_model=list[StrongPoolLimitPoint])
+def strong_pool_limits(
+    days: int = Query(30, ge=2, le=90),
+    db: Session = Depends(get_db),
+):
+    """强势池每天的涨停 / 跌停只数（顶栏那一格的历史序列；今天的数另取 profit-effect）"""
+    return get_strong_pool_limit_history(db, days)
 
 
 @router.get("/profit-effect", response_model=ProfitEffectResponse)

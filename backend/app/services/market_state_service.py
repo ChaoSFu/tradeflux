@@ -18,6 +18,7 @@ from ..models.review import DailyReview
 from ..schemas.market_state import (
     MarketStateResponse,
     MarketHistoryPoint,
+    StrongPoolLimitPoint,
     ActiveSector,
     DragonLeader,
     WeakToStrongCandidate,
@@ -157,13 +158,33 @@ def get_market_history(db: Session, days: int = 30) -> List[MarketHistoryPoint]:
             loss_effect_score=r.loss_effect_score,
             strong_pool_avg_pct=getattr(r, "strong_pool_avg_pct", None),
             profit_effect_groups=_parse_groups(getattr(r, "profit_effect_groups", None)),
-            overall_limit_up_count=r.overall_limit_up_count,
-            overall_limit_down_count=r.overall_limit_down_count,
             emotional_temperature=r.emotional_temperature,
             suggested_position_level=r.suggested_position_level,
             market_phase=r.market_phase,
         )
         for r in reversed(reviews)
+    ]
+
+
+def get_strong_pool_limit_history(db: Session, days: int = 30) -> List[StrongPoolLimitPoint]:
+    """近 days 个有记录的交易日，强势池每天的涨停 / 跌停只数，日期升序。
+
+    早期 DailyReview 没有这两列（null）的行跳过——**null 是没记，不是 0 只**，
+    当 0 会把均值拉低、让今天的倍数虚高。
+    """
+    rows = (
+        db.query(DailyReview.date, DailyReview.overall_limit_up_count, DailyReview.overall_limit_down_count)
+        .filter(
+            DailyReview.overall_limit_up_count.isnot(None),
+            DailyReview.overall_limit_down_count.isnot(None),
+        )
+        .order_by(DailyReview.date.desc())
+        .limit(days)
+        .all()
+    )
+    return [
+        StrongPoolLimitPoint(date=d, limit_up_count=up, limit_down_count=down)
+        for d, up, down in reversed(rows)
     ]
 
 

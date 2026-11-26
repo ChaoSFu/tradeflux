@@ -84,16 +84,23 @@ class MarketStateResponse(BaseModel):
     weak_to_strong_candidates: List[WeakToStrongCandidate]
 
 
+class StrongPoolLimitPoint(BaseModel):
+    """强势池某一天的涨停 / 跌停只数（DailyReview 落库值：那天池子里的票、那天的涨跌停标志）。
+
+    顶栏「强势股涨跌停」那一格的历史序列。顶栏挂在每个页面上，所以单开这个只带三列的
+    接口（30 天约 1KB），不去拉 /history（30 天 21KB，带着分组、温度那一堆用不上的）。
+    """
+    date: date
+    limit_up_count: int
+    limit_down_count: int
+
+
 class MarketHistoryPoint(BaseModel):
     date: date
     profit_effect_score: float
     loss_effect_score: float
     strong_pool_avg_pct: Optional[float] = None   # 强势股真实均涨幅 %
     profit_effect_groups: Optional[List[ProfitEffectGroup]] = None  # 分组均涨幅
-    # 强势池当天的涨停 / 跌停只数（DailyReview 落库值，那天池子里的票、那天收盘的标志）。
-    # 早期的行没有这两列 → None，不是 0
-    overall_limit_up_count: Optional[int] = None
-    overall_limit_down_count: Optional[int] = None
     emotional_temperature: float
     suggested_position_level: float
     market_phase: Optional[str] = None

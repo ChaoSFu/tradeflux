@@ -24,9 +24,8 @@ import { cn } from '@/utils/cn'
 import { TrendingUp, Zap, ChevronDown, ChevronUp, Activity } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type {
-  RiskLevel, ProfitEffectGroup, SectorProfitEffect, Stock, MarketHistoryPoint, ProfitEffectData,
+  RiskLevel, ProfitEffectGroup, SectorProfitEffect, Stock, MarketHistoryPoint,
 } from '@/types'
-import { MiniBars, ratioLevel, ratioLevelRule, type RatioLevel } from '@/components/common/LimitMiniBars'
 import { useSectorTags, type SectorTagData } from '@/hooks/useSectorTags'
 import { useDragonStocks } from '@/hooks/useDragonStocks'
 import { useLeaderUniverseMaxes, getLeaderTags } from '@/hooks/useLeaderUniverseMaxes'
@@ -286,133 +285,6 @@ function LifecycleSeries({ history }: { history: MarketHistoryPoint[] }) {
   }
   return <LifecycleEffectChart series={q.data?.series ?? []} history={history}
                                todayEstimate={q.data?.today_estimate} limitTrend={trend.data} />
-}
-
-/**
- * 强势池涨跌停（2026-11-26 用户提）：**跌停照顶栏「跌停 · 极端做空」的样子做，单独成框、放大**。
- *
- * 强势池是高标（近 60 日打开过连板高度的票）。池子里的票开始成批跌停 = 部分高标开始退潮。
- * 只摆一个数字看不出它是多是少、在变多还是变少，所以跟顶栏一样给三样，每样都追得到字段：
- * 今日只数 + 相对近 30 日均值的倍数、相对前一个交易日的增减、近 12 个交易日的柱状缩略图。
- *
- * 口径跟顶栏不同：顶栏是全市场跌停，这里只数强势池里的票，两个数本来就不一样。
- *
- * 序列怎么拼：**今天一律取 profit-effect**（跟左边均涨幅同一份快照），之前的日子取
- * DailyReview 落库值（那天池子里的票、那天的涨跌停标志）；DailyReview 里今天那一行不用，
- * 免得两个观测时点拼成一根柱子。早期没有这两列的行（null）跳过，不当 0。
- * 入池条件是「近 60 日最高连板」，当天跌停不会让票掉出池子——这个数没有幸存者偏差。
- */
-const POOL_DOWN_LEVEL: Record<RatioLevel, { text: string; box: string; textCls: string }> = {
-  // 「退潮」在这一格说的是高标，跌停少的那档就不能也叫退潮
-  low:     { text: '偏少',     box: 'border-down/30 bg-down/5',  textCls: 'text-text-muted' },
-  normal:  { text: '均值附近', box: 'border-down/30 bg-down/5',  textCls: 'text-text-muted' },
-  high:    { text: '高于均值', box: 'border-down/60 bg-down/10', textCls: 'text-down' },
-  extreme: { text: '极端',     box: 'border-down bg-down/20 shadow-[0_0_14px_-4px_#26C281]', textCls: 'text-down font-bold' },
-}
-
-function poolLimitStat(pe: ProfitEffectData, history: MarketHistoryPoint[],
-                       key: 'overall_limit_down_count' | 'overall_limit_up_count') {
-  const past = history
-    .filter((h) => h.date < pe.date && h[key] != null)
-    .map((h) => ({ date: h.date, n: h[key] as number }))
-  const series = [...past, { date: pe.date, n: pe[key] }].slice(-30)
-  const today = series[series.length - 1]
-  const prev = series.length >= 2 ? series[series.length - 2] : null
-  // 只有今天一个点时没有「均值」可言；均值是 0（近 N 日全是 0）时也不给倍数
-  const avg = series.length >= 2 ? series.reduce((a, p) => a + p.n, 0) / series.length : null
-  const ratio = avg ? today.n / avg : null
-  return {
-    today, prev, avg, ratio, days: series.length,
-    delta: prev ? today.n - prev.n : null,
-    bars: series.slice(-12),
-  }
-}
-
-function StrongPoolLimitBoxes({ pe, history }: { pe: ProfitEffectData; history: MarketHistoryPoint[] }) {
-  const dn = poolLimitStat(pe, history, 'overall_limit_down_count')
-  const up = poolLimitStat(pe, history, 'overall_limit_up_count')
-  const lv = ratioLevel(dn.ratio)
-  const box = POOL_DOWN_LEVEL[lv ?? 'normal']
-  const deltaText = (d: number) => (d > 0 ? `↑${d}` : d < 0 ? `↓${-d}` : '持平')
-  const prevText = (s: typeof dn) => s.prev && s.delta != null
-    ? `前一个交易日（${s.prev.date}）${s.prev.n} 只，${
-        s.delta > 0 ? `多了 ${s.delta} 只` : s.delta < 0 ? `少了 ${-s.delta} 只` : '持平'}`
-    : '还没有前一个交易日的记录，不显示增减'
-  const downTip = [
-    `强势池今日跌停 ${dn.today.n} 只`
-      + (dn.avg != null && dn.ratio != null
-        ? ` · 近 ${dn.days} 个交易日均值 ${dn.avg.toFixed(1)} → ${dn.ratio.toFixed(2)}×` : ''),
-    prevText(dn),
-    '柱状 = 近 12 个交易日强势池的跌停只数，最后一根是今天（未收盘时是上次更新数据那一刻的盘中数）',
-    '读法：强势池是高标，池子里跌停变多 = 部分高标开始退潮；贴近 0 = 高标没有成批出逃',
-    '口径：只数强势池里的票；顶栏「跌停 · 极端做空」是全市场，两个数不一样',
-    `四档阈值（今日/近30日均值，跟顶栏同一套）：${ratioLevelRule({
-      low: '偏少', normal: '均值附近', high: '高于均值', extreme: '极端' })}`,
-  ].join('\n')
-  const upTip = [
-    `强势池今日涨停 ${up.today.n} 只`
-      + (up.avg != null && up.ratio != null
-        ? ` · 近 ${up.days} 个交易日均值 ${up.avg.toFixed(1)} → ${up.ratio.toFixed(2)}×（>1 高标接力强于近月）` : ''),
-    prevText(up),
-    '柱状 = 近 12 个交易日强势池的涨停只数，最后一根是今天',
-  ].join('\n')
-
-  return (
-    <div className="flex flex-wrap gap-3 items-stretch">
-      {/* 跌停 · 高标退潮：这一格是这张卡里最该先看的，放大、单独成框、排在涨停前面 */}
-      <div className={cn('rounded-lg border px-3 py-2 min-w-[190px]', box.box)} title={downTip}>
-        <p className="text-[11px] text-text-secondary leading-none mb-1.5">跌停 · 高标退潮</p>
-        <div className="flex items-center gap-3">
-          <span className="font-mono text-3xl font-bold text-down leading-none">{dn.today.n}</span>
-          <div className="flex flex-col gap-1.5">
-            <div className="flex items-center gap-1.5 leading-none">
-              {dn.ratio != null && (
-                <span className="text-xs font-mono font-bold text-down/90">{dn.ratio.toFixed(2)}×</span>
-              )}
-              {lv && <span className={cn('text-[11px]', box.textCls)}>{box.text}</span>}
-              {/* 跌停变多是高标退潮的信号，走 down 色加粗；变少不抢注意力 */}
-              {dn.delta != null && (
-                <span className={cn('text-[11px] font-mono',
-                  dn.delta > 0 ? 'text-down font-bold' : 'text-text-muted')}>
-                  {deltaText(dn.delta)}
-                </span>
-              )}
-            </div>
-            {dn.bars.length >= 2 && <MiniBars data={dn.bars} height={22} barWidth={4} />}
-          </div>
-        </div>
-        {dn.avg != null && (
-          <p className="text-[10px] text-text-muted leading-none mt-1.5">
-            {/* 前一日带上日期：DailyReview 缺过某天时，「前一日」其实是更早那天 */}
-            近 {dn.days} 日均 {dn.avg.toFixed(1)} 只{dn.prev && ` · ${dn.prev.date.slice(5)} ${dn.prev.n} 只`}
-          </p>
-        )}
-      </div>
-
-      {/* 涨停：并排放着，看得出今天高标是接力的多还是出逃的多；分量比跌停那格轻 */}
-      <div className="rounded-lg border border-bg-border px-3 py-2" title={upTip}>
-        <p className="text-[11px] text-text-secondary leading-none mb-1.5">涨停</p>
-        <div className="flex items-center gap-2.5">
-          <span className="font-mono text-xl font-bold text-up leading-none">{up.today.n}</span>
-          <div className="flex flex-col gap-1.5">
-            <div className="flex items-center gap-1.5 leading-none">
-              {up.ratio != null && (
-                <span className={cn('text-xs font-mono font-medium',
-                  up.ratio >= 1 ? 'text-up' : 'text-text-muted')}>{up.ratio.toFixed(2)}×</span>
-              )}
-              {up.delta != null && (
-                <span className="text-[11px] font-mono text-text-muted">{deltaText(up.delta)}</span>
-              )}
-            </div>
-            {up.bars.length >= 2 && <MiniBars data={up.bars} tone="up" height={14} barWidth={3} />}
-          </div>
-        </div>
-        {up.avg != null && (
-          <p className="text-[10px] text-text-muted leading-none mt-1.5">近 {up.days} 日均 {up.avg.toFixed(1)} 只</p>
-        )}
-      </div>
-    </div>
-  )
 }
 
 /** 逐日各状态只数。同一个 ['lifecycle-effect'] 请求，跟上面那张图同一次状态推演 */
@@ -1187,8 +1059,18 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* 强势池涨跌停：跌停照顶栏「跌停 · 极端做空」做成醒目的框（2026-11-26） */}
-                  <StrongPoolLimitBoxes pe={pe} history={history ?? []} />
+                  {/* 涨跌停数 */}
+                  <div className="flex gap-4 items-center">
+                    <div className="text-center">
+                      <p className="label mb-0.5">涨停</p>
+                      <span className="text-xl font-mono font-bold text-up">{pe.overall_limit_up_count}</span>
+                    </div>
+                    <div className="w-px h-8 bg-border" />
+                    <div className="text-center">
+                      <p className="label mb-0.5">跌停</p>
+                      <span className="text-xl font-mono font-bold text-down">{pe.overall_limit_down_count}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
 

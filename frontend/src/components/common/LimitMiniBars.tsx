@@ -28,6 +28,22 @@ export function ratioLevelRule(names: Record<RatioLevel, string>): string {
 }
 
 /**
+ * 一条只数序列（日期升序、最后一个点是今天）的读数：今天、前一个点、均值、倍数、增减、
+ * 最后 12 根柱子。只有今天一个点时没有均值可言；均值是 0（全是 0）时也不给倍数。
+ */
+export function seriesStat(series: { date: string; n: number }[]) {
+  const today = series[series.length - 1]
+  const prev = series.length >= 2 ? series[series.length - 2] : null
+  const avg = series.length >= 2 ? series.reduce((a, p) => a + p.n, 0) / series.length : null
+  return {
+    today, prev, avg, days: series.length,
+    ratio: avg ? today.n / avg : null,
+    delta: prev ? today.n - prev.n : null,
+    bars: series.slice(-12),
+  }
+}
+
+/**
  * 近 N 个交易日的只数缩略图。
  *
  * **柱状不是折线**：只数是离散计数，柱子高度一眼能比大小；折线会在 0 附近画出
