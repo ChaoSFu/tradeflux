@@ -426,6 +426,9 @@ export interface MarketHistoryPoint {
   loss_effect_score: number
   strong_pool_avg_pct: number | null
   profit_effect_groups: ProfitEffectGroup[] | null
+  /** 强势池当天涨停 / 跌停只数（DailyReview 落库值）；早期的行没有 → null，不是 0 */
+  overall_limit_up_count: number | null
+  overall_limit_down_count: number | null
   emotional_temperature: number
   suggested_position_level: number
   market_phase: string | null

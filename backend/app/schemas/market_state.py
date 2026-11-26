@@ -90,6 +90,10 @@ class MarketHistoryPoint(BaseModel):
     loss_effect_score: float
     strong_pool_avg_pct: Optional[float] = None   # 强势股真实均涨幅 %
     profit_effect_groups: Optional[List[ProfitEffectGroup]] = None  # 分组均涨幅
+    # 强势池当天的涨停 / 跌停只数（DailyReview 落库值，那天池子里的票、那天收盘的标志）。
+    # 早期的行没有这两列 → None，不是 0
+    overall_limit_up_count: Optional[int] = None
+    overall_limit_down_count: Optional[int] = None
     emotional_temperature: float
     suggested_position_level: float
     market_phase: Optional[str] = None
