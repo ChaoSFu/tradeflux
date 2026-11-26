@@ -19,7 +19,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { fetchProfitEffect } from '@/api/marketState'
+import { fetchProfitEffect, fetchStrongPoolLimits } from '@/api/marketState'
 import { fetchTurnoverOverview } from '@/api/turnover'
 import { fetchLimitMoves, fetchLimitMovesSectorCounts, fetchLimitMovesTrend, fetchStrongPool, fetchLifecycleEffect } from '@/api/stocks'
 import { LIFECYCLE_ZH } from '@/lib/lifecycle'
@@ -30,7 +30,7 @@ import { SectorSection, buildSectorGroups } from '@/components/common/SectorSect
 import type { Stock } from '@/types'
 import { useAppStore } from '@/store'
 import { cn } from '@/utils/cn'
-import { MiniBars, ratioLevel, ratioLevelRule, type RatioLevel } from '@/components/common/LimitMiniBars'
+import { MiniBars, ratioLevel, ratioLevelRule, seriesStat, type RatioLevel } from '@/components/common/LimitMiniBars'
 
 const pctColor = (v: number) => (v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-text-secondary')
 const pctSign = (v: number) => (v >= 0 ? `+${v.toFixed(2)}%` : `${v.toFixed(2)}%`)
@@ -58,6 +58,17 @@ const DOWN_LEVEL: Record<RatioLevel, { text: string; box: string }> = {
   normal:  { text: '均值附近', box: 'border-bg-border bg-bg-elevated/40' },
   high:    { text: '高于均值', box: 'border-down/50 bg-down/10' },
   extreme: { text: '极端',     box: 'border-down bg-down/20' },
+}
+
+/**
+ * 强势股跌停那格的四档：切法同上（ratioLevel），叫法不同——这一格的「退潮」说的是高标，
+ * 跌停少的那档就不能也叫退潮，叫「偏少」。框一直带 down 色的边，平常日子也看得见它在那。
+ */
+const POOL_DOWN_LEVEL: Record<RatioLevel, { text: string; box: string; textCls: string }> = {
+  low:     { text: '偏少',     box: 'border-down/40 bg-down/5',  textCls: 'text-text-muted' },
+  normal:  { text: '均值附近', box: 'border-down/40 bg-down/5',  textCls: 'text-text-muted' },
+  high:    { text: '高于均值', box: 'border-down/60 bg-down/10', textCls: 'text-down' },
+  extreme: { text: '极端',     box: 'border-down bg-down/20',    textCls: 'text-down font-bold' },
 }
 
 function Cell({ label, title, children }: { label: string; title?: string; children: React.ReactNode }) {
@@ -186,6 +197,52 @@ export function MarketStateBar() {
     '读法：贴近 0 或急剧变少 = 做空力量退潮；开始变多 = 风险抬头',
     `四档阈值（今日/30日均值）：${ratioLevelRule({ low: '退潮', normal: '均值附近', high: '高于均值', extreme: '极端' })}`,
   ].join('\n')
+
+  // ── 强势股涨跌停（2026-11-26 用户提：放进顶栏，照「跌停 · 极端做空」做醒目）──────
+  // 强势池是高标（近 60 日打开过连板高度的票）。池子里的票开始成批跌停 = 部分高标开始
+  // 退潮——跟左边全市场那两格是两个口径，所以单独成框、挨着放。
+  //
+  // 序列怎么拼：**今天一律取 profit-effect**（跟「强势股池表现」同一份快照），之前的
+  // 日子取 DailyReview 落库值（那天池子里的票、那天的涨跌停标志）；DailyReview 里今天
+  // 那一行不用，免得两个观测时点拼成一根柱子。
+  // 入池条件是「近 60 日最高连板」，当天跌停不会让票掉出池子——这个数没有幸存者偏差。
+  const { data: poolLimits } = useQuery({
+    queryKey: ['strong-pool-limits', 30],
+    queryFn: () => fetchStrongPoolLimits(30),
+    staleTime: 10 * 60 * 1000,
+  })
+  const pool = useMemo(() => {
+    if (!pe?.has_data) return null
+    const past = (poolLimits ?? []).filter((p) => p.date < pe.date)
+    const stat = (key: 'limit_down_count' | 'limit_up_count', today: number) => seriesStat(
+      [...past.map((p) => ({ date: p.date, n: p[key] })), { date: pe.date, n: today }].slice(-30))
+    return {
+      down: stat('limit_down_count', pe.overall_limit_down_count),
+      up: stat('limit_up_count', pe.overall_limit_up_count),
+    }
+  }, [pe, poolLimits])
+  const poolDownLevel = pool ? ratioLevel(pool.down.ratio) : null
+  const deltaText = (d: number) => (d > 0 ? `↑${d}` : d < 0 ? `↓${-d}` : '持平')
+  const poolTip = (st: NonNullable<typeof pool>['down'], what: string, extra: string[]) => [
+    `强势股今日${what} ${st.today.n} 只`
+      + (st.avg != null && st.ratio != null
+        ? ` · 近 ${st.days} 个交易日均值 ${st.avg.toFixed(1)} → ${st.ratio.toFixed(2)}×` : ''),
+    st.prev && st.delta != null
+      ? `前一个交易日（${st.prev.date}）${st.prev.n} 只，${
+          st.delta > 0 ? `多了 ${st.delta} 只` : st.delta < 0 ? `少了 ${-st.delta} 只` : '持平'}`
+      : '还没有前一个交易日的记录，不显示增减',
+    `柱状 = 近 12 个交易日强势池的${what}只数，最后一根是今天（未收盘时是上次更新数据那一刻的盘中数）`,
+    ...extra,
+  ].join('\n')
+  const poolDownTip = pool ? poolTip(pool.down, '跌停', [
+    '读法：强势池是高标，池子里跌停变多 = 部分高标开始退潮；贴近 0 = 高标没有成批出逃',
+    '口径：只数强势池里的票；左边「跌停 · 极端做空」是全市场',
+    `四档阈值（今日/近30日均值，跟全市场那格同一套）：${ratioLevelRule({
+      low: '偏少', normal: '均值附近', high: '高于均值', extreme: '极端' })}`,
+  ]) : ''
+  const poolUpTip = pool ? poolTip(pool.up, '涨停', [
+    '读法：>1× = 高标接力强于近月；口径只数强势池里的票',
+  ]) : ''
 
   // 行情强弱标注：涨停数>30日均值=强势(>2倍=极端强势)；跌停数>30日均值=弱势(>2倍=极端弱势)
   const strongLv = upRatio == null ? 0 : upRatio > 2 ? 2 : upRatio > 1 ? 1 : 0
@@ -340,6 +397,64 @@ export function MarketStateBar() {
               </span>
             )}
           </Cell>
+        )}
+
+        {/* 强势股涨跌停（2026-11-26）：跌停照左边「跌停 · 极端做空」的样子——大数字、
+            倍数和档位、比前一个交易日的增减、近 12 日柱状；涨停并排在同一个框里。
+            框的边随跌停档位加深 */}
+        {pool && (
+          <div className={cn('shrink-0 rounded-md border px-2.5 py-1 flex items-stretch gap-3',
+                             POOL_DOWN_LEVEL[poolDownLevel ?? 'normal'].box)}>
+            <div title={poolDownTip}>
+              <p className="text-[10px] text-text-secondary leading-none mb-1">强势股跌停 · 高标退潮</p>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xl font-bold text-down leading-none">{pool.down.today.n}</span>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1.5 leading-none">
+                    {pool.down.ratio != null && (
+                      <span className="text-[11px] font-mono font-bold text-down/90">
+                        {pool.down.ratio.toFixed(2)}×
+                      </span>
+                    )}
+                    {poolDownLevel && (
+                      <span className={cn('text-[10px]', POOL_DOWN_LEVEL[poolDownLevel].textCls)}>
+                        {POOL_DOWN_LEVEL[poolDownLevel].text}
+                      </span>
+                    )}
+                    {/* 跌停变多 = 高标在退潮，走 down 色加粗；变少不抢注意力 */}
+                    {pool.down.delta != null && (
+                      <span className={cn('text-[10px] font-mono',
+                        pool.down.delta > 0 ? 'text-down font-bold' : 'text-text-muted')}>
+                        {deltaText(pool.down.delta)}
+                      </span>
+                    )}
+                  </div>
+                  {pool.down.bars.length >= 2 && <MiniBars data={pool.down.bars} />}
+                </div>
+              </div>
+            </div>
+            <div className="w-px bg-bg-border/70" />
+            <div title={poolUpTip}>
+              <p className="text-[10px] text-text-secondary leading-none mb-1">强势股涨停</p>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xl font-bold text-up leading-none">{pool.up.today.n}</span>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1.5 leading-none">
+                    {pool.up.ratio != null && (
+                      <span className={cn('text-[11px] font-mono font-bold',
+                        pool.up.ratio >= 1 ? 'text-up' : 'text-text-muted')}>
+                        {pool.up.ratio.toFixed(2)}×
+                      </span>
+                    )}
+                    {pool.up.delta != null && (
+                      <span className="text-[10px] font-mono text-text-muted">{deltaText(pool.up.delta)}</span>
+                    )}
+                  </div>
+                  {pool.up.bars.length >= 2 && <MiniBars data={pool.up.bars} tone="up" />}
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* 此前叫"赚钱效应"，但统计口径其实是当前 in_strong_pool 股票的当天涨跌幅，
