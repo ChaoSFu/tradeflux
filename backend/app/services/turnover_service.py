@@ -121,19 +121,23 @@ def resolve_trade_date(db: Session, trade_date: Optional[_date] = None,
 
 
 def sync_turnover_pool(db: Session, trade_date: Optional[_date] = None,
-                       market_now: Optional[datetime] = None) -> dict:
+                       market_now: Optional[datetime] = None,
+                       stocks: Optional[List[dict]] = None) -> dict:
     """
     拉取成交额前列股票，记在这批数据所属的交易日名下（同一天重跑会先清空当天旧行，幂等）。
 
     trade_date：daily_update 传它的 target_date；页面自愈/手动刷新不传，现算。见 resolve_trade_date。
+    stocks：调用方这一趟已经问过同一句（fetch_turnover_top_stocks 的结果）就传进来，不再问第二遍
+    （2026-11-27：日更第 1 步选候选股问过一次，存档时原来又问一次）。不传或为空才自己问。
     返回 {'ok': bool, 'count': n, 'date': 'YYYY-MM-DD'|None, 'settled': bool|None, 'errors': [...]}
     """
     _last_sync_attempt["ts"] = datetime.now()
     day, settled, why = resolve_trade_date(db, trade_date, market_now)
     if day is None:
         return {"ok": False, "count": 0, "date": None, "settled": None, "errors": [why]}
-    keyword = get_pool_keywords(db)["turnover_pool_keyword"]
-    stocks = fetch_turnover_top_stocks(keyword)
+    if not stocks:
+        keyword = get_pool_keywords(db)["turnover_pool_keyword"]
+        stocks = fetch_turnover_top_stocks(keyword)
     if not stocks:
         return {"ok": False, "count": 0, "date": None, "settled": None,
                 "errors": ["成交额选股 API 不可用（本次未拿到完整分页）"]}

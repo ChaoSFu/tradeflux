@@ -647,6 +647,21 @@ def kline_bar_from_quote(
     )
 
 
+def kline_bar_from_prompt_row(r: dict, code: str, is_st: bool, d: date) -> "KLineBar | None":
+    """
+    选股 prompt 的一行（prompt_api.parse_row / parse_row_on 的字典）→ d 那天的 KLineBar（2026-11-27 抽出来，
+    日更补当日 bar、补历史缺口和涨停雷达刷新共用）。数据日期（列名里的日期）不是 d 的一律不要；构 bar 走
+    kline_bar_from_quote，跟行情兜底同一套判定（停牌零成交、没价格的返回 None）。
+    """
+    if not r or r.get("data_date") != d:
+        return None
+    q = StockQuote(code=code, name=r.get("name") or "", price=r.get("price"),
+                   pct_change=r.get("pct_change"), open=r.get("open"), high=r.get("high"),
+                   low=r.get("low"), prev_close=r.get("prev_close"), volume=r.get("volume"),
+                   amount=r.get("amount"), trade_date=r.get("data_date"))
+    return kline_bar_from_quote(q, code, is_st, d)
+
+
 # ---------------------------------------------------------------------------
 # 股票列表抓取（主力：AkShare/新浪；备用：东方财富 clist）
 # ---------------------------------------------------------------------------
