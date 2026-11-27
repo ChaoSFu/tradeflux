@@ -151,6 +151,12 @@ class StepLogger:
             from app.services import api_call_counter
             for ln in api_call_counter.lines():
                 self._log(ln)
+            from app.services import prompt_api
+            t = prompt_api.task_status()
+            if t:
+                self._log(f"  选股 prompt：本次{t['label']}用 {t['used']}/{t['limit']} 次"
+                          + (f"；⚠️ {len(t['refused'])} 问超出上限没发出：{'；'.join(t['refused'][:5])}"
+                             if t["refused"] else ""))
         except Exception:  # noqa: BLE001 —— 计数只是看板，不能拦住日志收尾
             pass
         self._log(f"  总耗时: {total:.1f}s  完成于 {datetime.now().strftime('%H:%M:%S')}")
@@ -163,11 +169,12 @@ from app.models.stock import Stock, StockDailySnapshot
 from app.models.sector import Sector, StockSectorRelation, SectorDailySnapshot
 from app.models.review import DailyReview
 from app.services.eastmoney_fetcher import (
-    StockBasicInfo, KLineBar, StockQuote,
+    StockBasicInfo, KLineBar,
     fetch_main_board_stocks, fetch_klines_batch, get_limit_pct, get_actual_limit_pct,
     fetch_strong_pool_codes, fetch_stock_bk_codes, fetch_limit_move_codes,
     fetch_turnover_top_stocks, fetch_stock_quotes_batch, kline_bar_from_quote,
     bar_is_settled, probe_market_now, market_label, market_int, SH_TZ,
+    kline_bar_from_prompt_row,
 )
 from app.services.fuyao_dump import (
     get_api_key as get_fuyao_key, daily_k_dump, load_bars,
@@ -193,6 +200,19 @@ from app.services.sector_phase_service import refresh_sector_phases
 # （生产日志出现过成片 JSONDecodeError）。修掉"全体按最大缺口拉"之后每只股票
 # 的 payload 从 ~52天 降到 2-3 天，不再需要靠高并发抢时间，统一降到 12。
 _KLINE_WORKERS = 12
+
+# fuyao dump 拿不到时的逐只 K 线（2026-11-27，用户：被封的主要是取 K 线的接口）。11-26 生产计数：dump 正常时
+# 一趟日更逐只 K 线只剩 1~2 只；dump 一挂，原来是 150~200 只按 12 并发全部逐只拉、再加一轮重试——正是会被
+# 封的那种打法。现在 dump 没接上的先分清「只差当日那根」（交给 prompt，一次 100 只）和「真缺历史」（按日期问
+# prompt），两样都补不上的才逐只拉：低并发、有只数上限，超出的这趟就不补，日志和界面上写明。
+_KLINE_FALLBACK_WORKERS = 3
+_KLINE_FALLBACK_DELAY = 0.3
+_KLINE_FALLBACK_CAP = 30
+# 按日期问 prompt 补历史：缺得比这多的（多半是长期停牌）一只票一个 K 线请求就能拿全，不值得每天问一次
+_PROMPT_GAP_MAX_DAYS = 5
+# 补历史缺口之后这趟日更还要问的 prompt（当日那根另算，按只数现算）：掉出池补结算 1、核心召回约 3、
+# 流通市值补问 1、成交额前列补问 1——补历史只能用剩下的，不能把后面必需的挤掉
+_PROMPT_RESERVE_AFTER_GAPS = 6
 
 
 
@@ -298,110 +318,9 @@ def _sync_missing_sector_relations(db, limit_move_stocks: list, log=None) -> int
 _MIN_SNAPSHOTS_FOR_DB_REBUILD = 60
 
 
-def _snapshots_to_klinebars(snaps: list, code: str = "", is_st: bool = False) -> List[KLineBar]:
-    """
-    将已排序的 StockDailySnapshot 列表转换为 KLineBar 列表。
-    open/high/low 在 compute_window_stats 中未被使用，填 0.0。
-    close_price 为 None（老快照迁移前无此字段）时降级为 0.0，
-    此时 MA60/MA30 计算结果为 0，阶段判定回退为 "normal"（可接受的保守策略）。
-
-    涨跌停标志：按收盘价 + 0.005 容差重新判定，自动修正历史快照里旧逻辑
-    （浮点取整漏判）落库的 is_limit_up/down；判不出来时才降级用存储值。
-
-    **前收必须从这一行自己的 close 和 pct_change 反推，不能取前一根 bar 的收盘价**
-    （2026-09-03 修）。快照只在股票进候选池那天才写，序列里有缺口是常态（实测覆盖率
-    94.3%），拿缺口另一侧的收盘价当前收，算出来的涨停价必然是错的，而这段重算还会
-    **覆盖掉本来正确的存储值**——它本是来修错的，却在缺口处制造新的错。
-
-    实测案例 603989 艾华集团：06-12、06-15 无快照行，于是 06-16（真实 +10.01%，
-    快照存的 is_limit_up=t 是对的）被重算成 False，连板链从 06-17 才起算，
-    board_count_60d 由 4 变成 3。后果是它被踢出收窄后的强势池——而东财天梯和腾讯
-    K 线都确认那天是涨停。
-
-    close 与 pct_change 来自同一行、同一个数据源，天然自洽，跟前后有没有缺口无关：
-        prev_close = close / (1 + pct/100)
-    验算：34.3 / 1.1001 = 31.179 → 涨停价 round(31.179×1.10, 2) = 34.30
-          → 34.3 >= 34.295 → True ✓
-
-    影响面不止强势池：board_count_60d 同时喂着涨停板块雷达的核心召回、破局雷达的
-    高度曲线，limit_up_days_60d/20d/10d 也按同一个窗口数。任何快照有缺口的股票
-    都会被系统性低估。
-    """
-    snaps = sorted(snaps, key=lambda s: s.date)
-    lp = get_limit_pct(code, is_st) if code else None
-    bars: List[KLineBar] = []
-    for s in snaps:
-        close = s.close_price or 0.0
-        is_lu, is_ld = bool(s.is_limit_up), bool(s.is_limit_down)
-        # 这一行自己的前收（见 docstring）。pct 缺失时给 0.0 —— 后面的
-        # `own_prev > 0` 会挡住，保留存储值而不是拿一个假前收去翻转它
-        own_prev = (close / (1 + s.pct_change / 100.0)
-                    if close > 0 and s.pct_change is not None
-                    and abs(1 + s.pct_change / 100.0) > 1e-9 else 0.0)
-        if lp is not None and close > 0 and own_prev > 0:
-            actual = lp + 0.1
-            lu_price = round(own_prev * (1 + actual / 100), 2)
-            ld_price = round(own_prev * (1 - actual / 100), 2)
-            # **只单向修正：False → True，绝不 True → False**（2026-09-03）。
-            #
-            # 这段重算的声明目的是"修正旧逻辑的浮点取整**漏判**"——漏判就是
-            # "该 True 却存了 False"。所以它只该补，不该删。
-            #
-            # 双向改的后果实测出现过两次，每次都是把**正确的 True 改成错的 False**：
-            #   603989 06-16  存 True（+10.01% 真涨停）→ 重算 False → 连板 4→3
-            #   603773 08-04  存 True（+9.99%  真涨停）→ 重算 False → 连板 4→3
-            #
-            # 根子在于反推的前收不可能精确：pct_change 只存两位小数（9.99，真实
-            # 9.9938），反推前收带 ~0.002 误差，round 到分一放大就跨过 0.005 容差
-            #   71.43/1.0999 = 64.9422 → round(64.9422×1.10, 2) = 71.44
-            #   而真实前收 64.94    → round(64.94  ×1.10, 2) = 71.43 = 收盘价
-            # 边界上差一分钱，判定就翻。而**存储值是当时用真前收算的，比这个准**。
-            #
-            # 用前一根 bar 的收盘价当前收更糟（快照有缺口时直接取到几天前的价），
-            # 那是这个 bug 的上一版形态。两种反推都不可靠，所以：能补则补，不动已有。
-            if close >= lu_price - 0.005:
-                is_lu = True
-            if close <= ld_price + 0.005:
-                is_ld = True
-        # OHLC：2026-08-27 起快照会落库真实值；NULL 是加列之前写的老行，退回 0.0。
-        # 有 high 就能重算炸板/一字板，没有就只能沿用当初落库的标志（老行为）。
-        o, h, lo = s.open_price, s.high_price, s.low_price
-        has_ohlc = h is not None and lo is not None and h > 0
-        is_bb, is_owu, is_owd = (bool(s.is_broken_board),
-                                 bool(s.is_one_word_limit_up),
-                                 bool(s.is_one_word_limit_down))
-        # 炸板/一字板用同一个自洽前收，不能再回头用前一根 bar 的收盘价——
-        # 缺口处那个值是错的，涨停判定已经因它翻过一次
-        if has_ohlc and lp is not None and close > 0 and own_prev > 0:
-            actual = lp + 0.1
-            lu_price = round(own_prev * (1 + actual / 100), 2)
-            ld_price = round(own_prev * (1 - actual / 100), 2)
-            # 炸板同理只单向补：涨停判定既然只补不删，炸板也不能反过来把
-            # 已知的炸板抹掉。一字板需要 is_lu 成立，跟着上面的结果走
-            if (not is_lu) and h >= lu_price - 0.005:
-                is_bb = True
-            is_owu = is_owu or (is_lu and lo >= lu_price - 0.005)
-            is_owd = is_owd or (is_ld and h <= ld_price + 0.005)
-        bars.append(KLineBar(
-            date=s.date,
-            open_price=o or 0.0,
-            close_price=close,
-            high_price=h or 0.0,
-            low_price=lo or 0.0,
-            pct_change=s.pct_change or 0.0,
-            turnover_rate=s.turnover_rate,   # None 保持 None＝未知，不降级成0.0
-            # 成交量/成交额/来源口径（2026-09-03 补）。首版漏了这三个，而绝大多数
-            # 股票走的正是 DB 重建这条路（日志里"DB重建 230 只"），结果生产上
-            # leader_cycle_snapshots 的 volume 和 turnover_rate 全部为空——
-            # dump 和腾讯/新浪那两条路都接了，唯独这里没接，链条断在中间。
-            volume=s.volume, amount=s.amount, volume_source=s.volume_source,
-            is_limit_up=is_lu,
-            is_limit_down=is_ld,
-            is_broken_board=is_bb,
-            is_one_word_limit_up=is_owu,
-            is_one_word_limit_down=is_owd,
-        ))
-    return bars
+# 快照 → KLineBar 的转换 2026-11-27 挪到 app/services/snapshot_history.snapshots_to_klinebars（涨停雷达刷新
+# 按钮也要用库里历史重建 K 线，不再逐只拉 65 天）。这里保留原名，别的脚本和测试照旧从这里 import
+from app.services.snapshot_history import snapshots_to_klinebars as _snapshots_to_klinebars  # noqa: E402
 
 
 def _build_klines_from_db(
@@ -727,20 +646,29 @@ def _settle_dropped_out_snapshots(db, target_date: date, run_settled: bool,
                     bars_map = load_bars(dump_path, {i.code: i.is_st for i in infos})
         except Exception as e:  # noqa: BLE001
             log.warning(f"    dump 不可用（{type(e).__name__}），退回逐股拉取")
-    miss = [i for i in infos if not (bars_map.get(i.code) or [])]
-    if miss:
-        bars_map.update(fetch_klines_batch(miss, days=3, max_workers=_KLINE_WORKERS,
-                                           delay_between=0.0, require_date=target_date))
-    # 再走一遍主链路那层行情兜底。少了它，2026-08-31 收盘后这条路是 0/42——
-    # 全部清成 NULL，而主链路同一时刻拿到了 231/231。见 _repair_today_bar_from_quotes
-    still_miss = [i for i in infos
-                  if not any(b.date == target_date for b in (bars_map.get(i.code) or []))]
+    # 当日那根：先问选股 prompt（按代码一次 100 只），补不上的才逐只拉 K 线（2026-11-27 调换顺序：原来先按
+    # 12 并发逐只拉、dump 一挂就是几十个 K 线请求），最后是行情兜底
+    def _no_today(i) -> bool:
+        return not any(b.date == target_date for b in (bars_map.get(i.code) or []))
+
+    still_miss = [i for i in infos if _no_today(i)]
     if still_miss:
         p_rep, _ = _repair_today_bar_from_prompt(still_miss, bars_map, target_date, log, prefix="    ")
         if p_rep:
             log.info(f"    [掉出池补结算] 选股 prompt 补回 {p_rep}/{len(still_miss)} 只当日bar")
-        still_miss = [i for i in still_miss
-                      if not any(b.date == target_date for b in (bars_map.get(i.code) or []))]
+        still_miss = [i for i in still_miss if _no_today(i)]
+    if still_miss:
+        kl = still_miss[:_KLINE_FALLBACK_CAP]
+        got = fetch_klines_batch(kl, days=3, max_workers=_KLINE_FALLBACK_WORKERS,
+                                 delay_between=_KLINE_FALLBACK_DELAY, require_date=target_date)
+        for c, bars in got.items():
+            if any(b.date == target_date for b in bars):
+                bars_map[c] = bars
+        still_miss = [i for i in still_miss if _no_today(i)]
+        log.info(f"    [掉出池补结算] 逐只K线 {len(kl)} 只（{_KLINE_FALLBACK_WORKERS} 并发），"
+                 f"之后仍缺 {len(still_miss)} 只")
+    # 再走一遍主链路那层行情兜底。少了它，2026-08-31 收盘后这条路是 0/42——
+    # 全部清成 NULL，而主链路同一时刻拿到了 231/231。见 _repair_today_bar_from_quotes
     if still_miss:
         rep, rej = _repair_today_bar_from_quotes(still_miss, bars_map, target_date, log, prefix="    ")
         log.info(f"    [掉出池补结算] K线接口没给当日bar的 {len(still_miss)} 只，"
@@ -808,13 +736,20 @@ def _is_open_session(target_date: date, market_now, probed: bool, cal) -> bool:
     return probed or st is True
 
 
-def _repair_today_bar_from_prompt(infos, klines_map, target_date, log, prefix="  "):
+def _prompt_row_bar(r: dict, info, d: date):
+    """选股 prompt 的一行 → d 那天的 KLineBar，见 eastmoney_fetcher.kline_bar_from_prompt_row。"""
+    return kline_bar_from_prompt_row(r, info.code, info.is_st, d)
+
+
+def _repair_today_bar_from_prompt(infos, klines_map, target_date, log, prefix="  ", rows_out=None):
     """
     用选股 prompt 按代码把缺的**当日 bar** 补回 klines_map（2026-11-25：少打实时接口）。
     返回 (补回数, 数据日期对不上被拒数)。一次 100 只，开高低收、成交量（股）都有；
     数据日期取列名里的日期（OPEN_PRICE<140>{2026-11-25}），**不等于 target_date 一律拒**。
-    构 bar 走 kline_bar_from_quote，跟行情兜底同一个函数（同一个市场事实只一套判定）。
     停牌（零成交）、没拿到的留给后面的行情兜底。
+
+    rows_out：给了就把问回来的行原样存进去（2026-11-27）。这一问的结果里本来就带流通市值，后面推流通股本
+    直接用，同一批代码不再问第二遍。
     """
     if not infos:
         return 0, 0
@@ -824,6 +759,8 @@ def _repair_today_bar_from_prompt(infos, klines_map, target_date, log, prefix=" 
     except prompt_api.PromptError as e:
         log.info(f"{prefix}⚠️  选股 prompt 补当日bar失败（{e}），改走行情兜底")
         return 0, 0
+    if rows_out is not None:
+        rows_out.update(rows)
     repaired = rejected = 0
     for info in infos:
         r = rows.get(info.code)
@@ -832,11 +769,7 @@ def _repair_today_bar_from_prompt(infos, klines_map, target_date, log, prefix=" 
         if r.get("data_date") != target_date:
             rejected += 1
             continue
-        q = StockQuote(code=info.code, name=r.get("name") or "", price=r.get("price"),
-                       pct_change=r.get("pct_change"), open=r.get("open"), high=r.get("high"),
-                       low=r.get("low"), prev_close=r.get("prev_close"), volume=r.get("volume"),
-                       amount=r.get("amount"), trade_date=r.get("data_date"))
-        bar = kline_bar_from_quote(q, info.code, info.is_st, target_date)
+        bar = _prompt_row_bar(r, info, target_date)
         if not bar:
             continue
         bars = [b for b in klines_map.get(info.code, []) if b.date != target_date]
@@ -844,6 +777,98 @@ def _repair_today_bar_from_prompt(infos, klines_map, target_date, log, prefix=" 
         klines_map[info.code] = bars
         repaired += 1
     return repaired, rejected
+
+
+def _fill_history_gaps_from_prompt(infos, hist_map, out_map, target_date, cal, reserve, log):
+    """
+    fuyao dump 没接上的股票（2026-11-27）：先分清「只差当日那根」和「真缺历史」，真缺的按日期问 prompt 补。
+
+    · 只差当日那根（库里历史已经到上一个交易日）——原来照样逐只拉 2~3 天 K 线，只为拿当天那根。当天那根
+      后面的「当日 bar 兜底」本来就先问 prompt（按代码一次 100 只），这里直接交给它。
+    · 真缺历史、缺的不超过 _PROMPT_GAP_MAX_DAYS 天——按日期问「X年X月X日开盘价；…」，每天每 100 只一问，
+      补齐的写进 out_map（跟 dump 补的一样，后面跟库里历史按日期并起来）。
+    · 问之前看本次任务还剩几次：留够 reserve 给后面必需的查询，不够就不问，剩下的走逐只 K 线。
+
+    哪天缺要靠交易日历；日历拿不到就分不清（节假日会被当成缺），全部退回逐只 K 线。
+    返回 (仍要逐只拉 K 线的 infos, 只差当日那根的代码, 补上的历史 bar {代码: [bar…]})。
+    """
+    from bisect import bisect_right
+    from app.services import prompt_api
+
+    if not infos:
+        return [], set(), {}
+    if not cal:
+        log.info(f"  dump 没接上 {len(infos)} 只，交易日历拿不到、分不清缺哪几天，全部走逐只 K 线")
+        return list(infos), set(), {}
+
+    cal = sorted(cal)
+    only_today: set = set()
+    need: dict = {}                       # {代码: [缺的交易日]}
+    too_long: list = []
+    by_code = {i.code: i for i in infos}
+    for info in infos:
+        hist = hist_map.get(info.code) or []
+        if not hist:
+            too_long.append(info)
+            continue
+        lo = bisect_right(cal, hist[-1].date)
+        missing = [d for d in cal[lo:] if d < target_date]
+        if not missing:
+            only_today.add(info.code)
+        elif len(missing) > _PROMPT_GAP_MAX_DAYS:
+            too_long.append(info)
+        else:
+            need[info.code] = missing
+
+    got: dict = {}                        # {代码: {日期: bar}}
+    asked = 0
+    stop_why = None
+    for d in sorted({d for ds in need.values() for d in ds}):
+        codes = [c for c, ds in need.items() if d in ds]
+        for i in range(0, len(codes), prompt_api.CODES_PER_QUERY):
+            left = prompt_api.task_left()
+            if left is not None and left - reserve < 1:
+                stop_why = f"本次 prompt 只剩 {left} 次、要留 {reserve} 次给后面必需的查询"
+                break
+            chunk = codes[i:i + prompt_api.CODES_PER_QUERY]
+            try:
+                rows = prompt_api.fetch_codes(chunk, fields=prompt_api.bar_fields_on(d), on=d)
+            except prompt_api.PromptError as e:
+                stop_why = f"选股 prompt 按日期问失败（{e}）"
+                break
+            finally:
+                asked += 1
+            for c in chunk:
+                r = rows.get(c)
+                bar = _prompt_row_bar(r, by_code[c], d) if r else None
+                if bar:
+                    got.setdefault(c, {})[d] = bar
+        if stop_why:
+            break
+
+    filled: dict = {}
+    rest: list = list(too_long)
+    for c, ds in need.items():
+        bars = got.get(c) or {}
+        if bars:
+            # 没补全的也先放进去：逐只 K 线拿到了会整份覆盖，拿不到（超了上限）至少少一个洞
+            out_map[c] = [bars[d] for d in sorted(bars)]
+        if len(bars) == len(ds):
+            filled[c] = out_map[c]
+            only_today.add(c)
+        else:
+            rest.append(by_code[c])
+
+    parts = [f"只差当日那根 {len(only_today) - len(filled)} 只（当日bar交给选股 prompt）"]
+    if need:
+        days = sorted({len(v) for v in need.values()})
+        parts.append(f"缺历史 {len(need)} 只（{days[0]}~{days[-1]} 天），按日期问 prompt 补齐 {len(filled)} 只"
+                     f"（{asked} 次查询）")
+    if too_long:
+        parts.append(f"缺超过 {_PROMPT_GAP_MAX_DAYS} 天的 {len(too_long)} 只")
+    log.info(f"  dump 没接上 {len(infos)} 只：" + "；".join(parts)
+             + (f"；{stop_why}，没问完" if stop_why else ""))
+    return rest, only_today, filled
 
 
 def _repair_today_bar_from_quotes(infos, klines_map, target_date, log, prefix="  ", suspended=None):
@@ -1346,6 +1371,9 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
     from app.services import api_call_counter
     api_call_counter.install()
     api_call_counter.reset()
+    # 选股 prompt 一次日更 20 次以内（用户 2026-11-26 定）：超额的那一问不发，按「没拿到」走兜底
+    from app.services import prompt_api as _prompt_api
+    _prompt_api.start_task("日更")
     # 清掉上一轮的 dump 熔断标记：本轮 dump 有三个调用点，第一个撞上网络不可达
     # 之后另外两个直接跳过，不再对着同一个地址反复重连（2026-08-28 那次白等几分钟）
     reset_dump_availability()
@@ -1639,12 +1667,12 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                 db.rollback()
         log.info(f"DB重建 {len(db_group)} 只（拉近2日），全量拉取 {len(full_group)} 只")
 
-        # 全量拉取（新股 / 历史不足）。并发统一用 _KLINE_WORKERS——原来 full 用15、
-        # db 用30，30 对同一个源偏高（生产上出现过成片 JSONDecodeError），而且修掉
-        # 上面那个"全体按最大缺口拉"之后 payload 小了一个数量级，不需要靠高并发抢时间。
+        # 全量拉取（新股 / 历史不足，10 年存档也补不上的）。dump 只有 10 天、prompt 按日期一天一问，65 天的窗口
+        # 只能逐只拉。2026-11-27 起跟 dump 没接上那批同一套低并发（原来 12 并发），也不要求带当天那根——
+        # 当天那根交给后面的 prompt / 行情兜底，免得源里没有当天就交叉兜底再打一遍
         full_klines = fetch_klines_batch(
-            full_group, days=65, max_workers=_KLINE_WORKERS, delay_between=0.0,
-            require_date=target_date,
+            full_group, days=65, max_workers=_KLINE_FALLBACK_WORKERS, delay_between=_KLINE_FALLBACK_DELAY,
+            require_date=None,
         ) if full_group else {}
 
         # DB 重建组拉取天数：**按每只股票各自的缺口算**，不是全体取一个最大值。
@@ -1676,6 +1704,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # dump 是**加速手段不是依赖**：没配 key、下载失败、pyarrow 没装、解析出错，
         # 任何一种都静默退回逐股那条老路，只记日志，绝不让整轮更新失败。
         today_klines: dict = {}
+        _today_prompt_rows: dict = {}     # 补当日bar那一问的原始行（带流通市值），后面推流通股本复用
         _dump_dates: dict = {}            # {代码: dump 里这只票有行的日子}——停牌期间 dump 没有行
         _quote_suspended: set = set()     # 行情是今天的、全天零成交（停牌），收盘后那一跑记下来
         dump_hit: set[str] = set()        # dump 把历史缺口补齐了，不用逐股拉
@@ -1703,7 +1732,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                             if not _usable:
                                 log.warning(
                                     f"旧 dump 只覆盖到 {_st}，比库里所有股票的历史都旧，"
-                                    f"一根也接不上——跳过解析，全部退回逐股K线接口")
+                                    f"一根也接不上——跳过解析，改走选股 prompt / 逐只K线")
                         if _usable:
                             wanted = {i.code: i.is_st for i in db_group}
                             dump_bars = load_bars(dump_path, wanted)
@@ -1774,7 +1803,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                     log.warning(f"  dump 下载重试：{_e}")
             except Exception as e:  # noqa: BLE001
                 log.warning(f"fuyao dump 不可用（{type(e).__name__}: {e}），"
-                            f"本轮全部退回逐股K线接口")
+                            f"本轮先用选股 prompt 补，补不上的才逐只拉K线（低并发、有上限）")
                 if _dump_settled:
                     # 盘后拿不到当日 dump 要在界面上看得见，不能只躺在日志里。
                     # 调度器的"失败重试"对这种情况**不会触发**——dump 失败是被
@@ -1783,88 +1812,83 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                     # 缓存必然不够用"来自动重试，最坏多用一天逐股路径。
                     api_warnings.append(
                         f"收盘后未能取得当日 dump（{type(e).__name__}），"
-                        f"K线已退回逐股接口（慢约十倍）；下一次收盘后会自动再试")
+                        f"K线改由选股 prompt / 逐只K线补；下一次收盘后会自动再试")
         elif db_group:
-            log.info("  未配置 FUYAO_API_KEY，K线走逐股接口（配置后可省下绝大部分请求）")
+            log.info("  未配置 FUYAO_API_KEY，历史缺口走选股 prompt / 逐只K线（配置后可省下绝大部分请求）")
 
-        by_days: dict[int, List[StockBasicInfo]] = {}
-        for info in db_group:
-            if info.code in dump_hit:
-                continue            # dump 已覆盖，不用再打外部接口
-            bars = db_klines_map.get(info.code) or []
-            if bars:
-                gap = (target_date - bars[-1].date).days
-                d = max(2, min(gap + 2, 65))
-            else:
-                d = 65          # 没有任何历史，按全量补
-            by_days.setdefault(d, []).append(info)
+        # 交易日历（2026-11-27 挪到这里）：下面要靠它分清 dump 没接上的股票「缺哪几天」。缓存在库里，常态零请求
+        try:
+            from app.services.trading_calendar import get_trading_days as _gtd
+            _cal = _gtd(db, need_through=target_date, log=log)
+        except Exception:  # noqa: BLE001
+            _cal = None      # 拿不到日历就退回旧行为，但那只在序列无空洞时才对
 
-        if by_days:
-            spread = sorted(by_days)
-            if spread[-1] > 3:
-                big = sum(len(v) for k, v in by_days.items() if k > 3)
-                need = sum(len(v) for v in by_days.values())
-                log.info(f"  DB重建缺口分组：{len(by_days)} 档（{spread[0]}~{spread[-1]}天），"
-                         f"其中 {big}/{need} 只需要补多天")
-            for d, group in by_days.items():
-                today_klines.update(fetch_klines_batch(
-                    group, days=d, max_workers=_KLINE_WORKERS, delay_between=0.0,
-                    require_date=target_date,
-                ))
-        db_fetch_days = max(by_days) if by_days else 2   # 下面重试用
-
-        # 高并发批量拉取下，个别股票会因限流/连接重置静默拉空（fetch_kline 内部
-        # 东财→腾讯双重兜底都失败）。若不重试，这些股票会一直被下面"今日无数据，
-        # 降级用历史"吞掉——今日涨跌停/连板数永久卡在缺today这天的旧值，且不会
-        # 自愈：因为下次再跑，同样的高并发批量请求大概率又撞上同样的限流。
-        # 低并发单独重试一轮：脱离批量并发环境后单只股票拉取成功率接近100%。
-        #
-        # 2026-08-25修复真实bug（外部评审指出）：判断"缺不缺今日数据"此前只看
-        # `today_klines.get(code)` 是否非空——但接口完全可能返回非空list、却没有
-        # target_date这一根（比如只返回到昨天），这种情况被当成"拉取成功"，既不
-        # 会触发下面的低并发重试，也不会被下面 db_today_missing 计入degraded告警，
-        # 是比"完全拉空"更隐蔽的一种静默过期。改成明确检查最后一根bar的日期是不是
-        # target_date，而不是list是否为空。
         def _has_today_bar(bars: list) -> bool:
             return bool(bars) and bars[-1].date == target_date
 
-        # dump 已补齐历史、只差当日那一根的股票**不进这个重试**：它们"缺今日"是
-        # 设计使然（dump 收盘后才有当日数据），不是拉取失败。放进来会让盘中 182 只
-        # 全部走低并发逐股重试，比不用 dump 还慢——那正是这条链路要消灭的东西。
-        # 它们的当日bar由下面的「定向行情兜底」用实时行情补，那条路是批量的。
-        missing_codes = [info for info in db_group
-                         if info.code not in dump_no_today
-                         and not _has_today_bar(today_klines.get(info.code))]
-        if missing_codes:
-            log.info(f"  DB重建组 {len(missing_codes)} 只今日K线拉取失败，低并发重试...")
-            retry_klines = fetch_klines_batch(
-                missing_codes, days=db_fetch_days, max_workers=3, delay_between=0.3,
-                require_date=target_date,
-            )
-            recovered = sum(1 for bars in retry_klines.values() if _has_today_bar(bars))
-            if recovered:
-                log.info(f"  重试补齐 {recovered}/{len(missing_codes)} 只")
-            today_klines.update(retry_klines)
+        # ── dump 没接上的：先问 prompt，补不上的才逐只拉 K 线（2026-11-27）──────────────
+        # 原来这里把 dump 没接上的全部按 12 并发逐只拉 2~65 天、再低并发重试一轮——dump 一挂就是
+        # 150~200 个 K 线请求，正是会被封的打法。见 _fill_history_gaps_from_prompt。
+        _not_hit = [info for info in db_group if info.code not in dump_hit]
+        _gap_reserve = -(-len(candidates) // 100) + _PROMPT_RESERVE_AFTER_GAPS   # 当日那根 + 后面必需的
+        kline_fallback, _, _gap_bars = _fill_history_gaps_from_prompt(
+            _not_hit, db_klines_map, today_klines, target_date, _cal, _gap_reserve, log)
+        if _gap_bars:
+            # 补上的历史日落库（只补没有的行、不覆盖），下一趟不用再问
+            try:
+                _sid = {c: i for c, i in db.query(Stock.code, Stock.id)
+                        .filter(Stock.code.in_(list(_gap_bars))).all()}
+                _added, _ = insert_history_bars(db, _gap_bars, _sid, target_date)
+                if _added:
+                    log.info(f"  选股 prompt 补的历史日落库 {_added} 条")
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"  prompt 补的历史日落库失败（本趟计算照用）: {type(e).__name__}: {e}")
+                db.rollback()
 
-        # full_group 同样按日期判断缺不缺今日那一根 + 同样低并发重试（2026-08-25补齐）：
-        # 上一轮把"非空≠有今日数据"这个判断只改到了 db_group，full_group 这边还停留在
-        # "list非空就算成功"，于是一只返回了65根但最后一根是昨天的股票会被当成拉取成功，
-        # 既不重试也不计入 degraded 告警——跟 db_group 那个已修的bug是同一个，只是漏改了
-        # 另一半。全量拉取本身耗时更长，重试单独限制并发防止把限流打得更严重。
-        full_missing_codes = [info for info in full_group if not _has_today_bar(full_klines.get(info.code))]
+        # 逐只 K 线：低并发、有只数上限。强势池的先拉，缺得少的先拉
+        def _hist_last(info) -> date:
+            bars = db_klines_map.get(info.code) or []
+            return bars[-1].date if bars else date.min
+        kline_fallback.sort(key=lambda i: (i.code not in strong_pool_codes, -_hist_last(i).toordinal()))
+        _kl_skipped = kline_fallback[_KLINE_FALLBACK_CAP:]
+        kline_fallback = kline_fallback[:_KLINE_FALLBACK_CAP]
+        by_days: dict[int, List[StockBasicInfo]] = {}
+        for info in kline_fallback:
+            bars = db_klines_map.get(info.code) or []
+            gap = (target_date - bars[-1].date).days if bars else 63
+            by_days.setdefault(max(2, min(gap + 2, 65)), []).append(info)
+        if by_days:
+            spread = sorted(by_days)
+            log.info(f"  逐只K线 {len(kline_fallback)} 只（{spread[0]}~{spread[-1]}天，"
+                     f"{_KLINE_FALLBACK_WORKERS} 并发）")
+            for d, group in by_days.items():
+                # 不要求带当天那根（require_date=None）：要求的话源里没有当天就会交叉兜底再打一遍，
+                # 当天那根交给后面的 prompt / 行情兜底
+                today_klines.update(fetch_klines_batch(
+                    group, days=d, max_workers=_KLINE_FALLBACK_WORKERS,
+                    delay_between=_KLINE_FALLBACK_DELAY, require_date=None,
+                ))
+        if _kl_skipped:
+            log.warning(f"  dump 没接上、prompt 也没补上的还有 {len(_kl_skipped)} 只超过逐只K线上限 "
+                        f"{_KLINE_FALLBACK_CAP}，这趟不补历史缺口（窗口里留洞）："
+                        f"{', '.join(i.code for i in _kl_skipped[:10])}{' …' if len(_kl_skipped) > 10 else ''}")
+            api_warnings.append(f"{len(_kl_skipped)} 只股票的历史K线这趟没补齐（dump 不可用、超过逐只K线上限），"
+                                f"窗口指标可能偏差，下一趟会再补")
+
+        # full_group 一根都没拉到的低并发再试一次（2026-11-27 改）：原来是「缺当天那根」就整只 65 天重拉，
+        # 当天那根现在交给后面的 prompt / 行情兜底，重拉只为「整只没拿到」——没历史的票连当日兜底都不补
+        full_missing_codes = [info for info in full_group if not full_klines.get(info.code)]
         if full_missing_codes:
-            log.info(f"  全量组 {len(full_missing_codes)} 只今日K线缺失，低并发重试...")
+            log.info(f"  全量组 {len(full_missing_codes)} 只一根K线都没拿到，低并发重试一次...")
             retry_full = fetch_klines_batch(
-                full_missing_codes, days=65, max_workers=3, delay_between=0.3,
-                require_date=target_date,
+                full_missing_codes, days=65, max_workers=_KLINE_FALLBACK_WORKERS,
+                delay_between=_KLINE_FALLBACK_DELAY, require_date=None,
             )
-            recovered_full = sum(1 for bars in retry_full.values() if _has_today_bar(bars))
+            recovered_full = sum(1 for bars in retry_full.values() if bars)
             if recovered_full:
                 log.info(f"  重试补齐 {recovered_full}/{len(full_missing_codes)} 只")
-            # 只用真的补到今日那一根的结果覆盖，避免重试拿到一份更短/同样过期的历史
-            # 反而把原来那份完整历史挤掉（全量组的历史窗口是后面所有指标的基础）。
             for code, bars in retry_full.items():
-                if _has_today_bar(bars):
+                if bars:
                     full_klines[code] = bars
 
         # 合并：历史快照 + 新拉 bar，按日期并集去重（新数据覆盖同日历史并补齐缺口日）
@@ -1884,12 +1908,6 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
 
         fetched = sum(1 for v in klines_map.values() if v)
         failed = len(candidates) - fetched
-
-        try:
-            from app.services.trading_calendar import get_trading_days as _gtd
-            _cal = _gtd(db, need_through=target_date, log=log)
-        except Exception:  # noqa: BLE001
-            _cal = None      # 拿不到日历就退回旧行为，但那只在序列无空洞时才对
 
         # target_date 跟随「最新一根 K 线」自动修正：用所有股票的最大日期，
         # 避免个别停牌股的陈旧末日 bar 把 target_date 误导到过去。
@@ -1942,7 +1960,8 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         if stale_infos:
             # 先问选股 prompt（按代码一次 100 只，开高低收量额都有），剩下的才打实时行情（2026-11-25）
             log.info(f"  {len(stale_infos)} 只今日K线仍缺失，先用选股 prompt 按代码补当日bar...")
-            p_rep, p_rej = _repair_today_bar_from_prompt(stale_infos, klines_map, target_date, log)
+            p_rep, p_rej = _repair_today_bar_from_prompt(stale_infos, klines_map, target_date, log,
+                                                         rows_out=_today_prompt_rows)
             log.info(f"  选股 prompt 补回 {p_rep}/{len(stale_infos)} 只当日bar"
                      + (f"（另有 {p_rej} 只数据日期不是{target_date}，已拒绝）" if p_rej else ""))
             stale_infos = [i for i in stale_infos if not _has_today_bar(klines_map.get(i.code))]
@@ -2511,7 +2530,9 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         # 周末/节假日/盘前跑，选股 API 给的是上一交易日收盘的名单（2026-11-08 修）。
         try:
             from app.services.turnover_service import sync_turnover_pool
-            r_tov = sync_turnover_pool(db, trade_date=target_date, market_now=market_now)
+            # 第 1 步已经问过同一句（2026-11-27：同一个问题一趟只问一次），拿到了就直接存；没拿到才再问
+            r_tov = sync_turnover_pool(db, trade_date=target_date, market_now=market_now,
+                                       stocks=api_turnover_rows or None)
             log.info(f"成交额概览数据同步：{r_tov['count']} 只 → {r_tov.get('date') or '未写'}"
                      + ("" if r_tov.get("settled") is not False else "（尚未收盘，盘中名单）"))
             for w in (r_tov.get("errors") or []):
@@ -2559,7 +2580,16 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
                     from app.services.eastmoney_fetcher import fetch_float_market_caps_prompt
                     _pool = db.query(Stock).filter(Stock.in_strong_pool.is_(True)).all()
                     _cm = [st.code for st in _pool]
-                    _caps, _bad = fetch_float_market_caps_prompt(_cm)
+                    # 补当日bar那一问（按代码、同一批票）的结果里本来就带流通市值和最新价，直接用；
+                    # 那一问没覆盖到的（K 线已带当天那根、盘前没有价）才另问（2026-11-27）
+                    _caps = {c: (r["float_market_cap"], r["price"]) for c, r in _today_prompt_rows.items()
+                             if c in set(_cm) and r.get("float_market_cap") and r.get("price")}
+                    _ask = [c for c in _cm if c not in _caps]
+                    _bad = 0
+                    if _ask:
+                        _more, _bad = fetch_float_market_caps_prompt(_ask)
+                        _caps.update(_more)
+                    log.info(f"  流通市值：{len(_cm) - len(_ask)} 只用补当日bar那一问的结果，另问 {len(_ask)} 只")
                     if _bad:
                         # 拿到多少必须报出来。静默用一份残缺数据，跟"这只票本来
                         # 就没有流通市值"看起来一模一样
@@ -2698,6 +2728,10 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
             db.rollback()
         log.lap("弱转强(状态刷新)")
 
+        _pt = _prompt_api.task_status()
+        if _pt and _pt["refused"]:
+            api_warnings.append(f"选股 prompt 超出本次上限 {_pt['limit']} 次，{len(_pt['refused'])} 问没发出"
+                                f"（{'；'.join(_pt['refused'][:3])}），相关数据走了兜底或这趟缺")
         log.summary()
 
     except Exception as e:
@@ -2708,6 +2742,7 @@ def run_daily_update(target_date: date, skip_boards: bool = False) -> dict:
         db.rollback()
         raise
     finally:
+        _prompt_api.finish_task()
         db.close()
         from app.database import engine
         engine.dispose()

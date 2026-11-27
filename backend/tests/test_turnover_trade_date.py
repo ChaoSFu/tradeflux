@@ -179,6 +179,18 @@ class TestSync:
         assert r["date"] is None and "不是 2026-11-05" in r["errors"][0]
         assert env["fetch"] == fetched and _dates(db) == [FRI]
 
+    def test_调用方已经问过同一句就不再问(self, db, env):
+        """2026-11-27：日更第 1 步选候选股问过成交额前列，存档时直接用那份，不再打第二次。"""
+        given = [{"code": "600777", "name": "甲", "pct_change": 1.0, "amount": 3e9,
+                  "turnover_rate": 2.0, "market": "SH"}]
+        r = ts.sync_turnover_pool(db, trade_date=FRI, market_now=SUNDAY_MARKET_CLOCK, stocks=given)
+        assert r["ok"] and r["count"] == 1 and env["fetch"] == 0
+        rows = db.query(TurnoverPoolDaily).filter(TurnoverPoolDaily.date == FRI).all()
+        assert [x.stock_code for x in rows] == ["600777"]
+        # 给的是空的（第 1 步没拿到）才自己问
+        ts.sync_turnover_pool(db, trade_date=FRI, market_now=SUNDAY_MARKET_CLOCK, stocks=[])
+        assert env["fetch"] == 1
+
     def test_拒绝时不调选股API也不动库(self, db, env):
         _add_rows(db, FRI, ["600009"])
         r = ts.sync_turnover_pool(db, trade_date=SUN, market_now=_at(SUN, 20))

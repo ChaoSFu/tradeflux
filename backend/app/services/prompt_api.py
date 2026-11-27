@@ -4,7 +4,8 @@
 用户定的取数原则：**用好 prompt 接口，尽量少拿实时接口取数，一个接口不要过分调用**。起因是东财 push2 的
 全市场行情列表（clist，58 页翻一遍、一天四五次重试）被限流，生产 IP 从 11-19 起每次第 1 页就 502。
 
-这里管三件事，所有选股请求都必须走 `search()`：
+这里管四件事，所有选股请求都必须走 `search()`：
+  · **每次任务的调用上限**（2026-11-26 用户定：一次任务 20 次以内）：见 start_task。
   · **跨进程节流**：日更子进程、网站进程、大市值同步子进程共用一个文件锁，任意两次请求至少隔
     MIN_INTERVAL_S 秒——并发提交也会排队，不会同一秒打出去好几个。
   · **统一的请求体和解析**：列名里带日期（`OPEN_PRICE<140>{2026-11-25}`、
@@ -24,6 +25,7 @@ import os
 import random
 import re
 import string
+import threading
 import time
 from datetime import date
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -57,6 +59,78 @@ TIMEOUT_S = 15
 
 class PromptError(RuntimeError):
     """选股接口这次没拿全（请求失败、分页中断）。调用方按「不可用」处理，绝不当成部分结果用。"""
+
+
+class PromptBudgetExceeded(PromptError):
+    """
+    本次任务的选股请求已用满上限，这一问**没有发出去**。是 PromptError 的子类：所有调用方本来就把
+    PromptError 当「这次没拿到」走兜底，超额不需要另写一条路。
+    """
+
+
+# ── 每次任务的调用上限（2026-11-26 用户定）──────────────────────────────────────
+#
+# 「prompt 是批量接口，注意调用次数不能太多，一次任务控制在 20 次以内。」生产 11-26 实测一趟日更 10 次。
+# 上限按**进程**记：日更、大市值同步都是独立子进程，一个进程就是一次任务。网站进程不设上限（页面上的
+# 按钮各自只问一两次），但 calls_total() 照样在数，给「这次刷新打了几次」做差用。
+# 必需的查询（强势池、涨跌停、当天那根）排在每趟任务的最前面，超额先挡掉的是排在后面的。
+
+TASK_LIMIT = 20
+
+_count_lock = threading.Lock()
+_calls_total = 0                    # 本进程累计发出的选股请求
+_task: Optional[dict] = None        # {"label", "limit", "used", "refused": [这一问的摘要, ...]}
+
+
+def start_task(label: str, limit: int = TASK_LIMIT) -> None:
+    """从这里起本进程的选股请求计入一次任务，满 limit 次之后的请求不发，抛 PromptBudgetExceeded。"""
+    global _task
+    with _count_lock:
+        _task = {"label": label, "limit": limit, "used": 0, "refused": []}
+
+
+def finish_task() -> Optional[dict]:
+    """结束本次任务，返回它的用量（没开过任务返回 None）。"""
+    global _task
+    with _count_lock:
+        t, _task = _task, None
+    return t
+
+
+def task_status() -> Optional[dict]:
+    with _count_lock:
+        return None if _task is None else {**_task, "refused": list(_task["refused"])}
+
+
+def task_left() -> Optional[int]:
+    """本次任务还能问几次；没开任务（没有上限）返回 None。"""
+    with _count_lock:
+        return None if _task is None else max(0, _task["limit"] - _task["used"])
+
+
+def calls_total() -> int:
+    with _count_lock:
+        return _calls_total
+
+
+def _brief(keyword: str) -> str:
+    """超额那一问的摘要：按代码问的只报只数和要的字段，不把一百个代码打进日志。"""
+    if keyword.startswith("股票代码是"):
+        head, _, fields = keyword.partition("；")
+        return f"按代码问 {head.count('或') + 1} 只（{fields[:24]}）"
+    return keyword[:40]
+
+
+def _take(keyword: str) -> None:
+    global _calls_total
+    with _count_lock:
+        if _task is not None:
+            if _task["used"] >= _task["limit"]:
+                _task["refused"].append(_brief(keyword))
+                raise PromptBudgetExceeded(
+                    f"本次{_task['label']}的选股 prompt 已用满 {_task['limit']} 次，这一问没发出：{_brief(keyword)}")
+            _task["used"] += 1
+        _calls_total += 1
 
 
 # ── 节流 ────────────────────────────────────────────────────────────────────
@@ -111,6 +185,7 @@ def search(keyword: str, *, page_no: int = 1, page_size: int = PAGE_SIZE, xc_id:
            fingerprint: str = FINGERPRINT, timeout: float = TIMEOUT_S) -> dict:
     """问一页。返回 result（{total, dataList, columns}）。失败抛 PromptError。"""
     from .eastmoney_fetcher import json_or_explain
+    _take(keyword)          # 超过本次任务上限就不发，抛 PromptBudgetExceeded
     _throttle()
     try:
         resp = httpx.post(URL, headers=HEADERS, json=_body(keyword, page_no, page_size, xc_id, fingerprint),
@@ -322,6 +397,16 @@ def day_fields_on(d: date) -> str:
             + "；".join(f"截至{ds}近{n}个交易日涨跌幅" for n in (5, 10, 20, 60)))
 
 
+def bar_fields_on(d: date) -> str:
+    """
+    补那一天的日 K（2026-11-27，fuyao 打包数据拿不到时补历史缺口用）。2026-11-26 实测：按代码问
+    「X年X月X日开盘价；最高价；最低价；收盘价；涨跌幅；成交量」12/12 跟那天的腾讯日 K 一致；
+    列名 OPEN_PRICE / PEAK_PRICE / BOTTOM_PRICE / NEWEST_PRICE / CHG / VOLUME / TRADING_VOLUMES 都带那一天。
+    """
+    ds = date_phrase(d)
+    return f"{ds}开盘价；{ds}最高价；{ds}最低价；{ds}收盘价；{ds}涨跌幅；{ds}成交量；{ds}成交额"
+
+
 def _dated(item: dict, prefix: str, d: date):
     tail = "{" + d.isoformat() + "}"
     for k, v in item.items():
@@ -348,7 +433,9 @@ def parse_row_on(item: dict, d: date) -> Optional[dict]:
         "code": code, "name": name, "market": (str(item.get("MARKET_SHORT_NAME") or "").strip().upper() or None),
         "price": price if price and price > 0 else None, "pct_change": pct,
         "prev_close": round(price / (1 + pct / 100), 4) if price and pct is not None and pct > -100 else None,
-        "open": None, "high": None, "low": None,
+        # 开高低只有问了才有（day_fields_on 不问；补历史 K 线问，见 bar_fields_on）
+        "open": cn_number(_dated(item, "OPEN_PRICE", d)), "high": cn_number(_dated(item, "PEAK_PRICE", d)),
+        "low": cn_number(_dated(item, "BOTTOM_PRICE", d)),
         "volume": cn_number(_dated(item, "VOLUME", d)), "amount": cn_number(_dated(item, "TRADING_VOLUMES", d)),
         "turnover_rate": cn_number(_dated(item, "TURNOVER_RATE", d)), "volume_ratio": cn_number(_dated(item, "QRR", d)),
         "total_market_cap": cap, "float_market_cap": cn_number(_dated(item, "CIRCULATION_MARKET_VALUE", d)),

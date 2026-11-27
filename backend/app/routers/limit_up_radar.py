@@ -23,6 +23,7 @@ from ..schemas.limit_up_radar import (
 )
 from ..services import limit_up_radar_service as radar
 from ..services.limit_up_detail_fetcher import SOURCE_NAME
+from ..services.prompt_api import calls_total as prompt_calls_total
 from ..models.limit_up_detail import LimitUpDailyDetail
 from ..models.stock import Stock
 from ..services.limit_up_detail_service import (
@@ -162,11 +163,12 @@ def _run_refresh_job(target: date) -> None:
         └ B 东财条件选股（板块核心召回）        ← A、B 互不依赖，同时跑
         ↓
         C 区间涨幅补全（今日攻击里不在召回名单的股票）  ← 要 A 的涨停名单 + B 的召回名单
-        D 重算龙头分/风险分                              ← 要 A/B 的结果，纯DB
+        D 重算龙头分/风险分                              ← 要 A/B 的结果，库里历史 + prompt 一问当天
     """
     t0 = time.time()
     db = SessionLocal()
     timings: dict = {}
+    prompt_before = prompt_calls_total()
     try:
         # ── A ∥ B ────────────────────────────────────────────────────────────
         _set(step="拉取涨停明细 + 核心召回（并行）")
@@ -202,15 +204,28 @@ def _run_refresh_job(target: date) -> None:
         except Exception:  # noqa: BLE001
             db.rollback()
 
-        # ── D：龙头分/风险分（纯 DB 计算）────────────────────────────────────
+        # ── D：龙头分/风险分（库里历史 + prompt 问当天那根，见 _radar_bars）──────────
         t2 = time.time()
         scores_n = 0
+        score_stats: dict = {}
         try:
             _set(step="重算本页股票龙头分/风险分")
-            scores_n = refresh_radar_scores(db, target)
+            scores_n = refresh_radar_scores(db, target, stats=score_stats)
             timings["评分"] = round(time.time() - t2, 1)
         except Exception:  # noqa: BLE001
             db.rollback()
+
+        # 这一次刷新打了多少外部请求（2026-11-27：一个接口不要过分调用，先得看得见）。网站进程不装全局计数器，
+        # prompt 用本进程的累计数做差——同一时段别的页面问的也会算进来，所以写「含同期」
+        n_prompt = prompt_calls_total() - prompt_before
+        timings["外部调用"] = {"选股prompt": n_prompt, "评分逐只K线": score_stats.get("kline_stocks", 0),
+                              "评分历史不够没拉": score_stats.get("kline_skipped", 0)}
+        print(f"[涨停雷达刷新] {target} 外部调用：选股 prompt {n_prompt} 次（含同期其他请求）；"
+              f"算分逐只K线 {score_stats.get('kline_stocks', 0)} 只"
+              + (f"（另有 {score_stats['kline_skipped']} 只库里历史不够或断档、超上限没拉）"
+                 if score_stats.get("kline_skipped") else "")
+              + (f"；当天那根 prompt 失败：{score_stats['prompt_error']}" if score_stats.get("prompt_error") else ""),
+              flush=True)
 
         refreshed = get_last_refreshed(db, target)
         _set(running=False, ok=True, error=recall_err, trade_date=target.isoformat(),

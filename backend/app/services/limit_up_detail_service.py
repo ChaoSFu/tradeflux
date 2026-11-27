@@ -486,9 +486,90 @@ def scores_key(trade_date: date) -> str:
     return f"{SCORES_KEY_PREFIX}{trade_date.isoformat()}"
 
 
-def refresh_radar_scores(db: Session, trade_date: date, max_stocks: int = 200) -> int:
+# 涨停雷达刷新算分时，库里历史不够、只能逐只拉 K 线的那几只：低并发、有上限（2026-11-27）
+_RADAR_MIN_HIST = 60
+_RADAR_KLINE_CAP = 20
+_RADAR_KLINE_WORKERS = 3
+
+
+def _radar_bars(db: Session, targets: list, trade_date: date, stats: dict) -> Dict[str, list]:
+    """
+    算分用的 K 线（2026-11-27 改）：历史取库里快照，当天那根问选股 prompt（按代码一次 100 只），
+    库里历史不够 _RADAR_MIN_HIST 根或断档的才逐只拉 K 线（最多 _RADAR_KLINE_CAP 只、_RADAR_KLINE_WORKERS 并发）。
+
+    原来是每点一次刷新就给 41~200 只各拉 65 天 K 线、15 并发——K 线接口被封的嫌疑之一。库里的历史每天
+    日更都在补（dump 给全库补缺口），这些票多数都够；当天那根 prompt 一问就是全部。
+    当天那根的优先级：prompt（此刻）> 逐只 K 线带回来的 > 库里那天的快照（上一趟日更写的）。
+    """
+    from ..models.stock import StockDailySnapshot
+    from . import prompt_api
+    from .eastmoney_fetcher import kline_bar_from_prompt_row
+    from .snapshot_history import snapshots_to_klinebars
+
+    by_sid: Dict[int, list] = {}
+    for snap in (db.query(StockDailySnapshot)
+                 .filter(StockDailySnapshot.stock_id.in_([s.id for s in targets]),
+                         StockDailySnapshot.date <= trade_date,
+                         StockDailySnapshot.close_price.isnot(None))
+                 .order_by(StockDailySnapshot.stock_id, StockDailySnapshot.date.desc())):
+        lst = by_sid.setdefault(snap.stock_id, [])
+        if len(lst) < 66:
+            lst.append(snap)
+    bars_map: Dict[str, list] = {}
+    for s in targets:
+        snaps = list(reversed(by_sid.get(s.id, [])))
+        bars_map[s.code] = snapshots_to_klinebars(snaps, s.code, bool(s.is_st)) if snaps else []
+
+    # 当天那根：一问（≤100 只）。失败就用库里那天的快照，算出来的分数日期照实标（bd）
+    today: Dict[str, object] = {}
+    before = prompt_api.calls_total()
+    try:
+        rows = prompt_api.fetch_codes([s.code for s in targets])
+        for s in targets:
+            bar = kline_bar_from_prompt_row(rows.get(s.code), s.code, bool(s.is_st), trade_date)
+            if bar:
+                today[s.code] = bar
+    except prompt_api.PromptError as e:
+        stats["prompt_error"] = str(e)[:120]
+    stats["prompt_calls"] = prompt_api.calls_total() - before
+
+    # 库里历史用不上的：逐只 K 线，低并发、有上限。用不上 = 不够 _RADAR_MIN_HIST 根，或者**断档**——最后一根
+    # 比这批票里最新的那根还旧（掉出池子、dump 没补到的票，库里历史可能停在几周前；直接接上当天那根，窗口
+    # 中间就是一个大洞，连板、N 日涨幅全算错）。生产上 dump 每天给全库补缺口，断档的应该只剩停牌的
+    hist = {s.code: [b for b in bars_map[s.code] if b.date < trade_date] for s in targets}
+    ref = max((h[-1].date for h in hist.values() if h), default=None)
+    short = [s for s in targets
+             if len(hist[s.code]) < _RADAR_MIN_HIST or hist[s.code][-1].date < ref]
+    picked = short[:_RADAR_KLINE_CAP]
+    if picked:
+        infos = [StockBasicInfo(code=s.code, name=s.name, market=market_int(s.market, s.code),
+                                is_st=bool(s.is_st), pct_change=0.0, turnover_rate=0.0) for s in picked]
+        got = fetch_klines_batch(infos, days=65, max_workers=_RADAR_KLINE_WORKERS,
+                                 delay_between=0.3, require_date=None)
+        for c, bars in got.items():
+            if len(bars) > len(bars_map.get(c) or []):
+                bars_map[c] = bars
+    stats["kline_stocks"] = len(picked)
+    stats["kline_skipped"] = len(short) - len(picked)
+
+    out: Dict[str, list] = {}
+    for s in targets:
+        bars = bars_map.get(s.code) or []
+        base = [b for b in bars if b.date < trade_date]
+        cur = today.get(s.code) or next((b for b in bars if b.date == trade_date), None)
+        out[s.code] = base[-65:] + ([cur] if cur else [])
+    stats["today_from_prompt"] = len(today)
+    return out
+
+
+def refresh_radar_scores(db: Session, trade_date: date, max_stocks: int = 200,
+                         stats: Optional[dict] = None) -> int:
     """
     只给**这个页面上出现的股票**重算龙头分/风险分/情绪分，2026-08-25新增。
+
+    K 线怎么来见 _radar_bars（2026-11-27 起：库里历史 + prompt 问当天那根，原来逐只拉 65 天）。
+    stats 给了就把这次的外部调用填进去：prompt_calls（选股 prompt 次数）、kline_stocks（逐只拉 K 线的只数）、
+    kline_skipped（历史不够或断档、超了上限没拉的只数）、today_from_prompt（当天那根由 prompt 补上的只数）。
 
     背景：这两个分数是本仓库用65日K线窗口自己算的（compute_window_stats），东财给
     不了。而 daily_update 只对候选池内的股票重算，核心锚大多在池外——那里的分数是
@@ -496,7 +577,7 @@ def refresh_radar_scores(db: Session, trade_date: date, max_stocks: int = 200) -
     页面的数据全部刷新，所以在这里补上。
 
     范围严格限定在页面上的股票：今日涨停股 ∪（东财召回名单 ∩ 关注板块成员）。
-    3/3门槛下实测只有41只，41次K线拉取几秒钟就够，仍然属于"轻量手动刷新"。
+    3/3门槛下实测只有41只。K 线原来是这 41 只逐只拉 65 天，2026-11-27 起改成库里历史 + prompt 问当天那根。
 
     **结果不写进 Stock**，而是单独存一份页面作用域的 AppConfig。这是刻意的：
     刷新接口有一条硬保证"不改动主流程数据"（见 test_sync_never_touches_stock_
@@ -548,14 +629,7 @@ def refresh_radar_scores(db: Session, trade_date: date, max_stocks: int = 200) -
         .filter(StockSectorRelation.is_leader == True).all()  # noqa: E712
     }
 
-    infos = [
-        StockBasicInfo(
-            code=s.code, name=s.name, market=market_int(s.market, s.code),
-            is_st=bool(s.is_st), pct_change=0.0, turnover_rate=0.0,
-        )
-        for s in targets
-    ]
-    klines = fetch_klines_batch(infos, days=65, max_workers=15, delay_between=0.0)
+    klines = _radar_bars(db, targets, trade_date, stats if stats is not None else {})
 
     payload = {}
     for s in targets:
