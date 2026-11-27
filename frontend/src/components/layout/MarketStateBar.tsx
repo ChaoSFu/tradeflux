@@ -198,6 +198,28 @@ export function MarketStateBar() {
     `四档阈值（今日/30日均值）：${ratioLevelRule({ low: '退潮', normal: '均值附近', high: '高于均值', extreme: '极端' })}`,
   ].join('\n')
 
+  // 涨停那半格（2026-11-27 用户提：跟跌停框到一起，照强势股那框的涨停半格做）：
+  // 增减、缩略图的口径跟跌停完全一样——大数字和昨日只数不是同一天的观测就不显示增减
+  const upSeries: { date: string; n: number }[] = last30
+    .slice(-12)
+    .map((p) => ({ date: p.date, n: p.limit_up_count }))
+  const upPrev = upSeries.length >= 2 ? upSeries[upSeries.length - 2] : null
+  const upSameDay = upSeries.length > 0
+    && upSeries[upSeries.length - 1].date === (upCount as any)?.trade_date
+  const upDelta = upPrev && upSameDay && limitUpCount != null
+    ? limitUpCount - upPrev.n : null
+  const upTip = limitUpCount == null ? '' : [
+    `今日涨停 ${limitUpCount} 只`
+      + (avgUp30 && upRatio != null
+        ? ` · 30日均值 ${avgUp30.toFixed(1)} → ${upRatio.toFixed(2)}×` : ''),
+    upPrev && upDelta != null
+      ? `上一交易日（${upPrev.date}）${upPrev.n} 只，${
+          upDelta > 0 ? `多了 ${upDelta} 只` : upDelta < 0 ? `少了 ${-upDelta} 只` : '持平'}`
+      : '上一交易日的只数和今天不是同一天的观测，不显示增减',
+    '柱状 = 近 12 个交易日的涨停只数，最后一根是今天（未收盘时是盘中数）',
+    '读法：>1× = 做多意愿强于近月',
+  ].join('\n')
+
   // ── 强势股涨跌停（2026-11-26 用户提：放进顶栏，照「跌停 · 极端做空」做醒目）──────
   // 强势池是高标（近 60 日打开过连板高度的票）。池子里的票开始成批跌停 = 部分高标开始
   // 退潮——跟左边全市场那两格是两个口径，所以单独成框、挨着放。
@@ -342,61 +364,73 @@ export function MarketStateBar() {
             )}
           </div>
         )}
-        {/* 跌停 · 极端做空（2026-09-16 提到队首并单独成框）：这一格是做多做空
-            环境最直接的那个事实，原来跟其他格一样是一行小字，看不出方向 */}
-        {limitDownCount != null && (
-          <div className={cn('shrink-0 rounded-md border px-2.5 py-1',
-                             DOWN_LEVEL[downLevel ?? 'normal'].box)}
-               title={downTip}>
-            <p className="text-[10px] text-text-secondary leading-none mb-1">跌停 · 极端做空</p>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xl font-bold text-down leading-none">
-                {limitDownCount}
-              </span>
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-1.5 leading-none">
-                  {downRatio != null && (
-                    <span className="text-[11px] font-mono font-bold text-down/90">
-                      {downRatio.toFixed(2)}×
-                    </span>
-                  )}
-                  {downLevel && (
-                    <span className={cn('text-[10px]',
-                      downLevel === 'low' ? 'text-accent'
-                        : downLevel === 'normal' ? 'text-text-muted' : 'text-down')}>
-                      {DOWN_LEVEL[downLevel].text}
-                    </span>
-                  )}
-                  {/* 跌停变多是风险抬头，走 down 色；变少只是退潮，不抢注意力 */}
-                  {downDelta != null && (
-                    <span className={cn('text-[10px] font-mono',
-                      downDelta > 0 ? 'text-down font-bold' : 'text-text-muted')}>
-                      {downDelta > 0 ? `↑${downDelta}` : downDelta < 0 ? `↓${-downDelta}` : '持平'}
-                    </span>
-                  )}
+        {/* 全市场涨跌停一个框（2026-11-27 用户提：照右边强势股那框，跌停 | 涨停 框到一起）。
+            跌停 · 极端做空 2026-09-16 提到队首并单独成框：这一格是做多做空环境最直接的那个
+            事实，原来跟其他格一样是一行小字，看不出方向；涨停 · 极端做多紧挨着——多空两端
+            的极端读数并排，才看得出今天是哪一边在主导。框的边随跌停档位加深 */}
+        {(limitDownCount != null || limitUpCount != null) && (
+          <div className={cn('shrink-0 rounded-md border px-2.5 py-1 flex items-stretch gap-3',
+                             DOWN_LEVEL[downLevel ?? 'normal'].box)}>
+          {limitDownCount != null && (
+            <div title={downTip}>
+              <p className="text-[10px] text-text-secondary leading-none mb-1">跌停 · 极端做空</p>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xl font-bold text-down leading-none">
+                  {limitDownCount}
+                </span>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1.5 leading-none">
+                    {downRatio != null && (
+                      <span className="text-[11px] font-mono font-bold text-down/90">
+                        {downRatio.toFixed(2)}×
+                      </span>
+                    )}
+                    {downLevel && (
+                      <span className={cn('text-[10px]',
+                        downLevel === 'low' ? 'text-accent'
+                          : downLevel === 'normal' ? 'text-text-muted' : 'text-down')}>
+                        {DOWN_LEVEL[downLevel].text}
+                      </span>
+                    )}
+                    {/* 跌停变多是风险抬头，走 down 色；变少只是退潮，不抢注意力 */}
+                    {downDelta != null && (
+                      <span className={cn('text-[10px] font-mono',
+                        downDelta > 0 ? 'text-down font-bold' : 'text-text-muted')}>
+                        {downDelta > 0 ? `↑${downDelta}` : downDelta < 0 ? `↓${-downDelta}` : '持平'}
+                      </span>
+                    )}
+                  </div>
+                  {downSeries.length >= 2 && <MiniBars data={downSeries} />}
                 </div>
-                {downSeries.length >= 2 && <MiniBars data={downSeries} />}
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* 涨停 · 极端做多：紧挨着跌停（2026-09-16 移过来）。多空两端的极端读数
-            并排，才看得出今天是哪一边在主导。倍数口径跟跌停那格一致：今日只数 /
-            该方向的30日均值 */}
-        {limitUpCount != null && (
-          <Cell label="涨停 · 极端做多"
-                title={`今日涨停 ${limitUpCount} 只`
-                  + (avgUp30 && upRatio != null
-                    ? ` · 30日均值 ${avgUp30.toFixed(1)} → ${upRatio.toFixed(2)}×（>1 做多意愿强于近月）` : '')}>
-            <span className="font-mono text-base font-bold text-up">{limitUpCount}</span>
-            {upRatio != null && (
-              <span className={cn('text-xs font-mono font-medium',
-                                  upRatio >= 1 ? 'text-up' : 'text-text-muted')}>
-                {upRatio.toFixed(2)}×
-              </span>
-            )}
-          </Cell>
+          {limitDownCount != null && limitUpCount != null && <div className="w-px bg-bg-border/70" />}
+          {/* 涨停 · 极端做多：倍数口径跟跌停一致（今日只数 / 该方向的30日均值） */}
+          {limitUpCount != null && (
+            <div title={upTip}>
+              <p className="text-[10px] text-text-secondary leading-none mb-1">涨停 · 极端做多</p>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xl font-bold text-up leading-none">{limitUpCount}</span>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1.5 leading-none">
+                    {upRatio != null && (
+                      <span className={cn('text-[11px] font-mono font-bold',
+                        upRatio >= 1 ? 'text-up' : 'text-text-muted')}>
+                        {upRatio.toFixed(2)}×
+                      </span>
+                    )}
+                    {upDelta != null && (
+                      <span className="text-[10px] font-mono text-text-muted">{deltaText(upDelta)}</span>
+                    )}
+                  </div>
+                  {upSeries.length >= 2 && <MiniBars data={upSeries} tone="up" />}
+                </div>
+              </div>
+            </div>
+          )}
+          </div>
         )}
 
         {/* 强势股涨跌停（2026-11-26）：跌停照左边「跌停 · 极端做空」的样子——大数字、
